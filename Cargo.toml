@@ -1,0 +1,9 @@
+[package]
+name = "mutant"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mutant-derive = { path = "derive" }
+static_assertions = "1.1.*"
+utf8-width = "0.1.7"
