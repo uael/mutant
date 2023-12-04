@@ -11,7 +11,7 @@ use core::slice;
 use crate::Error;
 pub use mutant_derive::*;
 
-pub use crate::Partition;
+pub use crate::Validated;
 pub use crate::Unalign;
 
 pub unsafe trait Zeroable: Sized {
@@ -35,8 +35,8 @@ pub trait Size: Sized {
 
 pub trait Swab: Sized {
   #[inline(always)]
-  fn swab(bytes: &[u8]) -> Option<Partition<'_>> {
-    Partition::from_split(bytes, mem::size_of::<Self>()).ok()
+  fn swab(bytes: &[u8]) -> Option<Validated<'_>> {
+    Validated::try_from::<()>(bytes, mem::size_of::<Self>(), |_| Ok(())).ok()
   }
 
   #[inline(always)]
@@ -831,11 +831,11 @@ unsafe impl UnpackMut for u16 {}
 
 impl Size for bool {}
 impl Swab for bool {
-  fn swab(bytes: &[u8]) -> Option<Partition<'_>> {
-    Partition::from_split(bytes, 1)
+  fn swab(bytes: &[u8]) -> Option<Validated<'_>> {
+    Validated::try_from::<()>(bytes, 1, |_| Ok(()))
       .and_then(|x| match x.validated[0] {
         0 | 1 => Ok(x),
-        _ => Err(Error::InvalidBytePattern),
+        _ => todo!()
       })
       .ok()
   }
@@ -853,9 +853,9 @@ impl Size for char {
 }
 impl Swab for char {
   #[inline(always)]
-  fn swab(bytes: &[u8]) -> Option<Partition<'_>> {
+  fn swab(bytes: &[u8]) -> Option<Validated<'_>> {
     if !bytes.is_empty() {
-      Partition::from_split(bytes, utf8_width::get_width(bytes[0])).ok()
+      Validated::try_from(bytes, utf8_width::get_width(bytes[0]), |_| Ok(())).ok()
     } else {
       None
     }
