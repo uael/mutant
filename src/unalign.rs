@@ -1,15 +1,29 @@
-use crate::{tests::AnyBitPattern, tests::Packed, tests::Zeroable};
+use crate::Mutant;
+use crate::Tail;
 use core::fmt::{self, Debug, Display, Formatter};
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
-pub struct Unalign<T: Copy>(T);
+pub struct Unalign<T>(pub T);
 
-unsafe impl<T: Copy + 'static> Packed for Unalign<T> {}
-unsafe impl<T: Copy + Zeroable> Zeroable for Unalign<T> {}
-unsafe impl<T: Copy + AnyBitPattern> AnyBitPattern for Unalign<T> {}
+unsafe impl<T: Mutant> Mutant for Unalign<T> {
+  type Error = T::Error;
+  type Head = T::Head;
+  type Tail = T::Tail;
 
-impl<T: Copy> Unalign<T> {
+  #[inline]
+  fn validate(bytes: &T::Head) -> Result<<T::Tail as Tail>::Size, T::Error> {
+    T::validate(bytes)
+  }
+}
+
+// unsafe impl<T: Varying + Copy> Varying for Unalign<T> {
+//   fn size_initialized(&self) -> usize {
+//     { self.0 }.size_initialized()
+//   }
+// }
+
+impl<T> Unalign<T> {
   #[inline(always)]
   pub fn new(value: T) -> Self {
     Self(value)
