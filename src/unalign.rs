@@ -6,13 +6,25 @@ use core::fmt::{self, Debug, Display, Formatter};
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
 pub struct Unalign<T: Copy>(pub T);
 
-unsafe impl<T: Mutant + Copy> Mutant for Unalign<T> {
+impl<T: Mutant + Copy> Mutant for Unalign<T> {
+  type Metadata = T::Metadata;
+
   type Head = Unalign<T::Head>;
   type Tail = T::Tail;
 
   #[inline]
-  fn validate(head: &Self::Head, bytes: &[u8]) -> Option<Self::Metadata> {
-    T::validate(&head.into_inner(), bytes)
+  fn validate(head: &Self::Head, tail: &Self::Tail) -> bool {
+    T::validate(&head.into_inner(), tail)
+  }
+
+  #[inline]
+  fn trailing(head: &Self::Head, tail: &[u8]) -> usize {
+    T::trailing(&head.into_inner(), tail)
+  }
+
+  #[inline]
+  unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
+    T::metadata(size)
   }
 }
 

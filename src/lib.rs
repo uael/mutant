@@ -1,11 +1,9 @@
-#![feature(ptr_metadata)]
-#![feature(offset_of)]
-use core::any::TypeId;
 use core::fmt::Debug;
-use core::mem::{self, align_of, size_of};
+use core::mem::{align_of, align_of_val, size_of, size_of_val};
 use core::fmt::Formatter;
-use core::ptr::Pointee;
+use core::any::TypeId;
 
+mod ptr;
 mod unalign;
 mod unaligned;
 mod undrop;
@@ -14,574 +12,508 @@ pub use unalign::*;
 pub use unaligned::*;
 pub use undrop::*;
 
-pub unsafe trait Mutant: Pointee + 'static {
+mod sealed {
+  use core::hash::Hash;
+  use crate::Mutant;
+
+  pub trait Metadata: Copy + Send + Sync + Ord + Hash + Unpin {
+    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self>;
+  }
+
+  impl Metadata for () {
+    #[inline(always)]
+    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self> {
+      T::metadata(size)
+    }
+  }
+
+  impl Metadata for usize {
+    #[inline(always)]
+    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self> {
+      T::metadata(size)
+    }
+  }
+}
+
+pub trait Mutant: 'static {
+  type Metadata: sealed::Metadata;
+
   type Head: Copy + Mutant<Tail = ()>;
   type Tail: ?Sized + Mutant<Metadata = Self::Metadata>;
 
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata>;
-}
+  #[inline(always)]
+  fn trailing(_head: &Self::Head, tail: &[u8]) -> usize {
+    size_of_within::<Self::Tail>(tail)
+  }
 
-pub unsafe trait Super<'a>: Sized {
-  type Tag: Mutant<Head = Self::Tag, Tail = ()>;
-}
+  #[inline(always)]
+  fn validate(_head: &Self::Head, _tail: &Self::Tail) -> bool {
+    true
+  }
 
-pub unsafe trait State<'a, T: Super<'a>>: Mutant
-where
-  &'a Self: TryFrom<T>,
-  &'a Self: Into<T>,
-{
-  const TAG: T::Tag;
-
-  fn upcast(&'a self) -> T;
+  #[inline(always)]
+  unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
+    if size < size_of::<Self::Head>() {
+      None
+    } else {
+      Self::Tail::metadata(size - size_of::<Self::Head>())
+    }
+  }
 }
 
 // fn ----------------------------------------------------------------------------------------------
 
-pub fn head_of<T: ?Sized + Mutant>(value: &T) -> &T::Head {
-  unsafe { &*(value as *const T as *const T::Head) }
-}
-
-pub fn tail_of<T: ?Sized + Mutant>(value: &T) -> &T::Tail {
-  let addr = unsafe { (value as *const T as *const ()).add(size_of::<T::Head>()) };
-  let meta = core::ptr::metadata(value);
-  unsafe { &*core::ptr::from_raw_parts(addr, meta) }
-}
-
-pub fn validate<T: ?Sized + Mutant>(bytes: &[u8]) -> Option<T::Metadata> {
-  union PtrRepr<T: ?Sized + Mutant> {
-    bytes: *const [u8],
-    value: *const T,
-    head: *const T::Head,
+#[inline(always)]
+pub fn unpack_head<T: ?Sized + Mutant>(bytes: &[u8]) -> Option<(&T::Head, &[u8])> {
+  if TypeId::of::<T>() != TypeId::of::<T::Head>() {
+    return unpack(bytes);
   }
 
-  let ptr = PtrRepr::<T> { bytes };
-
-  // Fast path for bytes.
-  if TypeId::of::<T>() == TypeId::of::<[u8]>() {
-    return Some(core::ptr::metadata(unsafe { ptr.value }));
+  if align_of::<T::Head>() != 1 && bytes.as_ptr().align_offset(align_of::<T::Head>()) != 0 {
+    return None;
   }
 
-  // Primitive types.
-  if TypeId::of::<T>() == TypeId::of::<T::Head>() {
-    if align_of::<T::Head>() != 1 && bytes.as_ptr().align_offset(align_of::<T::Head>()) != 0 {
-      return None;
-    }
-
-    return if size_of::<T::Head>() <= bytes.len() {
-      let (_, tail) = bytes.split_at(size_of::<T::Head>());
-      T::validate(unsafe { &*ptr.head }, tail)?;
-      Some(core::ptr::metadata(unsafe { ptr.value }))
-    } else {
-      None
-    };
+  if size_of::<T::Head>() > bytes.len() {
+    return None;
   }
 
-  let (head, tail) = unpack::<T::Head>(bytes)?;
-  T::validate(head, tail)
+  let (head, tail) = (size_of::<T::Head>() <= bytes.len())
+    .then(|| bytes.split_at(size_of::<T::Head>()))?;
+
+  Some((unsafe { &*(head.as_ptr() as *const T::Head) }, tail))
 }
 
+#[inline(always)]
+pub fn size_of_within<T: ?Sized + Mutant>(bytes: &[u8]) -> usize {
+  unpack_head::<T>(bytes)
+    .map(|(head, tail)| size_of::<T::Head>() + T::trailing(head, tail))
+    .unwrap_or(0)
+}
+
+#[inline(always)]
 pub fn unpack<T: ?Sized + Mutant>(bytes: &[u8]) -> Option<(&T, &[u8])> {
-  union PtrRepr<T: ?Sized + Mutant> {
-    bytes: *const [u8],
-    value: *const T,
-    head: *const T::Head,
-    tail: *const T::Tail,
+  let (head, tail) = unpack_head::<T>(bytes)?;
+  let tail_size = T::trailing(head, tail);
+  let meta = unsafe { T::Tail::metadata(tail_size) }?;
+
+  // compute raw address from base pointer and metadata.
+  let addr = ptr::from_raw_parts::<T>(bytes.as_ptr() as *const (), meta);
+
+  // SAFETY: [`align_of_val`] never actually deference `val`.
+  assert!(align_of_val(head) >= align_of_val(unsafe { &*addr }));
+
+  // SAFETY: [`size_of_val`] never actually deference `val`.
+  let size = size_of_val(unsafe { &*addr });
+  if size > bytes.len() {
+    // alignment mismatch.
+    return None;
   }
 
-  let ptr = PtrRepr::<T> { bytes };
-
-  // Fast path for bytes.
-  if TypeId::of::<T>() == TypeId::of::<[u8]>() {
-    return Some((unsafe { &*ptr.value }, &[]));
-  }
-
-  // Primitive types.
-  if TypeId::of::<T>() == TypeId::of::<T::Head>() {
-
-    dbg!(align_of::<T::Head>());
-    dbg!(mem::align_of_val(unsafe { &*ptr.head }));
-    dbg!(bytes.as_ptr().align_offset(align_of::<T::Head>()));
-
-    if align_of::<T::Head>() != 1 && bytes.as_ptr().align_offset(align_of::<T::Head>()) != 0 {
+  let tail = if TypeId::of::<T>() == TypeId::of::<T::Tail>() {
+    assert_eq!(size_of::<T::Head>(), 0);
+    let addr = ptr::from_raw_parts::<T::Tail>(bytes.as_ptr() as *const (), meta);
+    // SAFETY: `tail` is bound checked.
+    unsafe { &*addr }
+  } else {
+    let (tail, _) = unpack(&bytes[size_of::<T::Head>()..size])?;
+    if size_of_val(tail) != tail_size {
       return None;
     }
-
-    return if size_of::<T::Head>() <= bytes.len() {
-      let (_, tail) = bytes.split_at(size_of::<T::Head>());
-      T::validate(unsafe { &*ptr.head }, tail)?;
-      Some((unsafe { &*ptr.value }, tail))
-    } else {
-      None
-    };
-  }
-
-  let (head, tail) = unpack::<T::Head>(bytes)?;
-  let meta = T::validate(head, tail)?;
-
-  let value_ptr = core::ptr::from_raw_parts(bytes.as_ptr() as *const (), meta);
-  let (bytes, rest) = {
-    // Fake a value of type `T` and metadata `meta` to retrieve the size of `T`.
-    // SAFETY: `mem::size_of_val` never actually deference `val` address.
-    let size = mem::size_of_val(unsafe { &*value_ptr });
-    if size > bytes.len() {
-      return None;
-    }
-    bytes.split_at(size)
+    tail
   };
 
-  if TypeId::of::<T>() != TypeId::of::<T::Tail>() {
-    let (tail, _) = unpack::<T::Tail>(&bytes[size_of::<T::Head>()..])?;
-    assert_eq!(mem::size_of_val(head) + mem::size_of_val(tail), bytes.len());
-  } else {
-    assert_eq!(mem::size_of_val(head), 0);
-  }
+  assert_eq!(size_of_val(head) + size_of_val(tail), size);
 
-  Some(( unsafe { &*value_ptr }, rest))
+  if T::validate(head, tail) {
+    // SAFETY: bound checked.
+    Some(( unsafe { &*addr }, &bytes[size..]))
+  } else {
+    None
+  }
 }
 
 // impl Mutant -------------------------------------------------------------------------------------
 
-unsafe impl<T: Mutant<Tail = ()>, const N: usize> Mutant for [T; N] {
+impl Mutant for () {
+  type Metadata = ();
+
+  type Head = ();
+  type Tail = ();
+
+  #[inline(always)]
+  fn trailing(_head: &Self::Head, _tail: &[u8]) -> usize {
+    0
+  }
+
+  #[inline(always)]
+  unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
+    if size == 0 {
+      Some(())
+    } else {
+      None
+    }
+  }
+}
+
+impl<T: Mutant<Tail = ()>> Mutant for [T] {
+  type Metadata = usize;
+
+  type Head = ();
+  type Tail = [T::Head];
+
+  #[inline(always)]
+  fn trailing(_head: &Self::Head, tail: &[u8]) -> usize {
+    tail.len()
+  }
+
+  #[inline(always)]
+  fn validate(_head: &Self::Head, tail: &Self::Tail) -> bool {
+    tail.iter().all(|x| T::validate(x, &()))
+  }
+
+  #[inline(always)]
+  unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
+    match size_of::<T>() {
+      0 => (size == 0).then_some(0),
+      n => (size % n == 0).then_some(size / n)
+    }
+  }
+}
+
+impl<T: Mutant<Tail = ()>, const N: usize> Mutant for [T; N] {
+  type Metadata = ();
+
   type Head = [T::Head; N];
   type Tail = ();
 
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata> {
-    for x in head {
-      // let _ = T::validate(x)?;
-    }
-    Some(())
-  }
-}
-
-unsafe impl<T: Mutant> Mutant for [T] {
-  type Head = ();
-  type Tail = [T];
-
   #[inline(always)]
-  fn validate(_head: &Self::Head, mut tail: &[u8]) -> Option<Self::Metadata> {
-    if size_of::<T>() == 0 {
-      Some(0)
-    } else {
-      let len = tail.len() / size_of::<T>();
-      for _ in 0..len {
-        (_, tail) = unpack::<T>(tail)?;
-      }
-      Some(len)
-    }
+  fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+    head.iter().all(|x| T::validate(x, &()))
   }
 }
 
-unsafe impl Mutant for () {
-  type Head = Self;
-  type Tail = Self;
+impl Mutant for u8 {
+  type Metadata = ();
 
-  #[inline]
-  fn validate(_head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
-}
-
-unsafe impl Mutant for u8 {
   type Head = Self;
   type Tail = ();
-
-  #[inline]
-  fn validate(_head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
 }
 
-unsafe impl Mutant for u16 {
+impl Mutant for u16 {
+  type Metadata = ();
+
   type Head = Self;
   type Tail = ();
-
-  #[inline]
-  fn validate(_head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
 }
 
-unsafe impl Mutant for u32 {
+impl Mutant for u32 {
+  type Metadata = ();
+
   type Head = Self;
   type Tail = ();
-
-  #[inline]
-  fn validate(_head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
 }
 
-unsafe impl Mutant for bool {
+impl Mutant for u64 {
+  type Metadata = ();
+
+  type Head = Self;
+  type Tail = ();
+}
+
+impl Mutant for bool {
+  type Metadata = ();
+
   type Head = u8;
   type Tail = ();
 
-  #[inline]
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    match *head {
-      0 | 1 => Some(()),
-      _ => None,
-    }
+  #[inline(always)]
+  fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+    matches!(*head, 0 | 1)
   }
 }
 
-unsafe impl Mutant for char {
+impl Mutant for char {
+  type Metadata = ();
+
   type Head = u32;
   type Tail = ();
 
-  #[inline]
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    char::from_u32(*head).map(|_| ())
+  #[inline(always)]
+  fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+    char::from_u32(*head).is_some()
   }
 }
 
-// Tests -------------------------------------------------------------------------------------------
+// tests -------------------------------------------------------------------------------------------
 
-#[repr(C, u8)]
-#[derive(Debug)]
-enum X<'a> {
-  A(&'a A) = 0,
-  B(&'a B) = 1,
-  C(&'a C) = 2,
-}
+#[cfg(test)]
+mod tests {
+  use super::*;
 
-#[repr(C, packed)]
-#[derive(Debug)]
-struct A(u8);
-
-#[repr(C, packed)]
-#[derive(Debug)]
-struct B(u8, u8);
-
-#[repr(C, packed)]
-struct C(u8, Dst<[u8]>);
-
-unsafe impl<'a> Super<'a> for X<'a> {
-  type Tag = u8;
-}
-
-impl<'a> Into<X<'a>> for &'a A {
-  fn into(self) -> X<'a> {
-    X::A(self)
+  #[derive(Copy, Clone)]
+  #[repr(C, packed)]
+  struct Dst<T: ?Sized> {
+    len: u8,
+    payload: Undrop<T>,
   }
-}
 
-impl<'a> TryFrom<X<'a>> for &'a A {
-  type Error = ();
-
-  fn try_from(value: X<'a>) -> Result<Self, Self::Error> {
-    match value {
-      X::A(value) => Ok(value),
-      _ => Err(()),
+  impl<T: ?Sized + Debug + Unaligned> Debug for Dst<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+      f.debug_struct("Dst")
+        .field("len", &self.len)
+        .field("payload", &read_aligned!(self.payload))
+        .finish()
     }
   }
-}
 
-unsafe impl<'a> State<'a, X<'a>> for A {
-  const TAG: u8 = 0;
+  unsafe impl<T: ?Sized> Unaligned for Dst<T> { }
 
-  fn upcast(&'a self) -> X<'a> {
-    X::A(self)
-  }
-}
+  impl<T: ?Sized + Mutant> Mutant for Dst<T> {
+    type Metadata = T::Metadata;
 
-unsafe impl Mutant for A {
-  type Head = u8;
-  type Tail = ();
+    type Head = u8;
+    type Tail = T;
 
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    if *head == Self::TAG {
-      Some(())
-    } else {
-      None
+    #[inline(always)]
+    fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
+      *head as usize
     }
   }
-}
 
-impl<'a> Into<X<'a>> for &'a B {
-  fn into(self) -> X<'a> {
-    X::B(self)
+  #[test]
+  fn test() {
+    println!("{:?}", unpack::<()>(&[1, 0, 0, 0]));
+    println!("{:?}", unpack::<[u8]>(&[0, 1, 2, 3, 4, 5]));
+    println!("{:?}", unpack::<[bool]>(&[0, 1, 0, 1]));
+    println!("{:?}", unpack::<[Unalign<u16>]>(&[0, 1, 0, 2]));
+    println!("{:?}", unpack::<u8>(&[0]));
+    println!("{:?}", unpack::<bool>(&[0]));
+    println!("{:?}", unpack::<bool>(&[1]));
+    println!("{:?}", unpack::<bool>(&[2]));
+    println!("{:?}", unpack::<Unalign<char>>(&[b'a', 0, 0, 0]));
+    println!("{:?}", unpack::<Dst<[u8]>>(&[3, 1, 2, 3, 4]));
+    println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[2, 1, 0]));
+    println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[1, 1, 0]));
+    println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[3, 1, 0]));
+    println!("{:?}", unpack::<Dst<Unalign<[u16; 2]>>>(&[4, 1, 0, 2, 0]));
+    println!("{:?}", unpack::<Dst<Unalign<[u16; 2]>>>(&[5, 1, 0, 2, 0]));
+    //
+    // println!("{:?}", unpack::<A>(&[0]));
+    // println!("{:?}", unpack::<B>(&[1, 69]));
+    // println!("{:?}", unpack::<C>(&[2, 3, 1, 2, 3]));
+    //
+    // println!("{:?}", unpack_x(&[0]));
+    // println!("{:?}", unpack_x(&[1, 69]));
+    // println!("{:?}", unpack_x(&[2, 3, 1, 2, 3]));
+    //
+    // println!("{:?}", unpack::<Command<[u8]>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
+    // println!("{:?}", unpack::<Command<SetEventMask>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
+    //
+    // println!("{:?}", unpack::<Command<[u8]>>(&[0x42, 0, 0]));
+    // println!("{:?}", unpack::<Command<Reset>>(&[0x42, 0, 0]));
   }
-}
 
-impl<'a> TryFrom<X<'a>> for &'a B {
-  type Error = ();
-
-  fn try_from(value: X<'a>) -> Result<Self, Self::Error> {
-    match value {
-      X::B(value) => Ok(value),
-      _ => Err(()),
+  #[test]
+  fn test_hci() {
+    #[derive(Copy, Clone)]
+    #[repr(C, packed)]
+    struct Packet<T: ?Sized> {
+      r#type: u8,
+      data: Undrop<T>,
     }
-  }
-}
 
-unsafe impl<'a> State<'a, X<'a>> for B {
-  const TAG: u8 = 1;
-
-  fn upcast(&'a self) -> X<'a> {
-    X::B(self)
-  }
-}
-
-unsafe impl Mutant for B {
-  type Head = [u8; 2];
-  type Tail = ();
-
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    if head[0] == Self::TAG {
-      Some(())
-    } else {
-      None
+    trait PacketVariant: Mutant {
+      const PACKET_TYPE: u8;
     }
-  }
-}
 
-impl<'a> Into<X<'a>> for &'a C {
-  fn into(self) -> X<'a> {
-    X::C(self)
-  }
-}
-
-impl<'a> TryFrom<X<'a>> for &'a C {
-  type Error = ();
-
-  fn try_from(value: X<'a>) -> Result<Self, Self::Error> {
-    match value {
-      X::C(value) => Ok(value),
-      _ => Err(()),
+    impl<T: ?Sized + EventVariant> PacketVariant for Event<T> {
+      const PACKET_TYPE: u8 = 1;
     }
-  }
-}
 
-unsafe impl<'a> State<'a, X<'a>> for C {
-  const TAG: u8 = 2;
-
-  fn upcast(&'a self) -> X<'a> {
-    X::C(self)
-  }
-}
-
-unsafe impl Mutant for C {
-  type Head = u8;
-  type Tail = Dst<[u8]>;
-
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata> {
-    if *head == Self::TAG {
-      validate::<Self::Tail>(tail)
-    } else {
-      None
+    impl PacketVariant for Acl<[u8]> {
+      const PACKET_TYPE: u8 = 2;
     }
-  }
-}
 
-impl Debug for C {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("C")
-      .field("0", &self.0)
-      .field("1", &&self.1)
-      .finish()
-  }
-}
+    unsafe impl<T: ?Sized> Unaligned for Packet<T> {}
 
-fn unpack_x(bytes: &[u8]) -> Option<(X<'_>, &[u8])> {
-  match *unpack::<<X as Super>::Tag>(bytes)?.0 {
-    A::TAG => unpack(bytes).map(|(v, r)| (X::A(v), r)),
-    B::TAG => unpack(bytes).map(|(v, r)| (X::B(v), r)),
-    C::TAG => unpack(bytes).map(|(v, r)| (X::C(v), r)),
-    _ => None,
-  }
-}
-
-// unsafe impl Mutant for X {
-//   type Head = u8;
-//   type Tail = [u8];
-//
-//   fn validate(head: &Self::Head) -> Option<Self::Metadata> {
-//     match *head {
-//       0 => Ok(0),
-//       1 => Ok(1),
-//       _ => Err("invalid tag")
-//     }
-//   }
-// }
-
-#[derive(Copy, Clone)]
-#[repr(C, packed)]
-struct Dst<T: ?Sized> {
-  len: u8,
-  payload: Undrop<T>,
-}
-
-impl<T: ?Sized + Debug + Unaligned> Debug for Dst<T> {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("Dst")
-      .field("len", &self.len)
-      .field("payload", &read_aligned!(self.payload))
-      .finish()
-  }
-}
-
-unsafe impl<T: ?Sized> Unaligned for Dst<T> { }
-
-unsafe impl Mutant for Dst<()> {
-  type Head = Self;
-  type Tail = ();
-
-  fn validate(_head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
-}
-
-unsafe impl<T: ?Sized + Mutant> Mutant for Dst<T>
-where
-  Self: Pointee<Metadata = usize>,
-  T: Pointee<Metadata = usize>,
-{
-  type Head = Dst<()>;
-  type Tail = T;
-
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(head.len as usize)
-  }
-}
-
-trait CommandParams: Mutant {
-  const OPCODE: u16;
-}
-
-#[repr(C, packed)]
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct Command<T: ?Sized> {
-  opcode: u16,
-  parameters_len: u8,
-  parameters: Undrop<T>,
-}
-
-impl<T: CommandParams> Command<T> {
-  fn new(parameters: T) -> Self {
-    Self {
-      opcode: T::OPCODE,
-      parameters_len: mem::size_of_val(&parameters) as u8,
-      parameters: Undrop::new(parameters),
+    impl Mutant for Packet<()> {
+      type Metadata = ();
+      type Head = Self;
+      type Tail = ();
     }
-  }
-}
 
-impl<T: ?Sized + Unaligned + Debug> Debug for Command<T> {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("Command")
-      .field("opcode", &{ self.opcode })
-      .field("parameters_len", &{ self.parameters_len })
-      .field("parameters", &read_aligned!(self.parameters))
-      .finish()
-  }
-}
+    impl<T: ?Sized + PacketVariant> Mutant for Packet<T> {
+      type Metadata = T::Metadata;
+      type Head = Packet<()>;
+      type Tail = T;
 
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct Reset;
-
-unsafe impl Unaligned for Reset {}
-
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct SetEventMask {
-  mask: u64
-}
-
-unsafe impl Unaligned for SetEventMask {}
-
-enum Commands<'a> {
-  Reset(&'a Command<Reset>),
-  SetEventMask(&'a Command<SetEventMask>),
-  Unknown(&'a Command<[u8]>),
-}
-
-unsafe impl Mutant for Command<()> {
-  type Head = Self;
-  type Tail = ();
-
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
-}
-
-unsafe impl Mutant for Command<[u8]> {
-  type Head = Command<()>;
-  type Tail = [u8];
-
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    Some(head.parameters_len as usize)
-  }
-}
-
-unsafe impl Mutant for Command<Reset> {
-  type Head = Command<()>;
-  type Tail = Reset;
-
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    if head.opcode == 0x42 {
-      Some(())
-    } else {
-      None
+      fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+        head.r#type == T::PACKET_TYPE
+      }
     }
-  }
-}
 
-unsafe impl Mutant for Command<SetEventMask> {
-  type Head = Command<()>;
-  type Tail = SetEventMask;
-
-  fn validate(head: &Self::Head, _tail: &[u8]) -> Option<Self::Metadata> {
-    if head.opcode == 0x43 {
-      Some(())
-    } else {
-      None
+    impl<T: ?Sized + Unaligned + Debug> Debug for Packet<T> {
+      fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Packet")
+          .field("type", &self.r#type)
+          .field("data", &read_aligned!(self.data))
+          .finish()
+      }
     }
+
+    #[derive(Copy, Clone)]
+    #[repr(C, packed)]
+    struct Acl<T: ?Sized> {
+      handle_and_flags: Unalign<u16>,
+      data_total_len: Unalign<u16>,
+      parameters: Undrop<T>,
+    }
+
+    unsafe impl<T: ?Sized> Unaligned for Acl<T> {}
+
+    impl Mutant for Acl<()> {
+      type Metadata = ();
+      type Head = Self;
+      type Tail = ();
+    }
+
+    impl Mutant for Acl<[u8]> {
+      type Metadata = usize;
+      type Head = Acl<()>;
+      type Tail = [u8];
+
+      #[inline(always)]
+      fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
+        head.data_total_len.into_inner() as usize
+      }
+    }
+
+    impl<T: ?Sized + Unaligned + Debug> Debug for Acl<T> {
+      fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Acl")
+          .field("handle_and_flags", &self.handle_and_flags)
+          .field("data_total_len", &self.data_total_len)
+          .field("completed_packets", &read_aligned!(self.parameters))
+          .finish()
+      }
+    }
+
+    #[derive(Copy, Clone)]
+    #[repr(C, packed)]
+    struct Event<T: ?Sized> {
+      event_code: u8,
+      parameters_len: u8,
+      parameters: Undrop<T>,
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C, packed)]
+    struct ConnectionComplete {
+      address: [u8; 6],
+      handle: u16,
+      link_type: u8,
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C, packed)]
+    struct CompletedPackets {
+      handle: u16,
+      number_of_completed_packets: u16,
+    }
+
+    #[repr(C, packed)]
+    struct NumberOfCompletedPackets {
+      num_handles: u8,
+      completed_packets: [CompletedPackets]
+    }
+
+    unsafe impl<T: ?Sized> Unaligned for Event<T> {}
+    unsafe impl Unaligned for ConnectionComplete {}
+    unsafe impl Unaligned for CompletedPackets {}
+    unsafe impl Unaligned for NumberOfCompletedPackets {}
+
+    trait EventVariant: Mutant {
+      const EVENT_CODE: Option<u8>;
+    }
+
+    impl EventVariant for [u8] {
+      const EVENT_CODE: Option<u8> = None;
+    }
+
+    impl EventVariant for ConnectionComplete {
+      const EVENT_CODE: Option<u8> = Some(21);
+    }
+
+    impl EventVariant for NumberOfCompletedPackets {
+      const EVENT_CODE: Option<u8> = Some(42);
+    }
+
+    impl Mutant for ConnectionComplete {
+      type Metadata = ();
+      type Head = Self;
+      type Tail = ();
+    }
+
+    impl Mutant for NumberOfCompletedPackets {
+      type Metadata = usize;
+      type Head = u8;
+      type Tail = [CompletedPackets];
+    }
+
+    impl Mutant for CompletedPackets {
+      type Metadata = ();
+      type Head = Self;
+      type Tail = ();
+    }
+
+    impl Mutant for Event<()> {
+      type Metadata = ();
+      type Head = Self;
+      type Tail = ();
+    }
+
+    impl<T: ?Sized + EventVariant> Mutant for Event<T> {
+      type Metadata = T::Metadata;
+      type Head = Event<()>;
+      type Tail = T;
+
+      #[inline(always)]
+      fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
+        head.parameters_len as usize
+      }
+
+      #[inline(always)]
+      fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+        match T::EVENT_CODE {
+          Some(event_code) => event_code == head.event_code,
+          _ => true,
+        }
+      }
+    }
+
+    impl<T: ?Sized + Debug + Unaligned> Debug for Event<T> {
+      fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Event")
+          .field("event_code", &self.event_code)
+          .field("parameters_len", &self.parameters_len)
+          .field("parameters", &read_aligned!(self.parameters))
+          .finish()
+      }
+    }
+
+    impl Debug for NumberOfCompletedPackets {
+      fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumberOfCompletedPackets")
+          .field("num_handles", &self.num_handles)
+          .field("completed_packets", &read_aligned!(self.completed_packets))
+          .finish()
+      }
+    }
+
+    println!("{:?}", unpack::<Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
+    println!("{:?}", unpack::<Event<ConnectionComplete>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
+    println!("{:?}", unpack::<Event<ConnectionComplete>>(&[22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
+    println!("{:?}", unpack::<Packet<Event<[u8]>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
+    println!("{:?}", unpack::<Packet<Event<ConnectionComplete>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3]));
   }
-}
-
-unsafe impl Mutant for Reset {
-  type Head = Self;
-  type Tail = ();
-
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
-}
-
-unsafe impl Mutant for SetEventMask {
-  type Head = Self;
-  type Tail = ();
-
-  fn validate(head: &Self::Head, tail: &[u8]) -> Option<Self::Metadata> {
-    Some(())
-  }
-}
-
-#[test]
-fn test() {
-  println!("{:?}", unpack::<u32>(&[1, 0, 0, 0]));
-  println!("{:?}", unpack::<[u8]>(&[0, 1, 2, 3, 4, 5]));
-  println!("{:?}", unpack::<[bool]>(&[0, 1, 0, 1]));
-  println!("{:?}", unpack::<[Unalign<u16>]>(&[0, 1, 0, 2]));
-  println!("{:?}", unpack::<u8>(&[0]));
-  println!("{:?}", unpack::<bool>(&[0]));
-  println!("{:?}", unpack::<bool>(&[1]));
-  println!("{:?}", unpack::<bool>(&[2]));
-  println!("{:?}", unpack::<Unalign<char>>(&[b'a', 0, 0, 0]));
-  println!("{:?}", unpack::<Dst<[u8]>>(&[3, 1, 2, 3, 4]));
-
-  println!("{:?}", unpack::<A>(&[0]));
-  println!("{:?}", unpack::<B>(&[1, 69]));
-  println!("{:?}", unpack::<C>(&[2, 3, 1, 2, 3]));
-
-  println!("{:?}", unpack_x(&[0]));
-  println!("{:?}", unpack_x(&[1, 69]));
-  println!("{:?}", unpack_x(&[2, 3, 1, 2, 3]));
-
-  println!("{:?}", unpack::<Command<[u8]>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
-  println!("{:?}", unpack::<Command<SetEventMask>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
-
-  println!("{:?}", unpack::<Command<[u8]>>(&[0x42, 0, 0]));
-  println!("{:?}", unpack::<Command<Reset>>(&[0x42, 0, 0]));
 }

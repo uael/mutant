@@ -3,22 +3,31 @@ use crate::Mutant;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::fmt::{self, Debug, Display, Formatter};
-use core::ptr::Pointee;
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
 
-unsafe impl<T: Mutant + ?Sized> Mutant for Undrop<T>
-where
-  Self: Pointee<Metadata = T::Metadata>
-{
+impl<T: Mutant + ?Sized> Mutant for Undrop<T> {
+  type Metadata = T::Metadata;
+
   type Head = T::Head;
   type Tail = T::Tail;
 
   #[inline(always)]
-  fn validate(head: &T::Head, bytes: &[u8]) -> Option<T::Metadata> {
+  fn validate(head: &T::Head, tail: &Self::Tail) -> bool {
     let _ = Check::<T>::ASSERT_NOT_DROP;
-    T::validate(head, bytes)
+    T::validate(head, tail)
+  }
+
+  #[inline(always)]
+  fn trailing(head: &Self::Head, tail: &[u8]) -> usize {
+    let _ = Check::<T>::ASSERT_NOT_DROP;
+    T::trailing(head, tail)
+  }
+
+  #[inline(always)]
+  unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
+    T::metadata(size)
   }
 }
 
