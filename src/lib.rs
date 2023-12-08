@@ -12,31 +12,8 @@ pub use unalign::*;
 pub use unaligned::*;
 pub use undrop::*;
 
-mod sealed {
-  use core::hash::Hash;
-  use crate::Mutant;
-
-  pub trait Metadata: Copy + Send + Sync + Ord + Hash + Unpin {
-    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self>;
-  }
-
-  impl Metadata for () {
-    #[inline(always)]
-    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self> {
-      T::metadata(size)
-    }
-  }
-
-  impl Metadata for usize {
-    #[inline(always)]
-    unsafe fn of<T: ?Sized + Mutant<Metadata = Self>>(size: usize) -> Option<Self> {
-      T::metadata(size)
-    }
-  }
-}
-
 pub trait Mutant: 'static {
-  type Metadata: sealed::Metadata;
+  type Metadata: Copy;
 
   type Head: Copy + Mutant<Tail = ()>;
   type Tail: ?Sized + Mutant<Metadata = Self::Metadata>;
