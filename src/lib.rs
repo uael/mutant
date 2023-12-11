@@ -1,8 +1,10 @@
-use core::fmt::Debug;
-use core::mem::{align_of, align_of_val, size_of, size_of_val};
-use core::fmt::Formatter;
+#![feature(offset_of)]
 use core::any::TypeId;
+use core::fmt::Debug;
+use core::fmt::Formatter;
+use core::mem::{align_of, align_of_val, size_of, size_of_val};
 
+mod layout;
 mod ptr;
 mod unalign;
 mod unaligned;
@@ -54,8 +56,8 @@ pub fn unpack_head<T: ?Sized + Mutant>(bytes: &[u8]) -> Option<(&T::Head, &[u8])
     return None;
   }
 
-  let (head, tail) = (size_of::<T::Head>() <= bytes.len())
-    .then(|| bytes.split_at(size_of::<T::Head>()))?;
+  let (head, tail) =
+    (size_of::<T::Head>() <= bytes.len()).then(|| bytes.split_at(size_of::<T::Head>()))?;
 
   Some((unsafe { &*(head.as_ptr() as *const T::Head) }, tail))
 }
@@ -103,7 +105,7 @@ pub fn unpack<T: ?Sized + Mutant>(bytes: &[u8]) -> Option<(&T, &[u8])> {
 
   if T::validate(head, tail) {
     // SAFETY: bound checked.
-    Some(( unsafe { &*addr }, &bytes[size..]))
+    Some((unsafe { &*addr }, &bytes[size..]))
   } else {
     None
   }
@@ -152,7 +154,7 @@ impl<T: Mutant<Tail = ()>> Mutant for [T] {
   unsafe fn metadata(size: usize) -> Option<Self::Metadata> {
     match size_of::<T>() {
       0 => (size == 0).then_some(0),
-      n => (size % n == 0).then_some(size / n)
+      n => (size % n == 0).then_some(size / n),
     }
   }
 }
@@ -243,7 +245,7 @@ mod tests {
     }
   }
 
-  unsafe impl<T: ?Sized> Unaligned for Dst<T> { }
+  unsafe impl<T: ?Sized> Unaligned for Dst<T> {}
 
   impl<T: ?Sized + Mutant> Mutant for Dst<T> {
     type Metadata = T::Metadata;
@@ -401,7 +403,7 @@ mod tests {
     #[repr(C, packed)]
     struct NumberOfCompletedPackets {
       num_handles: u8,
-      completed_packets: [CompletedPackets]
+      completed_packets: [CompletedPackets],
     }
 
     unsafe impl<T: ?Sized> Unaligned for Event<T> {}
@@ -488,9 +490,23 @@ mod tests {
     }
 
     println!("{:?}", unpack::<Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
-    println!("{:?}", unpack::<Event<ConnectionComplete>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
-    println!("{:?}", unpack::<Event<ConnectionComplete>>(&[22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
-    println!("{:?}", unpack::<Packet<Event<[u8]>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
-    println!("{:?}", unpack::<Packet<Event<ConnectionComplete>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3]));
+    println!(
+      "{:?}",
+      unpack::<Event<ConnectionComplete>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+    );
+    println!(
+      "{:?}",
+      unpack::<Event<ConnectionComplete>>(&[22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+    );
+    println!(
+      "{:?}",
+      unpack::<Packet<Event<[u8]>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+    );
+    println!(
+      "{:?}",
+      unpack::<Packet<Event<ConnectionComplete>>>(&[
+        1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
+      ])
+    );
   }
 }

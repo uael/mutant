@@ -30,7 +30,7 @@ pub unsafe trait Unaligned {}
 #[macro_export]
 macro_rules! read_aligned {
   ($unaligned:expr $(,)?) => {{
-    const fn assert_unaligned<T: ?Sized + Unaligned>(_: *const T) { }
+    const fn assert_unaligned<T: ?Sized + Unaligned>(_: *const T) {}
     let addr = core::ptr::addr_of!($unaligned);
     assert_unaligned(addr);
     unsafe { &*addr }
@@ -40,7 +40,7 @@ macro_rules! read_aligned {
 #[macro_export]
 macro_rules! read_aligned_mut {
   ($unaligned:expr $(,)?) => {{
-    const fn assert_unaligned<T: ?Sized + Unaligned>(_: *const T) { }
+    const fn assert_unaligned<T: ?Sized + Unaligned>(_: *const T) {}
     let addr = core::ptr::addr_of_mut!($unaligned);
     assert_unaligned(addr);
     unsafe { &mut *addr }

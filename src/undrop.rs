@@ -1,8 +1,8 @@
 use crate::Mutant;
 
+use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
-use core::fmt::{self, Debug, Display, Formatter};
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
