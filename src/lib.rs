@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 use core::mem;
 use core::num::NonZeroUsize;
+use std::marker::PhantomData;
 
 // mod unalign;
 // mod unaligned;
@@ -10,7 +11,7 @@ use core::num::NonZeroUsize;
 // pub use unaligned::*;
 // pub use undrop::*;
 
-pub unsafe trait Mutant2: 'static {
+pub unsafe trait Packed: 'static {
   const LAYOUT: TypeLayout;
 }
 
@@ -20,78 +21,60 @@ pub struct TypeLayout {
   tail: Option<NonZeroUsize>,
 }
 
-#[repr(C, align(65536))]
-struct Aligned64k([u8; 65536]);
-
-pub const ALIGNED_64K_ADDR: *const () = {
-  const REF: &Aligned64k = &Aligned64k([0; mem::size_of::<Aligned64k>()]);
-  let ptr: *const _ = REF;
-  ptr.cast()
-};
-
-#[macro_export]
-macro_rules! offset_of {
-  ($Container:ty, $($fields:tt).+ $(,)?) => {{
-    let ptr = $crate::ptr::from_addr::<$Container>(ALIGNED_64K_ADDR);
-    // SAFETY:
-    // - `ptr` is never actually deferenced.
-    // - in case 64k isn't enough, [`core::ptr::addr_of`] will emit a compiler error.
-    let field_ptr = unsafe {
-      core::ptr::addr_of!((*ptr).$($fields).+)
-    };
-    // SAFETY: Safe as all `offset_from` garantees are assured by [`ptr::addr_of`].
-    let offset = unsafe { field_ptr.cast::<u8>().offset_from(ptr.cast::<u8>()) };
-    // Guaranteed not to be lossy: `field` comes after `ptr`, so the offset
-    // from `ptr` to `field` is guaranteed to be positive.
-    assert!(offset >= 0);
-    offset as usize
-  }};
+#[derive(Debug, Eq, PartialEq)]
+pub enum MetadataRequirement {
+  Is(usize),
+  IsAtLeast(usize),
+  IsMultipleOf(usize),
+  IsAtLeastThenMultipleOf(usize, usize),
+  IsEmpty,
 }
 
 // impl TypeLayout ---------------------------------------------------------------------------------
 
 impl TypeLayout {
   #[inline(always)]
+  const fn new(head: usize, tail: Option<NonZeroUsize>) -> Self {
+    Self { head, tail }
+  }
+
+  #[inline(always)]
   pub const fn of_sized<T: Sized>() -> Self {
     assert!(mem::align_of::<T>() == 1, "type must be unaligned");
-    Self { head: mem::size_of::<T>(), tail: None }
+    Self::new(mem::size_of::<T>(), None)
   }
 
   #[inline(always)]
-  pub const fn of_slice<T: Mutant2>() -> Self {
+  pub const fn of_slice<T: Packed>() -> Self {
     assert!(mem::align_of::<T>() == 1, "slice item type must be unaligned");
-    Self { head: 0, tail: NonZeroUsize::new(T::LAYOUT.head) }
+    Self::new(0, NonZeroUsize::new(T::LAYOUT.head))
   }
 
   #[inline(always)]
-  pub const unsafe fn of_struct(fields: &[(Self, usize)]) -> Self {
-    let (mut i, mut layout) = (0, Self { head: 0, tail: None });
+  pub const unsafe fn of_struct(fields: &[Self]) -> Self {
+    let (mut i, mut layout) = (0, Self::new(0, None));
     while i < fields.len() {
       assert!(layout.tail.is_none());
-      assert!(layout.head == fields[i].1, "struct must be at least `#[repr(packed)]`");
-      layout.head += fields[i].0.head;
-      layout.tail = fields[i].0.tail;
+      layout.head += fields[i].head;
+      layout.tail = fields[i].tail;
       i += 1;
     }
     layout
   }
 
   #[inline(always)]
-  pub const fn size_of(self, metadata: usize) -> usize {
+  pub const fn size_of(&self, metadata: usize) -> usize {
     match (self.head, self.tail) {
       (head, None) => {
         assert!(metadata == 0, "only `DST` have metadata");
         head
       },
-      (head, Some(tail)) => {
-        assert!(tail.is_power_of_two());
-        head + tail.get() * metadata
-      }
+      (head, Some(tail)) => head + tail.get() * metadata
     }
   }
 
   #[inline(always)]
-  pub const fn metadata(self, mut size: usize) -> Option<usize> {
+  pub const fn metadata(&self, mut size: usize) -> Option<usize> {
     match (self.head, self.tail) {
       (head, None) => if size == head {
         Some(0)
@@ -99,7 +82,6 @@ impl TypeLayout {
         None
       },
       (head, Some(tail)) => if size >= head {
-        assert!(tail.is_power_of_two());
         size -= head;
         if size % tail.get() == 0 {
           Some(size / tail.get())
@@ -111,23 +93,146 @@ impl TypeLayout {
       }
     }
   }
+
+  #[inline(always)]
+  pub const fn transmute(&self, into: &Self) -> Option<MetadataRequirement> {
+    if self.head > into.head {
+      // Calculate the size difference between `self.head` and `into.head`.
+      let remaining = self.head - into.head;
+      match (self.tail, into.tail) {
+        (a, Some(b)) => {
+          // Calculate how much of the `remaining` bytes can fit in the tail of `other`.
+          // This is done by finding the remainder of `remaining` when divided by the size of `b`.
+          let remaining = remaining % b.get();
+          if remaining != 0 {
+            return match a {
+              None => panic!(
+                "cannot transmute between types of incompatible byte layouts, \
+                remaining bytes to fit in the target is not a multiple of the target `DST` \
+                trailing slice item size"
+              ),
+              Some(a) => {
+                let gcd = gcd(a.get(), b.get());
+                if self.head % gcd != 0 {
+                  panic!(
+                    "cannot transmute between `DST` types of incompatible byte layouts, \
+                    source cannot catchup on target"
+                  )
+                }
+                if into.head % gcd != 0 {
+                  panic!(
+                    "cannot transmute between `DST` types of incompatible byte layouts, \
+                    target cannot catchup on source"
+                  )
+                }
+                let mut i = self.head;
+                while (i - into.head) % b.get() != 0 {
+                  i += a.get();
+                }
+                let x = (i - self.head) / a.get();
+                match lcm(a.get(), b.get()) / a.get() {
+                  1 => Some(MetadataRequirement::IsAtLeast(x)),
+                  n => Some(MetadataRequirement::IsAtLeastThenMultipleOf(x, n)),
+                }
+              }
+            }
+          }
+        }
+        _ => panic!(
+          "cannot transmute between types of different sizes, \
+          source is bigger than target"
+        ),
+      };
+    } else if self.head < into.head {
+      // Calculate the size difference between `into.head` and `self.head`.
+      let missing = into.head - self.head;
+      return match (self.tail, into.tail) {
+        (None, _) => panic!(
+          "cannot transmute between types of different sizes, \
+          source is smaller than target"
+        ),
+        (Some(a), None) => {
+          assert!(
+            missing % a.get() == 0,
+            "cannot transmute between types of incompatible byte layouts, \
+            missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
+            item size"
+          );
+          Some(MetadataRequirement::Is(missing / a.get()))
+        }
+        (Some(a), Some(b)) => {
+          let x = lcm(missing + a.get(), missing + b.get()) - missing;
+          assert!(x % a.get() == 0, "origin cannot fit target");
+          assert!(x % b.get() == 0, "origin cannot fit target");
+          // Determine the metadata requirement based on the value of `n`,
+          // which is the LCM of `a.get()` and `b.get()` divided by `a.get()`.
+          match lcm(a.get(), b.get()) / a.get() {
+            // If `n` is 1, it implies that the size of `a` is already aligned with `b`.
+            // Thus, the metadata requirement is at least `x / a.get()`.
+            1 => Some(MetadataRequirement::IsAtLeast(x / a.get())),
+            // If `n` is greater than 1, it indicates a more complex alignment requirement,
+            // where `x / a.get()` is the minimum alignment, and `n` is the multiple of `a`
+            // that fits into `b`. This represents a case where multiple instances of `a`
+            // are required for alignment with `b`.
+            n => Some(MetadataRequirement::IsAtLeastThenMultipleOf(x / a.get(), n)),
+          }
+        }
+      }
+    }
+
+    // Heads are equivalents.
+    match (self.tail, into.tail) {
+      // This block calculates the minimum number of times `a` must be repeated to reach a size
+      // that is a multiple of `b`. It first computes the least common multiple (LCM) of the
+      // sizes `a` and `b` using the `lcm` function. The LCM is the smallest positive integer
+      // that is divisible by both `a` and `b`.
+      // The value of `n` is then determined by dividing this LCM by the size of `a`.
+      // This gives the minimum number of `a` items that fit into a size multiple of `b`.
+      //
+      // The function then returns different metadata requirements based on the value of `n`:
+      // - If `n` is 1, it implies that the size of `a` is already a multiple of `b`, or they
+      //   are equal. In this case, no additional metadata requirements are needed.
+      // - If `n` is greater than 1, it indicates that multiple instances of `a` are required to
+      //   reach a size that is a multiple of `b`. Hence, it returns
+      //   `MetadataRequirement::MultipleOf(n)`, signifying the need for `n` instances of `a`.
+      (Some(a), Some(b)) => match lcm(a.get(), b.get()) / a.get() {
+        1 => None,
+        n => Some(MetadataRequirement::IsMultipleOf(n)),
+      },
+      (Some(_), _) => Some(MetadataRequirement::IsEmpty),
+      _ => None,
+    }
+  }
+}
+
+#[inline(always)]
+const fn gcd(a: usize, b: usize) -> usize {
+  match b {
+    0 => a,
+    _ => gcd(b, a % b),
+  }
+}
+
+#[inline(always)]
+const fn lcm(a: usize, b: usize) -> usize {
+  a * b / gcd(a, b)
 }
 
 // impl --------------------------------------------------------------------------------------------
 
-unsafe impl Mutant2 for () {
+unsafe impl Packed for () {
   const LAYOUT: TypeLayout = TypeLayout::of_sized::<Self>();
 }
 
-unsafe impl Mutant2 for u8 {
+unsafe impl Packed for u8 {
   const LAYOUT: TypeLayout = TypeLayout::of_sized::<Self>();
 }
 
-unsafe impl<T: Mutant2> Mutant2 for [T] {
+unsafe impl<T: Packed> Packed for [T] {
   const LAYOUT: TypeLayout = TypeLayout::of_slice::<T>();
 }
 
-unsafe impl<T: Mutant2, const N: usize> Mutant2 for [T; N] {
+unsafe impl<T: Packed, const N: usize> Packed for [T; N] {
   const LAYOUT: TypeLayout = TypeLayout::of_sized::<Self>();
 }
 
@@ -135,7 +240,7 @@ unsafe impl<T: Mutant2, const N: usize> Mutant2 for [T; N] {
 #[repr(transparent)]
 struct u16le([u8; 2]);
 
-unsafe impl Mutant2 for u16le {
+unsafe impl Packed for u16le {
   const LAYOUT: TypeLayout = TypeLayout::of_sized::<Self>();
 }
 
@@ -143,14 +248,21 @@ unsafe impl Mutant2 for u16le {
 #[repr(transparent)]
 struct u32le([u8; 4]);
 
-unsafe impl Mutant2 for u32le {
+unsafe impl Packed for u32le {
   const LAYOUT: TypeLayout = TypeLayout::of_sized::<Self>();
 }
 
 // fn ----------------------------------------------------------------------------------------------
 
+struct Check<A: Packed + ?Sized, B: Packed + ?Sized>(PhantomData<A>, PhantomData<B>);
+
+impl<A: Packed + ?Sized, B: Packed + ?Sized> Check<A, B> {
+  const REQUIREMENT: Option<MetadataRequirement> = A::LAYOUT.transmute(&B::LAYOUT);
+}
+
 #[inline(always)]
-pub const fn try_transmute<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &T) -> Option<&U> {
+pub const fn try_transmute<T: Packed + ?Sized, U: Packed + ?Sized>(value: &T) -> Option<&U> {
+  let _ = Check::<T, U>::REQUIREMENT;
   let metadata = ptr::metadata(value);
   let size = T::LAYOUT.size_of(metadata);
   match U::LAYOUT.metadata(size) {
@@ -163,7 +275,7 @@ pub const fn try_transmute<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &T) 
 }
 
 #[inline(always)]
-pub const fn transmute<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &T) -> &U {
+pub const fn transmute<T: Packed + ?Sized, U: Packed + ?Sized>(value: &T) -> &U {
   match try_transmute(value) {
     Some(value) => value,
     _ => panic!("transmute of types with incompatible layouts."),
@@ -171,7 +283,8 @@ pub const fn transmute<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &T) -> &
 }
 
 #[inline(always)]
-pub fn try_transmute_mut<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &mut T) -> Option<&mut U> {
+pub fn try_transmute_mut<T: Packed + ?Sized, U: Packed + ?Sized>(value: &mut T) -> Option<&mut U> {
+  let _ = Check::<T, U>::REQUIREMENT;
   let metadata = ptr::metadata(value);
   let size = T::LAYOUT.size_of(metadata);
   match U::LAYOUT.metadata(size) {
@@ -184,36 +297,11 @@ pub fn try_transmute_mut<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &mut T
 }
 
 #[inline(always)]
-pub fn transmute_mut<T: Mutant2 + ?Sized, U: Mutant2 + ?Sized>(value: &mut T) -> &mut U {
+pub fn transmute_mut<T: Packed + ?Sized, U: Packed + ?Sized>(value: &mut T) -> &mut U {
   match try_transmute_mut(value) {
     Some(value) => value,
     _ => panic!("transmute of types with incompatible layouts."),
   }
-}
-
-pub const fn align_of<T: ?Sized>() -> usize {
-  // SAFETY: `OffsetOfTrailingIsAlignment` is `repr(C)`, and its layout is guaranteed [1] to begin
-  // with the single-byte layout for `_byte`, followed by the padding needed to align `_trailing`,
-  // then the layout for `_trailing`, and finally any trailing padding bytes needed to
-  // correctly-align the entire struct.
-  //
-  // This computes the alignment of `T` by counting the number of bytes preceding `_trailing`.
-  // For instance, if the alignment of `T` is `1`, then no padding is required align `_trailing` and
-  // it will be located immediately after `_byte` at offset 1. If the alignment of `T` is 2, then a
-  // single padding byte is required before `_trailing`, and `_trailing` will be located at
-  // offset 2.
-  //
-  // This correspondence between offset and alignment holds for all valid Rust alignments, and we
-  // confirm this exhaustively.
-  //
-  // [1]: https://doc.rust-lang.org/nomicon/other-reprs.html#reprc
-  #[repr(C)]
-  struct OffsetOfTrailingIsAlignment<T: ?Sized> {
-    _byte: u8,
-    _trailing: T,
-  }
-
-  offset_of!(OffsetOfTrailingIsAlignment<T>, _trailing)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -292,6 +380,146 @@ mod tests {
   use super::*;
   use core::mem::ManuallyDrop;
 
+  #[macro_export]
+  macro_rules! assert_panic {
+    ($msg:expr, $e:expr) => {
+      assert_eq!(
+        Some($msg),
+        std::panic::catch_unwind(|| { $e })
+          .err()
+          .and_then(|a| a.downcast_ref::<&'static str>().cloned())
+      )
+    };
+  }
+
+  #[test]
+  fn test_layout() {
+    macro_rules! layout {
+      ($h:expr $(,)?) => { &TypeLayout::new($h, None) };
+      ($h:expr, [$t:expr] $(,)?) => { &TypeLayout::new($h, NonZeroUsize::new($t)) };
+    }
+
+    assert_eq!(
+      None,
+      layout! { 1 }.transmute(layout!{ 1 })
+    );
+
+    assert_eq!(
+      None,
+      layout! { 42 }.transmute(layout!{ 42 })
+    );
+
+    assert_panic!(
+      "cannot transmute between types of different sizes, \
+      source is bigger than target",
+      layout! { 2 }.transmute(layout!{ 1 })
+    );
+
+    assert_panic!(
+      "cannot transmute between types of different sizes, \
+      source is smaller than target",
+      layout! { 1 }.transmute(layout!{ 2 })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsEmpty),
+      layout! { 42, [1] }.transmute(layout!{ 42 })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::Is(7)),
+      layout! { 35, [1] }.transmute(layout!{ 42 })
+    );
+
+    assert_panic!(
+      "cannot transmute between types of incompatible byte layouts, \
+      missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
+      item size",
+      layout! { 35, [2] }.transmute(layout!{ 42 })
+    );
+
+    assert_panic!(
+      "cannot transmute between types of incompatible byte layouts, \
+      missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
+      item size",
+      layout! { 40, [3] }.transmute(layout!{ 42 })
+    );
+
+    assert_eq!(
+      None,
+      layout! { 42, [1] }.transmute(layout!{ 42, [1] })
+    );
+
+    assert_eq!(
+      None,
+      layout! { 42, [3] }.transmute(layout!{ 42, [1] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(2)),
+      layout! { 42, [1] }.transmute(layout!{ 42, [2] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(3)),
+      layout! { 42, [1] }.transmute(layout!{ 42, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(3)),
+      layout! { 42, [2] }.transmute(layout!{ 42, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(3)),
+      layout! { 42, [4] }.transmute(layout!{ 42, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(8)),
+      layout! { 42, [5] }.transmute(layout!{ 42, [8] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsMultipleOf(3)),
+      layout! { 42, [2] }.transmute(layout!{ 42, [6] })
+    );
+
+    assert_panic!(
+      "cannot transmute between types of incompatible byte layouts, \
+      remaining bytes to fit in the target is not a multiple of the target `DST` \
+      trailing slice item size",
+      layout! { 42 }.transmute(layout!{ 38, [3] })
+    );
+
+    assert_panic!(
+      "cannot transmute between `DST` types of incompatible byte layouts, \
+      target cannot catchup on source",
+      layout! { 42, [3] }.transmute(layout!{ 38, [3] })
+    );
+
+    assert_panic!(
+      "cannot transmute between `DST` types of incompatible byte layouts, \
+      source cannot catchup on target",
+      layout! { 41, [3] }.transmute(layout!{ 39, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsAtLeastThenMultipleOf(2, 3)),
+      layout! { 42, [1] }.transmute(layout!{ 38, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsAtLeastThenMultipleOf(1, 3)),
+      layout! { 42, [2] }.transmute(layout!{ 38, [3] })
+    );
+
+    assert_eq!(
+      Some(MetadataRequirement::IsAtLeastThenMultipleOf(1, 3)),
+      layout! { 43, [2] }.transmute(layout!{ 39, [3] })
+    );
+  }
+
   #[repr(C, packed)]
   struct Foo<T: ?Sized> {
     a: u8,
@@ -307,72 +535,42 @@ mod tests {
     b: T,
   }
 
-  unsafe impl<T: ?Sized + Mutant2> Mutant2 for Foo<T> {
+  unsafe impl<T: ?Sized + Packed> Packed for Foo<T> {
     const LAYOUT: TypeLayout = unsafe {
       TypeLayout::of_struct(&[
-        (<u8 as Mutant2>::LAYOUT, offset_of!(Self, a)),
-        (<u16le as Mutant2>::LAYOUT, offset_of!(Self, b)),
-        (<[u8; 6] as Mutant2>::LAYOUT, offset_of!(Self, c)),
-        (<T as Mutant2>::LAYOUT, offset_of!(Self, d)),
+        <u8 as Packed>::LAYOUT,
+        <u16le as Packed>::LAYOUT,
+        <[u8; 6] as Packed>::LAYOUT,
+        <T as Packed>::LAYOUT,
       ])
     };
   }
 
-  unsafe impl<T: ?Sized + Mutant2> Mutant2 for Bar<T> {
+  unsafe impl<T: ?Sized + Packed> Packed for Bar<T> {
     const LAYOUT: TypeLayout = unsafe {
       TypeLayout::of_struct(&[
-        (<[u8; 4] as Mutant2>::LAYOUT, offset_of!(Self, a)),
-        (<T as Mutant2>::LAYOUT, offset_of!(Self, b))
+        <[u8; 4] as Packed>::LAYOUT,
+        <T as Packed>::LAYOUT,
       ])
     };
-  }
-
-  #[test]
-  fn test_offset_of() {
-    assert_eq!(0, offset_of!(Foo<()>, a));
-    assert_eq!(1, offset_of!(Foo<()>, b));
-    assert_eq!(3, offset_of!(Foo<()>, c));
-    assert_eq!(9, offset_of!(Foo<()>, d));
-
-    assert_eq!(0, offset_of!(Bar<()>, a));
-    assert_eq!(4, offset_of!(Bar<()>, b));
   }
 
   #[test]
   fn test_transmute() {
+    println!("{:?}", Check::<[u8; 4], [u8; 4]>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[u8; 4]>, Bar<[u8; 4]>>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[u8; 4]>, Bar<[u8]>>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[u8; 4]>, Bar<[[u8; 4]]>>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[u8; 4]>, Bar<[[u8; 2]]>>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[[u8; 2]]>, Bar<[[u8; 2]]>>::REQUIREMENT);
+    println!("{:?}", Check::<Bar<[[u8; 2]]>, Bar<[[u8; 4]]>>::REQUIREMENT);
+
     assert_eq!(Some(&[1, 2]), try_transmute::<[u8], [u8; 2]>(&[1, 2]));
     assert_eq!(None, try_transmute::<[u8], [u8; 3]>(&[1, 2]));
     assert_eq!(Some(&Bar { a: [1, 2, 3, 4], b: () }), try_transmute::<[u8], Bar<()>>(&[1, 2, 3, 4]));
     println!("{:?}", try_transmute::<[u8], Bar<[u8]>>(&[1, 2, 3, 4, 5, 6]));
     println!("{:?}", try_transmute::<Bar<[u8]>, Bar<[u8; 2]>>(try_transmute::<[u8], Bar<[u8]>>(&[1, 2, 3, 4, 5, 6]).unwrap()));
     println!("{:?}", transmute::<Bar<[u8; 3]>, [u8]>(&Bar { a: [1, 2, 3, 4], b: [5, 6, 7] }));
-  }
-
-  #[test]
-  fn test_layout() {
-    #[repr(packed)]
-    struct Foo {
-      a: u8,
-      b: u32le,
-      c: u16le,
-    }
-
-    unsafe impl Mutant2 for Foo {
-      const LAYOUT: TypeLayout = unsafe {
-        TypeLayout::of_struct(&[
-          (<u8 as Mutant2>::LAYOUT, offset_of!(Self, a)),
-          (<u32le as Mutant2>::LAYOUT, offset_of!(Self, b)),
-          (<u16le as Mutant2>::LAYOUT, offset_of!(Self, c))
-        ])
-      };
-    }
-
-    println!("{:?}", <Foo as Mutant2>::LAYOUT);
-
-    // let FOO: TypeLayout = struct_layout!(Foo { a: u8, c: u32, d: u16 });
-    //
-    // let x: Foo = unsafe { core::mem::zeroed() };
-    // println!("{:?}", FOO);
   }
 }
 //

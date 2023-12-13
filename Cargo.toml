@@ -7,3 +7,5 @@ edition = "2021"
 mutant-derive = { path = "derive" }
 static_assertions = "1.1.*"
 konst = { version = "0.3.*", features = ["cmp"] }
+indoc = "2.0.4"
+const_format = { version = "0.2.32", features = ["assert"]}
