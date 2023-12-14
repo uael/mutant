@@ -1,9 +1,9 @@
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
+use core::mem::ManuallyDrop;
+use core::mem::MaybeUninit;
 use core::num::NonZeroUsize;
-use mem::align_of;
-use mem::size_of;
 
 // mod unalign;
 // mod unaligned;
@@ -14,8 +14,22 @@ use mem::size_of;
 // pub use undrop::*;
 
 pub unsafe trait Mutant: 'static {
-  type Head;
-  type Tail;
+  #[doc(hidden)]
+  type Head: Copy;
+  #[doc(hidden)]
+  type Tail: Copy;
+
+  #[doc(hidden)]
+  const HEAD: Layout<Self::Head>;
+  #[doc(hidden)]
+  const TAIL: Layout<Self::Tail>;
+}
+
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct Layout<T> {
+  header: (),
+  layout: MaybeUninit<T>,
 }
 
 // impl Mutant -------------------------------------------------------------------------------------
@@ -23,31 +37,57 @@ pub unsafe trait Mutant: 'static {
 unsafe impl Mutant for () {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 unsafe impl Mutant for u8 {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 unsafe impl Mutant for u16 {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 unsafe impl Mutant for u32 {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffffffff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
-unsafe impl<T: Mutant> Mutant for [T] {
+unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>> Mutant for [T] {
   type Head = ();
   type Tail = T;
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
+  const TAIL: Layout<Self::Tail> = T::HEAD;
 }
 
-unsafe impl<T: Mutant, const N: usize> Mutant for [T; N] {
+unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>, const N: usize> Mutant for [T; N] {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new([layout_of::<T>(); N]) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+unsafe impl<T: ?Sized + Mutant> Mutant for ManuallyDrop<T> {
+  type Head = T::Head;
+  type Tail = T::Tail;
+
+  const HEAD: Layout<Self::Head> = T::HEAD;
+  const TAIL: Layout<Self::Tail> = T::TAIL;
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -58,6 +98,9 @@ struct u16le([u8; 2]);
 unsafe impl Mutant for u16le {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 2])) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -68,9 +111,58 @@ struct u32le([u8; 4]);
 unsafe impl Mutant for u32le {
   type Head = Self;
   type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 4])) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 // fn ----------------------------------------------------------------------------------------------
+
+#[inline]
+pub const fn align_of<T: ?Sized + Mutant>() -> usize {
+  mem::align_of::<T::Head>()
+}
+
+#[inline]
+pub const fn min_size_of<T: ?Sized + Mutant>() -> usize {
+  mem::size_of::<T::Head>()
+}
+
+#[inline]
+pub const fn size_of_tail<T: ?Sized + Mutant>() -> usize {
+  mem::size_of::<T::Tail>()
+}
+
+#[inline]
+pub const fn maybe_uninit<T: ?Sized + Mutant>(offset: usize) -> bool {
+  // Handle head offset first (ie. not an offset within the trailing slice for `DST`).
+  if offset < min_size_of::<T>() {
+    // SAFETY: `offset` has been checked above to be in bounds.
+    return unsafe { T::HEAD.maybe_uninit_unchecked(offset) };
+  }
+  // Ensure type is a dynamically sized type `DST`.
+  assert!(size_of_tail::<T>() > 0);
+  // The offset point to the trailing slice of this `DST`,
+  // compute the new offset withing the tail layout.
+  let offset = (offset - min_size_of::<T>()) % size_of_tail::<T>();
+  // SAFETY: `offset` has been computed above to be in bounds.
+  unsafe { T::TAIL.maybe_uninit_unchecked(offset) }
+}
+
+#[doc(hidden)]
+#[inline]
+pub const unsafe fn layout_of<T: ?Sized + Mutant>() -> T::Head {
+  T::HEAD.layout.assume_init()
+}
+
+#[inline]
+pub const fn is_aligned_to<T: ?Sized + Mutant>(value: &T, align: usize) -> bool {
+  assert!(align.is_power_of_two(), "alignment must be power of 2");
+  // `value` is aligned for `U` if `T` alignment is already big enough.
+  align_of::<T>() >= align
+    // or if the value address is a multiple of `U` alignment.
+    || ptr::addr_of(value) & (align - 1) == 0
+}
 
 #[inline]
 pub const fn transmute<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &T) -> &U {
@@ -91,7 +183,7 @@ pub const fn try_transmute<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &T) ->
   match layout::try_transmute::<T, U>(ptr::metadata(value)) {
     None => None,
     Some(metadata) => {
-      if is_aligned_to::<T, U>(value) {
+      if is_aligned_to::<T>(value, align_of::<U>()) {
         let ptr = ptr::from_raw_parts::<U>(value as *const T as *const (), metadata);
         Some(unsafe { &*ptr })
       } else {
@@ -106,7 +198,7 @@ pub fn try_transmute_mut<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &mut T) 
   match layout::try_transmute::<T, U>(ptr::metadata(value)) {
     None => None,
     Some(metadata) => {
-      if is_aligned_to::<T, U>(value) {
+      if is_aligned_to::<T>(value, align_of::<U>()) {
         let ptr = ptr::from_raw_parts_mut::<U>(value as *mut T as *mut (), metadata);
         Some(unsafe { &mut *ptr })
       } else {
@@ -116,14 +208,6 @@ pub fn try_transmute_mut<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &mut T) 
   }
 }
 
-#[inline]
-pub const fn is_aligned_to<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &T) -> bool {
-  // `value` is aligned for `U` if `T` alignment is already big enough.
-  align_of::<T::Head>() >= align_of::<U::Head>()
-    // or if the value address is a multiple of `U` alignment.
-    || ptr::addr_of(value) % align_of::<U::Head>() == 0
-}
-
 // mod layout --------------------------------------------------------------------------------------
 
 pub mod layout {
@@ -131,7 +215,7 @@ pub mod layout {
 
   #[inline]
   pub const fn transmute<T: ?Sized + Mutant, U: ?Sized + Mutant>(metadata: usize) -> usize {
-    let _ = Check::<T, U>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<T, U>::ASSERT_INFALLIBLE;
     unsafe { transmute_unchecked::<T, U>(metadata) }
   }
 
@@ -139,7 +223,7 @@ pub mod layout {
   pub const fn try_transmute<T: ?Sized + Mutant, U: ?Sized + Mutant>(
     metadata: usize,
   ) -> Option<usize> {
-    if Check::<T, U>::REQUIREMENTS.is_transmutable(metadata) {
+    if Transmute::<T, U>::REQUIREMENTS.is_transmutable(metadata) {
       Some(unsafe { transmute_unchecked::<T, U>(metadata) })
     } else {
       None
@@ -150,12 +234,23 @@ pub mod layout {
   pub const unsafe fn transmute_unchecked<T: ?Sized + Mutant, U: ?Sized + Mutant>(
     metadata: usize,
   ) -> usize {
-    match size_of::<U::Tail>() {
+    match size_of_tail::<U>() {
       0 => 0,
       bt => {
-        let size = size_of::<T::Head>() + metadata * size_of::<T::Tail>();
-        (size - size_of::<U::Head>()) / bt
+        let size = min_size_of::<T>() + metadata * size_of_tail::<T>();
+        (size - min_size_of::<U>()) / bt
       }
+    }
+  }
+
+  impl<T> Layout<T> {
+    #[inline(always)]
+    pub const unsafe fn new(invalid: T) -> Self {
+      Self { header: (), layout: MaybeUninit::new(invalid) }
+    }
+
+    pub(super) const unsafe fn maybe_uninit_unchecked(self, offset: usize) -> bool {
+      (&self.header as *const ()).cast::<u8>().offset(offset as isize).read() == 0
     }
   }
 
@@ -172,8 +267,8 @@ pub mod layout {
 
   impl Requirements {
     #[inline]
-    const fn is_transmutable(&self, metadata: usize) -> bool {
-      match *self {
+    const fn is_transmutable(self, metadata: usize) -> bool {
+      match self {
         Self::Is(n) => metadata == n,
         Self::IsAtLeast(n) => metadata >= n,
         Self::IsMultipleOf(m) => metadata % m == 0,
@@ -186,10 +281,10 @@ pub mod layout {
     #[inline]
     const fn of<T: ?Sized + Mutant, U: ?Sized + Mutant>() -> Self {
       let (ah, at, bh, bt) = (
-        size_of::<T::Head>(),
-        NonZeroUsize::new(size_of::<T::Tail>()),
-        size_of::<U::Head>(),
-        NonZeroUsize::new(size_of::<U::Tail>()),
+        min_size_of::<T>(),
+        NonZeroUsize::new(size_of_tail::<T>()),
+        min_size_of::<U>(),
+        NonZeroUsize::new(size_of_tail::<U>()),
       );
       let mut min_at_count = 0; // Minimum number of `at` required to align `ah[at]` and `bh[bt]`.
       if ah < bh {
@@ -205,7 +300,6 @@ pub mod layout {
             missing bytes to fit the target is not a multiple of the source `DST` \
             trailing slice item size"
           );
-          return Self::Is(missing / at);
         }
         min_at_count = (missing + at - 1) / at; // Ceiling of division.
       } else if ah > bh {
@@ -223,9 +317,15 @@ pub mod layout {
           )
         }
       }
-      match (at, bt) {
+      let requirements = match (at, bt) {
         (None, _) => Self::None,
-        (_, None) => Self::IsEmpty,
+        (Some(at), None) => {
+          if ah < bh {
+            Self::Is((bh - ah) / at.get())
+          } else {
+            Self::IsEmpty
+          }
+        }
         (Some(at), Some(bt)) => {
           #[inline]
           const fn gcd(a: usize, b: usize) -> usize {
@@ -256,14 +356,33 @@ pub mod layout {
             (n, m) => Self::IsAtLeastThenMultipleOf(n, m),
           }
         }
+      };
+      // Check for no-uninit bytes.
+      let at = size_of_tail::<T>();
+      let minimum_size = match requirements {
+        Self::Is(n) | Self::IsAtLeast(n) => ah + (n * at),
+        Self::IsMultipleOf(m) => ah + (m * at),
+        Self::IsAtLeastThenMultipleOf(n, _) => ah + (n * at),
+        Self::IsEmpty | Self::None => ah,
+      };
+      let mut offset = 0;
+      while offset < minimum_size {
+        if !maybe_uninit::<U>(offset) && maybe_uninit::<T>(offset) {
+          panic!(
+            "cannot transmute between types of incompatible byte layouts, \
+            source padding will left uninitialized byte(s) in target"
+          );
+        }
+        offset += 1;
       }
+      requirements
     }
   }
 
-  struct Check<A: ?Sized, B: ?Sized>(PhantomData<A>, PhantomData<B>);
+  struct Transmute<T: ?Sized, U: ?Sized>(PhantomData<T>, PhantomData<U>);
 
-  impl<A: ?Sized + Mutant, B: ?Sized + Mutant> Check<A, B> {
-    pub const REQUIREMENTS: Requirements = Requirements::of::<A, B>();
+  impl<T: ?Sized + Mutant, U: ?Sized + Mutant> Transmute<T, U> {
+    pub const REQUIREMENTS: Requirements = Requirements::of::<T, U>();
     pub const ASSERT_INFALLIBLE: () = match Self::REQUIREMENTS {
       Requirements::Is(_) => panic!(
         "cannot transmute between types of incompatible byte layouts, \
@@ -291,7 +410,7 @@ pub mod layout {
         use `try_transmute` instead"
       ),
       Requirements::None => assert!(
-        align_of::<A::Head>() >= align_of::<B::Head>(),
+        align_of::<T>() >= align_of::<U>(),
         "cannot transmute between types of incompatible byte layouts, \
         alignment mismatch; \
         use `try_transmute` instead"
@@ -301,13 +420,56 @@ pub mod layout {
 
   #[test]
   fn test_infallible() {
-    let _ = Check::<[u8], [u8]>::ASSERT_INFALLIBLE;
-    let _ = Check::<[u8; 2], [u8]>::ASSERT_INFALLIBLE;
-    let _ = Check::<[[u8; 5]], [u8]>::ASSERT_INFALLIBLE;
-    let _ = Check::<[[u8; 4]], [[u8; 2]]>::ASSERT_INFALLIBLE;
-    let _ = Check::<tests::Foo<[u8]>, [u8]>::ASSERT_INFALLIBLE;
-    let _ = Check::<tests::Bar<[u8]>, [u8]>::ASSERT_INFALLIBLE;
-    let _ = Check::<tests::Foo<[u8]>, tests::Bar<[u8]>>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<[u8], [u8]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<[u8; 2], [u8]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<[[u8; 5]], [u8]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<[[u8; 4]], [[u8; 2]]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<tests::Foo<[u8]>, [u8]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<tests::Bar<[u8]>, [u8]>::ASSERT_INFALLIBLE;
+    let _ = Transmute::<tests::Foo<[u8]>, tests::Bar<[u8]>>::ASSERT_INFALLIBLE;
+  }
+
+  #[test]
+  fn test_nouninit() {
+    use Requirements::*;
+
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C, packed)]
+    pub struct BazPacked {
+      a: u8,
+      b: u32,
+      c: [u8; 6],
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    pub struct Baz {
+      a: u8,
+      b: u32,
+      c: [u8; 6],
+    }
+
+    unsafe impl Mutant for BazPacked {
+      type Head = Self;
+      type Tail = ();
+
+      const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: u8, b: u32, c: [u8; 6] }) };
+      const TAIL: Layout<Self::Tail> = <()>::HEAD;
+    }
+
+    unsafe impl Mutant for Baz {
+      type Head = Self;
+      type Tail = ();
+
+      const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: u8, b: u32, c: [u8; 6] }) };
+      const TAIL: Layout<Self::Tail> = <()>::HEAD;
+    }
+
+    assert_eq!(None, Requirements::of::<BazPacked, [u8]>());
+    assert_panic!(
+      "cannot transmute between types of incompatible byte layouts, \
+      source padding will left uninitialized byte(s) in target",
+      Requirements::of::<Baz, [u8]>()
+    );
   }
 
   #[test]
@@ -320,6 +482,9 @@ pub mod layout {
     unsafe impl<const H: usize, const T: usize> Mutant for Layout<H, T> {
       type Head = [u8; H];
       type Tail = [u8; T];
+
+      const HEAD: crate::Layout<Self::Head> = <[u8; H]>::HEAD;
+      const TAIL: crate::Layout<Self::Tail> = <[u8; T]>::HEAD;
     }
 
     // Basic tests for equal head and tail sizes
@@ -515,6 +680,15 @@ mod tests {
   use core::mem::ManuallyDrop;
 
   #[macro_export]
+  macro_rules! layout {
+    ($T:ty { $($field:ident: $field_ty:ty),+ $(,)? }) => {{
+      let mut layout: $T = ::core::mem::zeroed();
+      $(layout.$field = $crate::layout_of::<$field_ty>();)+
+      $crate::Layout::new(layout)
+    }};
+  }
+
+  #[macro_export]
   macro_rules! assert_panic {
     ($msg:expr, $e:expr) => {
       assert_eq!(
@@ -526,6 +700,7 @@ mod tests {
     };
   }
 
+  #[derive(Copy, Clone)]
   #[repr(C, packed)]
   pub struct Foo<T: ?Sized> {
     a: u8,
@@ -534,21 +709,74 @@ mod tests {
     d: ManuallyDrop<T>,
   }
 
-  #[derive(Debug, Eq, PartialEq)]
+  #[derive(Debug, Copy, Clone, Eq, PartialEq)]
   #[repr(C)]
   pub struct Bar<T: ?Sized> {
     a: [u8; 4],
     b: T,
   }
 
-  unsafe impl<T: ?Sized + Mutant> Mutant for Foo<T> {
-    type Head = Foo<T::Head>;
-    type Tail = T::Tail;
+  // Approximately what `Mutant` will derive
+  #[repr(C, packed)]
+  pub struct __FooHead<T: ?Sized>
+  where
+    u8: Mutant,
+    u16le: Mutant,
+    [u8; 6]: Mutant,
+    ManuallyDrop<T>: Mutant,
+  {
+    a: u8,
+    b: u16le,
+    c: [u8; 6],
+    d: <ManuallyDrop<T> as Mutant>::Head,
+    d_tail: [<ManuallyDrop<T> as Mutant>::Tail; 0],
+  }
+
+  // Approximately what `Mutant` will derive
+  impl<T: ?Sized> Copy for __FooHead<T>
+  where
+    u8: Mutant,
+    u16le: Mutant,
+    [u8; 6]: Mutant,
+    ManuallyDrop<T>: Mutant,
+  {
+  }
+
+  // Approximately what `Mutant` will derive
+  impl<T: ?Sized> Clone for __FooHead<T>
+  where
+    u8: Mutant,
+    u16le: Mutant,
+    [u8; 6]: Mutant,
+    ManuallyDrop<T>: Mutant,
+  {
+    fn clone(&self) -> Self {
+      *self
+    }
+  }
+
+  // Approximately what `Mutant` will derive
+  unsafe impl<T: ?Sized> Mutant for Foo<T>
+  where
+    u8: Mutant,
+    u16le: Mutant,
+    [u8; 6]: Mutant,
+    ManuallyDrop<T>: Mutant,
+  {
+    type Head = __FooHead<T>;
+    type Tail = <ManuallyDrop<T> as Mutant>::Tail;
+
+    const HEAD: Layout<Self::Head> =
+      unsafe { layout!(Self::Head { a: u8, b: u16le, c: [u8; 6], d: ManuallyDrop<T> }) };
+    const TAIL: Layout<Self::Tail> = <ManuallyDrop<T> as Mutant>::TAIL;
   }
 
   unsafe impl<T: ?Sized + Mutant> Mutant for Bar<T> {
     type Head = Bar<T::Head>;
     type Tail = T::Tail;
+
+    const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: [u8; 4], b: T }) };
+    const TAIL: Layout<Self::Tail> = T::TAIL;
   }
 
   #[test]
