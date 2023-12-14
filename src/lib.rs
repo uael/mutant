@@ -2,6 +2,8 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
 use core::num::NonZeroUsize;
+use mem::align_of;
+use mem::size_of;
 
 // mod unalign;
 // mod unaligned;
@@ -24,6 +26,16 @@ unsafe impl Mutant for () {
 }
 
 unsafe impl Mutant for u8 {
+  type Head = Self;
+  type Tail = ();
+}
+
+unsafe impl Mutant for u16 {
+  type Head = Self;
+  type Tail = ();
+}
+
+unsafe impl Mutant for u32 {
   type Head = Self;
   type Tail = ();
 }
@@ -79,8 +91,12 @@ pub const fn try_transmute<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &T) ->
   match layout::try_transmute::<T, U>(ptr::metadata(value)) {
     None => None,
     Some(metadata) => {
-      let ptr = ptr::from_raw_parts::<U>(value as *const T as *const (), metadata);
-      Some(unsafe { &*ptr })
+      if is_aligned_to::<T, U>(value) {
+        let ptr = ptr::from_raw_parts::<U>(value as *const T as *const (), metadata);
+        Some(unsafe { &*ptr })
+      } else {
+        None
+      }
     }
   }
 }
@@ -90,10 +106,22 @@ pub fn try_transmute_mut<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &mut T) 
   match layout::try_transmute::<T, U>(ptr::metadata(value)) {
     None => None,
     Some(metadata) => {
-      let ptr = ptr::from_raw_parts_mut::<U>(value as *mut T as *mut (), metadata);
-      Some(unsafe { &mut *ptr })
+      if is_aligned_to::<T, U>(value) {
+        let ptr = ptr::from_raw_parts_mut::<U>(value as *mut T as *mut (), metadata);
+        Some(unsafe { &mut *ptr })
+      } else {
+        None
+      }
     }
   }
+}
+
+#[inline]
+pub const fn is_aligned_to<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &T) -> bool {
+  // `value` is aligned for `U` if `T` alignment is already big enough.
+  align_of::<T::Head>() >= align_of::<U::Head>()
+    // or if the value address is a multiple of `U` alignment.
+    || ptr::addr_of(value) % align_of::<U::Head>() == 0
 }
 
 // mod layout --------------------------------------------------------------------------------------
@@ -122,11 +150,11 @@ pub mod layout {
   pub const unsafe fn transmute_unchecked<T: ?Sized + Mutant, U: ?Sized + Mutant>(
     metadata: usize,
   ) -> usize {
-    match mem::size_of::<U::Tail>() {
+    match size_of::<U::Tail>() {
       0 => 0,
       bt => {
-        let size = mem::size_of::<T::Head>() + metadata * mem::size_of::<T::Tail>();
-        (size - mem::size_of::<U::Head>()) / bt
+        let size = size_of::<T::Head>() + metadata * size_of::<T::Tail>();
+        (size - size_of::<U::Head>()) / bt
       }
     }
   }
@@ -158,10 +186,10 @@ pub mod layout {
     #[inline]
     const fn of<T: ?Sized + Mutant, U: ?Sized + Mutant>() -> Self {
       let (ah, at, bh, bt) = (
-        mem::size_of::<T::Head>(),
-        NonZeroUsize::new(mem::size_of::<T::Tail>()),
-        mem::size_of::<U::Head>(),
-        NonZeroUsize::new(mem::size_of::<U::Tail>()),
+        size_of::<T::Head>(),
+        NonZeroUsize::new(size_of::<T::Tail>()),
+        size_of::<U::Head>(),
+        NonZeroUsize::new(size_of::<U::Tail>()),
       );
       let mut min_at_count = 0; // Minimum number of `at` required to align `ah[at]` and `bh[bt]`.
       if ah < bh {
@@ -262,7 +290,12 @@ pub mod layout {
         source tail might not be empty; \
         use `try_transmute` instead"
       ),
-      Requirements::None => {}
+      Requirements::None => assert!(
+        align_of::<A::Head>() >= align_of::<B::Head>(),
+        "cannot transmute between types of incompatible byte layouts, \
+        alignment mismatch; \
+        use `try_transmute` instead"
+      ),
     };
   }
 
@@ -281,7 +314,8 @@ pub mod layout {
   fn test_requirements() {
     use Requirements::*;
 
-    struct Layout<const H: usize, const T: usize = 0>;
+    #[repr(packed)]
+    struct Layout<const H: usize, const T: usize = 0>([u8; H], [[u8; T]]);
 
     unsafe impl<const H: usize, const T: usize> Mutant for Layout<H, T> {
       type Head = [u8; H];
@@ -401,6 +435,7 @@ pub mod layout {
 // mod ptr -----------------------------------------------------------------------------------------
 
 mod ptr {
+  use super::*;
   pub use core::ptr;
 
   /// Extract the metadata component of a pointer.
@@ -420,6 +455,22 @@ mod ptr {
   #[inline]
   pub(super) const fn from_raw_parts_mut<T: ?Sized>(address: *mut (), metadata: usize) -> *mut T {
     unsafe { PtrRepr::with_components(address, metadata).mut_ptr }
+  }
+
+  /// Extract the address component of a non-dangling pointer.
+  #[inline]
+  pub(super) const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
+    // Compute `ptr` raw pointer `ptr`.
+    let ptr = ptr.cast::<()>();
+    // SAFETY: This no-op trick ensure that `ptr` has a provenance:
+    // This will result in a compile-error if `ptr` is a dangling pointer (has no provenance).
+    let _ = unsafe { ptr::addr_of!((*(ptr as *const (u8, ()))).1) };
+    // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
+    // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
+    //   has a provenance.
+    // - During const eval, it is unsound to perform this transmutation if the pointer has no
+    //   provenance; the above trick ensure just that.
+    unsafe { mem::transmute(ptr) }
   }
 
   #[repr(C)]
@@ -547,7 +598,7 @@ mod tests {
     println!("{:?}", transmute::<Bar<[u8; 3]>, [u8]>(&Bar { a: [1, 2, 3, 4], b: [5, 6, 7] }));
   }
 }
-//
+
 //   #[derive(Copy, Clone)]
 //   #[repr(C, packed)]
 //   struct Dst<T: ?Sized> {
