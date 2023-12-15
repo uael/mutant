@@ -1,9 +1,10 @@
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use core::mem;
+use core::{fmt, mem};
 use core::mem::ManuallyDrop;
 use core::mem::MaybeUninit;
 use core::num::NonZeroUsize;
+use core::fmt::{Display, Formatter};
 
 // mod unalign;
 // mod unaligned;
@@ -25,95 +26,18 @@ pub unsafe trait Mutant: 'static {
   const TAIL: Layout<Self::Tail>;
 }
 
+#[repr(packed)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+pub struct Unalign<T: Copy>(pub T);
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
+
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
 pub struct Layout<T> {
   header: (),
   layout: MaybeUninit<T>,
-}
-
-// impl Mutant -------------------------------------------------------------------------------------
-
-unsafe impl Mutant for () {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-unsafe impl Mutant for u8 {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xff) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-unsafe impl Mutant for u16 {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffff) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-unsafe impl Mutant for u32 {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffffffff) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>> Mutant for [T] {
-  type Head = ();
-  type Tail = T;
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
-  const TAIL: Layout<Self::Tail> = T::HEAD;
-}
-
-unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>, const N: usize> Mutant for [T; N] {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new([layout_of::<T>(); N]) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-unsafe impl<T: ?Sized + Mutant> Mutant for ManuallyDrop<T> {
-  type Head = T::Head;
-  type Tail = T::Tail;
-
-  const HEAD: Layout<Self::Head> = T::HEAD;
-  const TAIL: Layout<Self::Tail> = T::TAIL;
-}
-
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-#[allow(non_camel_case_types)]
-#[repr(transparent)]
-struct u16le([u8; 2]);
-
-unsafe impl Mutant for u16le {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 2])) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
-}
-
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-#[allow(non_camel_case_types)]
-#[repr(transparent)]
-struct u32le([u8; 4]);
-
-unsafe impl Mutant for u32le {
-  type Head = Self;
-  type Tail = ();
-
-  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 4])) };
-  const TAIL: Layout<Self::Tail> = <()>::HEAD;
 }
 
 // fn ----------------------------------------------------------------------------------------------
@@ -205,6 +129,162 @@ pub fn try_transmute_mut<T: ?Sized + Mutant, U: ?Sized + Mutant>(value: &mut T) 
         None
       }
     }
+  }
+}
+
+// impl Mutant -------------------------------------------------------------------------------------
+
+unsafe impl Mutant for () {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+unsafe impl Mutant for u8 {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+unsafe impl Mutant for u16 {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+unsafe impl Mutant for u32 {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(0xffffffff) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>> Mutant for [T] {
+  type Head = ();
+  type Tail = T;
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(()) };
+  const TAIL: Layout<Self::Tail> = T::HEAD;
+}
+
+unsafe impl<T: Copy + Mutant<Head = T, Tail = ()>, const N: usize> Mutant for [T; N] {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new([layout_of::<T>(); N]) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[allow(non_camel_case_types)]
+#[repr(transparent)]
+struct u16le([u8; 2]);
+
+unsafe impl Mutant for u16le {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 2])) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[allow(non_camel_case_types)]
+#[repr(transparent)]
+struct u32le([u8; 4]);
+
+unsafe impl Mutant for u32le {
+  type Head = Self;
+  type Tail = ();
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Self([1; 4])) };
+  const TAIL: Layout<Self::Tail> = <()>::HEAD;
+}
+
+// impl Unalign ------------------------------------------------------------------------------------
+
+unsafe impl<T: Mutant + Copy> Mutant for Unalign<T> {
+  type Head = Unalign<T::Head>;
+  type Tail = T::Tail;
+
+  const HEAD: Layout<Self::Head> = unsafe { Layout::new(Unalign(layout_of::<T>())) };
+  const TAIL: Layout<Self::Tail> = T::TAIL;
+}
+
+impl<T: Copy> Unalign<T> {
+  #[inline(always)]
+  pub const fn new(value: T) -> Self {
+    Self(value)
+  }
+
+  #[inline(always)]
+  pub const fn into_inner(self) -> T {
+    self.0
+  }
+}
+
+impl<T: Display + Copy> Display for Unalign<T> {
+  #[inline(always)]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Display::fmt(&self.into_inner(), f)
+  }
+}
+
+impl<T: Debug + Copy> Debug for Unalign<T> {
+  #[inline(always)]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Debug::fmt(&self.into_inner(), f)
+  }
+}
+
+// impl Undrop -------------------------------------------------------------------------------------
+
+unsafe impl<T: ?Sized + Mutant> Mutant for Undrop<T> {
+  type Head = T::Head;
+  type Tail = T::Tail;
+
+  const HEAD: Layout<Self::Head> = T::HEAD;
+  const TAIL: Layout<Self::Tail> = T::TAIL;
+}
+
+impl<T: ?Sized> Undrop<T> {
+  const ASSERT_NOT_DROP: () = assert!(!mem::needs_drop::<T>());
+}
+
+impl<T: Sized> Undrop<T> {
+  #[inline(always)]
+  pub const fn new(value: T) -> Self {
+    let _ = Self::ASSERT_NOT_DROP;
+    Self(ManuallyDrop::new(value))
+  }
+
+  #[inline(always)]
+  pub const fn into_inner(self) -> T {
+    let _ = Self::ASSERT_NOT_DROP;
+    ManuallyDrop::into_inner(self.0)
+  }
+}
+
+impl<T: Display + ?Sized> Display for Undrop<T> {
+  #[inline(always)]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    let _ = Self::ASSERT_NOT_DROP;
+    Display::fmt(unsafe { mem::transmute::<_, &T>(self) }, f)
+  }
+}
+
+impl<T: Debug + ?Sized> Debug for Undrop<T> {
+  #[inline(always)]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    let _ = Self::ASSERT_NOT_DROP;
+    Debug::fmt(unsafe { mem::transmute::<_, &T>(self) }, f)
   }
 }
 
@@ -677,7 +757,6 @@ mod ptr {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use core::mem::ManuallyDrop;
 
   #[macro_export]
   macro_rules! layout {
@@ -706,7 +785,7 @@ mod tests {
     a: u8,
     b: u16le,
     c: [u8; 6],
-    d: ManuallyDrop<T>,
+    d: Undrop<T>,
   }
 
   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -723,13 +802,13 @@ mod tests {
     u8: Mutant,
     u16le: Mutant,
     [u8; 6]: Mutant,
-    ManuallyDrop<T>: Mutant,
+    Undrop<T>: Mutant,
   {
     a: u8,
     b: u16le,
     c: [u8; 6],
-    d: <ManuallyDrop<T> as Mutant>::Head,
-    d_tail: [<ManuallyDrop<T> as Mutant>::Tail; 0],
+    d: <Undrop<T> as Mutant>::Head,
+    d_tail: [<Undrop<T> as Mutant>::Tail; 0],
   }
 
   // Approximately what `Mutant` will derive
@@ -738,7 +817,7 @@ mod tests {
     u8: Mutant,
     u16le: Mutant,
     [u8; 6]: Mutant,
-    ManuallyDrop<T>: Mutant,
+    Undrop<T>: Mutant,
   {
   }
 
@@ -748,7 +827,7 @@ mod tests {
     u8: Mutant,
     u16le: Mutant,
     [u8; 6]: Mutant,
-    ManuallyDrop<T>: Mutant,
+    Undrop<T>: Mutant,
   {
     fn clone(&self) -> Self {
       *self
@@ -761,14 +840,14 @@ mod tests {
     u8: Mutant,
     u16le: Mutant,
     [u8; 6]: Mutant,
-    ManuallyDrop<T>: Mutant,
+    Undrop<T>: Mutant,
   {
     type Head = __FooHead<T>;
-    type Tail = <ManuallyDrop<T> as Mutant>::Tail;
+    type Tail = <Undrop<T> as Mutant>::Tail;
 
     const HEAD: Layout<Self::Head> =
-      unsafe { layout!(Self::Head { a: u8, b: u16le, c: [u8; 6], d: ManuallyDrop<T> }) };
-    const TAIL: Layout<Self::Tail> = <ManuallyDrop<T> as Mutant>::TAIL;
+      unsafe { layout!(Self::Head { a: u8, b: u16le, c: [u8; 6], d: Undrop<T> }) };
+    const TAIL: Layout<Self::Tail> = <Undrop<T> as Mutant>::TAIL;
   }
 
   unsafe impl<T: ?Sized + Mutant> Mutant for Bar<T> {
@@ -785,7 +864,7 @@ mod tests {
       a: 0x42,
       b: u16le([0x42, 0x42]),
       c: [0x42, 0xff, 0xff, 0xff, 0xff, 0xff],
-      d: ManuallyDrop::new([0xaf, 0xaf, 0xaa]),
+      d: Undrop::new([0xaf, 0xaf, 0xaa]),
     };
 
     let bar: &mut Bar<[u8]> = transmute_mut(&mut foo);
