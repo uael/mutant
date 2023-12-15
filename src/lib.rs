@@ -1,10 +1,12 @@
 use core::fmt::Debug;
+use core::fmt::{Display, Formatter};
 use core::marker::PhantomData;
-use core::{fmt, mem};
 use core::mem::ManuallyDrop;
 use core::mem::MaybeUninit;
 use core::num::NonZeroUsize;
-use core::fmt::{Display, Formatter};
+use core::{fmt, mem};
+
+pub use mutant_derive::Mutant;
 
 // mod unalign;
 // mod unaligned;
@@ -513,36 +515,18 @@ pub mod layout {
   fn test_nouninit() {
     use Requirements::*;
 
-    #[derive(Debug, Copy, Clone)]
+    #[derive(Debug, Copy, Clone, Mutant)]
     #[repr(C, packed)]
+    #[mutant(crate = "crate")]
     pub struct BazPacked {
       a: u8,
       b: u32,
       c: [u8; 6],
     }
 
-    #[derive(Debug, Copy, Clone)]
-    pub struct Baz {
-      a: u8,
-      b: u32,
-      c: [u8; 6],
-    }
-
-    unsafe impl Mutant for BazPacked {
-      type Head = Self;
-      type Tail = ();
-
-      const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: u8, b: u32, c: [u8; 6] }) };
-      const TAIL: Layout<Self::Tail> = <()>::HEAD;
-    }
-
-    unsafe impl Mutant for Baz {
-      type Head = Self;
-      type Tail = ();
-
-      const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: u8, b: u32, c: [u8; 6] }) };
-      const TAIL: Layout<Self::Tail> = <()>::HEAD;
-    }
+    #[derive(Debug, Copy, Clone, Mutant)]
+    #[mutant(crate = "crate")]
+    pub struct Baz(u8, u32, [u8; 6]);
 
     assert_eq!(None, Requirements::of::<BazPacked, [u8]>());
     assert_panic!(
@@ -556,16 +540,10 @@ pub mod layout {
   fn test_requirements() {
     use Requirements::*;
 
+    #[derive(Mutant)]
     #[repr(packed)]
+    #[mutant(crate = "crate")]
     struct Layout<const H: usize, const T: usize = 0>([u8; H], [[u8; T]]);
-
-    unsafe impl<const H: usize, const T: usize> Mutant for Layout<H, T> {
-      type Head = [u8; H];
-      type Tail = [u8; T];
-
-      const HEAD: crate::Layout<Self::Head> = <[u8; H]>::HEAD;
-      const TAIL: crate::Layout<Self::Tail> = <[u8; T]>::HEAD;
-    }
 
     // Basic tests for equal head and tail sizes
     assert_eq!(None, Requirements::of::<Layout<1>, Layout<1>>());
@@ -779,8 +757,9 @@ mod tests {
     };
   }
 
-  #[derive(Copy, Clone)]
+  #[derive(Copy, Clone, Mutant)]
   #[repr(C, packed)]
+  #[mutant(crate = "crate")]
   pub struct Foo<T: ?Sized> {
     a: u8,
     b: u16le,
@@ -788,75 +767,18 @@ mod tests {
     d: Undrop<T>,
   }
 
-  #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+  #[derive(Debug, Copy, Clone, Eq, PartialEq, Mutant)]
   #[repr(C)]
+  #[mutant(crate = "crate")]
   pub struct Bar<T: ?Sized> {
     a: [u8; 4],
     b: T,
   }
 
-  // Approximately what `Mutant` will derive
-  #[repr(C, packed)]
-  pub struct __FooHead<T: ?Sized>
-  where
-    u8: Mutant,
-    u16le: Mutant,
-    [u8; 6]: Mutant,
-    Undrop<T>: Mutant,
-  {
-    a: u8,
-    b: u16le,
-    c: [u8; 6],
-    d: <Undrop<T> as Mutant>::Head,
-    d_tail: [<Undrop<T> as Mutant>::Tail; 0],
-  }
-
-  // Approximately what `Mutant` will derive
-  impl<T: ?Sized> Copy for __FooHead<T>
-  where
-    u8: Mutant,
-    u16le: Mutant,
-    [u8; 6]: Mutant,
-    Undrop<T>: Mutant,
-  {
-  }
-
-  // Approximately what `Mutant` will derive
-  impl<T: ?Sized> Clone for __FooHead<T>
-  where
-    u8: Mutant,
-    u16le: Mutant,
-    [u8; 6]: Mutant,
-    Undrop<T>: Mutant,
-  {
-    fn clone(&self) -> Self {
-      *self
-    }
-  }
-
-  // Approximately what `Mutant` will derive
-  unsafe impl<T: ?Sized> Mutant for Foo<T>
-  where
-    u8: Mutant,
-    u16le: Mutant,
-    [u8; 6]: Mutant,
-    Undrop<T>: Mutant,
-  {
-    type Head = __FooHead<T>;
-    type Tail = <Undrop<T> as Mutant>::Tail;
-
-    const HEAD: Layout<Self::Head> =
-      unsafe { layout!(Self::Head { a: u8, b: u16le, c: [u8; 6], d: Undrop<T> }) };
-    const TAIL: Layout<Self::Tail> = <Undrop<T> as Mutant>::TAIL;
-  }
-
-  unsafe impl<T: ?Sized + Mutant> Mutant for Bar<T> {
-    type Head = Bar<T::Head>;
-    type Tail = T::Tail;
-
-    const HEAD: Layout<Self::Head> = unsafe { layout!(Self::Head { a: [u8; 4], b: T }) };
-    const TAIL: Layout<Self::Tail> = T::TAIL;
-  }
+  // #[derive(Mutant)]
+  // #[repr(packed)]
+  // #[mutant(crate = "crate")]
+  // struct Layout<const H: usize, const T: usize = 0>([u8; H], [[u8; T]]);
 
   #[test]
   fn test_transmute() {
@@ -904,274 +826,226 @@ mod tests {
     );
     println!("{:?}", transmute::<Bar<[u8; 3]>, [u8]>(&Bar { a: [1, 2, 3, 4], b: [5, 6, 7] }));
   }
-}
 
-//   #[derive(Copy, Clone)]
-//   #[repr(C, packed)]
-//   struct Dst<T: ?Sized> {
-//     len: u8,
-//     payload: Undrop<T>,
-//   }
-//
-//   impl<T: ?Sized + Debug + Unaligned> Debug for Dst<T> {
-//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//       f.debug_struct("Dst")
-//         .field("len", &self.len)
-//         .field("payload", &read_aligned!(self.payload))
-//         .finish()
-//     }
-//   }
-//
-//   unsafe impl<T: ?Sized> Unaligned for Dst<T> {}
-//
-//   #[test]
-//   fn test() {
-//     println!("{:?}", unpack::<()>(&[1, 0, 0, 0]));
-//     println!("{:?}", unpack::<[u8]>(&[0, 1, 2, 3, 4, 5]));
-//     println!("{:?}", unpack::<[bool]>(&[0, 1, 0, 1]));
-//     println!("{:?}", unpack::<[Unalign<u16>]>(&[0, 1, 0, 2]));
-//     println!("{:?}", unpack::<u8>(&[0]));
-//     println!("{:?}", unpack::<bool>(&[0]));
-//     println!("{:?}", unpack::<bool>(&[1]));
-//     println!("{:?}", unpack::<bool>(&[2]));
-//     println!("{:?}", unpack::<Unalign<char>>(&[b'a', 0, 0, 0]));
-//     println!("{:?}", unpack::<Dst<[u8]>>(&[3, 1, 2, 3, 4]));
-//     println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[2, 1, 0]));
-//     println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[1, 1, 0]));
-//     println!("{:?}", unpack::<Dst<Unalign<u16>>>(&[3, 1, 0]));
-//     println!("{:?}", unpack::<Dst<Unalign<[u16; 2]>>>(&[4, 1, 0, 2, 0]));
-//     println!("{:?}", unpack::<Dst<Unalign<[u16; 2]>>>(&[5, 1, 0, 2, 0]));
-//     //
-//     // println!("{:?}", unpack::<A>(&[0]));
-//     // println!("{:?}", unpack::<B>(&[1, 69]));
-//     // println!("{:?}", unpack::<C>(&[2, 3, 1, 2, 3]));
-//     //
-//     // println!("{:?}", unpack_x(&[0]));
-//     // println!("{:?}", unpack_x(&[1, 69]));
-//     // println!("{:?}", unpack_x(&[2, 3, 1, 2, 3]));
-//     //
-//     // println!("{:?}", unpack::<Command<[u8]>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
-//     // println!("{:?}", unpack::<Command<SetEventMask>>(&[0x43, 0, 8, 69, 69, 69, 69, 69, 69, 69, 69]));
-//     //
-//     // println!("{:?}", unpack::<Command<[u8]>>(&[0x42, 0, 0]));
-//     // println!("{:?}", unpack::<Command<Reset>>(&[0x42, 0, 0]));
-//   }
-//
-//   #[test]
-//   fn test_hci() {
-//     #[derive(Copy, Clone)]
-//     #[repr(C, packed)]
-//     struct Packet<T: ?Sized> {
-//       r#type: u8,
-//       data: Undrop<T>,
-//     }
-//
-//     trait PacketVariant: Pointee {
-//       const PACKET_TYPE: u8;
-//     }
-//
-//     impl<T: ?Sized + EventVariant> PacketVariant for Event<T> {
-//       const PACKET_TYPE: u8 = 1;
-//     }
-//
-//     impl PacketVariant for Acl<[u8]> {
-//       const PACKET_TYPE: u8 = 2;
-//     }
-//
-//     unsafe impl<T: ?Sized> Unaligned for Packet<T> {}
-//
-//     impl Pointee for Packet<()> {
-//       type Metadata = ();
-//       type Head = Self;
-//       type Tail = ();
-//     }
-//
-//     impl<T: ?Sized + PacketVariant> Pointee for Packet<T> {
-//       type Metadata = T::Metadata;
-//       type Head = Packet<()>;
-//       type Tail = T;
-//
-//       fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
-//         head.r#type == T::PACKET_TYPE
-//       }
-//     }
-//
-//     impl<T: ?Sized + Unaligned + Debug> Debug for Packet<T> {
-//       fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("Packet")
-//           .field("type", &self.r#type)
-//           .field("data", &read_aligned!(self.data))
-//           .finish()
-//       }
-//     }
-//
-//     #[derive(Copy, Clone)]
-//     #[repr(C, packed)]
-//     struct Acl<T: ?Sized> {
-//       handle_and_flags: Unalign<u16>,
-//       data_total_len: Unalign<u16>,
-//       parameters: Undrop<T>,
-//     }
-//
-//     unsafe impl<T: ?Sized> Unaligned for Acl<T> {}
-//
-//     impl Pointee for Acl<()> {
-//       type Metadata = ();
-//       type Head = Self;
-//       type Tail = ();
-//     }
-//
-//     impl Pointee for Acl<[u8]> {
-//       type Metadata = usize;
-//       type Head = Acl<()>;
-//       type Tail = [u8];
-//
-//       #[inline]
-//       fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
-//         head.data_total_len.into_inner() as usize
-//       }
-//     }
-//
-//     impl<T: ?Sized + Unaligned + Debug> Debug for Acl<T> {
-//       fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("Acl")
-//           .field("handle_and_flags", &self.handle_and_flags)
-//           .field("data_total_len", &self.data_total_len)
-//           .field("completed_packets", &read_aligned!(self.parameters))
-//           .finish()
-//       }
-//     }
-//
-//     #[derive(Copy, Clone)]
-//     #[repr(C, packed)]
-//     struct Event<T: ?Sized> {
-//       event_code: u8,
-//       parameters_len: u8,
-//       parameters: Undrop<T>,
-//     }
-//
-//     #[derive(Debug, Copy, Clone)]
-//     #[repr(C, packed)]
-//     struct ConnectionComplete {
-//       address: [u8; 6],
-//       handle: u16,
-//       link_type: u8,
-//     }
-//
-//     #[derive(Debug, Copy, Clone)]
-//     #[repr(C, packed)]
-//     struct CompletedPackets {
-//       handle: u16,
-//       number_of_completed_packets: u16,
-//     }
-//
-//     #[repr(C, packed)]
-//     struct NumberOfCompletedPackets {
-//       num_handles: u8,
-//       completed_packets: [CompletedPackets],
-//     }
-//
-//     unsafe impl<T: ?Sized> Unaligned for Event<T> {}
-//     unsafe impl Unaligned for ConnectionComplete {}
-//     unsafe impl Unaligned for CompletedPackets {}
-//     unsafe impl Unaligned for NumberOfCompletedPackets {}
-//
-//     trait EventVariant: Pointee {
-//       const EVENT_CODE: Option<u8>;
-//     }
-//
-//     impl EventVariant for [u8] {
-//       const EVENT_CODE: Option<u8> = None;
-//     }
-//
-//     impl EventVariant for ConnectionComplete {
-//       const EVENT_CODE: Option<u8> = Some(21);
-//     }
-//
-//     impl EventVariant for NumberOfCompletedPackets {
-//       const EVENT_CODE: Option<u8> = Some(42);
-//     }
-//
-//     impl Pointee for ConnectionComplete {
-//       type Metadata = ();
-//       type Head = Self;
-//       type Tail = ();
-//     }
-//
-//     impl Pointee for NumberOfCompletedPackets {
-//       type Metadata = usize;
-//       type Head = u8;
-//       type Tail = [CompletedPackets];
-//     }
-//
-//     impl Pointee for CompletedPackets {
-//       type Metadata = ();
-//       type Head = Self;
-//       type Tail = ();
-//     }
-//
-//     impl Pointee for Event<()> {
-//       type Metadata = ();
-//       type Head = Self;
-//       type Tail = ();
-//     }
-//
-//     impl<T: ?Sized + EventVariant> Pointee for Event<T> {
-//       type Metadata = T::Metadata;
-//       type Head = Event<()>;
-//       type Tail = T;
-//
-//       #[inline]
-//       fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
-//         head.parameters_len as usize
-//       }
-//
-//       #[inline]
-//       fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
-//         match T::EVENT_CODE {
-//           Some(event_code) => event_code == head.event_code,
-//           _ => true,
-//         }
-//       }
-//     }
-//
-//     impl<T: ?Sized + Debug + Unaligned> Debug for Event<T> {
-//       fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("Event")
-//           .field("event_code", &self.event_code)
-//           .field("parameters_len", &self.parameters_len)
-//           .field("parameters", &read_aligned!(self.parameters))
-//           .finish()
-//       }
-//     }
-//
-//     impl Debug for NumberOfCompletedPackets {
-//       fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("NumberOfCompletedPackets")
-//           .field("num_handles", &self.num_handles)
-//           .field("completed_packets", &read_aligned!(self.completed_packets))
-//           .finish()
-//       }
-//     }
-//
-//     println!("{:?}", unpack::<Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
-//     println!(
-//       "{:?}",
-//       unpack::<Event<ConnectionComplete>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
-//     );
-//     println!(
-//       "{:?}",
-//       unpack::<Event<ConnectionComplete>>(&[22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
-//     );
-//     println!(
-//       "{:?}",
-//       unpack::<Packet<Event<[u8]>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
-//     );
-//     println!(
-//       "{:?}",
-//       unpack::<Packet<Event<ConnectionComplete>>>(&[
-//         1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
-//       ])
-//     );
-//   }
-// }
+  // #[test]
+  // fn test_hci() {
+  //   #[derive(Copy, Clone)]
+  //   #[repr(C, packed)]
+  //   struct Packet<T: ?Sized> {
+  //     r#type: u8,
+  //     data: Undrop<T>,
+  //   }
+  //
+  //   trait PacketVariant: Mutant {
+  //     const PACKET_TYPE: u8;
+  //   }
+  //
+  //   impl<T: ?Sized + EventVariant> PacketVariant for Event<T> {
+  //     const PACKET_TYPE: u8 = 1;
+  //   }
+  //
+  //   impl PacketVariant for Acl<[u8]> {
+  //     const PACKET_TYPE: u8 = 2;
+  //   }
+  //
+  //   unsafe impl<T: ?Sized + Mutant> Mutant for Packet<T> {
+  //     type Head = u8;
+  //     type Tail = ();
+  //     const HEAD: Layout<Self::Head> = Layout { header: (), layout: () };
+  //     const TAIL: Layout<Self::Tail> = Layout { header: (), layout: () };
+  //   }
+  //   impl Pointee for Packet<()> {
+  //     type Metadata = ();
+  //     type Head = Self;
+  //     type Tail = ();
+  //   }
+  //
+  //   impl<T: ?Sized + PacketVariant> Pointee for Packet<T> {
+  //     type Metadata = T::Metadata;
+  //     type Head = Packet<()>;
+  //     type Tail = T;
+  //
+  //     fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+  //       head.r#type == T::PACKET_TYPE
+  //     }
+  //   }
+  //
+  //   impl<T: ?Sized + Unaligned + Debug> Debug for Packet<T> {
+  //     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+  //       f.debug_struct("Packet")
+  //         .field("type", &self.r#type)
+  //         .field("data", &read_aligned!(self.data))
+  //         .finish()
+  //     }
+  //   }
+  //
+  //   #[derive(Copy, Clone)]
+  //   #[repr(C, packed)]
+  //   struct Acl<T: ?Sized> {
+  //     handle_and_flags: Unalign<u16>,
+  //     data_total_len: Unalign<u16>,
+  //     parameters: Undrop<T>,
+  //   }
+  //
+  //   unsafe impl<T: ?Sized> Unaligned for Acl<T> {}
+  //
+  //   impl Pointee for Acl<()> {
+  //     type Metadata = ();
+  //     type Head = Self;
+  //     type Tail = ();
+  //   }
+  //
+  //   impl Pointee for Acl<[u8]> {
+  //     type Metadata = usize;
+  //     type Head = Acl<()>;
+  //     type Tail = [u8];
+  //
+  //     #[inline]
+  //     fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
+  //       head.data_total_len.into_inner() as usize
+  //     }
+  //   }
+  //
+  //   impl<T: ?Sized + Unaligned + Debug> Debug for Acl<T> {
+  //     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+  //       f.debug_struct("Acl")
+  //         .field("handle_and_flags", &self.handle_and_flags)
+  //         .field("data_total_len", &self.data_total_len)
+  //         .field("completed_packets", &read_aligned!(self.parameters))
+  //         .finish()
+  //     }
+  //   }
+  //
+  //   #[derive(Copy, Clone)]
+  //   #[repr(C, packed)]
+  //   struct Event<T: ?Sized> {
+  //     event_code: u8,
+  //     parameters_len: u8,
+  //     parameters: Undrop<T>,
+  //   }
+  //
+  //   #[derive(Debug, Copy, Clone)]
+  //   #[repr(C, packed)]
+  //   struct ConnectionComplete {
+  //     address: [u8; 6],
+  //     handle: u16,
+  //     link_type: u8,
+  //   }
+  //
+  //   #[derive(Debug, Copy, Clone)]
+  //   #[repr(C, packed)]
+  //   struct CompletedPackets {
+  //     handle: u16,
+  //     number_of_completed_packets: u16,
+  //   }
+  //
+  //   #[repr(C, packed)]
+  //   struct NumberOfCompletedPackets {
+  //     num_handles: u8,
+  //     completed_packets: [CompletedPackets],
+  //   }
+  //
+  //   unsafe impl<T: ?Sized> Unaligned for Event<T> {}
+  //   unsafe impl Unaligned for ConnectionComplete {}
+  //   unsafe impl Unaligned for CompletedPackets {}
+  //   unsafe impl Unaligned for NumberOfCompletedPackets {}
+  //
+  //   trait EventVariant: Pointee {
+  //     const EVENT_CODE: Option<u8>;
+  //   }
+  //
+  //   impl EventVariant for [u8] {
+  //     const EVENT_CODE: Option<u8> = None;
+  //   }
+  //
+  //   impl EventVariant for ConnectionComplete {
+  //     const EVENT_CODE: Option<u8> = Some(21);
+  //   }
+  //
+  //   impl EventVariant for NumberOfCompletedPackets {
+  //     const EVENT_CODE: Option<u8> = Some(42);
+  //   }
+  //
+  //   impl Pointee for ConnectionComplete {
+  //     type Metadata = ();
+  //     type Head = Self;
+  //     type Tail = ();
+  //   }
+  //
+  //   impl Pointee for NumberOfCompletedPackets {
+  //     type Metadata = usize;
+  //     type Head = u8;
+  //     type Tail = [CompletedPackets];
+  //   }
+  //
+  //   impl Pointee for CompletedPackets {
+  //     type Metadata = ();
+  //     type Head = Self;
+  //     type Tail = ();
+  //   }
+  //
+  //   impl Pointee for Event<()> {
+  //     type Metadata = ();
+  //     type Head = Self;
+  //     type Tail = ();
+  //   }
+  //
+  //   impl<T: ?Sized + EventVariant> Pointee for Event<T> {
+  //     type Metadata = T::Metadata;
+  //     type Head = Event<()>;
+  //     type Tail = T;
+  //
+  //     #[inline]
+  //     fn trailing(head: &Self::Head, _tail: &[u8]) -> usize {
+  //       head.parameters_len as usize
+  //     }
+  //
+  //     #[inline]
+  //     fn validate(head: &Self::Head, _tail: &Self::Tail) -> bool {
+  //       match T::EVENT_CODE {
+  //         Some(event_code) => event_code == head.event_code,
+  //         _ => true,
+  //       }
+  //     }
+  //   }
+  //
+  //   impl<T: ?Sized + Debug + Unaligned> Debug for Event<T> {
+  //     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+  //       f.debug_struct("Event")
+  //         .field("event_code", &self.event_code)
+  //         .field("parameters_len", &self.parameters_len)
+  //         .field("parameters", &read_aligned!(self.parameters))
+  //         .finish()
+  //     }
+  //   }
+  //
+  //   impl Debug for NumberOfCompletedPackets {
+  //     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+  //       f.debug_struct("NumberOfCompletedPackets")
+  //         .field("num_handles", &self.num_handles)
+  //         .field("completed_packets", &read_aligned!(self.completed_packets))
+  //         .finish()
+  //     }
+  //   }
+  //
+  //   println!("{:?}", unpack::<Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69]));
+  //   println!(
+  //     "{:?}",
+  //     unpack::<Event<ConnectionComplete>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+  //   );
+  //   println!(
+  //     "{:?}",
+  //     unpack::<Event<ConnectionComplete>>(&[22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+  //   );
+  //   println!(
+  //     "{:?}",
+  //     unpack::<Packet<Event<[u8]>>>(&[1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+  //   );
+  //   println!(
+  //     "{:?}",
+  //     unpack::<Packet<Event<ConnectionComplete>>>(&[
+  //       1, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
+  //     ])
+  //   );
+  // }
+}
