@@ -3,11 +3,511 @@ use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::mem::MaybeUninit;
 use core::num::NonZeroUsize;
-use core::{fmt, mem};
-use std::ops::{Deref, DerefMut};
+use core::{fmt, mem, slice};
+use core::ops::{Deref, DerefMut};
+use core::ptr::addr_of;
 
 pub use mutant_derive::ensure;
 pub use mutant_derive::Mutant;
+pub use mutant_derive::DataType;
+
+#[inline]
+pub const fn align_of2<T: ?Sized + DataType>() -> usize {
+  match T::LAYOUT {
+    Layout::Slice => mem::align_of::<T::Item>(),
+    _ => mem::align_of::<T::Header>(),
+  }
+}
+
+#[inline]
+pub const fn min_size_of2<T: ?Sized + DataType>() -> usize {
+  mem::size_of::<T::Header>()
+}
+
+#[inline]
+pub const fn size_of_tail_item2<T: ?Sized + DataType>() -> usize {
+  mem::size_of::<T::Item>()
+}
+
+#[inline]
+pub const fn is_sized2<T: ?Sized + DataType>() -> bool {
+  match T::LAYOUT {
+    Layout::Slice => false,
+    Layout::Struct { .. } => size_of_tail_item2::<T>() == 0,
+    _ => true,
+  }
+}
+
+#[inline]
+pub const fn size_of_val<T: ?Sized + DataType>(val: &T) -> usize {
+  min_size_of2::<T>() + ptr::metadata(val) * size_of_tail_item2::<T>()
+}
+
+#[inline]
+pub const fn maybe_uninit2<T: ?Sized + DataType>(offset: usize) -> bool {
+  // Check for `offset` to be in bounds.
+  if is_sized2::<T>() && offset >= min_size_of2::<T>() {
+    return true
+  }
+  match T::LAYOUT {
+    Layout::Void => true,
+    Layout::Slice | Layout::Array => {
+      let offset = offset % size_of_tail_item2::<T>();
+      maybe_uninit2::<T::Item>(offset)
+    }
+    Layout::Struct { repr } => {
+      // Handle head offset first (ie. not an offset within the trailing slice for `DST`).
+      if offset < min_size_of2::<T>() {
+        return repr.maybe_uninit(offset);
+      }
+      // The offset point to the trailing slice of this `DST`,
+      // compute the new offset withing the tail layout.
+      let offset = (offset - min_size_of2::<T>()) % size_of_tail_item2::<T>();
+      maybe_uninit2::<T::Item>(offset)
+    },
+    Layout::Integer { spec } => match spec.bitsmask {
+      Some(bitsmask) if bitsmask & (1 << offset) != 0xff => true,
+      _ => false,
+    }
+  }
+}
+
+#[inline]
+pub const fn cast2<T: ?Sized + DataType, U: ?Sized + DataType>(value: &T) -> &U {
+  todo!()
+}
+
+#[inline]
+pub const fn len_of_val<T: ?Sized + DataType>(val: &T) -> usize {
+  match T::LAYOUT {
+    Layout::Slice => ptr::metadata(val),
+    Layout::Array => min_size_of2::<T>() / mem::size_of::<T::Item>(),
+    Layout::Struct { repr } => repr.len_of_val(val),
+    _ => 0,
+  }
+}
+
+#[inline]
+pub const fn is_valid2<T: ?Sized + DataType>(val: &T) -> Result<(), isize> {
+  match T::LAYOUT {
+    Layout::Void => Ok(()),
+    Layout::Struct { repr } => repr.validate(val),
+    Layout::Slice | Layout::Array => {
+      let ptr = (val as *const T).cast::<T::Item>();
+      let len = len_of_val(val);
+      let mut i = 0;
+      while i < len {
+        match is_valid2(unsafe { &*ptr.offset(i as isize) }) {
+          Ok(()) => {}
+          Err(err) => return Err(err)
+        }
+        i += 1;
+      }
+      Ok(())
+    },
+    Layout::Integer { spec } => {
+      let uint = {
+        let ptr = (val as *const T).cast::<u8>();
+        // SAFETY: `ptr` store at least `min_size_of2::<T>()` bytes.
+        spec.load(unsafe { slice::from_raw_parts(ptr, min_size_of2::<T>()) })
+      };
+      // Validate allowed bits.
+      match spec.bitsmask {
+        Some(bitsmask) if uint | bitsmask != bitsmask => return Err(0),
+        _ => {}
+      }
+      Ok(())
+    },
+  }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Layout<T: ?Sized + DataType> {
+  Void,
+  Slice, Array,
+  Struct { repr: Repr<T, T::Fields> },
+  Integer { spec: IntegerSpec },
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Ordering {
+  Lsb = 1, Msb
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct IntegerSpec {
+  ordering: Option<Ordering>,
+  bitsmask: Option<u64>,
+}
+
+#[repr(transparent)]
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub struct Repr<T: ?Sized + DataType, F: FieldList<T>> {
+  r#type: PhantomData<T>,
+  fields: F,
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub struct Field<T: ?Sized + DataType, F: Copy + DataType> {
+  r#type: PhantomData<(F, T)>,
+  offset: usize,
+  factor: Option<NonZeroUsize>,
+  expect: Option<u64>,
+}
+
+#[repr(packed)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+pub struct Unalign<T: Copy>(pub T);
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
+
+pub trait Integer: Copy + DataType {
+  const SPEC: IntegerSpec;
+}
+
+impl Integer for u8 {
+  const SPEC: IntegerSpec = IntegerSpec::new();
+}
+
+impl Integer for u16 {
+  const SPEC: IntegerSpec = IntegerSpec::new();
+}
+
+impl Integer for u32 {
+  const SPEC: IntegerSpec = IntegerSpec::new();
+}
+
+impl Integer for u64 {
+  const SPEC: IntegerSpec = IntegerSpec::new();
+}
+
+pub trait FieldList<T: ?Sized + DataType>: Copy + 'static {
+  type Type: Copy + DataType;
+  type Tail: FieldList<T>;
+}
+
+impl<T: ?Sized + DataType> FieldList<T> for () {
+  type Type = ();
+  type Tail = ();
+}
+
+impl<T: ?Sized + DataType, F: Copy + DataType> FieldList<T> for Field<T, F> {
+  type Type = F;
+  type Tail = ();
+}
+
+impl<T: ?Sized + DataType, A: Copy + DataType, B: Copy + FieldList<T>> FieldList<T> for (Field<T, A>, B) {
+  type Type = A;
+  type Tail = B;
+}
+
+pub trait DataType: 'static {
+  /// Type of the trailing slice item for slice type or DST, `()` otherwise.
+  type Item: Copy + DataType;
+  /// Type of the sized part of `Self`.
+  /// For `Sized` types, `Self::Header` is `Self`.
+  type Header: Copy + DataType;
+  /// Fields of `Self`. Non-empty only for `struct` types.
+  type Fields: FieldList<Self>;
+
+  /// Layout of `Self`.
+  const LAYOUT: Layout<Self>;
+}
+
+impl DataType for () {
+  type Item = ();
+  type Header = ();
+  type Fields = ();
+  const LAYOUT: Layout<Self> = Layout::Void;
+}
+
+impl<T: Copy + DataType> DataType for [T] {
+  type Item = T;
+  type Header = ();
+  type Fields = ();
+  const LAYOUT: Layout<Self> = Layout::Slice;
+}
+
+impl<T: Copy + DataType, const N: usize> DataType for [T; N] {
+  type Item = T;
+  type Header = Self;
+  type Fields = ();
+  const LAYOUT: Layout<Self> = Layout::Array;
+}
+
+impl<T: Integer> DataType for T {
+  type Item = ();
+  type Header = Self;
+  type Fields = ();
+  const LAYOUT: Layout<Self> = Layout::Integer { spec: T::SPEC };
+}
+
+impl IntegerSpec {
+  #[inline(always)]
+  pub const fn new() -> Self {
+    Self { ordering: None, bitsmask: None }
+  }
+
+  #[inline(always)]
+  pub const fn with_ordering(self, ordering: Ordering) -> Self {
+    Self { ordering: Some(ordering), bitsmask: self.bitsmask }
+  }
+
+  #[inline(always)]
+  pub const fn with_bitsmask(self, bitsmask: u64) -> Self {
+    Self { ordering: self.ordering, bitsmask: Some(bitsmask) }
+  }
+
+  #[inline(always)]
+  pub const fn ordering(self) -> Ordering {
+    match self.ordering {
+      Some(ordering) => ordering,
+      #[cfg(target_endian = "little")]
+      _ => Ordering::Lsb,
+      #[cfg(target_endian = "big")]
+      _ => Ordering::Msb,
+    }
+  }
+
+  #[inline(always)]
+  pub const fn load(self, bytes: &[u8]) -> u64 {
+    let (mut bit, mut uint) = (0, 0);
+    assert!(bytes.len() <= 8);
+    while bit < bytes.len() {
+      let byte = bytes[bit];
+      uint |= (byte as u64) << 8 * match self.ordering() {
+        Ordering::Lsb => bit,
+        Ordering::Msb => bytes.len() - bit,
+      };
+      bit += 1;
+    }
+    uint
+  }
+}
+
+#[macro_export]
+macro_rules! offset_of {
+  ($Container:ty, $($fields:tt).+ $(,)?) => {
+    unsafe {
+      union Zeroed<T> {
+        zeroed: ManuallyDrop<T>,
+        empty: ()
+      }
+
+      let zeroed = Zeroed { zeroed: ManuallyDrop::<$Container>::new(mem::zeroed()) };
+      let base_ptr: *const $Container = (&zeroed.empty as *const ()).cast();
+
+      ptr::addr_of(addr_of!((*base_ptr).$($fields).+)) - ptr::addr_of(base_ptr)
+    }
+  };
+}
+
+impl<A: Copy + DataType, B: ?Sized + DataType> DataType for (A, B) {
+  type Item = B::Item;
+  type Header = (A, B::Header);
+  type Fields = (Field<Self, A>, Field<Self, B::Header>);
+  const LAYOUT: Layout<Self> = Layout::Struct {
+    repr: Repr::new(unsafe {(
+      field::<Self, A>(offset_of!(Self::Header, 0), None, None),
+      field::<Self, B::Header>(offset_of!(Self::Header, 1), None, None),
+    )})
+  };
+}
+
+impl<T: ?Sized + DataType, F: Copy + DataType> Clone for Field<T, F> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+
+impl<T: ?Sized + DataType, F: Copy + DataType> Copy for Field<T, F> {
+
+}
+
+impl<T: ?Sized + DataType, F: FieldList<T>> Clone for Repr<T, F> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+
+impl<T: ?Sized + DataType, F: FieldList<T>> Copy for Repr<T, F> {
+
+}
+
+impl<T: ?Sized + DataType, F: Copy + DataType> Field<T, F> {
+  #[inline(always)]
+  pub const fn size(self) -> usize {
+    mem::size_of::<F>()
+  }
+
+  #[inline(always)]
+  pub const fn layout(self) -> Layout<F> {
+    F::LAYOUT
+  }
+
+  #[inline(always)]
+  pub const fn as_ref(self, val: &T) -> &F {
+    // SAFETY: safety is forwarded to the `unsafe` impl of the `DataType` trait.
+    unsafe { &*self.as_ptr(val) }
+  }
+
+  #[inline(always)]
+  pub const fn as_ptr(self, val: &T) -> *const F {
+    let ptr: *const T = val;
+    // SAFETY: safety is forwarded to the `unsafe` impl of the `DataType` trait.
+    unsafe { ptr.cast::<u8>().offset(self.offset as isize).cast::<F>() }
+  }
+
+  #[inline(always)]
+  pub const fn remaining(self, val: &T) -> usize {
+    size_of_val(val) - self.offset - self.size()
+  }
+
+  #[inline(always)]
+  const fn try_load(self, val: &T) -> Option<u64> {
+    let spec = match self.layout() {
+      Layout::Integer { spec } => spec,
+      _ => return None,
+    };
+
+    let bytes = unsafe { slice::from_raw_parts(self.as_ptr(val).cast::<u8>(), self.size()) };
+    Some(spec.load(bytes))
+  }
+}
+
+#[repr(transparent)]
+#[allow(non_camel_case_types)]
+pub struct u24 { bytes: [u8; 3] }
+
+impl u24 {
+  pub const fn from_ne_bytes(bytes: [u8; 3]) -> Self {
+    Self { bytes }
+  }
+
+  pub const fn from_le_bytes(bytes: [u8; 3]) -> Self {
+    #[cfg(target_endian = "big")]
+    let bytes = [bytes[2], bytes[1], bytes[0]];
+    Self { bytes }
+  }
+
+  pub const fn from_be_bytes(bytes: [u8; 3]) -> Self {
+    #[cfg(target_endian = "little")]
+    let bytes = [bytes[2], bytes[1], bytes[0]];
+    Self { bytes }
+  }
+
+  pub const fn into_u32(self) -> u32 {
+    let [b0, b1, b2] = self.bytes;
+    #[cfg(target_endian = "big")]
+    return u32::from_be_bytes([0, b2, b1, b0]);
+    #[cfg(target_endian = "little")]
+    u32::from_le_bytes([b0, b1, b2, 0])
+  }
+}
+
+impl<T: ?Sized + DataType, U: FieldList<T>> Repr<T, U> {
+  const LEN: usize = mem::size_of::<Self>() / mem::size_of::<Field<T, ()>>();
+
+  #[inline(always)]
+  pub const fn new(fields: U) -> Self {
+    Self { fields, r#type: PhantomData }
+  }
+
+  #[inline(always)]
+  pub const fn pop(self) -> (Option<Field<T, U::Type>>, Repr<T, U::Tail>) {
+    union Node<T: ?Sized + DataType, U: FieldList<T>> {
+      this: Repr<T, U>,
+      term: Repr<T, U::Tail>,
+      node: (Field<T, U::Type>, Repr<T, U::Tail>)
+    }
+
+    let repr = Node { this: self };
+    match Self::LEN {
+      // SAFETY: on terminal node, `Repr<T>` as the exact same representation as `Repr<T::Tail>`.
+      0 => (None, unsafe { repr.term }),
+      // SAFETY: `Repr<T>` as the exact same representation as `(Field<T::Head>, Repr<T::Tail>)`.
+      _ => (Some(unsafe { repr.node.0 }), unsafe { repr.node.1 })
+    }
+  }
+
+  #[inline(always)]
+  pub const fn maybe_uninit(self, offset: usize) -> bool {
+    match self.pop() {
+      (Some(field), tail) => (offset >= field.offset && maybe_uninit2::<U::Type>(offset - field.offset)) || tail.maybe_uninit(offset),
+      _ => false,
+    }
+  }
+
+  #[inline(always)]
+  pub const fn validate(self, val: &T) -> Result<(), isize> {
+    let (field, tail) = match self.pop() {
+      (Some(field), tail) => (field, tail),
+      _ => return Ok(())
+    };
+
+    // Validate integer field.
+    if let Some(uint) = field.try_load(val) {
+      // Validate fixed field.
+      match field.expect {
+        Some(expected) if expected != uint => return Err(0),
+        _ => {}
+      }
+      // Validate value bounds.
+      match field.factor {
+        // TODO: compute error (delta).
+        Some(aspect) if field.remaining(val) != uint as usize * aspect.get() => return Err(0),
+        _ => {}
+      }
+    }
+
+    match is_valid2(field.as_ref(val)) {
+      Ok(()) => tail.validate(val),
+      Err(err) => Err(err),
+    }
+  }
+
+  #[inline(always)]
+  pub const fn len_of_val(self, val: &T) -> usize {
+    match self.pop() {
+      (Some(field), _) if Self::LEN == 1 => len_of_val(field.as_ref(val)),
+      (Some(_), tail) => tail.len_of_val(val),
+      _ => 0
+    }
+  }
+}
+
+pub const unsafe fn field<T: ?Sized + DataType, U: Copy + DataType>(
+  offset: usize,
+  factor: Option<usize>,
+  expect: Option<U>,
+) -> Field<T, U> {
+  let factor = match factor {
+    Some(n) => Some(match NonZeroUsize::new(n) {
+      Some(n) => n,
+      _ => panic!("")
+    }),
+    _ => None
+  };
+  let expect = match expect {
+    Some(expect) => match U::LAYOUT {
+      Layout::Integer { .. } => {
+        union Expect<T> {
+          expect: ManuallyDrop<T>,
+          empty: ()
+        }
+
+        let expect = Expect { expect: ManuallyDrop::new(expect) };
+        let expect_ptr: *const () = unsafe { &expect.empty };
+        let bytes = unsafe { slice::from_raw_parts(expect_ptr.cast(), mem::size_of::<U>()) };
+        Some(IntegerSpec::new().load(bytes))
+      },
+      _ => panic!(""),
+    },
+    _ => None,
+  };
+  Field { r#type: PhantomData, offset, factor, expect }
+}
 
 pub unsafe trait Mutant: 'static {
   #[doc(hidden)]
@@ -16,6 +516,8 @@ pub unsafe trait Mutant: 'static {
   type Tail: ?Sized + Mutant;
   #[doc(hidden)]
   type Item: Copy;
+
+  // type Layout: Layout;
 
   #[doc(hidden)]
   const HEAD: TypeLayout<Self::Head>;
@@ -37,12 +539,7 @@ pub unsafe trait Mutant: 'static {
   }
 }
 
-#[repr(packed)]
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
-pub struct Unalign<T: Copy>(pub T);
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
-pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -51,11 +548,7 @@ pub struct TypeLayout<T> {
   layout: MaybeUninit<T>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Ordering {
-  LittleEndian,
-  BigEndian,
-}
+
 
 #[derive(Debug, Copy, Clone)]
 pub struct IntSpecifier {
@@ -75,12 +568,12 @@ impl IntSpecifier {
 
   pub const fn le(offset: usize, bits: u8) -> Self {
     assert!(bits > 0 && bits <= 64);
-    Self::new(Ordering::LittleEndian, offset, bits)
+    Self::new(Ordering::Lsb, offset, bits)
   }
 
   pub const fn be(offset: usize, bits: u8) -> Self {
     assert!(bits > 0 && bits <= 64);
-    Self::new(Ordering::BigEndian, offset, bits)
+    Self::new(Ordering::Msb, offset, bits)
   }
 
   pub const unsafe fn load(&self, ptr: *const u8) -> u64 {
@@ -95,9 +588,9 @@ impl IntSpecifier {
     };
     let val = match self.ordering {
       #[cfg(target_endian = "big")]
-      Ordering::LittleEndian => val.swap_bytes(),
+      Ordering::Lsb => val.swap_bytes(),
       #[cfg(target_endian = "little")]
-      Ordering::BigEndian => val.swap_bytes(),
+      Ordering::Msb => val.swap_bytes(),
       _ => val,
     };
     let mask = u64::MAX >> (64 - self.bits);
@@ -1146,6 +1639,14 @@ mod tests {
       pub event_code: u8,
       pub parameters_len: u8,
       pub parameters: Undrop<T>,
+    }
+
+    #[derive(Copy, Clone, DataType)]
+    #[mutant(crate)]
+    pub struct Event2<T: ?Sized + DataType> {
+      pub event_code: u8,
+      pub parameters_len: u8,
+      pub parameters: T,
     }
 
     pub trait EventParameters: Mutant {
