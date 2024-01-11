@@ -150,7 +150,7 @@ fn parse_field_attr(attrs: &[Attribute]) -> (TokenStream, TokenStream) {
         let content;
         parenthesized!(content in meta.input);
         let expr: Expr = content.parse()?;
-        expect = quote!(::core::option::Option::Some(#expr));
+        expect = quote!(#expr);
         return Ok(());
       }
 
@@ -193,7 +193,7 @@ pub fn derive_mutant(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
   let generics = input.generics;
   let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-  let header = format_ident!("__{}Header", input.ident);
+  let head = format_ident!("__{}Head", input.ident);
   let this = input.ident;
 
   let fields = match data.fields {
@@ -244,21 +244,21 @@ pub fn derive_mutant(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
 
   quote!(
     #(#repr)*
-    #vis struct #header #impl_generics (
+    #vis struct #head #impl_generics (
       #(#head_tys,)*
       [<#last_ty as #mutant::Mutant>::Item; 0]
     ) #where_clause;
 
-    impl #impl_generics Copy for #header #ty_generics #where_clause { }
+    impl #impl_generics Copy for #head #ty_generics #where_clause { }
 
-    impl #impl_generics Clone for #header #ty_generics #where_clause {
+    impl #impl_generics Clone for #head #ty_generics #where_clause {
       fn clone(&self) -> Self {
         *self
       }
     }
 
     unsafe impl #impl_generics #mutant::Mutant for #this #ty_generics #where_clause {
-      type Head = #header #ty_generics;
+      type Head = #head #ty_generics;
       type Tail = #last_ty;
       type Item = <#last_ty as #mutant::Mutant>::Item;
 
@@ -294,7 +294,7 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
   let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
   // Compute identifiers from input.
-  let header_ident = format_ident!("__{}Header", input.ident);
+  let head_ident = format_ident!("__{}Head", input.ident);
   let ident = input.ident;
 
   // Compute fields from input.
@@ -305,7 +305,8 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
     Fields::Unit => return proc_macro::TokenStream::from(quote! {
       unsafe impl #impl_generics #root::DataType for #ident #ty_generics #where_clause {
         type Item = ();
-        type Header = Self;
+        type Head = Self;
+        type Tail = ();
         type Fields = ();
 
         const LAYOUT: #root::Layout<Self> = #root::Layout::Void;
@@ -316,11 +317,11 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
   // Compute head & tail.
   let tail = match input_fields.last() { Some(field) => field, _ => bail_tokens!("empty struct") };
   let tail_ty = &tail.ty;
-  let tail_header_ty: Type = parse_quote!(<#tail_ty as #root::DataType>::Header);
+  let tail_head_ty: Type = parse_quote!(<#tail_ty as #root::DataType>::Head);
   let head = input_fields.iter().take(input_fields.len() - 1);
 
-  // Compute header fields.
-  let fields_tys = head.clone().map(|field| &field.ty).chain([&tail_header_ty]);
+  // Compute head fields.
+  let fields_tys = head.clone().map(|field| &field.ty).chain([&tail_head_ty]);
   let fields_ty = fields_tys
     .clone()
     .rev()
@@ -328,12 +329,12 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
   let fields = head
     .clone()
     .map(|field| (&field.ty, parse_field_attr(&field.attrs)))
-    .chain([(&tail_header_ty, parse_field_attr(&tail.attrs))])
+    .chain([(&tail_head_ty, parse_field_attr(&tail.attrs))])
     .enumerate()
     .map(|(i, (ty, (factor, expect)))| {
       let ident = Index { index: i as u32, span: Span::call_site() };
       quote!(unsafe {
-        #root::field::<Self, #ty>(#root::offset_of!(Self::Header, #ident), #factor, #expect)
+        #root::field::<Self, #ty>(#root::offset_of!(Self::Head, #ident), #factor, #expect)
       })
     })
     .collect::<Vec<_>>()
@@ -353,26 +354,28 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
   };
 
   proc_macro::TokenStream::from(quote!(
-    #(#repr)* #vis struct #header_ident #impl_generics (#(#fields_tys,)*) #where_clause;
+    #(#repr)* #vis struct #head_ident #impl_generics (#(#fields_tys,)*) #where_clause;
 
-    impl #impl_generics Copy for #header_ident #ty_generics #where_clause { }
-    impl #impl_generics Clone for #header_ident #ty_generics #where_clause {
+    impl #impl_generics Copy for #head_ident #ty_generics #where_clause { }
+    impl #impl_generics Clone for #head_ident #ty_generics #where_clause {
       fn clone(&self) -> Self {
         *self
       }
     }
 
-    impl #impl_generics #root::DataType for #header_ident #ty_generics #where_clause {
+    impl #impl_generics #root::DataType for #head_ident #ty_generics #where_clause {
       type Item = ();
-      type Header = Self;
+      type Head = Self;
+      type Tail = ();
       type Fields = #fields_ty;
 
       const LAYOUT: #root::Layout<Self> = #root::Layout::Struct { repr: #root::Repr::new(#fields) };
     }
 
     impl #impl_generics #root::DataType for #ident #ty_generics #where_clause {
-      type Item = <#tail_ty as #root::DataType>::Item;
-      type Header = #header_ident #ty_generics;
+      type Item = ();
+      type Head = #head_ident #ty_generics;
+      type Tail = <#tail_ty as #root::DataType>::Tail;
       type Fields = #fields_ty;
 
       const LAYOUT: #root::Layout<Self> = #root::Layout::Struct { repr: #root::Repr::new(#fields) };
