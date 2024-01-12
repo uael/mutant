@@ -1,117 +1,124 @@
 use core::marker::PhantomData;
 use core::num::NonZeroUsize;
-use core::{mem, slice};
-use core::mem::ManuallyDrop;
 
-use crate::{DataType, IntegerSpec, Layout, size_of_val};
+use crate::{
+  is_sized, is_unsized, min_size_of, size_of_val, transmute_ref, Data, Integer, IntegerSpec, Layout,
+};
 
 #[derive(Debug, Eq, PartialEq, Hash)]
-pub struct Field<T: ?Sized + DataType, F: Copy + DataType> {
-  parent: PhantomData<T>,
-  r#type: PhantomData<F>,
+#[repr(C)]
+pub struct Field<Base: ?Sized + Data, T: ?Sized + Data> {
+  base: PhantomData<Base>,
+  r#type: PhantomData<T>,
   pub offset: usize,
   pub factor: Option<NonZeroUsize>,
   pub expect: Option<u64>,
 }
 
+/// Instantiate a `Field` of the `Base` struct of type `T`.
+///
+/// # Safety
+///
+/// Caller must ensure that the provided `offset` is the right offset of this field within the
+/// `Base` struct.
 #[inline]
-pub const unsafe fn field<T: ?Sized + DataType, U: Copy + DataType>(
-  offset: usize,
-  factor: Option<usize>,
-  expect: Option<U>,
-) -> Field<T, U> {
-  let factor = match factor {
-    Some(n) => Some(match NonZeroUsize::new(n) {
-      Some(n) => n,
-      _ => panic!("")
-    }),
-    _ => None
-  };
-  let expect = match expect {
-    Some(expect) => match U::LAYOUT {
-      Layout::Integer { .. } => {
-        union Expect<T> {
-          expect: ManuallyDrop<T>,
-          empty: ()
-        }
-
-        let expect = Expect { expect: ManuallyDrop::new(expect) };
-        let expect_ptr: *const () = unsafe { &expect.empty };
-        let bytes = unsafe { slice::from_raw_parts(expect_ptr.cast(), mem::size_of::<U>()) };
-        Some(IntegerSpec::new().load(bytes))
-      },
-      _ => panic!(""),
-    },
-    _ => None,
-  };
-  Field { parent: PhantomData, r#type: PhantomData, offset, factor, expect }
+pub const unsafe fn field<Base: ?Sized + Data, T: ?Sized + Data>(offset: usize) -> Field<Base, T> {
+  Field { base: PhantomData, r#type: PhantomData, offset, factor: None, expect: None }
 }
 
-impl<T: ?Sized + DataType, F: Copy + DataType> Field<T, F> {
-  #[inline(always)]
-  pub const fn size(self) -> usize {
-    mem::size_of::<F>()
+impl<Base: ?Sized + Data, T: ?Sized + Data> Field<Base, T> {
+  #[inline]
+  pub const fn with_factor(mut self, factor: Option<usize>) -> Self {
+    self.factor = match factor {
+      Some(n) => NonZeroUsize::new(n),
+      _ => None,
+    };
+    self
+  }
+
+  #[inline]
+  pub const fn with_expect(mut self, expect: Option<&T>) -> Self
+  where
+    T: Integer,
+  {
+    self.expect = match expect {
+      Some(expect) => Some(IntegerSpec::new().load(transmute_ref(expect))),
+      _ => None,
+    };
+    self
   }
 
   #[inline(always)]
-  pub const fn layout(self) -> Layout<F> {
-    F::LAYOUT
+  pub const fn is_fallible(self) -> bool {
+    self.expect.is_some() || self.factor.is_some()
   }
 
   #[inline(always)]
-  pub const fn as_ref(self, val: &T) -> &F {
-    // SAFETY: safety is forwarded to the `unsafe` impl of the `DataType` trait.
+  pub const fn contains(self, offset: usize) -> bool {
+    offset >= self.offset && (is_unsized::<T>() || offset < self.offset + min_size_of::<T>())
+  }
+
+  #[inline(always)]
+  pub const fn as_ref(self, val: &Base) -> &T {
+    // SAFETY: safety is forwarded to the `unsafe` impl of the `Data` trait.
     unsafe { &*self.as_ptr(val) }
   }
 
   #[inline(always)]
-  pub const fn as_ptr(self, val: &T) -> *const F {
-    let ptr: *const T = val;
-    // SAFETY: safety is forwarded to the `unsafe` impl of the `DataType` trait.
-    unsafe { ptr.cast::<u8>().offset(self.offset as isize).cast::<F>() }
+  pub const fn as_ptr(self, val: &Base) -> *const T {
+    let ptr: *const Base = val;
+    crate::ptr::from_raw_parts(
+      // SAFETY: safety is forwarded to the `unsafe` impl of the `Data` trait.
+      unsafe { ptr.cast::<u8>().offset(self.offset as isize) }.cast(),
+      match is_sized::<T>() {
+        true => 0,
+        _ => crate::ptr::metadata(val),
+      },
+    )
   }
 
   #[inline(always)]
-  pub(crate) const fn remaining(self, val: &T) -> usize {
-    size_of_val(val) - self.offset - self.size()
+  pub(crate) const fn remaining(self, val: &Base) -> usize {
+    size_of_val(val) - size_of_val(self.as_ref(val)) - self.offset
   }
 
   #[inline(always)]
-  pub(crate) const fn try_load(self, val: &T) -> Option<u64> {
-    let spec = match self.layout() {
+  pub(crate) const fn try_load(self, val: &Base) -> Option<u64> {
+    let spec = match T::LAYOUT {
       Layout::Integer { spec } => spec,
       _ => return None,
     };
 
-    let bytes = unsafe { slice::from_raw_parts(self.as_ptr(val).cast::<u8>(), self.size()) };
-    Some(spec.load(bytes))
+    Some(spec.load(transmute_ref(self.as_ref(val))))
   }
 }
 
-pub trait FieldList<T: ?Sized + DataType>: Copy + 'static {
-  type Type: Copy + DataType;
-  type Tail: FieldList<T>;
+pub trait FieldList<Base: ?Sized + Data>: Copy + 'static {
+  type Type: ?Sized + Data;
+  type Rest: FieldList<Base>;
 }
 
-impl<T: ?Sized + DataType> FieldList<T> for () {
+impl<Base: ?Sized + Data> FieldList<Base> for () {
   type Type = ();
-  type Tail = ();
+  type Rest = ();
 }
 
-impl<T: ?Sized + DataType, F: Copy + DataType> FieldList<T> for Field<T, F> {
-  type Type = F;
-  type Tail = ();
+impl<Base: ?Sized + Data, T: ?Sized + Data> FieldList<Base> for Field<Base, T> {
+  type Type = T;
+  type Rest = ();
 }
 
-impl<T: ?Sized + DataType, A: Copy + DataType, B: Copy + FieldList<T>> FieldList<T> for (Field<T, A>, B) {
-  type Type = A;
-  type Tail = B;
+impl<Base: ?Sized + Data, T: ?Sized + Data, Rest: Copy + FieldList<Base>> FieldList<Base>
+  for (Field<Base, T>, Rest)
+{
+  type Type = T;
+  type Rest = Rest;
 }
 
-impl<T: ?Sized + DataType, F: Copy + DataType> Clone for Field<T, F> {
+impl<Base: ?Sized + Data, T: ?Sized + Data> Clone for Field<Base, T> {
   fn clone(&self) -> Self {
     *self
   }
 }
 
-impl<T: ?Sized + DataType, F: Copy + DataType> Copy for Field<T, F> {}
+impl<Base: ?Sized + Data, T: ?Sized + Data> Copy for Field<Base, T> {}

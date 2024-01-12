@@ -1,12 +1,15 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
-use syn::{parse_macro_input, parenthesized, token, punctuated::Punctuated, Data, DeriveInput, Error, Expr, Fields, Index, Token, Attribute, Path, parse_quote, Type};
+use quote::quote;
+use syn::{
+  parenthesized, parse_macro_input, punctuated::Punctuated, token, Attribute, Data, DeriveInput,
+  Error, Expr, Fields, Index, Path, Token,
+};
 
 macro_rules! bail {
   ($msg:expr $(,)?) => {
     return Error::new(Span::call_site(), &$msg[..]).to_compile_error().into()
   };
-  ( $msg:expr => $span_to_blame:expr $(,)? ) => {
+  ($msg:expr => $span_to_blame:expr $(,)?) => {
     return Error::new_spanned(&$span_to_blame, $msg).to_compile_error().into()
   };
 }
@@ -42,126 +45,173 @@ pub fn ensure(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   .into()
 }
 
-fn parse_derive_attr(attrs: &[Attribute]) -> TokenStream {
-  let mut crate_name = quote!(::mutant);
+fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
+  let mut repr_c_or_transparent = false;
+  let mut root = quote!(::mutant);
   for attr in attrs {
-    if !attr.path().is_ident("mutant") {
-      continue;
+    if attr.path().is_ident("repr") {
+      attr
+        .parse_nested_meta(|meta| {
+          // #[repr(C)]
+          if meta.path.is_ident("C") {
+            repr_c_or_transparent = true;
+          }
+          // #[repr(transparent)]
+          if meta.path.is_ident("transparent") {
+            repr_c_or_transparent = true;
+          }
+          Ok(())
+        })
+        .unwrap();
     }
-    attr.parse_nested_meta(|meta| {
-      // #[mutant(crate(<Path>))]
-      if meta.path.is_ident("crate") {
-        if meta.input.peek(token::Paren) {
-          let content;
-          parenthesized!(content in meta.input);
-          let path: Path = content.parse()?;
-          crate_name = quote!(#path);
-        } else {
-          crate_name = quote!(crate);
-        }
-        return Ok(());
-      }
+    if attr.path().is_ident("data") {
+      attr
+        .parse_nested_meta(|meta| {
+          // #[data(crate(<Path>))]
+          if meta.path.is_ident("crate") {
+            if meta.input.peek(token::Paren) {
+              let content;
+              parenthesized!(content in meta.input);
+              let path: Path = content.parse()?;
+              root = quote!(#path);
+            } else {
+              root = quote!(crate);
+            }
+            return Ok(());
+          }
 
-      Err(meta.error("unrecognized mutant attribute"))
-    }).unwrap();
+          Err(meta.error("unrecognized data attribute"))
+        })
+        .unwrap();
+    }
   }
-  crate_name
+  (repr_c_or_transparent, root)
 }
 
 fn parse_field_attr(attrs: &[Attribute]) -> (TokenStream, TokenStream) {
-  let mut factor = quote!(::core::option::Option::None);
-  let mut expect = quote!(::core::option::Option::None);
+  let mut factor = quote!();
+  let mut expect = quote!();
   for attr in attrs {
-    if !attr.path().is_ident("mutant") {
+    if !attr.path().is_ident("data") {
       continue;
     }
-    attr.parse_nested_meta(|meta| {
-      // #[mutant(expect(<Expr>))]
-      if meta.path.is_ident("expect") {
-        let content;
-        parenthesized!(content in meta.input);
-        let expr: Expr = content.parse()?;
-        expect = quote!(#expr);
-        return Ok(());
-      }
-
-      // #[mutant(size)] or #[mutant(size(N))], omitted N means 1
-      if meta.path.is_ident("size") {
-        if meta.input.peek(token::Paren) {
+    attr
+      .parse_nested_meta(|meta| {
+        // #[data(expect(<Expr>))]
+        if meta.path.is_ident("expect") {
           let content;
           parenthesized!(content in meta.input);
           let expr: Expr = content.parse()?;
-          factor = quote!(::core::option::Option::Some(#expr));
-        } else {
-          factor = quote!(::core::option::Option::Some(1));
+          expect = quote!(.with_expect(#expr));
+          return Ok(());
         }
-        return Ok(());
-      }
 
-      Err(meta.error("unrecognized mutant attribute"))
-    }).unwrap();
+        // #[data(size)] or #[data(size(N))], omitted N means 1
+        if meta.path.is_ident("size") {
+          if meta.input.peek(token::Paren) {
+            let content;
+            parenthesized!(content in meta.input);
+            let expr: Expr = content.parse()?;
+            factor = quote!(.with_factor(::core::option::Option::Some(#expr)));
+          } else {
+            factor = quote!(.with_factor(::core::option::Option::Some(1)));
+          }
+          return Ok(());
+        }
+
+        Err(meta.error("unrecognized data attribute"))
+      })
+      .unwrap();
   }
   (factor, expect)
 }
 
-#[proc_macro_derive(DataType, attributes(mutant))]
-pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_derive(Data, attributes(data))]
+pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
-  let root = parse_derive_attr(&input.attrs);
+  let (repr_c_or_transparent, root) = parse_derive_attr(&input.attrs);
 
   let data = match input.data {
     Data::Struct(data) => data,
-    _ => bail!("#[derive(DataType)] is yet only implemented for struct"),
+    _ => bail!("#[derive(Data)] is yet only implemented for struct"),
   };
 
-  // Compute `#[repr(..)]` attribute(s), visibility and generics from input.
-  let repr = input.attrs.iter().filter_map(|attr| attr.path().is_ident("repr").then_some(attr));
-  let vis = input.vis;
+  if !repr_c_or_transparent {
+    bail!("`#[repr(C)]` or `#[repr(transparant)]` is required in stable rust")
+  }
+
+  // Compute generics from input.
   let generics = input.generics;
   let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-  // Compute identifiers from input.
-  let head_ident = format_ident!("__{}Head", input.ident);
+  // Compute identifier from input.
   let ident = input.ident;
 
   // Compute fields from input.
-  let input_fields = match data.fields {
-    Fields::Named(fields) => fields.named,
-    Fields::Unnamed(fields) => fields.unnamed,
+  let input_fields = match &data.fields {
+    Fields::Named(fields) if !fields.named.is_empty() => &fields.named,
+    Fields::Unnamed(fields) if !fields.unnamed.is_empty() => &fields.unnamed,
     // Empty struct, impl as `Layout::Void`.
-    Fields::Unit => return proc_macro::TokenStream::from(quote! {
-      unsafe impl #impl_generics #root::DataType for #ident #ty_generics #where_clause {
-        type Item = ();
-        type Head = Self;
-        type Tail = ();
-        type Fields = ();
+    _ => {
+      return proc_macro::TokenStream::from(quote! {
+        unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
+          type Item = ();
+          type Fields = ();
 
-        const LAYOUT: #root::Layout<Self> = #root::Layout::Void;
-      }
-    })
+          const LAYOUT: #root::Layout<Self> = #root::Layout::Void;
+          const HEADER: usize = 0;
+        }
+      })
+    }
   };
 
-  // Compute head & tail.
-  let tail = match input_fields.last() { Some(field) => field, _ => bail!("empty struct") };
+  // Compute head.
+  let tail = match input_fields.last() {
+    Some(field) => field,
+    _ => unreachable!(),
+  };
   let tail_ty = &tail.ty;
-  let tail_head_ty: Type = parse_quote!(<#tail_ty as #root::DataType>::Head);
-  let head = input_fields.iter().take(input_fields.len() - 1);
+  let tail_ident = match &tail.ident {
+    Some(ident) => quote!(#ident),
+    _ => {
+      let ident = Index { index: (input_fields.len() - 1) as u32, span: Span::call_site() };
+      quote!(#ident)
+    }
+  };
+
+  // Compute `where` clause.
+  let predicates = input_fields
+    .iter()
+    .take(input_fields.len() - 1)
+    .map(|field| &field.ty)
+    .map(|ty| quote!(#ty: #root::Data + Copy))
+    .chain([quote!(#tail_ty: #root::Data)]);
+  let where_clause = match where_clause {
+    None => quote!(where #(#predicates,)*),
+    Some(where_clause) => {
+      let existing_predicates = where_clause.predicates.iter();
+      quote!(where #(#existing_predicates,)* #(#predicates,)*)
+    }
+  };
 
   // Compute head fields.
-  let fields_tys = head.clone().map(|field| &field.ty).chain([&tail_head_ty]);
-  let fields_ty = fields_tys
-    .clone()
-    .rev()
-    .fold(quote!(()), |tail, ty| quote!((#root::Field<Self, #ty>, #tail)));
-  let fields = head
-    .clone()
-    .map(|field| (&field.ty, parse_field_attr(&field.attrs)))
-    .chain([(&tail_head_ty, parse_field_attr(&tail.attrs))])
+  let fields_tys = input_fields.iter().map(|field| &field.ty);
+  let fields_ty =
+    fields_tys.clone().rev().fold(quote!(()), |tail, ty| quote!((#root::Field<Self, #ty>, #tail)));
+  let fields = input_fields
+    .iter()
+    .map(|field| (field.ident.as_ref(), &field.ty, parse_field_attr(&field.attrs)))
     .enumerate()
-    .map(|(i, (ty, (factor, expect)))| {
-      let ident = Index { index: i as u32, span: Span::call_site() };
+    .map(|(i, (ident, ty, (factor, expect)))| {
+      let ident = match ident {
+        Some(ident) => quote!(#ident),
+        _ => {
+          let ident = Index { index: i as u32, span: Span::call_site() };
+          quote!(#ident)
+        }
+      };
       quote!(unsafe {
-        #root::field::<Self, #ty>(::core::mem::offset_of!(Self::Head, #ident), #factor, #expect)
+        #root::field::<Self, #ty>(#root::offset_of!(Self, #ident)) #factor #expect
       })
     })
     .collect::<Vec<_>>()
@@ -169,43 +219,21 @@ pub fn derive_datatype(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
     .rev()
     .fold(quote!(()), |tail, head| quote!((#head, #tail)));
 
-  let predicates = head.clone()
-    .map(|field| &field.ty)
-    .map(|ty| quote!(#ty: #root::DataType + Copy));
-  let where_clause = match where_clause {
-    None => quote!(where #(#predicates,)* #tail_ty: #root::DataType),
-    Some(where_clause) => {
-      let existing_predicates = where_clause.predicates.iter();
-      quote!(where #(#existing_predicates,)* #(#predicates,)* #tail_ty: #root::DataType)
-    }
-  };
-
   proc_macro::TokenStream::from(quote!(
-    #(#repr)* #vis struct #head_ident #impl_generics (#(#fields_tys,)*) #where_clause;
-
-    impl #impl_generics Copy for #head_ident #ty_generics #where_clause { }
-    impl #impl_generics Clone for #head_ident #ty_generics #where_clause {
-      fn clone(&self) -> Self {
-        *self
-      }
-    }
-
-    impl #impl_generics #root::DataType for #head_ident #ty_generics #where_clause {
+    unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
       type Item = ();
-      type Head = Self;
-      type Tail = ();
       type Fields = #fields_ty;
 
       const LAYOUT: #root::Layout<Self> = #root::Layout::Struct { repr: #root::Repr::new(#fields) };
-    }
-
-    impl #impl_generics #root::DataType for #ident #ty_generics #where_clause {
-      type Item = ();
-      type Head = #head_ident #ty_generics;
-      type Tail = <#tail_ty as #root::DataType>::Tail;
-      type Fields = #fields_ty;
-
-      const LAYOUT: #root::Layout<Self> = #root::Layout::Struct { repr: #root::Repr::new(#fields) };
+      const HEADER: usize = {
+        let size = #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>();
+        if !#root::is_sized::<#tail_ty>() {
+          size
+        } else {
+          let align = #root::align_of::<Self>();
+          size.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
+        }
+      };
     }
   ))
 }

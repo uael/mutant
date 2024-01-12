@@ -2,20 +2,20 @@ use core::mem;
 
 /// Extract the metadata component of a pointer.
 #[inline]
-pub(super) const fn metadata<T: ?Sized>(ptr: *const T) -> usize {
+pub const fn metadata<T: ?Sized>(ptr: *const T) -> usize {
   unsafe { PtrRepr::empty().set_const(ptr).components.metadata }
 }
 
 /// Forms a (possibly-wide) raw pointer from a data address and metadata.
 #[inline]
-pub(super) const fn from_raw_parts<T: ?Sized>(address: *const (), metadata: usize) -> *const T {
+pub const fn from_raw_parts<T: ?Sized>(address: *const (), metadata: usize) -> *const T {
   unsafe { PtrRepr::with_components(address, metadata).const_ptr }
 }
 
 /// Performs the same functionality as [`from_raw_parts`], except that a
 /// raw `*mut` pointer is returned, as opposed to a raw `*const` pointer.
 #[inline]
-pub(super) const fn from_raw_parts_mut<T: ?Sized>(address: *mut (), metadata: usize) -> *mut T {
+pub const fn from_raw_parts_mut<T: ?Sized>(address: *mut (), metadata: usize) -> *mut T {
   unsafe { PtrRepr::with_components(address, metadata).mut_ptr }
 }
 

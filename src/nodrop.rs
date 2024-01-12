@@ -4,24 +4,24 @@ use core::mem;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 
-use crate::{DataType, Field, field, Layout, Repr};
+use crate::{field, Data, Field, Layout, Repr};
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
-pub struct Undrop<T: ?Sized>(ManuallyDrop<T>);
+pub struct NoDrop<T: ?Sized>(ManuallyDrop<T>);
 
-impl<T: ?Sized + DataType> DataType for Undrop<T> {
+unsafe impl<T: ?Sized + Data> Data for NoDrop<T> {
   type Item = ();
-  type Head = T::Head;
-  type Tail = T::Tail;
-  type Fields = Field<Self, T::Head>;
-  const LAYOUT: Layout<Self> = Layout::Struct { repr: Repr::new(unsafe { field::<Self, T::Head>(0, None, None) }) };
+  type Fields = Field<Self, T>;
+  const LAYOUT: Layout<Self> = Layout::Struct { repr: Repr::new(unsafe { field::<Self, T>(0) }) };
+  const HEADER: usize = T::HEADER;
 }
 
-impl<T: ?Sized> Undrop<T> {
+impl<T: ?Sized> NoDrop<T> {
   const ASSERT_NOT_DROP: () = assert!(!mem::needs_drop::<T>());
 }
 
-impl<T> Undrop<T> {
+impl<T> NoDrop<T> {
   #[inline(always)]
   pub const fn new(value: T) -> Self {
     let _ = Self::ASSERT_NOT_DROP;
@@ -35,7 +35,7 @@ impl<T> Undrop<T> {
   }
 }
 
-impl<T: ?Sized> Deref for Undrop<T> {
+impl<T: ?Sized> Deref for NoDrop<T> {
   type Target = T;
 
   #[inline(always)]
@@ -44,25 +44,23 @@ impl<T: ?Sized> Deref for Undrop<T> {
   }
 }
 
-impl<T: ?Sized> DerefMut for Undrop<T> {
+impl<T: ?Sized> DerefMut for NoDrop<T> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     self.0.deref_mut()
   }
 }
 
-impl<T: Display + ?Sized> Display for Undrop<T> {
+impl<T: Display + ?Sized> Display for NoDrop<T> {
   #[inline(always)]
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-    let _ = Self::ASSERT_NOT_DROP;
-    Display::fmt(unsafe { mem::transmute::<_, &T>(self) }, f)
+    Display::fmt(self.deref(), f)
   }
 }
 
-impl<T: Debug + ?Sized> Debug for Undrop<T> {
+impl<T: Debug + ?Sized> Debug for NoDrop<T> {
   #[inline(always)]
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-    let _ = Self::ASSERT_NOT_DROP;
-    Debug::fmt(unsafe { mem::transmute::<_, &T>(self) }, f)
+    Debug::fmt(self.deref(), f)
   }
 }
