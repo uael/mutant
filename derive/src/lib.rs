@@ -1,8 +1,7 @@
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
-  parenthesized, parse_macro_input, punctuated::Punctuated, token, Attribute, Data, DeriveInput,
-  Error, Expr, Fields, Index, Path, Token,
+  parenthesized, parse_macro_input, token, Attribute, Data, DeriveInput, Error, Fields, Index, Path,
 };
 
 macro_rules! bail {
@@ -12,37 +11,6 @@ macro_rules! bail {
   ($msg:expr => $span_to_blame:expr $(,)?) => {
     return Error::new_spanned(&$span_to_blame, $msg).to_compile_error().into()
   };
-}
-
-#[proc_macro]
-pub fn ensure(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-  let args = input.clone();
-  let mut args: Vec<Expr> =
-    parse_macro_input!(args with Punctuated::<Expr, Token![,]>::parse_terminated)
-      .into_iter()
-      .collect();
-
-  let input = proc_macro2::TokenStream::from(input);
-  let cond = match args.is_empty() {
-    false => args.remove(0),
-    _ => bail!("`attest` requires at least one expression argument."),
-  };
-  let asm = match args.is_empty() {
-    true => quote!("\r[\x08ERROR     attest failed"),
-    _ => quote!(::core::concat!("\r[\x08ERROR     ", #(#args),*)),
-  };
-  quote!(
-    #[cfg(debug_assertions)]
-    { assert!(#input); }
-    #[cfg(not(debug_assertions))]
-    if !#cond {
-      unsafe {
-        ::core::arch::asm!(#asm);
-        ::core::hint::unreachable_unchecked();
-      }
-    }
-  )
-  .into()
 }
 
 fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
@@ -88,44 +56,6 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
   (repr_c_or_transparent, root)
 }
 
-fn parse_field_attr(attrs: &[Attribute]) -> (TokenStream, TokenStream) {
-  let mut factor = quote!();
-  let mut expect = quote!();
-  for attr in attrs {
-    if !attr.path().is_ident("data") {
-      continue;
-    }
-    attr
-      .parse_nested_meta(|meta| {
-        // #[data(expect(<Expr>))]
-        if meta.path.is_ident("expect") {
-          let content;
-          parenthesized!(content in meta.input);
-          let expr: Expr = content.parse()?;
-          expect = quote!(.with_expect(#expr));
-          return Ok(());
-        }
-
-        // #[data(size)] or #[data(size(N))], omitted N means 1
-        if meta.path.is_ident("size") {
-          if meta.input.peek(token::Paren) {
-            let content;
-            parenthesized!(content in meta.input);
-            let expr: Expr = content.parse()?;
-            factor = quote!(.with_factor(::core::option::Option::Some(#expr)));
-          } else {
-            factor = quote!(.with_factor(::core::option::Option::Some(1)));
-          }
-          return Ok(());
-        }
-
-        Err(meta.error("unrecognized data attribute"))
-      })
-      .unwrap();
-  }
-  (factor, expect)
-}
-
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
@@ -141,6 +71,7 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   }
 
   // Compute generics from input.
+  let vis = input.vis;
   let generics = input.generics;
   let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -156,9 +87,10 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
       return proc_macro::TokenStream::from(quote! {
         unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
           type Item = ();
-          type Fields = ();
+          type Tail = ();
+          type Repr = ();
 
-          const LAYOUT: #root::Layout<Self> = #root::Layout::Void;
+          const LAYOUT: #root::Layout = #root::Layout::Void;
           const HEADER: usize = 0;
         }
       })
@@ -195,36 +127,42 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   };
 
   // Compute head fields.
-  let fields_tys = input_fields.iter().map(|field| &field.ty);
-  let fields_ty =
-    fields_tys.clone().rev().fold(quote!(()), |tail, ty| quote!((#root::Field<Self, #ty>, #tail)));
-  let fields = input_fields
-    .iter()
-    .map(|field| (field.ident.as_ref(), &field.ty, parse_field_attr(&field.attrs)))
-    .enumerate()
-    .map(|(i, (ident, ty, (factor, expect)))| {
-      let ident = match ident {
-        Some(ident) => quote!(#ident),
-        _ => {
-          let ident = Index { index: i as u32, span: Span::call_site() };
-          quote!(#ident)
-        }
-      };
-      quote!(unsafe {
-        #root::field::<Self, #ty>(#root::offset_of!(Self, #ident)) #factor #expect
-      })
-    })
-    .collect::<Vec<_>>()
-    .iter()
-    .rev()
-    .fold(quote!(()), |tail, head| quote!((#head, #tail)));
+  let mut impl_fields = vec![];
+  let fields = input_fields.iter().enumerate().rfold(quote!(()), |tail, (i, head)| {
+    let ty = &head.ty;
+    let field_ident = match &head.ident {
+      Some(ident) => quote!(#ident),
+      _ => {
+        let ident = Index { index: i as u32, span: Span::call_site() };
+        quote!(#ident)
+      }
+    };
+    let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
+    let fields = input_fields.len() - i;
+    impl_fields.push(quote! {
+      #[allow(non_camel_case_types)]
+      #[doc(hidden)]
+      #vis struct #struct_ident;
+
+      unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
+        type Type = #ty;
+        type Rest = #tail;
+        const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
+        const FIELDS: usize = #fields;
+      }
+    });
+    quote!(#struct_ident)
+  });
 
   proc_macro::TokenStream::from(quote!(
+    #(#impl_fields)*
+
     unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
       type Item = ();
-      type Fields = #fields_ty;
+      type Tail = <#tail_ty as #root::Data>::Tail;
+      type Repr = #fields;
 
-      const LAYOUT: #root::Layout<Self> = #root::Layout::Struct { repr: #root::Repr::new(#fields) };
+      const LAYOUT: #root::Layout = #root::Layout::Struct;
       const HEADER: usize = {
         let size = #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>();
         if !#root::is_sized::<#tail_ty>() {
