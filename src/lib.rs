@@ -1,45 +1,320 @@
+//! ***Efficient, safe, transmutation. Even for dynamically-sized types.***
+//!
+//! `mutant` is a Rust crate providing safe and efficient transmutation between types,
+//! including support for dynamically-sized types (`?Sized`). It empowers developers to
+//! perform zero-cost, type-safe memory reinterpretations, extending Rust's capabilities
+//! in systems programming, embedded systems, and other scenarios requiring fine-grained
+//! control over data representation.
+//!
+//! # Overview
+//!
+//! `mutant` primarily offers the [`Data`] trait, which, when derived, allows for safe and
+//! efficient transmutation between compatible types. The trait can be automatically
+//! implemented on structs using the [`Data`] derive macro, ensuring correctness and
+//! safety at compile-time. This crate stands out by supporting dynamically-sized types,
+//! a feature not commonly found in similar crates like `zerocopy` and `bytemuck`.
+//!
+//! Key features of `mutant` include:
+//! - Safe transmutation between types, including `?Sized` types.
+//! - Compile-time checks to ensure transmutation safety.
+//! - Utilities for handling unaligned data, critical in systems programming.
+//!
+//! # Use Cases
+//!
+//! `mutant` is particularly useful in scenarios where data representation must be changed without
+//! altering the underlying bytes, such as:
+//! - Systems programming where memory layout is critical.
+//! - Embedded programming involving direct manipulation of hardware registers.
+//! - Network programming for parsing and constructing packets with specific memory layouts.
+//! - Interfacing with C libraries requiring specific data representations.
+//!
+//! # Example
+//!
+//! Here's a simple example demonstrating how to use mutant:
+//!
+//! ```
+//! use mutant::{Data, u16le};
+//!
+//! #[derive(Data, Eq, PartialEq, Debug)]
+//! #[repr(C)]
+//! struct Loot<T: ?Sized> {
+//!   position: (u8, u8),
+//!   player: u16le,
+//!   items: T,
+//! }
+//!
+//! #[derive(Copy, Clone, Data, Eq, PartialEq, Debug)]
+//! #[repr(C)]
+//! struct Item {
+//!   archetype: u8,
+//!   legendary: bool,
+//! }
+//!
+//! let loot = Loot {
+//!   position: (21, 12),
+//!   player: 0xcafe.into(),
+//!   items: [
+//!     Item { archetype: 0x42, legendary: true },
+//!     Item { archetype: 0x21, legendary: false },
+//!   ]
+//! };
+//!
+//! #[derive(Copy, Clone, Data, Eq, PartialEq, Debug)]
+//! #[repr(C)]
+//! struct Position { x: u8, y: u8 }
+//!
+//! assert_eq!(&Position { x: 21, y: 12 }, mutant::transmute_ref(&loot.position));
+//!
+//! let loot: &Loot<[Item]> = &loot;
+//! let loot_bytes: &[u8] = mutant::transmute_ref(loot);
+//! assert_eq!(
+//!   &[21, 12, 0xfe, 0xca, 0x42, 1, 0x21, 0],
+//!   loot_bytes
+//! );
+//! assert_eq!(
+//!   loot,
+//!   mutant::transmute_ref::<_, Loot<[Item]>>(loot_bytes)
+//! );
+//! ```
+//!
+//! # Why mutant?
+//!
+//! `mutant` addresses a key gap in Rust's type system and memory model, specifically the ability to
+//! safely reinterpret complex and dynamically-sized types. This capability is vital in low-level
+//! programming, where it's often necessary to treat the same byte data as different types without
+//! copying or modifying it. While Rust's safety guarantees make it an excellent choice for systems
+//! programming, its strict type system can sometimes limit the flexibility needed in these domains.
+//! `mutant` offers a solution, enabling these manipulations while upholding Rust's safety
+//! principles.
+//!
+//! The crate is designed to be simple yet powerful, providing just the necessary tools
+//! without overcomplicating the user's codebase. It fits seamlessly into Rust's ecosystem,
+//! following Rust's conventions and idioms closely. This makes it an intuitive choice for Rust
+//! developers looking to leverage type-safe transmutation in their applications.
+//!
+//! # Cargo Features
+//!
+//! - **`alloc`** (not yet implemented)
+//!   Future plans include an `alloc` feature to integrate with Rust's allocation API, providing
+//!   more functionality related to dynamically-sized types.
+//!
+//! # Getting Started
+//!
+//! To use `mutant` in your project, add it as a dependency in your `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! mutant = "0.1"
+//! ```
+//!
+//! Then, derive the `Data` trait on your structs to enable safe transmutation:
+//! ```rust
+//! use mutant::Data;
+//!
+//! #[derive(Data)]
+//! #[repr(C)]
+//! struct MyStruct {
+//!   // ...
+//! }
+//! ```
+//!
+//! Use `mutant`'s functions like [`transmute_ref`] or [`try_transmute_ref`] to reinterpret your
+//! data safely.
+//!
+//! # Safety and Soundness
+//!
+//! Safety is a top priority for `mutant`. The crate undergoes rigorous testing and review to
+//! adhere to Rust's safety guarantees. Any use of `unsafe` code is carefully evaluated and
+//! documented, ensuring soundness and preventing undefined behavior.
+//!
+//! # Documentation and Testing
+//!
+//! `mutant` is committed to providing thorough documentation and extensive tests to ensure
+//! reliability and ease of use. The documentation follows Rust's standard library conventions,
+//! offering clear explanations and examples. Meanwhile, tests cover a wide range of use cases
+//! to guarantee the correctness and safety of the crate's functionality.
+//!
+//! # Contribution
+//!
+//! Contributions to `mutant` are welcome! Whether it's improving documentation, adding more tests,
+//! or implementing new features, your input is valuable. Check out the repository on GitHub for
+//! contributing guidelines and to submit your pull requests or issues.
+//!
+//! # License
+//!
+//! `mutant` is open-source software licensed under the MIT license. Feel free to use, modify,
+//! and distribute it in accordance with the license terms.
 use core::mem::ManuallyDrop;
 use core::num::NonZeroU8;
 use core::{mem, slice};
 
+pub use internal::*;
 pub use mutant_derive::Data;
 
+/// Represents errors that can arise within `mutant` operations.
+///
+/// This type enumerates all possible error conditions in `mutant`,
+/// providing detailed information for debugging and error handling.
+/// It is primarily used in the context of type transmutation, memory layout
+/// manipulation, and alignment assertions.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Error {
+  /// Indicates a mismatch in alignment requirements between the source and target types.
+  ///
+  /// This error is raised when attempting to transmute between two types where the alignment
+  /// of the target type is not compatible with the alignment of the source type.
+  /// Alignment mismatches can lead to undefined behavior, so it's crucial to ensure alignment
+  /// compatibility during transmutation.
   AlignmentMismatch,
+  /// Indicates a mismatch in size between the source and target types.
+  ///
+  /// This error occurs when the size of the source type does not match the size of the
+  /// target type. The inner value (`isize`) represents the size difference.
   SizeMismatch(isize),
+  /// Represents an invalid transmutation attempt, usually due to incompatible types.
+  ///
+  /// This error includes a message (`&'static str`) providing more context about why
+  /// the transmutation is invalid. It's typically raised when transmuting between types that
+  /// do not have compatible memory representations, which could lead to undefined behavior
+  /// or data corruption if allowed.
   InvalidTransmute(&'static str),
 }
 
+/// Specifies the byte order for raw data layout.
+///
+/// This enum is used in specifying how multi-byte data types are laid out in memory,
+/// particularly useful in scenarios like parsing binary data formats or interfacing
+/// with hardware.
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Ordering {
-  Lsb = 1, Msb,
-}
+pub enum Ordering { Lsb = 1, Msb }
 
+/// Represents the memory layout of a type.
+///
+/// The [`Layout`] enum is used to categorize the memory representation of a type, which is
+/// essential for safe and correct transmutation. It describes how data is laid out in memory,
+/// providing the necessary context for transmutation operations.
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Layout {
-  Void, Slice, Array, Struct,
-  Raw { layout: RawLayout },
-}
+pub enum Layout { Void, Slice, Array, Struct, Raw { layout: RawLayout } }
 
+/// Describes a byte-level memory layout. It is primarily used as the return type of
+/// the [`byte_layout_at`] function.
+///
+/// Variants:
+/// - `Uninit`: Indicates an uninitialized or undefined byte. This variant is used to represent
+///   bytes that may not have a defined state, similar to [`mem::MaybeUninit`] in Rust.
+/// - `AllowedBits(NonZeroU8)`: Specifies a set of valid bit patterns for a byte. The `NonZeroU8`
+///   value represents a bitmask where each set bit corresponds to an allowed bit in the byte.
+///
+/// # Examples
+/// ```
+/// use mutant::ByteLayout;
+///
+/// let allowed_bits_layout = ByteLayout::new(0b10101010);
+/// let uninit_layout = ByteLayout::Uninit;
+/// assert_eq!(uninit_layout, ByteLayout::new(0x00));
+/// ```
+#[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum ByteLayout {
-  Uninit,
-  AllowedBits(NonZeroU8),
-}
+pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
 
+/// Represents the detailed layout of raw data types.
+///
+/// [`RawLayout`] is used to describe the memory layout of raw data, typically integer types and
+/// boolean. It provides additional information such as byte ordering and allowed bit patterns,
+/// essential for interpreting raw data correctly, especially in low-level operations.
+///
+/// Fields:
+/// - `ordering`: Specifies the byte order (`Ordering`) of the data. It can be either
+///   least significant byte first (LSB) or most significant byte first (MSB).
+/// - `allowed_bits`: A bitmask (`Option<u64>`) indicating permissible bit patterns across the
+///   entire data type. This field is used to validate the integrity of the data or for specifying
+///   constraints that the data must adhere to (see [`is_valid_bits`]).
+///
+/// # Examples
+///
+/// ```
+/// use mutant::{RawLayout, Ordering};
+///
+/// // Example of a raw layout for a little-endian integer type
+/// let raw_layout_le = RawLayout {
+///   ordering: Some(Ordering::Lsb),
+///   allowed_bits: Some(0xFFFF_FFFF), // 32-bit mask
+/// };
+///
+/// // Example of a raw layout for a big-endian integer type with specific bit constraints
+/// let raw_layout_be = RawLayout {
+///   ordering: Some(Ordering::Msb),
+///   allowed_bits: Some(0x0F0F_0F0F), // Mask allowing certain bits in a 32-bit integer
+/// };
+/// ```
+///
+/// RawLayout is crucial for handling raw binary data and ensuring its correct interpretation
+/// across different systems and architectures. It enables precise control over how data is read
+/// and written, which is vital in systems programming, network packet processing, and interfacing
+/// with external hardware or software that has specific binary layout requirements.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub struct RawLayout {
   pub ordering: Option<Ordering>,
   pub allowed_bits: Option<u64>, // TODO(uael): use something like `&'static [ByteLayout]`
 }
 
+/// A wrapper to ensure the inner type does not require dropping.
+///
+/// `Dropless` is used to encapsulate types within packed structs, verifying that
+/// they do not implement the `Drop` trait. This check is essential to prevent
+/// undefined behavior that can arise if Rust automatically tries to drop a field
+/// in a packed struct, where standard drop semantics might lead to memory safety issues.
+///
+/// # Examples
+///
+/// ```
+/// use mutant::Dropless;
+///
+/// #[repr(packed)]
+/// struct FooPacked<T: ?Sized>(u8, Dropless<T>);
+///
+/// // Example usage with a packed struct
+/// let foo = FooPacked(1, Dropless::new(1234));
+/// // The `Dropless` wrapper checks that `1234` (the inner data) does not need to be dropped.
+/// ```
+///
+/// In this example, `Dropless` is used in `FooPacked` to wrap the value `1234`.
+/// It ensures that this value, as the inner data, does not require drop semantics.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
 #[repr(transparent)]
 pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
 
+/// A wrapper to un-align types that originally require alignment (align > 1).
+///
+/// `Unalign` is used to safely encapsulate types within structures while
+/// disregarding their original alignment requirements. This is particularly
+/// useful when working with types that inherently have an alignment greater
+/// than 1, ensuring that they can be placed in memory without alignment constraints.
+///
+/// # Examples
+///
+/// ```
+/// use mutant::Unalign;
+///
+/// // Check the alignment of a regular u32
+/// assert_eq!(4, mutant::align_of::<u32>());
+///
+/// // Check the alignment of a u32 wrapped with `Unalign`
+/// assert_eq!(1, mutant::align_of::<Unalign<u32>>());
+///
+/// // Create an `Unalign` wrapper for a type with a natural alignment of 4.
+/// let unaligned_data = Unalign::new(0u32);
+///
+/// // `unaligned_data` can be used in structures without worrying about
+/// // alignment requirements, making it suitable for scenarios where
+/// // strict alignment is not necessary.
+/// ```
+///
+/// In this example, `Unalign` is used to wrap a `u32`, which has a natural
+/// alignment of 4. The `Unalign` wrapper ensures that the data can be used in
+/// structures without imposing alignment restrictions, as demonstrated by the
+/// alignment checks and usage of `unaligned_data`.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
 #[data(crate)]
 #[repr(C, packed)]
@@ -204,6 +479,7 @@ pub const BIG_ALLOCATION: *const () = {
   ptr.cast()
 };
 
+/// Assert that a [`Data`] type is unaligned (ie. his alignment is equals to 1).
 #[doc(hidden)]
 #[rustfmt::skip]
 pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
@@ -214,6 +490,14 @@ pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
 
 // Functions ---------------------------------------------------------------------------------------
 
+/// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
+/// With the difference that it also accept unsized types with relaxed `?Sized` bound.
+///
+/// # Examples
+/// ```
+/// assert_eq!(4, mutant::align_of::<i32>());
+/// assert_eq!(4, mutant::align_of::<[i32]>()); // Also accept `?Sized` types.
+/// ```
 #[inline]
 pub const fn align_of<T: ?Sized>() -> usize {
   #[repr(C)]
@@ -236,10 +520,37 @@ pub const fn align_of<T: ?Sized>() -> usize {
   offset_of!(AlignOf<T>, 1)
 }
 
+/// Returns the [`ByteLayout`] of a type at a given `offset`.
+///
+/// For out-of-bounds `offset`, [`ByteLayout::Uninit`] is always returned.
+///
+/// # Examples
+/// ```
+/// use mutant::{ByteLayout, Data};
+///
+/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<u16>(1));
+/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<u16>(2));
+///
+/// #[derive(Copy, Clone, Data)]
+/// #[repr(C)]
+/// struct Foo {
+///   a: bool,
+///   b: u16,
+/// }
+///
+/// assert_eq!(ByteLayout::new(0b01), mutant::byte_layout_at::<Foo>(0));
+/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(1));
+/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<Foo>(2));
+/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<Foo>(3));
+/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(4));
+///
+/// // And for a slice:
+/// assert_eq!(ByteLayout::new(0b01), mutant::byte_layout_at::<[Foo]>(4));
+/// ```
 #[inline]
-pub const fn byte_layout<T: ?Sized + Data>(offset: usize) -> ByteLayout {
+pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
   #[inline(always)]
-  const fn repr_byte_layout<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> ByteLayout {
+  const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> ByteLayout {
     match R::FIELDS {
       // Reached the end of the struct, returns an uninitialized layout.
       0 => ByteLayout::Uninit,
@@ -247,10 +558,10 @@ pub const fn byte_layout<T: ?Sized + Data>(offset: usize) -> ByteLayout {
       _ if offset >= R::OFFSET
         && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>()) =>
       {
-        byte_layout::<R::Type>(offset - R::OFFSET)
+        byte_layout_at::<R::Type>(offset - R::OFFSET)
       }
       // `offset` does not offset in field, continue with next field.
-      _ => repr_byte_layout::<R::Rest, T>(offset),
+      _ => repr_byte_layout_at::<R::Rest, T>(offset),
     }
   }
 
@@ -260,8 +571,8 @@ pub const fn byte_layout<T: ?Sized + Data>(offset: usize) -> ByteLayout {
   }
   match T::LAYOUT {
     Layout::Void => unreachable!(),
-    Layout::Slice | Layout::Array => byte_layout::<T::Item>(offset % mem::size_of::<T::Item>()),
-    Layout::Struct => repr_byte_layout::<T::Repr, T>(offset),
+    Layout::Slice | Layout::Array => byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>()),
+    Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
     Layout::Raw { layout: spec } => ByteLayout::new(match spec.allowed_bits {
       Some(layout) => ((layout >> (offset * 8)) & 0xff) as u8,
       _ => 0xff,
@@ -269,6 +580,7 @@ pub const fn byte_layout<T: ?Sized + Data>(offset: usize) -> ByteLayout {
   }
 }
 
+/// Returns whatever a value of type `T` is aligned to `align`.
 #[inline]
 pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
   assert!(align.is_power_of_two(), "alignment must be power of 2");
@@ -608,9 +920,8 @@ mod layout {
         if bt.is_none() {
           if missing % at != 0 {
             return Err(
-              "cannot transmute between types of incompatible byte layouts, \
-              missing bytes to fit the target is not a multiple of the source `DST` \
-              trailing slice item size",
+              "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
+               the target is not a multiple of the source `DST` trailing slice item size",
             );
           }
         }
@@ -623,9 +934,8 @@ mod layout {
         let remaining = ah - bh;
         if at.is_none() && remaining % bt != 0 {
           return Err(
-            "cannot transmute between types of incompatible byte layouts, \
-            remaining bytes to fit in the target is not a multiple of the target `DST` \
-            trailing slice item size",
+            "cannot transmute between types of incompatible byte layouts, remaining bytes to fit \
+             in the target is not a multiple of the target `DST` trailing slice item size",
           );
         }
       }
@@ -653,8 +963,8 @@ mod layout {
           while (ah + min_at_count * at - bh) % bt != 0 {
             if min_at_count * at > lcm {
               return Err(
-                "cannot transmute between `DST` types of incompatible byte layouts, \
-                source cannot catchup on target",
+                "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+                 catchup on target",
               );
             }
             min_at_count += 1;
@@ -679,10 +989,10 @@ mod layout {
       };
       let mut offset = 0;
       while offset < minimum_size {
-        if !byte_layout::<T>(offset).is_transmutable_to(byte_layout::<U>(offset), mutable) {
+        if !byte_layout_at::<T>(offset).is_transmutable_to(byte_layout_at::<U>(offset), mutable) {
           return Err(
-            "cannot transmute between types of incompatible byte layouts, \
-            source padding will left uninitialized byte(s) in target",
+            "cannot transmute between types of incompatible byte layouts, source padding will \
+             left uninitialized byte(s) in target",
           );
         }
         offset += 1;
@@ -717,7 +1027,7 @@ mod layout {
     use super::*;
 
     #[test]
-    fn test_byte_layout() {
+    fn test_byte_layout_at() {
       use core::mem;
       use Requirements::*;
 
@@ -731,7 +1041,7 @@ mod layout {
       }
 
       for offset in 0..mem::size_of::<BazPacked>() {
-        assert_eq!(ByteLayout::new(0xff), byte_layout::<BazPacked>(offset), "at {}", offset);
+        assert_eq!(ByteLayout::new(0xff), byte_layout_at::<BazPacked>(offset), "at {}", offset);
       }
 
       #[derive(Debug, Copy, Clone, Data)]
@@ -742,8 +1052,8 @@ mod layout {
       assert_eq!(Ok(None), Requirements::of::<BazPacked, [u8]>(false));
       assert_eq!(
         Err(
-          "cannot transmute between types of incompatible byte layouts, \
-          source padding will left uninitialized byte(s) in target"
+          "cannot transmute between types of incompatible byte layouts, source padding will left \
+           uninitialized byte(s) in target"
         ),
         Requirements::of::<Baz, [u8]>(false)
       );
@@ -754,7 +1064,7 @@ mod layout {
       assert_eq!(
         Err(
           "cannot transmute between types of incompatible byte layouts, source padding will left \
-          uninitialized byte(s) in target"
+           uninitialized byte(s) in target"
         ),
         Requirements::of::<bool, u8>(true)
       );
@@ -838,81 +1148,78 @@ mod layout {
       );
       assert_eq!(
         Err(
-          "cannot transmute between types of incompatible byte layouts, \
-          missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
-          item size"
+          "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
+           target is not a multiple of the source `DST` trailing slice item size"
         ),
         Requirements::of::<Ty<35, 2>, Ty<42>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between types of incompatible byte layouts, \
-          missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
-          item size"
+          "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
+           target is not a multiple of the source `DST` trailing slice item size"
         ),
         Requirements::of::<Ty<40, 3>, Ty<42>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between types of incompatible byte layouts, \
-          remaining bytes to fit in the target is not a multiple of the target `DST` \
-          trailing slice item size"
+          "cannot transmute between types of incompatible byte layouts, remaining bytes to fit in \
+           the target is not a multiple of the target `DST` trailing slice item size"
         ),
         Requirements::of::<Ty<42>, Ty<38, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<42, 3>, Ty<38, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<41, 3>, Ty<39, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<38, 3>, Ty<42, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<39, 3>, Ty<41, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<39, 3>, Ty<41, 6>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<39, 6>, Ty<41, 3>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<39, 6>, Ty<41, 9>>(false)
       );
       assert_eq!(
         Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, \
-          source cannot catchup on target"
+          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+           catchup on target"
         ),
         Requirements::of::<Ty<39, 3>, Ty<41, 9>>(false)
       );
@@ -921,8 +1228,6 @@ mod layout {
 }
 
 // internal ----------------------------------------------------------------------------------------
-
-pub use internal::*;
 
 mod internal {
   use core::fmt;
@@ -1166,18 +1471,32 @@ mod internal {
     const HEADER: usize = mem::size_of::<Self>();
   }
 
-  // TODO:
-  // unsafe impl<A: Copy + Data, B: Copy + Data> Data for (A, B) {
-  //   type Item = ();
-  //   type Tail = B::Tail;
-  //   type Repr = (Field<Self, A>, Field<Self, B>);
-  //   const LAYOUT: Layout = Layout::Struct {
-  //     repr: unsafe {
-  //       Repr::new((field::<Self, A>(offset_of!(Self, 0)), field::<Self, B>(offset_of!(Self, 1))))
-  //     },
-  //   };
-  //   const HEADER: usize = mem::size_of::<Self>();
-  // }
+  const _: () = {
+    pub struct Tuple0;
+    pub struct Tuple1;
+
+    unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Repr<(A, B)> for Tuple0 {
+      type Type = A;
+      type Rest = Tuple1;
+      const OFFSET: usize = offset_of!((A, B), 0);
+      const FIELDS: usize = 2;
+    }
+
+    unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Repr<(A, B)> for Tuple1 {
+      type Type = B;
+      type Rest = ();
+      const OFFSET: usize = offset_of!((A, B), 1);
+      const FIELDS: usize = 1;
+    }
+
+    unsafe impl<A: Copy + Data, B: Copy + Data> Data for (A, B) {
+      type Item = ();
+      type Tail = B::Tail;
+      type Repr = Tuple0;
+      const LAYOUT: Layout = Layout::Struct;
+      const HEADER: usize = mem::size_of::<Self>();
+    }
+  };
 
   // impl numbers ----------------------------------------------------------------------------------
 
@@ -1326,13 +1645,13 @@ mod tests {
   }
 
   #[test]
-  fn test_byte_layout() {
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(0));
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(1));
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(2));
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(3));
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(4));
-    assert_eq!(ByteLayout::new(0xff), byte_layout::<Bar<[u8]>>(5));
+  fn test_byte_layout_at() {
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(0));
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(1));
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(2));
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(3));
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(4));
+    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(5));
 
     assert_eq!(Ok(&true), try_transmute_ref::<u8, bool>(&mut 1u8));
     assert_eq!(Ok(&1u8), try_transmute_ref::<bool, u8>(&mut true));
@@ -1341,7 +1660,7 @@ mod tests {
       // TODO: error message could be better.
       Err(Error::InvalidTransmute(
         "cannot transmute between types of incompatible byte layouts, source padding will left \
-        uninitialized byte(s) in target"
+         uninitialized byte(s) in target"
       )),
       try_transmute_mut::<bool, u8>(&mut true)
     );
