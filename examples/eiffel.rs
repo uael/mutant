@@ -118,7 +118,7 @@ mod host {
     f: impl FnOnce(u16le) -> F,
   ) -> Option<F::Output> {
     let connection_handle = host.get_event::<hci::ConnectionComplete>().await.handle;
-    let mut f = pin!(f(connection_handle));
+    let mut f = pin!(f(*connection_handle));
     loop {
       // Poll `f` once.
       if let Some(value) = unsync::poll_once(f.as_mut()).await {
@@ -181,8 +181,8 @@ mod hci {
   #[derive(Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct Acl<T: ?Sized> {
-    pub handle_and_flags: u16le,
-    pub data_total_len: u16le,
+    pub handle_and_flags: Unalign<u16le>,
+    pub data_total_len: Unalign<u16le>,
     pub parameters: Dropless<T>,
   }
 
@@ -235,14 +235,14 @@ mod hci {
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CommandStatus {
-    pub op_code: u16le,
+    pub op_code: Unalign<u16le>,
     pub status: u8,
   }
 
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CommandComplete<T: ?Sized + Data> {
-    pub op_code: u16le,
+    pub op_code: Unalign<u16le>,
     pub status: u8,
     pub result_parameters: Dropless<T>,
   }
@@ -251,7 +251,7 @@ mod hci {
   #[repr(C, packed)]
   pub struct ConnectionComplete {
     pub address: [u8; 6],
-    pub handle: u16le,
+    pub handle: Unalign<u16le>,
     pub link_type: u8,
   }
 
@@ -259,14 +259,14 @@ mod hci {
   #[repr(C, packed)]
   pub struct DisconnectionComplete {
     pub address: [u8; 6],
-    pub handle: u16le,
+    pub handle: Unalign<u16le>,
   }
 
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CompletedPackets {
-    pub handle: u16le,
-    pub number_of_completed_packets: u16le,
+    pub handle: Unalign<u16le>,
+    pub number_of_completed_packets: Unalign<u16le>,
   }
 
   #[derive(Data)]
@@ -279,7 +279,7 @@ mod hci {
   #[derive(Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct Command<T: ?Sized + CommandData> {
-    pub op_code: u16le,
+    pub op_code: Unalign<u16le>,
     pub parameters_len: u8,
     pub parameters: Dropless<T>,
   }

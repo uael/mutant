@@ -13,8 +13,15 @@ macro_rules! bail {
   };
 }
 
-fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
-  let mut repr_c_or_transparent = false;
+#[derive(Copy, Clone)]
+enum Repr {
+  Rust,
+  C,
+  Transparant,
+}
+
+fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
+  let mut repr = Repr::Rust;
   let mut root = quote!(::mutant);
   for attr in attrs {
     if attr.path().is_ident("repr") {
@@ -22,11 +29,15 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
         .parse_nested_meta(|meta| {
           // #[repr(C)]
           if meta.path.is_ident("C") {
-            repr_c_or_transparent = true;
+            repr = Repr::C;
           }
           // #[repr(transparent)]
           if meta.path.is_ident("transparent") {
-            repr_c_or_transparent = true;
+            repr = Repr::Transparant;
+          }
+          // #[repr(Rust)]
+          if meta.path.is_ident("Rust") {
+            repr = Repr::Rust;
           }
           Ok(())
         })
@@ -53,22 +64,18 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (bool, TokenStream) {
         .unwrap();
     }
   }
-  (repr_c_or_transparent, root)
+  (repr, root)
 }
 
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
-  let (repr_c_or_transparent, root) = parse_derive_attr(&input.attrs);
+  let (repr, root) = parse_derive_attr(&input.attrs);
 
   let data = match input.data {
     Data::Struct(data) => data,
     _ => bail!("#[derive(Data)] is yet only implemented for struct"),
   };
-
-  if !repr_c_or_transparent {
-    bail!("`#[repr(C)]` or `#[repr(transparant)]` is required in stable rust")
-  }
 
   // Compute generics from input.
   let vis = input.vis;
@@ -112,17 +119,26 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   };
 
   // Compute `where` clause.
-  let predicates = input_fields
-    .iter()
-    .take(input_fields.len() - 1)
-    .map(|field| &field.ty)
-    .map(|ty| quote!(#ty: #root::Data + Copy))
-    .chain([quote!(#tail_ty: #root::Data)]);
+  let predicates = match repr {
+    Repr::Rust => input_fields
+      .iter()
+      .map(|field| &field.ty)
+      .map(|ty| quote!(#ty: #root::Data + Copy))
+      .chain([quote!(Self: Sized)])
+      .collect::<Vec<_>>(),
+    Repr::C | Repr::Transparant => input_fields
+      .iter()
+      .take(input_fields.len() - 1)
+      .map(|field| &field.ty)
+      .map(|ty| quote!(#ty: #root::Data + Copy))
+      .chain([quote!(#tail_ty: #root::Data)])
+      .collect::<Vec<_>>(),
+  };
   let where_clause = match where_clause {
-    None => quote!(where #(#predicates,)*),
+    None => quote!(where #(#predicates),*),
     Some(where_clause) => {
       let existing_predicates = where_clause.predicates.iter();
-      quote!(where #(#existing_predicates,)* #(#predicates,)*)
+      quote!(where #(#existing_predicates,)* #(#predicates),*)
     }
   };
 
@@ -141,7 +157,6 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let fields = input_fields.len() - i;
     impl_fields.push(quote! {
       #[allow(non_camel_case_types)]
-      #[doc(hidden)]
       #vis struct #struct_ident;
 
       unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
@@ -154,24 +169,32 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     quote!(#struct_ident)
   });
 
+  // Compute header size.
+  let header = match repr {
+    Repr::Rust => quote!(::core::mem::size_of::<Self>()),
+    Repr::C | Repr::Transparant => quote!({
+      let size = #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>();
+      if !#root::is_sized::<#tail_ty>() {
+        size
+      } else {
+        let align = #root::align_of::<Self>();
+        size.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
+      }
+    }),
+  };
+
   proc_macro::TokenStream::from(quote!(
-    #(#impl_fields)*
+    const _: () = {
+      #(#impl_fields)*
 
-    unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-      type Item = ();
-      type Tail = <#tail_ty as #root::Data>::Tail;
-      type Repr = #fields;
+      unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
+        type Item = ();
+        type Tail = <#tail_ty as #root::Data>::Tail;
+        type Repr = #fields;
 
-      const LAYOUT: #root::Layout = #root::Layout::Struct;
-      const HEADER: usize = {
-        let size = #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>();
-        if !#root::is_sized::<#tail_ty>() {
-          size
-        } else {
-          let align = #root::align_of::<Self>();
-          size.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
-        }
-      };
-    }
+        const LAYOUT: #root::Layout = #root::Layout::Struct;
+        const HEADER: usize = #header;
+      }
+    };
   ))
 }
