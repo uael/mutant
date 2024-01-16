@@ -32,8 +32,8 @@
 //!
 //! Here's a simple example demonstrating how to use mutant:
 //!
-//! ```
-//! use mutant::{Data, u16le};
+//! ```rust
+//! use mutant::{Data, num::u16le};
 //!
 //! #[derive(Data, Eq, PartialEq, Debug)]
 //! #[repr(C)]
@@ -50,7 +50,7 @@
 //!   legendary: bool,
 //! }
 //!
-//! let loot = Loot {
+//! let mut loot = Loot {
 //!   position: (21, 12),
 //!   player: 0xcafe.into(),
 //!   items: [
@@ -64,11 +64,15 @@
 //! struct Position { x: u8, y: u8 }
 //!
 //! assert_eq!(&Position { x: 21, y: 12 }, mutant::transmute_ref(&loot.position));
+//! assert_eq!(Position { x: 21, y: 12 }, mutant::transmute(loot.position)); // Position is `Copy`
+//!
+//! let mut position: &mut Position = mutant::transmute_mut(&mut loot.position);
+//! position.x *= 2;
 //!
 //! let loot: &Loot<[Item]> = &loot;
 //! let loot_bytes: &[u8] = mutant::transmute_ref(loot);
 //! assert_eq!(
-//!   &[21, 12, 0xfe, 0xca, 0x42, 1, 0x21, 0],
+//!   &[21 * 2, 12, 0xfe, 0xca, 0x42, 1, 0x21, 0],
 //!   loot_bytes
 //! );
 //! assert_eq!(
@@ -217,28 +221,6 @@ pub enum Layout { Void, Slice, Array, Struct, Raw { layout: RawLayout } }
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
 
-#[doc(hidden)]
-macro_rules! decl_num {
-  ($(pub struct $ident:ident($bytes:literal, align($align:literal))),+) => {
-    $(
-      #[derive(Eq, PartialEq, Copy, Clone, Hash)]
-      #[allow(non_camel_case_types)]
-      #[repr(align($align))]
-      pub struct $ident([u8; $bytes]);
-    )+
-  };
-}
-
-decl_num! {
-  pub struct u16le(2, align(2)), pub struct u16be(2, align(2)),
-  pub struct u24le(3, align(4)), pub struct u24be(3, align(4)), pub struct u24(3, align(4)),
-  pub struct u32le(4, align(4)), pub struct u32be(4, align(4)),
-  pub struct u40le(5, align(8)), pub struct u40be(5, align(8)), pub struct u40(5, align(8)),
-  pub struct u48le(6, align(8)), pub struct u48be(6, align(8)), pub struct u48(6, align(8)),
-  pub struct u56le(7, align(8)), pub struct u56be(7, align(8)), pub struct u56(7, align(8)),
-  pub struct u64le(8, align(8)), pub struct u64be(8, align(8))
-}
-
 /// Represents the detailed layout of raw data types.
 ///
 /// [`RawLayout`] is used to describe the memory layout of raw data, typically integer types and
@@ -324,22 +306,20 @@ pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
 /// // Check the alignment of a u32 wrapped with `Unalign`
 /// assert_eq!(1, mutant::align_of::<Unalign<u32>>());
 ///
-/// // Create an `Unalign` wrapper for a type with a natural alignment of 4.
-/// let unaligned_data = Unalign::new(0u32);
-///
-/// // `unaligned_data` can be used in structures without worrying about
-/// // alignment requirements, making it suitable for scenarios where
-/// // strict alignment is not necessary.
+/// let byte: Unalign<u8> = 123.into();
+/// assert_eq!(123, byte.into_inner()); // `u8` is `Copy`
+/// assert_eq!(123, *byte); // `u8` is already unaligned, `byte` can be  deferenced.
 /// ```
 ///
-/// In this example, `Unalign` is used to wrap a `u32`, which has a natural
-/// alignment of 4. The `Unalign` wrapper ensures that the data can be used in
-/// structures without imposing alignment restrictions, as demonstrated by the
-/// alignment checks and usage of `unaligned_data`.
+/// ```compile_fail
+/// let uint: Unalign<u32> = 123.into();
+/// assert_eq!(123, uint.into_inner()); // `u32` is `Copy`
+/// assert_eq!(123, *uint); // this does not compile as it may result in an unaligned read.
+/// ```
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
 #[data(crate)]
 #[repr(C, packed)]
-pub struct Unalign<T: Copy>(pub T);
+pub struct Unalign<T>(pub T);
 
 pub unsafe trait Repr<T: ?Sized + Data> {
   type Type: ?Sized + Data;
@@ -1269,6 +1249,193 @@ mod layout {
   }
 }
 
+// num ---------------------------------------------------------------------------------------------
+
+pub mod num {
+  use crate::*;
+  use core::fmt::{Debug, Display, Formatter};
+
+  macro_rules! impl_num {
+    { $($ty:ident $raw:ident $bytes:literal $ordering:ident),+ } => {
+      $(impl_num!(@__impl $ty $raw $bytes { mem::size_of::<$raw>() - $bytes } $ordering);)+
+    };
+    { @__impl $ty:ident $raw:ident $bytes:literal $rest:tt $ordering:ident } => {
+      impl_num!(@__decl $raw $ty $bytes);
+
+      unsafe impl RawData for $ty {
+        const RAW_LAYOUT: RawLayout = RawLayout::new()
+          .with_ordering(impl_num!(@__ordering $ordering));
+      }
+
+      impl $ty {
+        pub const MAX: Self = Self([0xff; $bytes]);
+
+        #[inline(always)]
+        pub const fn to_ne_bytes(self) -> [u8; $bytes] {
+          swap!($ordering => ne, self).0
+        }
+
+        #[inline(always)]
+        pub const fn to_le_bytes(self) -> [u8; $bytes] {
+          swap!($ordering => le, self).0
+        }
+
+        #[inline(always)]
+        pub const fn to_be_bytes(self) -> [u8; $bytes] {
+          swap!($ordering => be, self).0
+        }
+
+        #[inline(always)]
+        pub const fn from_ne_bytes(bytes: [u8; $bytes]) -> Self {
+          swap!(ne => $ordering, Self(bytes))
+        }
+
+        #[inline(always)]
+        pub const fn from_le_bytes(bytes: [u8; $bytes]) -> Self {
+          swap!(le => $ordering, Self(bytes))
+        }
+
+        #[inline(always)]
+        pub const fn from_be_bytes(bytes: [u8; $bytes]) -> Self {
+          swap!(be => $ordering, Self(bytes))
+        }
+
+        #[inline(always)]
+        pub const fn from_raw(raw: $raw) -> Self {
+          swap!(ne => $ordering, Self(transmute::<_, Ne<$bytes, $rest>>(raw).bytes))
+        }
+
+        #[inline(always)]
+        pub const fn into_raw(self) -> $raw {
+          transmute(Ne::<$bytes, $rest>::new(swap!($ordering => ne, self).0))
+        }
+
+        #[inline(always)]
+        pub const fn swap_bytes(self) -> Self {
+          transmute(transmute::<_, $raw>(Be::<$bytes, $rest>::new(self.0)).swap_bytes())
+        }
+      }
+
+      impl From<$raw> for $ty {
+        fn from(raw: $raw) -> Self {
+          Self::from_raw(raw)
+        }
+      }
+
+      impl Into<$raw> for $ty {
+        fn into(self) -> $raw {
+          self.into_raw()
+        }
+      }
+
+      impl Debug for $ty {
+        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+          <$raw as Debug>::fmt(&self.into_raw(), f)
+        }
+      }
+
+      impl Display for $ty {
+        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+          <$raw as Display>::fmt(&self.into_raw(), f)
+        }
+      }
+    };
+    (@__ordering ne) => { Ordering::NATIVE };
+    (@__ordering le) => { Ordering::Lsb };
+    (@__ordering be) => { Ordering::Msb };
+    (@__decl u16 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 2); };
+    (@__decl u32 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 4); };
+    (@__decl u64 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 8); };
+    (@__decl_with $ty:ident $bytes:literal $align:literal) => {
+      #[repr(align($align))]
+      #[derive(Eq, PartialEq, Copy, Clone, Hash)]
+      #[allow(non_camel_case_types)]
+      pub struct $ty([u8; $bytes]);
+    };
+  }
+
+  #[rustfmt::skip]
+  macro_rules! swap {
+    (ne => ne, $e:expr) => { $e };
+    (le => le, $e:expr) => { $e };
+    (be => be, $e:expr) => { $e };
+    (le => be, $e:expr) => { $e.swap_bytes() };
+    (be => le, $e:expr) => { $e.swap_bytes() };
+    (ne => le, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (ne => be, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+    (le => ne, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (be => ne, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+  }
+
+  impl_num! {
+    u16le u16 2 le, u16be u16 2 be,
+    u24le u32 3 le, u24be u32 3 be, u24 u32 3 ne,
+    u32le u32 4 le, u32be u32 4 be,
+    u40le u64 5 le, u40be u64 5 be, u40 u64 5 ne,
+    u48le u64 6 le, u48be u64 6 be, u48 u64 6 ne,
+    u56le u64 7 le, u56be u64 7 be, u56 u64 7 ne,
+    u64le u64 8 le, u64be u64 8 be
+  }
+
+  #[derive(Copy, Clone, Data)]
+  #[repr(C, packed)]
+  #[data(crate)]
+  #[cfg(target_endian = "little")]
+  #[rustfmt::skip]
+  struct Be<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
+
+  #[derive(Copy, Clone, Data)]
+  #[repr(C, packed)]
+  #[data(crate)]
+  #[cfg(target_endian = "little")]
+  #[rustfmt::skip]
+  struct Ne<const BYTES: usize, const REST: usize> { bytes: [u8; BYTES], _rest: [u8; REST] }
+  #[cfg(target_endian = "big")]
+  #[rustfmt::skip]
+  struct Ne<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
+
+  impl<const BYTES: usize, const REST: usize> Be<BYTES, REST> {
+    pub const fn new(bytes: [u8; BYTES]) -> Self {
+      Self { bytes, _rest: [0; REST] }
+    }
+  }
+
+  impl<const BYTES: usize, const REST: usize> Ne<BYTES, REST> {
+    pub const fn new(bytes: [u8; BYTES]) -> Self {
+      Self { bytes, _rest: [0; REST] }
+    }
+  }
+
+  #[cfg(test)]
+  #[test]
+  fn test_num() {
+    use core::array::from_fn;
+
+    #[rustfmt::skip]
+    macro_rules! test {
+      ([$($ty:ident),+], $min:literal, $max:literal, $val:literal) => {$(
+        assert_eq!($max, $ty::MAX.into());
+        assert_eq!($min, $ty::from($min).into());
+        assert_eq!($max, $ty::from($max).into());
+        assert_eq!($val, $ty::from($val).into());
+        assert_eq!($max / 2, $ty::from($max / 2).into());
+        assert_eq!($val / 2, $ty::from($val / 2).into());
+        assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
+        assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
+        assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
+      )+};
+    }
+
+    test!([u16, u16le, u16be], 0u16, 0xffffu16, 0x0f1fu16);
+    test!([u24, u24le, u24be], 0u32, 0xffffffu32, 0x0f1f2fu32);
+    test!([u32, u32le, u32be], 0u32, 0xffffffffu32, 0x0f1f2f3fu32);
+    test!([u40, u40le, u40be], 0u64, 0xffffffffffu64, 0x0f1f2f3f4fu64);
+    test!([u48, u48le, u48be], 0u64, 0xffffffffffffu64, 0x0f1f2f3f4f5fu64);
+    test!([u56, u56le, u56be], 0u64, 0xffffffffffffffu64, 0x0f1f2f3f4f5f6fu64);
+    test!([u64, u64le, u64be], 0u64, 0xffffffffffffffffu64, 0x0f1f2f3f4f5f6f7fu64);
+  }
+}
+
 // internal ----------------------------------------------------------------------------------------
 
 const _: () = {
@@ -1424,26 +1591,28 @@ const _: () = {
 
   // impl Unalign ----------------------------------------------------------------------------------
 
-  impl<T: Copy> Unalign<T> {
+  impl<T> Unalign<T> {
     #[inline(always)]
     pub const fn new(value: T) -> Self {
       Self(value)
     }
+  }
 
+  impl<T: Copy> Unalign<T> {
     #[inline(always)]
     pub const fn into_inner(self) -> T {
       self.0
     }
   }
 
-  impl<T: Copy> From<T> for Unalign<T> {
+  impl<T> From<T> for Unalign<T> {
     #[inline(always)]
     fn from(value: T) -> Self {
       Unalign::new(value)
     }
   }
 
-  impl<T: Copy + Data> Deref for Unalign<T> {
+  impl<T: Data> Deref for Unalign<T> {
     type Target = T;
 
     #[inline(always)]
@@ -1452,7 +1621,7 @@ const _: () = {
     }
   }
 
-  impl<T: Copy + Data> DerefMut for Unalign<T> {
+  impl<T: Data> DerefMut for Unalign<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
       unaligned_mut!(self.0)
@@ -1549,147 +1718,7 @@ const _: () = {
     const HEADER: usize = mem::size_of::<Self>();
   }
 
-  // impl numbers ----------------------------------------------------------------------------------
-
-  #[derive(Copy, Clone, Data)]
-  #[repr(C, packed)]
-  #[data(crate)]
-  #[cfg(target_endian = "little")]
-  #[rustfmt::skip]
-  struct Be<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
-
-  #[derive(Copy, Clone, Data)]
-  #[repr(C, packed)]
-  #[data(crate)]
-  #[cfg(target_endian = "little")]
-  #[rustfmt::skip]
-  struct Ne<const BYTES: usize, const REST: usize> { bytes: [u8; BYTES], _rest: [u8; REST] }
-  #[cfg(target_endian = "big")]
-  #[rustfmt::skip]
-  struct Ne<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
-
-  impl<const BYTES: usize, const REST: usize> Be<BYTES, REST> {
-    pub const fn new(bytes: [u8; BYTES]) -> Self {
-      Self { bytes, _rest: [0; REST] }
-    }
-  }
-
-  impl<const BYTES: usize, const REST: usize> Ne<BYTES, REST> {
-    pub const fn new(bytes: [u8; BYTES]) -> Self {
-      Self { bytes, _rest: [0; REST] }
-    }
-  }
-
-  #[rustfmt::skip]
-  macro_rules! swap {
-    (ne => ne, $e:expr) => { $e };
-    (le => le, $e:expr) => { $e };
-    (be => be, $e:expr) => { $e };
-    (le => be, $e:expr) => { $e.swap_bytes() };
-    (be => le, $e:expr) => { $e.swap_bytes() };
-    (ne => le, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (ne => be, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
-    (le => ne, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (be => ne, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
-  }
-
-  macro_rules! impl_num {
-    ($($ty:ident $raw:ident $bytes:literal $ordering:ident),+) => {
-      impl_num!(@__impl $($ty $raw $bytes { mem::size_of::<$raw>() - $bytes } $ordering),+)
-    };
-    (@__impl $($ty:ident $raw:ident $bytes:literal $rest:tt $ordering:ident),+) => {$(
-      unsafe impl RawData for $ty {
-        const RAW_LAYOUT: RawLayout = RawLayout::new()
-          .with_ordering(impl_num!(@__ordering $ordering));
-      }
-
-      impl $ty {
-        pub const MAX: Self = Self([0xff; $bytes]);
-
-        #[inline(always)]
-        pub const fn to_ne_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => ne, self).0
-        }
-
-        #[inline(always)]
-        pub const fn to_le_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => le, self).0
-        }
-
-        #[inline(always)]
-        pub const fn to_be_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => be, self).0
-        }
-
-        #[inline(always)]
-        pub const fn from_ne_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(ne => $ordering, Self(bytes))
-        }
-
-        #[inline(always)]
-        pub const fn from_le_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(le => $ordering, Self(bytes))
-        }
-
-        #[inline(always)]
-        pub const fn from_be_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(be => $ordering, Self(bytes))
-        }
-
-        #[inline(always)]
-        pub const fn from_raw(raw: $raw) -> Self {
-          swap!(ne => $ordering, Self(transmute::<_, Ne<$bytes, $rest>>(raw).bytes))
-        }
-
-        #[inline(always)]
-        pub const fn into_raw(self) -> $raw {
-          transmute(Ne::<$bytes, $rest>::new(swap!($ordering => ne, self).0))
-        }
-
-        #[inline(always)]
-        pub const fn swap_bytes(self) -> Self {
-          transmute(transmute::<_, $raw>(Be::<$bytes, $rest>::new(self.0)).swap_bytes())
-        }
-      }
-
-      impl From<$raw> for $ty {
-        fn from(raw: $raw) -> Self {
-          Self::from_raw(raw)
-        }
-      }
-
-      impl Into<$raw> for $ty {
-        fn into(self) -> $raw {
-          self.into_raw()
-        }
-      }
-
-      impl Debug for $ty {
-        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-          <$raw as Debug>::fmt(&self.into_raw(), f)
-        }
-      }
-
-      impl Display for $ty {
-        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-          <$raw as Display>::fmt(&self.into_raw(), f)
-        }
-      }
-    )+};
-    (@__ordering ne) => { Ordering::NATIVE };
-    (@__ordering le) => { Ordering::Lsb };
-    (@__ordering be) => { Ordering::Msb };
-  }
-
-  impl_num! {
-    u16le u16 2 le, u16be u16 2 be,
-    u24le u32 3 le, u24be u32 3 be, u24 u32 3 ne,
-    u32le u32 4 le, u32be u32 4 be,
-    u40le u64 5 le, u40be u64 5 be, u40 u64 5 ne,
-    u48le u64 6 le, u48be u64 6 be, u48 u64 6 ne,
-    u56le u64 7 le, u56be u64 7 be, u56 u64 7 ne,
-    u64le u64 8 le, u64be u64 8 be
-  }
+  // impl RawData ----------------------------------------------------------------------------------
 
   unsafe impl RawData for bool {
     const RAW_LAYOUT: RawLayout = RawLayout::new().with_allowed_bits(0b1);
@@ -1756,7 +1785,7 @@ mod tests {
   #[data(crate)]
   pub struct FooPacked<T: ?Sized> {
     a: u8,
-    b: Unalign<u16le>,
+    b: Unalign<num::u16le>,
     c: [u8; 6],
     d: Dropless<T>,
   }
@@ -1767,34 +1796,6 @@ mod tests {
   pub struct Bar<T: ?Sized> {
     a: [u8; 4],
     b: T,
-  }
-
-  #[test]
-  fn test_num() {
-    use core::array::from_fn;
-
-    #[rustfmt::skip]
-    macro_rules! test {
-      ([$($ty:ident),+], $min:literal, $max:literal, $val:literal) => {$(
-        assert_eq!($max, $ty::MAX.into());
-        assert_eq!($min, $ty::from($min).into());
-        assert_eq!($max, $ty::from($max).into());
-        assert_eq!($val, $ty::from($val).into());
-        assert_eq!($max / 2, $ty::from($max / 2).into());
-        assert_eq!($val / 2, $ty::from($val / 2).into());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
-      )+};
-    }
-
-    test!([u16, u16le, u16be], 0u16, 0xffffu16, 0x0f1fu16);
-    test!([u24, u24le, u24be], 0u32, 0xffffffu32, 0x0f1f2fu32);
-    test!([u32, u32le, u32be], 0u32, 0xffffffffu32, 0x0f1f2f3fu32);
-    test!([u40, u40le, u40be], 0u64, 0xffffffffffu64, 0x0f1f2f3f4fu64);
-    test!([u48, u48le, u48be], 0u64, 0xffffffffffffu64, 0x0f1f2f3f4f5fu64);
-    test!([u56, u56le, u56be], 0u64, 0xffffffffffffffu64, 0x0f1f2f3f4f5f6fu64);
-    test!([u64, u64le, u64be], 0u64, 0xffffffffffffffffu64, 0x0f1f2f3f4f5f6f7fu64);
   }
 
   #[test]
@@ -1823,7 +1824,7 @@ mod tests {
   fn test_transmute() {
     let mut foo = FooPacked::<[u8; 3]> {
       a: 0x42,
-      b: Unalign::new(u16le::from_le_bytes([0x42, 0x42])),
+      b: Unalign::new(num::u16le::from_le_bytes([0x42, 0x42])),
       c: [0x42, 0xff, 0xff, 0xff, 0xff, 0xff],
       d: Dropless::new([0xaf, 0xaf, 0xaa]),
     };
@@ -1834,7 +1835,7 @@ mod tests {
     bar.a = [0xff; 4];
 
     assert_eq!(0xff, foo.a);
-    assert_eq!(u16le::from_le_bytes([0xff, 0xff]), foo.b.into_inner());
+    assert_eq!(num::u16le::from_le_bytes([0xff, 0xff]), foo.b.into_inner());
     assert_eq!([0xff, 0xff, 0xff, 0xff, 0xff, 0xff], foo.c);
 
     pub fn pack<T: ?Sized + Data>(value: &T) -> &[u8] {

@@ -1,3 +1,4 @@
+use mutant::num::*;
 use mutant::*;
 
 fn main() {
@@ -133,9 +134,9 @@ mod host {
 }
 
 mod hci {
+  use super::*;
   use core::fmt;
   use core::fmt::{Debug, Formatter};
-  use mutant::*;
 
   pub trait Socket {
     async fn recv(&self) -> &Packet<[u8]>;
