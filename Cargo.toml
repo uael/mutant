@@ -7,6 +7,7 @@ edition = "2021"
 mutant-derive = { path = "derive" }
 
 [dev-dependencies]
+loop-code = "0.5.2"
 futures = "0.3.30"
 
 [profile.release]

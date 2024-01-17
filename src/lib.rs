@@ -81,6 +81,12 @@
 //! );
 //! ```
 //!
+//! Transmute is checked at compile time:
+//! ```rust,compile_fail
+//! use mutant::try_transmute_mut;
+//! let _ = try_transmute_mut::<bool, u8>(&mut true);
+//! ```
+//!
 //! # Why mutant?
 //!
 //! `mutant` addresses a key gap in Rust's type system and memory model, specifically the ability to
@@ -173,13 +179,6 @@ pub enum Error {
   /// This error occurs when the size of the source type does not match the size of the
   /// target type. The inner value (`isize`) represents the size difference.
   SizeMismatch(isize),
-  /// Represents an invalid transmutation attempt, usually due to incompatible types.
-  ///
-  /// This error includes a message (`&'static str`) providing more context about why
-  /// the transmutation is invalid. It's typically raised when transmuting between types that
-  /// do not have compatible memory representations, which could lead to undefined behavior
-  /// or data corruption if allowed.
-  IncompatibleLayout(&'static str),
   InvalidBitPattern,
 }
 
@@ -241,7 +240,7 @@ pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
 /// with external hardware or software that has specific binary layout requirements.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct RawLayout {
-  pub pattern: Option<&'static [ByteLayout]>
+  pub pattern: Option<&'static [ByteLayout]>,
 }
 
 /// A wrapper to ensure the inner type does not require dropping.
@@ -431,29 +430,6 @@ macro_rules! unaligned_mut {
   }};
 }
 
-/// Reference data without interior mutability.
-#[doc(hidden)]
-macro_rules! data_ref {
-  ($align:ty, $val:expr) => {{
-    union Deref<T: Copy + Data, U: Copy> {
-      val: T,
-      void: (),
-      #[allow(dead_code)]
-      align: U,
-    }
-    #[inline]
-    const unsafe fn cast<T: Copy + Data>(void: *const ()) -> *const T {
-      void.cast()
-    }
-    let deref = Deref::<_, $align> { val: $val };
-    // SAFETY:
-    // - `Data` types does contains any interior mutability.
-    // - `union Deref<T>` has been initialized with a valid `T`.
-    // - `&deref.void` has the same address as `deref` and `deref.val`.
-    unsafe { &*cast(&deref.void) }
-  }};
-}
-
 /// Unwraps a result or propagates its error.
 /// FIXME: Remove when `?` is supported in `const` context.
 #[doc(hidden)]
@@ -484,6 +460,7 @@ pub const BIG_ALLOCATION: *const () = {
 pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
   struct Assert<T: ?Sized>(*const T);
   impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
+  #[allow(clippy::let_unit_value)]
   let _ = Assert::<T>::ASSERT_UNALIGNED;
 }
 
@@ -640,58 +617,58 @@ pub const fn is_unsized<T: ?Sized + Data>() -> bool {
 }
 
 #[inline]
-const fn is_valid_bits<T: ?Sized + Data>(val: &T) -> Result<(), Error> {
+const fn is_valid_bits<T: ?Sized + Data>(ptr: *const T) -> Result<(), Error> {
   #[inline]
-  const fn repr_field<R: Repr<T>, T: ?Sized + Data>(val: &T) -> &R::Type {
+  const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
     assert!(R::FIELDS != 0);
-    let ptr: *const T = val;
-    let ptr = ptr::from_raw_parts(
-      // SAFETY: safety is forwarded to the `unsafe` impl of the `Data` trait.
-      unsafe { ptr.cast::<u8>().offset(R::OFFSET as isize) }.cast(),
+    ptr::from_raw_parts(
+      // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
+      unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
       match is_sized::<R::Type>() {
         true => 0,
         _ => ptr::metadata(ptr),
       },
-    );
-    // SAFETY: safety is forwarded to the `unsafe` impl of the `Data` trait.
-    unsafe { &*ptr }
+    )
   }
 
   #[inline]
-  const fn repr_is_valid_bits<R: Repr<T>, T: ?Sized + Data>(val: &T) -> Result<(), Error> {
+  const fn repr_is_valid_bits<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> Result<(), Error> {
     match R::FIELDS {
       0 => Ok(()),
       _ => {
-        r#try!(is_valid_bits::<R::Type>(repr_field::<R, T>(val)));
-        repr_is_valid_bits::<R::Rest, T>(val)
-      },
+        r#try!(is_valid_bits::<R::Type>(repr_field::<R, T>(ptr)));
+        repr_is_valid_bits::<R::Rest, T>(ptr)
+      }
     }
   }
 
   match T::LAYOUT {
-    Layout::Struct => return repr_is_valid_bits::<T::Repr, T>(val),
+    Layout::Struct => return repr_is_valid_bits::<T::Repr, T>(ptr),
     Layout::Slice | Layout::Array => {
-      let (mut i, slice) = (0, as_slice(val));
-      while i < slice.len() {
-        r#try!(is_valid_bits(&slice[i]));
+      let len = match T::LAYOUT {
+        Layout::Array => min_size_of::<T>() / mem::size_of::<T::Item>(),
+        _ => ptr::metadata(ptr),
+      };
+      let mut i = 0;
+      while i < len {
+        // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
+        r#try!(is_valid_bits(unsafe { ptr.cast::<T::Item>().add(i) }));
         i += 1;
       }
     }
-    Layout::Raw { layout } => match layout.pattern {
-      Some(pattern) => {
+    Layout::Raw { layout } => {
+      if let Some(pattern) = layout.pattern {
         let mut offset = 0;
         while offset < min_size_of::<T>() {
-          let ptr = (val as *const T).cast::<u8>();
           // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
-          let byte = unsafe { ptr.offset(offset as isize).read() };
+          let byte = unsafe { ptr.cast::<u8>().add(offset).read() };
           if !pattern[offset].matches(byte) {
             return Err(Error::InvalidBitPattern);
           }
           offset += 1;
         }
       }
-      _ => {}
-    },
+    }
     _ => {}
   }
 
@@ -719,6 +696,11 @@ pub const fn size_of_val<T: ?Sized + Data>(val: &T) -> usize {
 }
 
 #[inline]
+const fn size_of_with<T: ?Sized + Data>(metadata: usize) -> usize {
+  min_size_of::<T>() + metadata * size_of_tail::<T>()
+}
+
+#[inline]
 pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::Tail]) {
   match try_split_at(val, mid) {
     Some(result) => result,
@@ -741,28 +723,22 @@ pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, 
   let ptr: *const u8 = (val as *const T).cast();
   let val_ptr = ptr::from_raw_parts::<T>(ptr.cast(), tail / mem::size_of::<T::Tail>());
   let rest_ptr = ptr::from_raw_parts::<[T::Tail]>(
-    unsafe { ptr.offset(mid as isize) }.cast(),
+    unsafe { ptr.add(mid) }.cast(),
     ptr::metadata(val) - ptr::metadata(val_ptr),
   );
   Some(unsafe { (&*val_ptr, &*rest_ptr) })
 }
 
+/// FIXME: Make as `const` fn once `const_refs_to_cell` is stabilized.
 #[inline]
-pub const fn transmute<T: Copy + Data, U: Copy + Data>(src: T) -> U {
-  *transmute_ref::<T, U>(data_ref!(U, src))
+pub fn transmute<T: Copy + Data, U: Copy + Data>(src: T) -> U {
+  try_transmute(src).unwrap()
 }
 
+/// FIXME: Make as `const` fn once `const_mut_refs` is stabilized.
 #[inline]
 pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> &mut U {
-  match try_transmute_mut(src) {
-    Ok(dst) => dst,
-    Err(err) => match err {
-      Error::AlignmentMismatch => panic!("alignment mismatch"),
-      Error::SizeMismatch(_) => panic!("size mismatch"),
-      Error::IncompatibleLayout(err) => panic!("{}", err),
-      Error::InvalidBitPattern => panic!("invalid bit pattern"),
-    },
-  }
+  try_transmute_mut(src).unwrap()
 }
 
 #[inline]
@@ -772,15 +748,22 @@ pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> &U {
     Err(err) => match err {
       Error::AlignmentMismatch => panic!("alignment mismatch"),
       Error::SizeMismatch(_) => panic!("size mismatch"),
-      Error::IncompatibleLayout(err) => panic!("{}", err),
       Error::InvalidBitPattern => panic!("invalid bit pattern"),
     },
   }
 }
 
+/// FIXME: Make as `const` fn once `const_refs_to_cell` is stabilized.
 #[inline]
-pub const fn try_transmute<T: Copy + Data, U: Copy + Data>(src: T) -> Result<U, Error> {
-  Ok(*r#try!(try_transmute_ref::<T, U>(data_ref!(U, src))))
+pub fn try_transmute<T: Copy + Data, U: Copy + Data>(src: T) -> Result<U, Error> {
+  let _ = layout::Transmute::<T, U, false>::apply(0)?;
+  union Transmute<T: Copy, U: Copy> {
+    src: T,
+    dst: U,
+  }
+  let dst = unsafe { Transmute { src }.dst };
+  is_valid_bits(&dst)?;
+  Ok(dst)
 }
 
 #[inline]
@@ -788,14 +771,10 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> Res
   if !is_aligned_to::<T>(src, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = match layout::Transmute::<T, U, true>::apply(ptr::metadata(src)) {
-    Ok(metadata) => metadata,
-    Err(err) => return Err(err),
-  };
+  let metadata = r#try!(layout::Transmute::<T, U, true>::apply(ptr::metadata(src)));
   let ptr = ptr::from_raw_parts_mut::<U>(src as *mut T as *mut (), metadata);
-  let val = unsafe { &mut *ptr };
-  r#try!(is_valid_bits(val));
-  Ok(val)
+  r#try!(is_valid_bits(ptr));
+  Ok(unsafe { &mut *ptr })
 }
 
 #[inline]
@@ -803,14 +782,10 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> R
   if !is_aligned_to::<T>(src, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = match layout::Transmute::<T, U, false>::apply(ptr::metadata(src)) {
-    Ok(metadata) => metadata,
-    Err(err) => return Err(err),
-  };
+  let metadata = r#try!(layout::Transmute::<T, U, false>::apply(ptr::metadata(src)));
   let ptr = ptr::from_raw_parts::<U>(src as *const T as *const (), metadata);
-  let val = unsafe { &*ptr };
-  r#try!(is_valid_bits(val));
-  Ok(val)
+  r#try!(is_valid_bits(ptr));
+  Ok(unsafe { &*ptr })
 }
 
 // ptr ---------------------------------------------------------------------------------------------
@@ -850,7 +825,10 @@ pub mod ptr {
     //   has a provenance.
     // - During const eval, it is unsound to perform this transmutation if the pointer has no
     //   provenance; the above trick ensure just that.
-    unsafe { mem::transmute(ptr) }
+    #[allow(clippy::transmutes_expressible_as_ptr_casts)]
+    unsafe {
+      mem::transmute(ptr)
+    }
   }
 
   #[repr(C)]
@@ -943,13 +921,11 @@ mod layout {
           _ => return Err("cannot transmute between types of different sizes, source too small"),
         };
         let missing = bh - ah;
-        if bt.is_none() {
-          if missing % at != 0 {
-            return Err(
-              "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
-               the target is not a multiple of the source `DST` trailing slice item size",
-            );
-          }
+        if bt.is_none() && missing % at != 0 {
+          return Err(
+            "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
+             the target is not a multiple of the source `DST` trailing slice item size",
+          );
         }
         min_at_count = (missing + at - 1) / at; // Ceiling of division.
       } else if ah > bh {
@@ -1013,12 +989,8 @@ mod layout {
       };
       let mut offset = 0;
       while offset < minimum_size {
-        if !byte_layout_at::<T>(offset).is_transmutable_to(byte_layout_at::<U>(offset), mutable) {
-          return Err(
-            "cannot transmute between types of incompatible byte layouts, source padding will \
-             left uninitialized byte(s) in target",
-          );
-        }
+        let (src_layout, dst_layout) = (byte_layout_at::<T>(offset), byte_layout_at::<U>(offset));
+        r#try!(src_layout.validate_transmute_to(dst_layout, mutable));
         offset += 1;
       }
       Ok(requirements)
@@ -1028,22 +1000,18 @@ mod layout {
   pub(crate) struct Transmute<T: ?Sized, U: ?Sized, const MUT: bool>(PhantomData<(*const T, U)>);
 
   impl<T: ?Sized + Data, U: ?Sized + Data, const MUT: bool> Transmute<T, U, MUT> {
-    const REQUIREMENTS: Result<Requirements, &'static str> = Requirements::of::<T, U>(MUT);
+    const REQUIREMENTS: Requirements = match Requirements::of::<T, U>(MUT) {
+      Ok(requirements) => requirements,
+      Err(message) => panic!("{}", message),
+    };
 
     #[inline]
     pub const fn apply(metadata: usize) -> Result<usize, Error> {
-      let delta = match Self::REQUIREMENTS {
-        Err(err) => return Err(Error::IncompatibleLayout(err)),
-        Ok(requirements) => requirements.delta(metadata),
-      };
-      if delta != 0 {
-        return Err(Error::SizeMismatch(delta * size_of_tail::<T>() as isize));
+      match Self::REQUIREMENTS.delta(metadata) {
+        0 if size_of_tail::<U>() == 0 => Ok(0),
+        0 => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail::<U>()),
+        n => Err(Error::SizeMismatch(n * size_of_tail::<T>() as isize)),
       }
-      if size_of_tail::<U>() == 0 {
-        return Ok(0);
-      }
-      let size = min_size_of::<T>() + metadata * size_of_tail::<T>();
-      Ok((size - min_size_of::<U>()) / size_of_tail::<U>())
     }
   }
 
@@ -1066,7 +1034,12 @@ mod layout {
       }
 
       for offset in 0..mem::size_of::<BazPacked>() {
-        assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<BazPacked>(offset), "at {}", offset);
+        assert_eq!(
+          ByteLayout::from_mask(0xff),
+          byte_layout_at::<BazPacked>(offset),
+          "at {}",
+          offset
+        );
       }
 
       #[derive(Debug, Copy, Clone, Data)]
@@ -1087,10 +1060,7 @@ mod layout {
       assert_eq!(Ok(None), Requirements::of::<bool, u8>(false));
       assert_eq!(Ok(None), Requirements::of::<u8, bool>(true));
       assert_eq!(
-        Err(
-          "cannot transmute between types of incompatible byte layouts, source padding will left \
-           uninitialized byte(s) in target"
-        ),
+        Err("mutating target type could result in unsound source value"),
         Requirements::of::<bool, u8>(true)
       );
     }
@@ -1257,97 +1227,98 @@ pub mod num {
 
   macro_rules! impl_num {
     { $($ty:ident $raw:ident $bytes:literal $ordering:ident),+ } => {
-      $(impl_num!(@__impl $ty $raw $bytes { mem::size_of::<$raw>() - $bytes } $ordering);)+
+      $(impl_num!($ty $raw $bytes { mem::size_of::<$raw>() - $bytes } $ordering);)+
     };
-    { @__impl $ty:ident $raw:ident $bytes:literal $rest:tt $ordering:ident } => {
-      impl_num!(@__decl $raw $ty $bytes);
+    ($ty:ident $raw:ident $n:literal $rest:tt $e:ident) => {
+      #[allow(non_camel_case_types)]
+      #[derive(Eq, PartialEq, Copy, Clone, Hash)]
+      #[repr(transparent)]
+      pub struct $ty(pub [u8; $n]);
 
       unsafe impl RawData for $ty {
         const RAW_LAYOUT: RawLayout = RawLayout::any();
       }
 
       impl $ty {
-        pub const MAX: Self = Self([0xff; $bytes]);
+        pub const MIN: Self = Self::from_raw($raw::MIN);
+        pub const MAX: Self = Self::from_raw($raw::MAX);
 
-        #[inline]
-        pub const fn to_ne_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => ne, self).0
-        }
+        #[inline] pub const fn to_ne_bytes(self) -> [u8; $n] { swap!($e => ne, self).0 }
+        #[inline] pub const fn to_le_bytes(self) -> [u8; $n] { swap!($e => le, self).0 }
+        #[inline] pub const fn to_be_bytes(self) -> [u8; $n] { swap!($e => be, self).0 }
 
-        #[inline]
-        pub const fn to_le_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => le, self).0
-        }
-
-        #[inline]
-        pub const fn to_be_bytes(self) -> [u8; $bytes] {
-          swap!($ordering => be, self).0
-        }
-
-        #[inline]
-        pub const fn from_ne_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(ne => $ordering, Self(bytes))
-        }
-
-        #[inline]
-        pub const fn from_le_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(le => $ordering, Self(bytes))
-        }
-
-        #[inline]
-        pub const fn from_be_bytes(bytes: [u8; $bytes]) -> Self {
-          swap!(be => $ordering, Self(bytes))
-        }
+        #[inline] pub const fn from_ne_bytes(b: [u8; $n]) -> Self { swap!(ne => $e, Self(b)) }
+        #[inline] pub const fn from_le_bytes(b: [u8; $n]) -> Self { swap!(le => $e, Self(b)) }
+        #[inline] pub const fn from_be_bytes(b: [u8; $n]) -> Self { swap!(be => $e, Self(b)) }
 
         #[inline]
         pub const fn from_raw(raw: $raw) -> Self {
-          swap!(ne => $ordering, Self(transmute::<_, Ne<$bytes, $rest>>(raw).bytes))
+          let (mut off, mut bytes) = (0, [0; $n]);
+          while off < $n {
+            bytes[off] = (raw >> (le_or_be!($e, off, $n - off - 1) * 8)) as u8;
+            off += 1;
+          }
+          Self(bytes)
         }
 
         #[inline]
         pub const fn into_raw(self) -> $raw {
-          transmute(Ne::<$bytes, $rest>::new(swap!($ordering => ne, self).0))
+          let (mut off, mut raw) = (0, 0);
+          while off < $n {
+            raw |= (self.0[off] as $raw) << (le_or_be!($e, off, $n - off - 1) * 8);
+            off += 1;
+          }
+          raw
         }
 
         #[inline]
-        pub const fn swap_bytes(self) -> Self {
-          transmute(transmute::<_, $raw>(Be::<$bytes, $rest>::new(self.0)).swap_bytes())
+        pub const fn swap_bytes(mut self) -> Self {
+          let mut i = 0;
+          while i < $n / 2 {
+            let tmp = self.0[i];
+            self.0[i] = self.0[$n - i - 1];
+            self.0[$n - i - 1] = tmp;
+            i += 1;
+          }
+          self
         }
       }
 
       impl From<$raw> for $ty {
+        #[inline]
         fn from(raw: $raw) -> Self {
           Self::from_raw(raw)
         }
       }
 
-      impl Into<$raw> for $ty {
-        fn into(self) -> $raw {
-          self.into_raw()
+      impl From<$ty> for $raw {
+        #[inline]
+        fn from(value: $ty) -> Self {
+          value.into_raw()
         }
       }
 
       impl Debug for $ty {
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
           <$raw as Debug>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Display for $ty {
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
           <$raw as Display>::fmt(&self.into_raw(), f)
         }
       }
     };
-    (@__decl u16 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 2); };
-    (@__decl u32 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 4); };
-    (@__decl u64 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 8); };
-    (@__decl_with $ty:ident $bytes:literal $align:literal) => {
-      #[repr(align($align))]
-      #[derive(Eq, PartialEq, Copy, Clone, Hash)]
-      #[allow(non_camel_case_types)]
-      pub struct $ty([u8; $bytes]);
-    };
+  }
+
+  #[rustfmt::skip]
+  macro_rules! le_or_be {
+    (ne, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
+    (le, $le:expr, $be:expr $(,)?) => { $le };
+    (be, $le:expr, $be:expr $(,)?) => { $be };
   }
 
   #[rustfmt::skip]
@@ -1373,35 +1344,6 @@ pub mod num {
     u64le u64 8 le, u64be u64 8 be
   }
 
-  #[derive(Copy, Clone, Data)]
-  #[repr(C, packed)]
-  #[data(crate)]
-  #[cfg(target_endian = "little")]
-  #[rustfmt::skip]
-  struct Be<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
-
-  #[derive(Copy, Clone, Data)]
-  #[repr(C, packed)]
-  #[data(crate)]
-  #[cfg(target_endian = "little")]
-  #[rustfmt::skip]
-  struct Ne<const BYTES: usize, const REST: usize> { bytes: [u8; BYTES], _rest: [u8; REST] }
-  #[cfg(target_endian = "big")]
-  #[rustfmt::skip]
-  struct Ne<const BYTES: usize, const REST: usize> { _rest: [u8; REST], bytes: [u8; BYTES] }
-
-  impl<const BYTES: usize, const REST: usize> Be<BYTES, REST> {
-    pub const fn new(bytes: [u8; BYTES]) -> Self {
-      Self { bytes, _rest: [0; REST] }
-    }
-  }
-
-  impl<const BYTES: usize, const REST: usize> Ne<BYTES, REST> {
-    pub const fn new(bytes: [u8; BYTES]) -> Self {
-      Self { bytes, _rest: [0; REST] }
-    }
-  }
-
   #[cfg(test)]
   #[test]
   fn test_num() {
@@ -1409,26 +1351,25 @@ pub mod num {
 
     #[rustfmt::skip]
     macro_rules! test {
-      ([$($ty:ident),+], $min:literal, $max:literal, $val:literal) => {$(
+      ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal, $val:literal) => {$(
+        assert_eq!($sz, mem::size_of::<$ty>());
         assert_eq!($max, $ty::MAX.into());
         assert_eq!($min, $ty::from($min).into());
         assert_eq!($max, $ty::from($max).into());
         assert_eq!($val, $ty::from($val).into());
-        assert_eq!($max / 2, $ty::from($max / 2).into());
-        assert_eq!($val / 2, $ty::from($val / 2).into());
         assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
         assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
         assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
       )+};
     }
 
-    test!([u16, u16le, u16be], 0u16, 0xffffu16, 0x0f1fu16);
-    test!([u24, u24le, u24be], 0u32, 0xffffffu32, 0x0f1f2fu32);
-    test!([u32, u32le, u32be], 0u32, 0xffffffffu32, 0x0f1f2f3fu32);
-    test!([u40, u40le, u40be], 0u64, 0xffffffffffu64, 0x0f1f2f3f4fu64);
-    test!([u48, u48le, u48be], 0u64, 0xffffffffffffu64, 0x0f1f2f3f4f5fu64);
-    test!([u56, u56le, u56be], 0u64, 0xffffffffffffffu64, 0x0f1f2f3f4f5f6fu64);
-    test!([u64, u64le, u64be], 0u64, 0xffffffffffffffffu64, 0x0f1f2f3f4f5f6f7fu64);
+    test!(2, [u16, u16le, u16be], 0u16, 0xffffu16, 0x0f1fu16);
+    test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32, 0x0f1f2fu32);
+    test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32, 0x0f1f2f3fu32);
+    test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64, 0x0f1f2f3f4fu64);
+    test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64, 0x0f1f2f3f4f5fu64);
+    test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64, 0x0f1f2f3f4f5f6fu64);
+    test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64, 0x0f1f2f3f4f5f6f7fu64);
   }
 }
 
@@ -1453,12 +1394,18 @@ const _: () = {
     }
 
     #[inline]
-    pub const fn is_transmutable_to(self, dst: Self, mutable: bool) -> bool {
+    pub const fn validate_transmute_to(self, dst: Self, mutable: bool) -> Result<(), &'static str> {
       match (self, dst) {
-        (_, Self::Uninit) => true,
-        (Self::Uninit, _) => false,
+        (_, Self::Uninit) => Ok(()),
+        (Self::Uninit, _) => Err(
+          "cannot transmute between types of incompatible byte layouts, source padding will left \
+           uninitialized byte(s) in target",
+        ),
         (Self::AllowedBits(src), Self::AllowedBits(dst)) => {
-          !mutable || src.get() | dst.get() == src.get()
+          if mutable && src.get() | dst.get() != src.get() {
+            return Err("mutating target type could result in unsound source value");
+          }
+          Ok(())
         }
       }
     }
@@ -1513,12 +1460,14 @@ const _: () = {
   impl<T> Dropless<T> {
     #[inline]
     pub const fn new(value: T) -> Self {
+      #[allow(clippy::let_unit_value)]
       let _ = Self::ASSERT_NOT_DROP;
       Self(ManuallyDrop::new(value))
     }
 
     #[inline]
     pub const fn into_inner(self) -> T {
+      #[allow(clippy::let_unit_value)]
       let _ = Self::ASSERT_NOT_DROP;
       ManuallyDrop::into_inner(self.0)
     }
@@ -1772,17 +1721,9 @@ mod tests {
     assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(4));
     assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(5));
 
-    assert_eq!(Ok(&true), try_transmute_ref::<u8, bool>(&mut 1u8));
-    assert_eq!(Ok(&1u8), try_transmute_ref::<bool, u8>(&mut true));
+    assert_eq!(Ok(&true), try_transmute_ref::<u8, bool>(&1u8));
+    assert_eq!(Ok(&1u8), try_transmute_ref::<bool, u8>(&true));
     assert_eq!(Ok(&mut true), try_transmute_mut::<u8, bool>(&mut 1u8));
-    assert_eq!(
-      // TODO: error message could be better.
-      Err(Error::IncompatibleLayout(
-        "cannot transmute between types of incompatible byte layouts, source padding will left \
-         uninitialized byte(s) in target"
-      )),
-      try_transmute_mut::<bool, u8>(&mut true)
-    );
   }
 
   #[test]
@@ -1846,12 +1787,12 @@ mod tests {
     #[data(crate)]
     struct Foo {
       bar: u8,
-      qux_len: u16,
+      qux_len: Unalign<u16>,
       qux: [u8],
     }
 
     let foo: &Foo = try_transmute_ref::<[u8], _>(&[1, 4, 0, 4, 5, 6, 7, 8, 9]).unwrap();
-    let (foo, rest) = split_at(foo, (3 + foo.qux_len) as usize);
+    let (foo, rest) = split_at(foo, (3 + foo.qux_len.into_inner()) as usize);
     let _ = (foo, rest);
   }
 }
@@ -1863,7 +1804,17 @@ pub struct Test {
   a: u8,
   b: u32,
   c: [bool; 4],
-  d: [(u8, bool)]
+  d: [(u8, bool)],
+}
+
+#[derive(Data)]
+#[data(crate)]
+#[repr(C, packed)]
+pub struct Test2 {
+  a: u8,
+  b: u32,
+  c: [u8; 4],
+  d: [(u8, u8)],
 }
 
 pub fn aa(val: &Test) -> Result<&[u8], Error> {
@@ -1876,4 +1827,33 @@ pub fn bb(val: &[u8]) -> Result<&Test, Error> {
 
 pub fn cc(val: &Test) -> &[u8] {
   transmute_ref(val)
+}
+
+pub fn dd(val: &Test2) -> Result<&[u8], Error> {
+  try_transmute_ref(val)
+}
+
+pub fn ee(val: &[u8]) -> Result<&Test2, Error> {
+  try_transmute_ref(val)
+}
+
+pub fn ff(val: &Test2) -> &[u8] {
+  transmute_ref(val)
+}
+
+pub fn gg(val: &[u8]) -> &Test2 {
+  transmute_ref(val)
+}
+
+pub fn hh(u: num::u24le) -> u32 {
+  u.into_raw()
+}
+
+pub fn ii(u: u32) -> u32 {
+  u.swap_bytes()
+}
+
+#[no_mangle]
+pub fn jj(u: u32) -> num::u24le {
+  u.into()
 }

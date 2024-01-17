@@ -73,18 +73,16 @@ mod host {
   impl<'rx, L: Socket> Host<'rx, L> {
     pub async fn get<T: ?Sized + PacketData>(&self) -> &T {
       loop {
-        match self.rx.get().await.try_transmute_ref::<Packet<T>>() {
-          Ok(value) => break unaligned_ref!(value.data),
-          _ => {}
+        if let Ok(value) = self.rx.get().await.try_transmute_ref::<Packet<T>>() {
+          break unaligned_ref!(value.data);
         }
       }
     }
 
     pub async fn get_event<T: ?Sized + EventData>(&self) -> &T {
       loop {
-        match self.rx.get().await.try_transmute_ref::<Packet<Event<T>>>() {
-          Ok(value) => break unaligned_ref!(value.data.parameters),
-          _ => {}
+        if let Ok(value) = self.rx.get().await.try_transmute_ref::<Packet<Event<T>>>() {
+          break unaligned_ref!(value.data.parameters);
         }
       }
     }
@@ -118,14 +116,14 @@ mod host {
     host: &Host<'_, T>,
     f: impl FnOnce(u16le) -> F,
   ) -> Option<F::Output> {
-    let connection_handle = host.get_event::<hci::ConnectionComplete>().await.handle;
-    let mut f = pin!(f(*connection_handle));
+    let connection_handle = host.get_event::<ConnectionComplete>().await.handle;
+    let mut f = pin!(f(connection_handle));
     loop {
       // Poll `f` once.
       if let Some(value) = unsync::poll_once(f.as_mut()).await {
         break Some(value);
       }
-      let disconnection = host.get_event::<hci::DisconnectionComplete>().await;
+      let disconnection = host.get_event::<DisconnectionComplete>().await;
       if disconnection.handle == connection_handle {
         break None;
       }
@@ -182,8 +180,8 @@ mod hci {
   #[derive(Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct Acl<T: ?Sized> {
-    pub handle_and_flags: Unalign<u16le>,
-    pub data_total_len: Unalign<u16le>,
+    pub handle_and_flags: u16le,
+    pub data_total_len: u16le,
     pub parameters: Dropless<T>,
   }
 
@@ -236,14 +234,14 @@ mod hci {
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CommandStatus {
-    pub op_code: Unalign<u16le>,
+    pub op_code: u16le,
     pub status: u8,
   }
 
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CommandComplete<T: ?Sized + Data> {
-    pub op_code: Unalign<u16le>,
+    pub op_code: u16le,
     pub status: u8,
     pub result_parameters: Dropless<T>,
   }
@@ -252,7 +250,7 @@ mod hci {
   #[repr(C, packed)]
   pub struct ConnectionComplete {
     pub address: [u8; 6],
-    pub handle: Unalign<u16le>,
+    pub handle: u16le,
     pub link_type: u8,
   }
 
@@ -260,14 +258,14 @@ mod hci {
   #[repr(C, packed)]
   pub struct DisconnectionComplete {
     pub address: [u8; 6],
-    pub handle: Unalign<u16le>,
+    pub handle: u16le,
   }
 
   #[derive(Debug, Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct CompletedPackets {
-    pub handle: Unalign<u16le>,
-    pub number_of_completed_packets: Unalign<u16le>,
+    pub handle: u16le,
+    pub number_of_completed_packets: u16le,
   }
 
   #[derive(Data)]
@@ -280,7 +278,7 @@ mod hci {
   #[derive(Copy, Clone, Data)]
   #[repr(C, packed)]
   pub struct Command<T: ?Sized + CommandData> {
-    pub op_code: Unalign<u16le>,
+    pub op_code: u16le,
     pub parameters_len: u8,
     pub parameters: Dropless<T>,
   }
