@@ -8,3 +8,7 @@ mutant-derive = { path = "derive" }
 
 [dev-dependencies]
 futures = "0.3.30"
+
+[profile.release]
+lto = true
+codegen-units = 1

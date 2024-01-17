@@ -179,17 +179,9 @@ pub enum Error {
   /// the transmutation is invalid. It's typically raised when transmuting between types that
   /// do not have compatible memory representations, which could lead to undefined behavior
   /// or data corruption if allowed.
-  InvalidTransmute(&'static str),
+  IncompatibleLayout(&'static str),
+  InvalidBitPattern,
 }
-
-/// Specifies the byte order for raw data layout.
-///
-/// This enum is used in specifying how multi-byte data types are laid out in memory,
-/// particularly useful in scenarios like parsing binary data formats or interfacing
-/// with hardware.
-#[rustfmt::skip]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Ordering { Lsb = 1, Msb }
 
 /// Represents the memory layout of a type.
 ///
@@ -213,9 +205,9 @@ pub enum Layout { Void, Slice, Array, Struct, Raw { layout: RawLayout } }
 /// ```
 /// use mutant::ByteLayout;
 ///
-/// let allowed_bits_layout = ByteLayout::new(0b10101010);
+/// let allowed_bits_layout = ByteLayout::from_mask(0b10101010);
 /// let uninit_layout = ByteLayout::Uninit;
-/// assert_eq!(uninit_layout, ByteLayout::new(0x00));
+/// assert_eq!(uninit_layout, ByteLayout::from_mask(0x00));
 /// ```
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -237,19 +229,10 @@ pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
 /// # Examples
 ///
 /// ```
-/// use mutant::{RawLayout, Ordering};
+/// use mutant::{ByteLayout, RawLayout, RawData};
 ///
-/// // Example of a raw layout for a little-endian integer type
-/// let raw_layout_le = RawLayout {
-///   ordering: Ordering::Lsb,
-///   allowed_bits: Some(0xFFFF_FFFF), // 32-bit mask
-/// };
-///
-/// // Example of a raw layout for a big-endian integer type with specific bit constraints
-/// let raw_layout_be = RawLayout {
-///   ordering: Ordering::Msb,
-///   allowed_bits: Some(0x0F0F_0F0F), // Mask allowing certain bits in a 32-bit integer
-/// };
+/// assert_eq!(u8::RAW_LAYOUT, RawLayout::any());
+/// assert_ne!(bool::RAW_LAYOUT, RawLayout::any());
 /// ```
 ///
 /// RawLayout is crucial for handling raw binary data and ensuring its correct interpretation
@@ -258,8 +241,7 @@ pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
 /// with external hardware or software that has specific binary layout requirements.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct RawLayout {
-  pub ordering: Ordering,
-  pub allowed_bits: Option<u64>, // TODO(uael): use something like `&'static [ByteLayout]`
+  pub pattern: Option<&'static [ByteLayout]>
 }
 
 /// A wrapper to ensure the inner type does not require dropping.
@@ -459,6 +441,7 @@ macro_rules! data_ref {
       #[allow(dead_code)]
       align: U,
     }
+    #[inline]
     const unsafe fn cast<T: Copy + Data>(void: *const ()) -> *const T {
       void.cast()
     }
@@ -469,6 +452,18 @@ macro_rules! data_ref {
     // - `&deref.void` has the same address as `deref` and `deref.val`.
     unsafe { &*cast(&deref.void) }
   }};
+}
+
+/// Unwraps a result or propagates its error.
+/// FIXME: Remove when `?` is supported in `const` context.
+#[doc(hidden)]
+macro_rules! r#try {
+  ($expr:expr $(,)?) => {
+    match $expr {
+      Ok(val) => val,
+      Err(err) => return Err(err),
+    }
+  };
 }
 
 /// A pointer to an aligned allocation of size 2^20.
@@ -485,6 +480,7 @@ pub const BIG_ALLOCATION: *const () = {
 /// Assert that a [`Data`] type is unaligned (ie. his alignment is equals to 1).
 #[doc(hidden)]
 #[rustfmt::skip]
+#[inline]
 pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
   struct Assert<T: ?Sized>(*const T);
   impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
@@ -557,7 +553,7 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
 /// ```
 /// use mutant::{ByteLayout, Data};
 ///
-/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<u16>(1));
+/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<u16>(1));
 /// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<u16>(2));
 ///
 /// #[derive(Copy, Clone, Data)]
@@ -567,18 +563,18 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
 ///   b: u16,
 /// }
 ///
-/// assert_eq!(ByteLayout::new(0b01), mutant::byte_layout_at::<Foo>(0));
+/// assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<Foo>(0));
 /// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(1));
-/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<Foo>(2));
-/// assert_eq!(ByteLayout::new(0xff), mutant::byte_layout_at::<Foo>(3));
+/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(2));
+/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(3));
 /// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(4));
 ///
 /// // And for a slice:
-/// assert_eq!(ByteLayout::new(0b01), mutant::byte_layout_at::<[Foo]>(4));
+/// assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<[Foo]>(4));
 /// ```
 #[inline]
 pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
-  #[inline(always)]
+  #[inline]
   const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> ByteLayout {
     match R::FIELDS {
       // Reached the end of the struct, returns an uninitialized layout.
@@ -603,10 +599,10 @@ pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
     Layout::Slice | Layout::Array if mem::size_of::<T::Item>() == 0 => ByteLayout::Uninit,
     Layout::Slice | Layout::Array => byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>()),
     Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
-    Layout::Raw { layout } => ByteLayout::new(match layout.allowed_bits {
-      Some(allowed_bits) => ((allowed_bits >> (offset * 8)) & 0xff) as u8,
-      _ => 0xff,
-    }),
+    Layout::Raw { layout } => match layout.pattern {
+      Some(pattern) => pattern[offset],
+      _ => ByteLayout::from_mask(0xff),
+    },
   }
 }
 
@@ -627,7 +623,7 @@ pub const fn is_sized<T: ?Sized + Data>() -> bool {
 
 #[inline]
 pub const fn is_unsized<T: ?Sized + Data>() -> bool {
-  #[inline(always)]
+  #[inline]
   const fn repr_is_unsized<R: Repr<T>, T: ?Sized + Data>() -> bool {
     match R::FIELDS {
       0 => false,
@@ -645,7 +641,7 @@ pub const fn is_unsized<T: ?Sized + Data>() -> bool {
 
 #[inline]
 const fn is_valid_bits<T: ?Sized + Data>(val: &T) -> Result<(), Error> {
-  #[inline(always)]
+  #[inline]
   const fn repr_field<R: Repr<T>, T: ?Sized + Data>(val: &T) -> &R::Type {
     assert!(R::FIELDS != 0);
     let ptr: *const T = val;
@@ -661,13 +657,13 @@ const fn is_valid_bits<T: ?Sized + Data>(val: &T) -> Result<(), Error> {
     unsafe { &*ptr }
   }
 
-  #[inline(always)]
+  #[inline]
   const fn repr_is_valid_bits<R: Repr<T>, T: ?Sized + Data>(val: &T) -> Result<(), Error> {
     match R::FIELDS {
       0 => Ok(()),
-      _ => match is_valid_bits::<R::Type>(repr_field::<R, T>(val)) {
-        Ok(_) => repr_is_valid_bits::<R::Rest, T>(val),
-        Err(err) => Err(err),
+      _ => {
+        r#try!(is_valid_bits::<R::Type>(repr_field::<R, T>(val)));
+        repr_is_valid_bits::<R::Rest, T>(val)
       },
     }
   }
@@ -677,17 +673,21 @@ const fn is_valid_bits<T: ?Sized + Data>(val: &T) -> Result<(), Error> {
     Layout::Slice | Layout::Array => {
       let (mut i, slice) = (0, as_slice(val));
       while i < slice.len() {
-        match is_valid_bits(&slice[i]) {
-          Ok(()) => i += 1,
-          Err(err) => return Err(err),
-        }
+        r#try!(is_valid_bits(&slice[i]));
+        i += 1;
       }
     }
-    Layout::Raw { layout } => match layout.allowed_bits {
-      Some(allowed_bits) => {
-        let uint = layout.ordering.load(transmute_ref(val));
-        if uint | allowed_bits != allowed_bits {
-          return Err(Error::InvalidTransmute("TODO"));
+    Layout::Raw { layout } => match layout.pattern {
+      Some(pattern) => {
+        let mut offset = 0;
+        while offset < min_size_of::<T>() {
+          let ptr = (val as *const T).cast::<u8>();
+          // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
+          let byte = unsafe { ptr.offset(offset as isize).read() };
+          if !pattern[offset].matches(byte) {
+            return Err(Error::InvalidBitPattern);
+          }
+          offset += 1;
         }
       }
       _ => {}
@@ -759,7 +759,8 @@ pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> &mut U 
     Err(err) => match err {
       Error::AlignmentMismatch => panic!("alignment mismatch"),
       Error::SizeMismatch(_) => panic!("size mismatch"),
-      Error::InvalidTransmute(err) => panic!("{}", err),
+      Error::IncompatibleLayout(err) => panic!("{}", err),
+      Error::InvalidBitPattern => panic!("invalid bit pattern"),
     },
   }
 }
@@ -771,17 +772,15 @@ pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> &U {
     Err(err) => match err {
       Error::AlignmentMismatch => panic!("alignment mismatch"),
       Error::SizeMismatch(_) => panic!("size mismatch"),
-      Error::InvalidTransmute(err) => panic!("{}", err),
+      Error::IncompatibleLayout(err) => panic!("{}", err),
+      Error::InvalidBitPattern => panic!("invalid bit pattern"),
     },
   }
 }
 
 #[inline]
 pub const fn try_transmute<T: Copy + Data, U: Copy + Data>(src: T) -> Result<U, Error> {
-  match try_transmute_ref::<T, U>(data_ref!(U, src)) {
-    Ok(dst) => Ok(*dst),
-    Err(err) => Err(err),
-  }
+  Ok(*r#try!(try_transmute_ref::<T, U>(data_ref!(U, src))))
 }
 
 #[inline]
@@ -795,10 +794,8 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> Res
   };
   let ptr = ptr::from_raw_parts_mut::<U>(src as *mut T as *mut (), metadata);
   let val = unsafe { &mut *ptr };
-  match is_valid_bits(val) {
-    Ok(()) => Ok(val),
-    Err(err) => Err(err),
-  }
+  r#try!(is_valid_bits(val));
+  Ok(val)
 }
 
 #[inline]
@@ -812,10 +809,8 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> R
   };
   let ptr = ptr::from_raw_parts::<U>(src as *const T as *const (), metadata);
   let val = unsafe { &*ptr };
-  match is_valid_bits(val) {
-    Ok(()) => Ok(val),
-    Err(err) => Err(err),
-  }
+  r#try!(is_valid_bits(val));
+  Ok(val)
 }
 
 // ptr ---------------------------------------------------------------------------------------------
@@ -843,7 +838,7 @@ pub mod ptr {
   }
 
   /// Extract the address component of a non-dangling pointer.
-  // #[inline]
+  #[inline]
   pub(super) const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
     // Compute `ptr` raw pointer `ptr`.
     let ptr = ptr.cast::<()>();
@@ -873,18 +868,22 @@ pub mod ptr {
   }
 
   impl<T: ?Sized> PtrRepr<T> {
+    #[inline]
     const fn empty() -> Self {
       Self::empty_with(core::ptr::null())
     }
 
+    #[inline]
     const fn empty_with(address: *const ()) -> Self {
       Self::with_components(address, 0)
     }
 
+    #[inline]
     const fn with_components(address: *const (), metadata: usize) -> Self {
       Self { components: PtrComponents { address, metadata } }
     }
 
+    #[inline]
     const fn set_const(mut self, const_ptr: *const T) -> Self {
       self.const_ptr = const_ptr;
       self
@@ -1031,9 +1030,10 @@ mod layout {
   impl<T: ?Sized + Data, U: ?Sized + Data, const MUT: bool> Transmute<T, U, MUT> {
     const REQUIREMENTS: Result<Requirements, &'static str> = Requirements::of::<T, U>(MUT);
 
+    #[inline]
     pub const fn apply(metadata: usize) -> Result<usize, Error> {
       let delta = match Self::REQUIREMENTS {
-        Err(err) => return Err(Error::InvalidTransmute(err)),
+        Err(err) => return Err(Error::IncompatibleLayout(err)),
         Ok(requirements) => requirements.delta(metadata),
       };
       if delta != 0 {
@@ -1066,7 +1066,7 @@ mod layout {
       }
 
       for offset in 0..mem::size_of::<BazPacked>() {
-        assert_eq!(ByteLayout::new(0xff), byte_layout_at::<BazPacked>(offset), "at {}", offset);
+        assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<BazPacked>(offset), "at {}", offset);
       }
 
       #[derive(Debug, Copy, Clone, Data)]
@@ -1263,54 +1263,53 @@ pub mod num {
       impl_num!(@__decl $raw $ty $bytes);
 
       unsafe impl RawData for $ty {
-        const RAW_LAYOUT: RawLayout = RawLayout::new()
-          .with_ordering(impl_num!(@__ordering $ordering));
+        const RAW_LAYOUT: RawLayout = RawLayout::any();
       }
 
       impl $ty {
         pub const MAX: Self = Self([0xff; $bytes]);
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_ne_bytes(self) -> [u8; $bytes] {
           swap!($ordering => ne, self).0
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_le_bytes(self) -> [u8; $bytes] {
           swap!($ordering => le, self).0
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_be_bytes(self) -> [u8; $bytes] {
           swap!($ordering => be, self).0
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_ne_bytes(bytes: [u8; $bytes]) -> Self {
           swap!(ne => $ordering, Self(bytes))
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_le_bytes(bytes: [u8; $bytes]) -> Self {
           swap!(le => $ordering, Self(bytes))
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_be_bytes(bytes: [u8; $bytes]) -> Self {
           swap!(be => $ordering, Self(bytes))
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_raw(raw: $raw) -> Self {
           swap!(ne => $ordering, Self(transmute::<_, Ne<$bytes, $rest>>(raw).bytes))
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn into_raw(self) -> $raw {
           transmute(Ne::<$bytes, $rest>::new(swap!($ordering => ne, self).0))
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn swap_bytes(self) -> Self {
           transmute(transmute::<_, $raw>(Be::<$bytes, $rest>::new(self.0)).swap_bytes())
         }
@@ -1340,9 +1339,6 @@ pub mod num {
         }
       }
     };
-    (@__ordering ne) => { Ordering::NATIVE };
-    (@__ordering le) => { Ordering::Lsb };
-    (@__ordering be) => { Ordering::Msb };
     (@__decl u16 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 2); };
     (@__decl u32 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 4); };
     (@__decl u64 $ty:ident $bytes:literal) => { impl_num!(@__decl_with $ty $bytes 8); };
@@ -1448,13 +1444,15 @@ const _: () = {
   // impl ByteLayout -------------------------------------------------------------------------------
 
   impl ByteLayout {
-    pub const fn new(allowed_bits: u8) -> Self {
-      match NonZeroU8::new(allowed_bits) {
-        Some(allowed_bits) => Self::AllowedBits(allowed_bits),
+    #[inline]
+    pub const fn from_mask(mask: u8) -> Self {
+      match NonZeroU8::new(mask) {
+        Some(mask) => Self::AllowedBits(mask),
         _ => Self::Uninit,
       }
     }
 
+    #[inline]
     pub const fn is_transmutable_to(self, dst: Self, mutable: bool) -> bool {
       match (self, dst) {
         (_, Self::Uninit) => true,
@@ -1464,60 +1462,27 @@ const _: () = {
         }
       }
     }
-  }
 
-  // impl Ordering ---------------------------------------------------------------------------------
-
-  impl Ordering {
-    #[cfg(target_endian = "little")]
-    const NATIVE: Self = Self::Lsb;
-    #[cfg(target_endian = "big")]
-    const NATIVE: Self = Self::Msb;
-
-    #[inline(always)]
-    const fn byte<const BIT: usize>(self, bytes: &[u8]) -> u64 {
-      if BIT >= bytes.len() {
-        return 0;
+    #[inline]
+    pub const fn matches(self, byte: u8) -> bool {
+      match self {
+        ByteLayout::Uninit => true,
+        ByteLayout::AllowedBits(mask) => byte | mask.get() == mask.get(),
       }
-      let shift = match self {
-        Ordering::Lsb => BIT,
-        Ordering::Msb => bytes.len() - BIT,
-      };
-      (bytes[BIT] as u64) << (shift * 8)
-    }
-
-    #[inline(always)]
-    pub const fn load(self, bytes: &[u8]) -> u64 {
-      assert!(bytes.len() <= 8);
-      let mut uint = 0;
-      uint |= self.byte::<0>(bytes);
-      uint |= self.byte::<1>(bytes);
-      uint |= self.byte::<2>(bytes);
-      uint |= self.byte::<3>(bytes);
-      uint |= self.byte::<4>(bytes);
-      uint |= self.byte::<5>(bytes);
-      uint |= self.byte::<6>(bytes);
-      uint |= self.byte::<7>(bytes);
-      uint
     }
   }
 
   // impl IntegerSpec ------------------------------------------------------------------------------
 
   impl RawLayout {
-    #[inline(always)]
-    pub const fn new() -> Self {
-      Self { ordering: Ordering::NATIVE, allowed_bits: None }
+    #[inline]
+    pub const fn any() -> Self {
+      Self { pattern: None }
     }
 
-    #[inline(always)]
-    pub const fn with_ordering(self, ordering: Ordering) -> Self {
-      Self { ordering, allowed_bits: self.allowed_bits }
-    }
-
-    #[inline(always)]
-    pub const fn with_allowed_bits(self, allowed_bits: u64) -> Self {
-      Self { ordering: self.ordering, allowed_bits: Some(allowed_bits) }
+    #[inline]
+    pub const fn with_pattern(pattern: &'static [ByteLayout]) -> Self {
+      Self { pattern: Some(pattern) }
     }
   }
 
@@ -1546,13 +1511,13 @@ const _: () = {
   }
 
   impl<T> Dropless<T> {
-    #[inline(always)]
+    #[inline]
     pub const fn new(value: T) -> Self {
       let _ = Self::ASSERT_NOT_DROP;
       Self(ManuallyDrop::new(value))
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn into_inner(self) -> T {
       let _ = Self::ASSERT_NOT_DROP;
       ManuallyDrop::into_inner(self.0)
@@ -1562,28 +1527,28 @@ const _: () = {
   impl<T: ?Sized> Deref for Dropless<T> {
     type Target = T;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Self::Target {
       self.0.deref()
     }
   }
 
   impl<T: ?Sized> DerefMut for Dropless<T> {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
       self.0.deref_mut()
     }
   }
 
   impl<T: Display + ?Sized> Display for Dropless<T> {
-    #[inline(always)]
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       Display::fmt(self.deref(), f)
     }
   }
 
   impl<T: Debug + ?Sized> Debug for Dropless<T> {
-    #[inline(always)]
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       Debug::fmt(self.deref(), f)
     }
@@ -1592,21 +1557,21 @@ const _: () = {
   // impl Unalign ----------------------------------------------------------------------------------
 
   impl<T> Unalign<T> {
-    #[inline(always)]
+    #[inline]
     pub const fn new(value: T) -> Self {
       Self(value)
     }
   }
 
   impl<T: Copy> Unalign<T> {
-    #[inline(always)]
+    #[inline]
     pub const fn into_inner(self) -> T {
       self.0
     }
   }
 
   impl<T> From<T> for Unalign<T> {
-    #[inline(always)]
+    #[inline]
     fn from(value: T) -> Self {
       Unalign::new(value)
     }
@@ -1615,28 +1580,28 @@ const _: () = {
   impl<T: Data> Deref for Unalign<T> {
     type Target = T;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Self::Target {
       unaligned_ref!(self.0)
     }
   }
 
   impl<T: Data> DerefMut for Unalign<T> {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
       unaligned_mut!(self.0)
     }
   }
 
   impl<T: Display + Copy> Display for Unalign<T> {
-    #[inline(always)]
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       Display::fmt(&self.into_inner(), f)
     }
   }
 
   impl<T: Debug + Copy> Debug for Unalign<T> {
-    #[inline(always)]
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       Debug::fmt(&self.into_inner(), f)
     }
@@ -1721,47 +1686,47 @@ const _: () = {
   // impl RawData ----------------------------------------------------------------------------------
 
   unsafe impl RawData for bool {
-    const RAW_LAYOUT: RawLayout = RawLayout::new().with_allowed_bits(0b1);
+    const RAW_LAYOUT: RawLayout = RawLayout::with_pattern(&[ByteLayout::from_mask(0b1)]);
   }
 
   unsafe impl RawData for u8 {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for u16 {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for u32 {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for u64 {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for usize {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for Option<NonZeroU8> {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for Option<NonZeroU16> {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for Option<NonZeroU32> {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for Option<NonZeroU64> {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 
   unsafe impl RawData for Option<NonZeroUsize> {
-    const RAW_LAYOUT: RawLayout = RawLayout::new();
+    const RAW_LAYOUT: RawLayout = RawLayout::any();
   }
 };
 
@@ -1800,19 +1765,19 @@ mod tests {
 
   #[test]
   fn test_byte_layout_at() {
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(0));
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(1));
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(2));
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(3));
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(4));
-    assert_eq!(ByteLayout::new(0xff), byte_layout_at::<Bar<[u8]>>(5));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(0));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(1));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(2));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(3));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(4));
+    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(5));
 
     assert_eq!(Ok(&true), try_transmute_ref::<u8, bool>(&mut 1u8));
     assert_eq!(Ok(&1u8), try_transmute_ref::<bool, u8>(&mut true));
     assert_eq!(Ok(&mut true), try_transmute_mut::<u8, bool>(&mut 1u8));
     assert_eq!(
       // TODO: error message could be better.
-      Err(Error::InvalidTransmute(
+      Err(Error::IncompatibleLayout(
         "cannot transmute between types of incompatible byte layouts, source padding will left \
          uninitialized byte(s) in target"
       )),
@@ -1889,4 +1854,26 @@ mod tests {
     let (foo, rest) = split_at(foo, (3 + foo.qux_len) as usize);
     let _ = (foo, rest);
   }
+}
+
+#[derive(Data)]
+#[data(crate)]
+#[repr(C, packed)]
+pub struct Test {
+  a: u8,
+  b: u32,
+  c: [bool; 4],
+  d: [(u8, bool)]
+}
+
+pub fn aa(val: &Test) -> Result<&[u8], Error> {
+  try_transmute_ref(val)
+}
+
+pub fn bb(val: &[u8]) -> Result<&Test, Error> {
+  try_transmute_ref(val)
+}
+
+pub fn cc(val: &Test) -> &[u8] {
+  transmute_ref(val)
 }
