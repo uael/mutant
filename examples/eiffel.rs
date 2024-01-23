@@ -73,7 +73,7 @@ mod host {
   impl<'rx, L: Socket> Host<'rx, L> {
     pub async fn get<T: ?Sized + PacketData>(&self) -> &T {
       loop {
-        if let Ok(value) = self.rx.get().await.try_transmute_ref::<Packet<T>>() {
+        if let Ok(value) = try_transmute_ref::<_, Packet<T>>(self.rx.get().await) {
           break unaligned_ref!(value.data);
         }
       }
@@ -81,7 +81,7 @@ mod host {
 
     pub async fn get_event<T: ?Sized + EventData>(&self) -> &T {
       loop {
-        if let Ok(value) = self.rx.get().await.try_transmute_ref::<Packet<Event<T>>>() {
+        if let Ok(value) = try_transmute_ref::<_, Packet<Event<T>>>(self.rx.get().await) {
           break unaligned_ref!(value.data.parameters);
         }
       }

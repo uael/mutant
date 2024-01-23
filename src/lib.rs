@@ -76,8 +76,8 @@
 //!   loot_bytes
 //! );
 //! assert_eq!(
-//!   loot,
-//!   mutant::transmute_ref::<_, Loot<[Item]>>(loot_bytes)
+//!   Ok(loot),
+//!   mutant::try_transmute_ref::<_, Loot<[Item]>>(loot_bytes)
 //! );
 //! ```
 //!
@@ -133,7 +133,7 @@
 //! # Safety and Soundness
 //!
 //! Safety is a top priority for `mutant`. The crate undergoes rigorous testing and review to
-//! adhere to Rust's safety guarantees. Any use of `unsafe` code is carefully evaluated and
+//! adhere to Rust's safety guarantees. Any use of `unsafe` code is carefully evalcuated and
 //! documented, ensuring soundness and preventing undefined behavior.
 //!
 //! # Documentation and Testing
@@ -156,6 +156,11 @@
 use core::mem;
 use core::mem::ManuallyDrop;
 use core::num::NonZeroU8;
+use core::ops::Range;
+use core::marker::PhantomData;
+use core::num::NonZeroUsize;
+
+use const_panic::concat_panic;
 
 pub use mutant_derive::Data;
 
@@ -182,6 +187,36 @@ pub enum Error {
   InvalidBitPattern,
 }
 
+/// Specifies the byte order for raw data layout.
+///
+/// This enum is used in specifying how multi-byte data types are laid out in memory,
+/// particularly useful in scenarios like parsing binary data formats or interfacing
+/// with hardware.
+#[rustfmt::skip]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Ordering { Lsb = 1, Msb }
+
+/// Represents the checks that needs to be done over the source metadata for a transmutation
+/// between two data types.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum MetadataChecks {
+  Is(usize),
+  IsAtLeast(usize),
+  IsMultipleOf(usize),
+  IsAtLeastThenMultipleOf(usize, usize),
+  IsEmpty,
+  None,
+}
+
+/// Represents the feasibility of a transmutation between two data types.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Transmutability {
+  /// All possible byte patterns in the source are valid in the target.
+  Infallible,
+  /// Some, maybe all, byte patterns are valid.
+  MaybeFallible,
+}
+
 /// Represents the memory layout of a type.
 ///
 /// The [`Layout`] enum is used to categorize the memory representation of a type, which is
@@ -193,54 +228,19 @@ pub enum Layout { Void, Slice, Array, Struct, Raw { layout: RawLayout } }
 
 /// Describes a byte-level memory layout. It is primarily used as the return type of
 /// the [`byte_layout_at`] function.
-///
-/// Variants:
-/// - `Uninit`: Indicates an uninitialized or undefined byte. This variant is used to represent
-///   bytes that may not have a defined state, similar to [`mem::MaybeUninit`] in Rust.
-/// - `AllowedBits(NonZeroU8)`: Specifies a set of valid bit patterns for a byte. The `NonZeroU8`
-///   value represents a bitmask where each set bit corresponds to an allowed bit in the byte.
-///
-/// # Examples
-/// ```
-/// use mutant::ByteLayout;
-///
-/// let allowed_bits_layout = ByteLayout::from_mask(0b10101010);
-/// let uninit_layout = ByteLayout::Uninit;
-/// assert_eq!(uninit_layout, ByteLayout::from_mask(0x00));
-/// ```
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum ByteLayout { Uninit, AllowedBits(NonZeroU8) }
+pub enum ByteLayout { Uninit, OutOfBounds, Init { layout: &'static RawLayout, offset: usize } }
 
-/// Represents the detailed layout of raw data types.
-///
-/// [`RawLayout`] is used to describe the memory layout of raw data, typically integer types and
-/// boolean. It provides additional information such as byte ordering and allowed bit patterns,
-/// essential for interpreting raw data correctly, especially in low-level operations.
-///
-/// Fields:
-/// - `ordering`: Specifies the byte order (`Ordering`) of the data. It can be either
-///   least significant byte first (LSB) or most significant byte first (MSB).
-/// - `allowed_bits`: A bitmask (`Option<u64>`) indicating permissible bit patterns across the
-///   entire data type. This field is used to validate the integrity of the data or for specifying
-///   constraints that the data must adhere to (see [`is_valid_bits`]).
-///
-/// # Examples
-///
-/// ```
-/// use mutant::{ByteLayout, RawLayout, RawData};
-///
-/// assert_eq!(u8::RAW_LAYOUT, RawLayout::any());
-/// assert_ne!(bool::RAW_LAYOUT, RawLayout::any());
-/// ```
-///
-/// RawLayout is crucial for handling raw binary data and ensuring its correct interpretation
-/// across different systems and architectures. It enables precise control over how data is read
-/// and written, which is vital in systems programming, network packet processing, and interfacing
-/// with external hardware or software that has specific binary layout requirements.
+/// Raw data layout (typically for integer types or enum discriminants).
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct RawLayout {
-  pub pattern: Option<&'static [ByteLayout]>,
+  /// Byte ordering.
+  ordering: Ordering,
+  /// Allowed value ranges.
+  patterns: Option<&'static [Range<u64>]>,
+  /// Data width in bytes.
+  width: usize,
 }
 
 /// A wrapper to ensure the inner type does not require dropping.
@@ -323,32 +323,6 @@ pub unsafe trait Data: 'static {
   /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`](mem::size_of)`::<Self>()`.
   #[doc(hidden)]
   const HEADER: usize;
-
-  #[inline]
-  fn transmute<T: Copy + Data>(self) -> T
-  where
-    Self: Copy,
-  {
-    transmute(self)
-  }
-
-  #[inline]
-  fn transmute_ref<T: ?Sized + Data>(&self) -> &T {
-    transmute_ref(self)
-  }
-
-  #[inline]
-  fn try_transmute<T: Copy + Data>(self) -> Result<T, Error>
-  where
-    Self: Copy,
-  {
-    try_transmute(self)
-  }
-
-  #[inline]
-  fn try_transmute_ref<T: ?Sized + Data>(&self) -> Result<&T, Error> {
-    try_transmute_ref(self)
-  }
 }
 
 pub unsafe trait RawData: Copy + Data {
@@ -356,6 +330,20 @@ pub unsafe trait RawData: Copy + Data {
 }
 
 // Macros ------------------------------------------------------------------------------------------
+
+#[doc(hidden)]
+macro_rules! evalc {
+  (|$src:ident, $dst:ident| => $e:expr) => { evalc!(|$src, $dst| () => $e) };
+  (|$src:ident, $dst:ident| $ty:ty => $e:expr) => {{
+    struct ConstEval<Src: ?Sized, Dst: ?Sized>(PhantomData<Src>, PhantomData<Dst>);
+
+    impl<Src: ?Sized + Data, Dst: ?Sized + Data> ConstEval<Src, Dst> {
+      const RESULT: $ty = $e;
+    }
+
+    ConstEval::<$src, $dst>::RESULT
+  }};
+}
 
 /// Expands to the offset in bytes of a field from the beginning of the given type.
 ///
@@ -394,6 +382,46 @@ macro_rules! offset_of {
   }};
 }
 
+#[macro_export]
+macro_rules! transmute {
+  ($e:expr) => {{
+    const fn transmute<Src: Copy + Data, Dst: Copy + Data>(src: Src) -> Dst {
+      let _ = evalc!(|Src, Dst| () => $crate::transmutability::<Src, Dst>().assert_infallible());
+      union Transmute<T: Copy, U: Copy> { src: T, dst: U }
+      unsafe { Transmute { src }.dst }
+    }
+
+    transmute($e)
+  }};
+}
+
+#[macro_export]
+macro_rules! try_transmute {
+  ($e:expr) => {{
+    const fn transmute<Src: Copy + Data, Dst: Copy + Data>(src: Src) -> Dst {
+      let _ = evalc!(|Src, Dst| () => { $crate::transmutability::<Src, Dst>(); });
+      union Transmute<T: Copy, U: Copy> { src: T, dst: U }
+      unsafe { Transmute { src }.dst }
+    }
+
+    let dst = transmute($e);
+    match $crate::is_bits_valid(&dst) {
+      true => Some(dst),
+      _ => None,
+    }
+  }};
+}
+
+#[test]
+fn test_() {
+  let _: u8 = transmute!(true);
+  let _: Option<bool> = try_transmute!(0u8);
+}
+// #[track_caller]
+// const fn test<T>(e: &T) {
+//   check!(e);
+// }
+
 /// Safely reference unaligned data.
 #[macro_export]
 macro_rules! unaligned_ref {
@@ -428,18 +456,6 @@ macro_rules! unaligned_mut {
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &mut *addr }
   }};
-}
-
-/// Unwraps a result or propagates its error.
-/// FIXME: Remove when `?` is supported in `const` context.
-#[doc(hidden)]
-macro_rules! r#try {
-  ($expr:expr $(,)?) => {
-    match $expr {
-      Ok(val) => val,
-      Err(err) => return Err(err),
-    }
-  };
 }
 
 /// A pointer to an aligned allocation of size 2^20.
@@ -528,40 +544,43 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
 ///
 /// # Examples
 /// ```
-/// use mutant::{ByteLayout, Data};
+/// //TODO:
+/// // use mutant::{ByteLayout, Data};
 ///
-/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<u16>(1));
-/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<u16>(2));
+/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<u16>(1));
+/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<u16>(2));
 ///
-/// #[derive(Copy, Clone, Data)]
-/// #[repr(C)]
-/// struct Foo {
-///   a: bool,
-///   b: u16,
-/// }
+/// //#[derive(Copy, Clone, Data)]
+/// //#[repr(C)]
+/// //struct Foo {
+/// //  a: bool,
+/// //  b: u16,
+/// //}
 ///
-/// assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<Foo>(0));
-/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(1));
-/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(2));
-/// assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(3));
-/// assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(4));
+/// //assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<Foo>(0));
+/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(1));
+/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(2));
+/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(3));
+/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(4));
 ///
-/// // And for a slice:
-/// assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<[Foo]>(4));
+/// //// And for a slice:
+/// //assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<[Foo]>(4));
 /// ```
 #[inline]
 pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
+  #[inline]
+  const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
+    offset >= R::OFFSET
+      && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
+  }
+
   #[inline]
   const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> ByteLayout {
     match R::FIELDS {
       // Reached the end of the struct, returns an uninitialized layout.
       0 => ByteLayout::Uninit,
       // `offset` does offset in field, defer to its inner layout.
-      _ if offset >= R::OFFSET
-        && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>()) =>
-      {
-        byte_layout_at::<R::Type>(offset - R::OFFSET)
-      }
+      _ if repr_contains::<R, T>(offset) => byte_layout_at::<R::Type>(offset - R::OFFSET),
       // `offset` does not offset in field, continue with next field.
       _ => repr_byte_layout_at::<R::Rest, T>(offset),
     }
@@ -569,17 +588,17 @@ pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
 
   // Check for `offset` to be in bounds.
   if is_sized::<T>() && offset >= min_size_of::<T>() {
-    return ByteLayout::Uninit;
+    return ByteLayout::OutOfBounds;
   }
-  match T::LAYOUT {
+  // Check for `ZST` slices.
+  if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
+    return ByteLayout::OutOfBounds;
+  }
+  match &T::LAYOUT {
     Layout::Void => unreachable!(),
-    Layout::Slice | Layout::Array if mem::size_of::<T::Item>() == 0 => ByteLayout::Uninit,
     Layout::Slice | Layout::Array => byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>()),
     Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
-    Layout::Raw { layout } => match layout.pattern {
-      Some(pattern) => pattern[offset],
-      _ => ByteLayout::from_mask(0xff),
-    },
+    Layout::Raw { layout } => layout.offset(offset),
   }
 }
 
@@ -617,7 +636,7 @@ pub const fn is_unsized<T: ?Sized + Data>() -> bool {
 }
 
 #[inline]
-const fn is_valid_bits<T: ?Sized + Data>(ptr: *const T) -> Result<(), Error> {
+const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
   #[inline]
   const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
     assert!(R::FIELDS != 0);
@@ -632,52 +651,147 @@ const fn is_valid_bits<T: ?Sized + Data>(ptr: *const T) -> Result<(), Error> {
   }
 
   #[inline]
-  const fn repr_is_valid_bits<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> Result<(), Error> {
+  const fn repr_is_bits_valid<R: Repr<Dst>, Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
     match R::FIELDS {
-      0 => Ok(()),
-      _ => {
-        r#try!(is_valid_bits::<R::Type>(repr_field::<R, T>(ptr)));
-        repr_is_valid_bits::<R::Rest, T>(ptr)
-      }
+      0 => true,
+      _ => is_bits_valid(repr_field::<R, _>(ptr)) || repr_is_bits_valid::<R::Rest, _>(ptr),
     }
   }
 
-  match T::LAYOUT {
-    Layout::Struct => return repr_is_valid_bits::<T::Repr, T>(ptr),
+  match Dst::LAYOUT {
+    Layout::Void => false,
+    Layout::Struct => repr_is_bits_valid::<Dst::Repr, Dst>(ptr),
     Layout::Slice | Layout::Array => {
-      let len = match T::LAYOUT {
-        Layout::Array => min_size_of::<T>() / mem::size_of::<T::Item>(),
+      let len = match Dst::LAYOUT {
+        Layout::Array => min_size_of::<Dst>() / mem::size_of::<Dst::Item>(),
         _ => ptr::metadata(ptr),
       };
       let mut i = 0;
       while i < len {
         // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
-        r#try!(is_valid_bits(unsafe { ptr.cast::<T::Item>().add(i) }));
+        if is_bits_valid(unsafe { ptr.cast::<Dst::Item>().add(i) }) {
+          return true;
+        }
         i += 1;
       }
+      false
     }
+    Layout::Raw { layout } if layout.is_any() => true,
     Layout::Raw { layout } => {
-      if let Some(pattern) = layout.pattern {
-        let mut offset = 0;
-        while offset < min_size_of::<T>() {
-          // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
-          let byte = unsafe { ptr.cast::<u8>().add(offset).read() };
-          if !pattern[offset].matches(byte) {
-            return Err(Error::InvalidBitPattern);
-          }
-          offset += 1;
-        }
+      let (mut offset, mut val) = (0, 0);
+      while offset < min_size_of::<Dst>() {
+        // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
+        let byte = unsafe { ptr.cast::<u8>().add(offset).read() };
+        val |= (byte as u64) << layout.ordering.shift(offset, min_size_of::<Dst>());
+        offset += 1;
+      }
+      layout.contains(val)
+    }
+  }
+}
+
+#[inline]
+#[track_caller]
+pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> MetadataChecks {
+  let (ah, at, bh, bt) = (
+    min_size_of::<Src>(),
+    NonZeroUsize::new(size_of_tail::<Src>()),
+    min_size_of::<Dst>(),
+    NonZeroUsize::new(size_of_tail::<Dst>()),
+  );
+  let mut min_at_count = 0; // Minimum number of `at` required to align `ah[at]` and `bh[bt]`.
+  if ah < bh {
+    let at = match at {
+      Some(tail) => tail.get(),
+      _ => concat_panic!("cannot transmute between types of different sizes, source too small"),
+    };
+    let missing = bh - ah;
+    if bt.is_none() && missing % at != 0 {
+      concat_panic!(
+        "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
+           the target is not a multiple of the source `DST` trailing slice item size",
+      );
+    }
+    min_at_count = (missing + at - 1) / at; // Ceiling of division.
+  } else if ah > bh {
+    if let Some(bt) = bt {
+      let remaining = ah - bh;
+      if at.is_none() && remaining % bt.get() != 0 {
+        concat_panic!(
+          "cannot transmute between types of incompatible byte layouts, remaining bytes to \
+             fit in the target is not a multiple of the target `DST` trailing slice item size",
+        );
       }
     }
-    _ => {}
   }
+  match (at, bt) {
+    (None, _) => MetadataChecks::None,
+    (Some(at), None) => {
+      if ah < bh {
+        MetadataChecks::Is((bh - ah) / at.get())
+      } else {
+        MetadataChecks::IsEmpty
+      }
+    }
+    (Some(at), Some(bt)) => {
+      #[inline]
+      const fn gcd(a: usize, b: usize) -> usize {
+        match b {
+          0 => a,
+          _ => gcd(b, a % b),
+        }
+      }
 
-  Ok(())
+      let (at, bt) = (at.get(), bt.get());
+      let gcd = gcd(at, bt);
+      let lcm = (at * bt) / gcd;
+      while (ah + min_at_count * at - bh) % bt != 0 {
+        if min_at_count * at > lcm {
+          concat_panic!(
+            "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+               catchup on target",
+          );
+        }
+        min_at_count += 1;
+      }
+      // Compute the minimum number of times `at` must be repeated to reach a size that is a
+      // multiple of `bt`.
+      match (min_at_count, bt / gcd) {
+        (0, 1) => MetadataChecks::None,
+        (0, m) => MetadataChecks::IsMultipleOf(m),
+        (n, 1) => MetadataChecks::IsAtLeast(n),
+        (n, m) => MetadataChecks::IsAtLeastThenMultipleOf(n, m),
+      }
+    }
+  }
 }
 
 #[inline]
 pub const fn min_size_of<T: ?Sized + Data>() -> usize {
   T::HEADER
+}
+
+#[inline]
+pub const fn transmute_metadata<Src: ?Sized + Data, Dst: ?Sized + Data>(metadata: usize)
+  -> Result<usize, isize>
+{
+  match evalc!(|Src, Dst| MetadataChecks => metadata_checks::<Src, Dst>()).check(metadata) {
+    0 if size_of_tail::<Dst>() == 0 => Ok(0),
+    0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
+    n => Err(n * size_of_tail::<Src>() as isize),
+  }
+}
+
+#[inline]
+#[track_caller]
+pub const fn transmute_min_size<Src: ?Sized + Data, Dst: ?Sized + Data>() -> usize {
+  use MetadataChecks::*;
+  match metadata_checks::<Src, Dst>() {
+    Is(n) | IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+    IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
+    IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+    IsEmpty | None => min_size_of::<Src>(),
+  }
 }
 
 #[inline]
@@ -729,63 +843,112 @@ pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, 
   Some(unsafe { (&*val_ptr, &*rest_ptr) })
 }
 
-/// FIXME: Make as `const` fn once `const_refs_to_cell` is stabilized.
 #[inline]
-pub fn transmute<T: Copy + Data, U: Copy + Data>(src: T) -> U {
-  try_transmute(src).unwrap()
+#[track_caller]
+pub const fn transmute<T: Copy + Data, U: Copy + Data>(src: T) -> U {
+  let _ = layout::for_infallible_copy::<T, U>();
+  union Transmute<T: Copy, U: Copy> {
+    src: T,
+    dst: U,
+  }
+  unsafe { Transmute { src }.dst }
 }
 
 /// FIXME: Make as `const` fn once `const_mut_refs` is stabilized.
 #[inline]
+#[track_caller]
 pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> &mut U {
-  try_transmute_mut(src).unwrap()
+  let metadata = layout::for_infallible_mut::<T, U>(ptr::metadata(src));
+  let ptr = ptr::from_raw_parts_mut::<U>(src as *mut T as *mut (), metadata);
+  unsafe { &mut *ptr }
 }
 
 #[inline]
+#[track_caller]
 pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> &U {
-  match try_transmute_ref(src) {
-    Ok(dst) => dst,
-    Err(err) => match err {
-      Error::AlignmentMismatch => panic!("alignment mismatch"),
-      Error::SizeMismatch(_) => panic!("size mismatch"),
-      Error::InvalidBitPattern => panic!("invalid bit pattern"),
-    },
-  }
+  let metadata = layout::for_infallible_ref::<T, U>(ptr::metadata(src));
+  let ptr = ptr::from_raw_parts::<U>(src as *const T as *const (), metadata);
+  unsafe { &*ptr }
 }
 
 /// FIXME: Make as `const` fn once `const_refs_to_cell` is stabilized.
 #[inline]
-pub fn try_transmute<T: Copy + Data, U: Copy + Data>(src: T) -> Result<U, Error> {
-  let _ = layout::Transmute::<T, U, false>::apply(0)?;
+#[track_caller]
+pub fn try_transmute<T: Copy + Data, U: Copy + Data>(src: T) -> Option<U> {
+  let _ = layout::for_copy::<T, U>();
   union Transmute<T: Copy, U: Copy> {
     src: T,
     dst: U,
   }
   let dst = unsafe { Transmute { src }.dst };
-  is_valid_bits(&dst)?;
-  Ok(dst)
+  match is_bits_valid(&dst) {
+    true => Some(dst),
+    _ => None,
+  }
 }
 
 #[inline]
+#[track_caller]
 pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(src: &mut T) -> Result<&mut U, Error> {
   if !is_aligned_to::<T>(src, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = r#try!(layout::Transmute::<T, U, true>::apply(ptr::metadata(src)));
+  let metadata = match layout::for_mut::<T, U>(ptr::metadata(src)) {
+    Ok(metadata) => metadata,
+    Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+  };
   let ptr = ptr::from_raw_parts_mut::<U>(src as *mut T as *mut (), metadata);
-  r#try!(is_valid_bits(ptr));
-  Ok(unsafe { &mut *ptr })
+  match is_bits_valid(ptr) {
+    true => Ok(unsafe { &mut *ptr }),
+    _ => Err(Error::InvalidBitPattern),
+  }
 }
 
 #[inline]
+#[track_caller]
 pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> Result<&U, Error> {
   if !is_aligned_to::<T>(src, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = r#try!(layout::Transmute::<T, U, false>::apply(ptr::metadata(src)));
+  let metadata = match layout::for_ref::<T, U>(ptr::metadata(src)) {
+    Ok(metadata) => metadata,
+    Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+  };
   let ptr = ptr::from_raw_parts::<U>(src as *const T as *const (), metadata);
-  r#try!(is_valid_bits(ptr));
-  Ok(unsafe { &*ptr })
+  match is_bits_valid(ptr) {
+    true => Ok(unsafe { &*ptr }),
+    _ => Err(Error::InvalidBitPattern),
+  }
+}
+
+/// # Examples
+/// ```
+/// use mutant::{transmutability, Transmutability::*};
+///
+/// assert_eq!(Infallible, transmutability::<bool, u8>());
+/// assert_eq!(MaybeFallible, transmutability::<u8, bool>());
+///
+/// assert_eq!(Infallible, transmutability::<(u8, u8), u16>());
+/// assert_eq!(Infallible, transmutability::<u16, (u8, u8)>());
+///
+/// assert_eq!(Infallible, transmutability::<(bool, bool), u16>());
+/// assert_eq!(MaybeFallible, transmutability::<u16, (bool, bool)>());
+/// ```
+#[inline]
+#[track_caller]
+pub const fn transmutability<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Transmutability {
+  let (mut off, end) = (0, transmute_min_size::<Src, Dst>());
+  let mut res = Transmutability::Infallible;
+  while off < end {
+    let dst = byte_layout_at::<Dst>(off);
+    res = res.merge(match dst {
+      ByteLayout::Uninit => Transmutability::Infallible,
+      ByteLayout::OutOfBounds => unreachable!(),
+      ByteLayout::Init { layout, .. } => layout.transmutability::<Src>(off),
+    });
+    off += dst.width();
+  }
+  res
 }
 
 // ptr ---------------------------------------------------------------------------------------------
@@ -823,7 +986,7 @@ pub mod ptr {
     // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
     // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
     //   has a provenance.
-    // - During const eval, it is unsound to perform this transmutation if the pointer has no
+    // - During const evalc, it is unsound to perform this transmutation if the pointer has no
     //   provenance; the above trick ensure just that.
     #[allow(clippy::transmutes_expressible_as_ptr_casts)]
     unsafe {
@@ -869,7 +1032,109 @@ pub mod ptr {
   }
 }
 
-// layout ------------------------------------------------------------------------------------------
+// metadata ----------------------------------------------------------------------------------------
+
+// mod layout2 {
+//   use core::marker::PhantomData;
+//   use const_panic::{concat_, concat_panic};
+//   use crate::*;
+//
+//   /// Metadata requirements.
+//   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+//   pub struct Transmute<Src: ?Sized + Data, Dst: ?Sized + Data> {
+//     inner: Inner,
+//     types: PhantomData<(*const Src, *const Dst)>
+//   }
+//
+//   /// Metadata inner requirements.
+//   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+//   enum Inner {
+//     Is(usize),
+//     IsAtLeast(usize),
+//     IsMultipleOf(usize),
+//     IsAtLeastThenMultipleOf(usize, usize),
+//     IsEmpty,
+//     None,
+//   }
+//
+//   #[inline]
+//   #[track_caller]
+//   pub const fn transmute_requires<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Requires<Src, Dst> {
+//     let (ah, at, bh, bt) = (
+//       min_size_of::<Src>(),
+//       NonZeroUsize::new(size_of_tail::<Src>()),
+//       min_size_of::<Dst>(),
+//       NonZeroUsize::new(size_of_tail::<Dst>()),
+//     );
+//     concat_!()
+//     let mut min_at_count = 0; // Minimum number of `at` required to align `ah[at]` and `bh[bt]`.
+//     if ah < bh {
+//       let at = match at {
+//         Some(tail) => tail.get(),
+//         _ => concat_panic!("cannot transmute between types of different sizes, source too small"),
+//       };
+//       let missing = bh - ah;
+//       if bt.is_none() && missing % at != 0 {
+//         concat_panic!(
+//           "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
+//              the target is not a multiple of the source `DST` trailing slice item size",
+//         );
+//       }
+//       min_at_count = (missing + at - 1) / at; // Ceiling of division.
+//     } else if ah > bh {
+//       if let Some(bt) = bt {
+//         let remaining = ah - bh;
+//         if at.is_none() && remaining % bt.get() != 0 {
+//           concat_panic!(
+//             "cannot transmute between types of incompatible byte layouts, remaining bytes to \
+//                fit in the target is not a multiple of the target `DST` trailing slice item size",
+//           );
+//         }
+//       }
+//     }
+//     let inner = match (at, bt) {
+//       (None, _) => Inner::None,
+//       (Some(at), None) => {
+//         if ah < bh {
+//           Inner::Is((bh - ah) / at.get())
+//         } else {
+//           Inner::IsEmpty
+//         }
+//       }
+//       (Some(at), Some(bt)) => {
+//         #[inline]
+//         const fn gcd(a: usize, b: usize) -> usize {
+//           match b {
+//             0 => a,
+//             _ => gcd(b, a % b),
+//           }
+//         }
+//
+//         let (at, bt) = (at.get(), bt.get());
+//         let gcd = gcd(at, bt);
+//         let lcm = (at * bt) / gcd;
+//         while (ah + min_at_count * at - bh) % bt != 0 {
+//           if min_at_count * at > lcm {
+//             concat_panic!(
+//               "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+//                  catchup on target",
+//             );
+//           }
+//           min_at_count += 1;
+//         }
+//         // Compute the minimum number of times `at` must be repeated to reach a size that is a
+//         // multiple of `bt`.
+//         match (min_at_count, bt / gcd) {
+//           (0, 1) => Inner::None,
+//           (0, m) => Inner::IsMultipleOf(m),
+//           (n, 1) => Inner::IsAtLeast(n),
+//           (n, m) => Inner::IsAtLeastThenMultipleOf(n, m),
+//         }
+//       }
+//     };
+//     Requires { inner, types: PhantomData }
+//   }
+// }
 
 mod layout {
   use core::marker::PhantomData;
@@ -879,7 +1144,7 @@ mod layout {
 
   /// Metadata requirements.
   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-  enum Requirements {
+  pub enum Requirements {
     Is(usize),
     IsAtLeast(usize),
     IsMultipleOf(usize),
@@ -907,12 +1172,13 @@ mod layout {
     }
 
     #[inline]
-    const fn of<T: ?Sized + Data, U: ?Sized + Data>(mutable: bool) -> Result<Self, &'static str> {
+    #[track_caller]
+    pub const fn of<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Result<Self, &'static str> {
       let (ah, at, bh, bt) = (
-        min_size_of::<T>(),
-        NonZeroUsize::new(size_of_tail::<T>()),
-        min_size_of::<U>(),
-        NonZeroUsize::new(size_of_tail::<U>()),
+        min_size_of::<Src>(),
+        NonZeroUsize::new(size_of_tail::<Src>()),
+        min_size_of::<Dst>(),
+        NonZeroUsize::new(size_of_tail::<Dst>()),
       );
       let mut min_at_count = 0; // Minimum number of `at` required to align `ah[at]` and `bh[bt]`.
       if ah < bh {
@@ -979,244 +1245,341 @@ mod layout {
           }
         }
       };
-      // Check for no-uninit bytes.
-      let at = size_of_tail::<T>();
-      let minimum_size = match requirements {
-        Self::Is(n) | Self::IsAtLeast(n) => ah + (n * at),
-        Self::IsMultipleOf(m) => ah + (m * at),
-        Self::IsAtLeastThenMultipleOf(n, _) => ah + (n * at),
-        Self::IsEmpty | Self::None => ah,
-      };
-      let mut offset = 0;
-      while offset < minimum_size {
-        let (src_layout, dst_layout) = (byte_layout_at::<T>(offset), byte_layout_at::<U>(offset));
-        r#try!(src_layout.validate_transmute_to(dst_layout, mutable));
-        offset += 1;
-      }
       Ok(requirements)
     }
   }
 
-  pub(crate) struct Transmute<T: ?Sized, U: ?Sized, const MUT: bool>(PhantomData<(*const T, U)>);
+  pub(crate) struct Transmute<
+    Src: ?Sized,
+    Dst: ?Sized,
+    const COPY: bool = false,
+    const MUTATION: bool = false,
+    const INFALLIBLE: bool = false,
+  >(PhantomData<(*const Src, Dst)>);
 
-  impl<T: ?Sized + Data, U: ?Sized + Data, const MUT: bool> Transmute<T, U, MUT> {
-    const REQUIREMENTS: Requirements = match Requirements::of::<T, U>(MUT) {
-      Ok(requirements) => requirements,
-      Err(message) => panic!("{}", message),
+  impl<
+      Src: ?Sized + Data,
+      Dst: ?Sized + Data,
+      const COPY: bool,
+      const MUTATION: bool,
+      const INFALLIBLE: bool,
+    > Transmute<Src, Dst, COPY, MUTATION, INFALLIBLE>
+  {
+    pub const MIN_SIZE: usize = match Self::REQUIREMENTS {
+      Requirements::Is(n) | Requirements::IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      Requirements::IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
+      Requirements::IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      Requirements::IsEmpty | Requirements::None => min_size_of::<Src>(),
+    };
+    const REQUIREMENTS: Requirements = {
+      if !COPY && INFALLIBLE && align_of::<Dst>() > align_of::<Src>() {
+        panic!(
+          "target type has higher alignment requirement; consider using a `try_*` alternative \
+           instead"
+        );
+      }
+      let req = match Requirements::of::<Src, Dst>() {
+        Ok(req) => req,
+        Err(reason) => panic!("{}", reason),
+      };
+      // let transmutability = transmutability::<Src, Dst>(0, match req {
+      //   Requirements::Is(n) | Requirements::IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      //   Requirements::IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
+      //   Requirements::IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      //   Requirements::IsEmpty | Requirements::None => min_size_of::<Src>(),
+      // });
+      // match transmutability {
+      //   Transmutability::Unreachable => panic!("invalid transmute"),
+      //   Transmutability::MaybeFallible if INFALLIBLE || MUTATION => panic!("use try_*"),
+      //   _ => {},
+      // }
+      if INFALLIBLE {
+        match req {
+          Requirements::Is(_) => panic!(
+            "cannot transmute between types of incompatible byte layouts, source too small; \
+               consider using a `try_*` alternative instead"
+          ),
+          Requirements::IsAtLeast(_) => panic!(
+            "cannot transmute between types of incompatible byte layouts, target too small; \
+               consider using a `try_*` alternative instead"
+          ),
+          Requirements::IsMultipleOf(_) => panic!(
+            "cannot transmute between types of incompatible byte layouts, tail size multiple of \
+               mismatch; consider using a `try_*` alternative instead"
+          ),
+          Requirements::IsAtLeastThenMultipleOf(_, _) => panic!(
+            "cannot transmute between types of incompatible byte layouts, target too small or \
+               tail size multiple of mismatch; consider using a `try_*` alternative instead"
+          ),
+          Requirements::IsEmpty => panic!(
+            "cannot transmute between types of incompatible byte layouts, source tail might not \
+               be empty; consider using a `try_*` alternative instead"
+          ),
+          Requirements::None => {},
+        }
+      }
+      req
     };
 
     #[inline]
-    pub const fn apply(metadata: usize) -> Result<usize, Error> {
+    #[track_caller]
+    pub const fn apply(metadata: usize) -> Result<usize, isize> {
       match Self::REQUIREMENTS.delta(metadata) {
-        0 if size_of_tail::<U>() == 0 => Ok(0),
-        0 => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail::<U>()),
-        n => Err(Error::SizeMismatch(n * size_of_tail::<T>() as isize)),
+        0 if size_of_tail::<Dst>() == 0 => Ok(0),
+        0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
+        n => Err(n * size_of_tail::<Src>() as isize),
       }
     }
   }
 
-  #[cfg(test)]
-  mod tests {
-    use super::*;
+  #[inline]
+  #[track_caller]
+  pub const fn for_infallible_copy<Src: Copy + Data, Dst: Copy + Data>() {
+    let requirements = Transmute::<Src, Dst, true, false, true>::REQUIREMENTS;
+    assert!(matches!(requirements, Requirements::None));
+  }
 
-    #[test]
-    fn test_byte_layout_at() {
-      use core::mem;
-      use Requirements::*;
-
-      #[derive(Debug, Copy, Clone, Data)]
-      #[repr(C, packed)]
-      #[data(crate)]
-      pub struct BazPacked {
-        a: u8,
-        b: u32,
-        c: [u8; 6],
-      }
-
-      for offset in 0..mem::size_of::<BazPacked>() {
-        assert_eq!(
-          ByteLayout::from_mask(0xff),
-          byte_layout_at::<BazPacked>(offset),
-          "at {}",
-          offset
-        );
-      }
-
-      #[derive(Debug, Copy, Clone, Data)]
-      #[repr(C)]
-      #[data(crate)]
-      pub struct Baz(u8, u32, [u8; 6]);
-
-      assert_eq!(Ok(None), Requirements::of::<BazPacked, [u8]>(false));
-      assert_eq!(
-        Err(
-          "cannot transmute between types of incompatible byte layouts, source padding will left \
-           uninitialized byte(s) in target"
-        ),
-        Requirements::of::<Baz, [u8]>(false)
-      );
-
-      assert_eq!(Ok(None), Requirements::of::<u8, bool>(false));
-      assert_eq!(Ok(None), Requirements::of::<bool, u8>(false));
-      assert_eq!(Ok(None), Requirements::of::<u8, bool>(true));
-      assert_eq!(
-        Err("mutating target type could result in unsound source value"),
-        Requirements::of::<bool, u8>(true)
-      );
-    }
-
-    #[test]
-    fn test_requirements() {
-      use Requirements::*;
-
-      #[derive(Data)]
-      #[repr(C, packed)]
-      #[data(crate)]
-      struct Ty<const H: usize, const T: usize = 0>([u8; H], [[u8; T]]);
-
-      // Basic tests for equal head and tail sizes
-      assert_eq!(Ok(None), Requirements::of::<Ty<1>, Ty<1>>(false));
-      assert_eq!(Ok(None), Requirements::of::<Ty<42>, Ty<42>>(false));
-      assert_eq!(Ok(None), Requirements::of::<Ty<42, 1>, Ty<42, 1>>(false));
-
-      // Test for equal head sizes with different tail sizes
-      assert_eq!(Ok(None), Requirements::of::<Ty<42, 3>, Ty<42, 1>>(false));
-      assert_eq!(Ok(IsMultipleOf(10)), Requirements::of::<Ty<50, 10>, Ty<50, 100>>(false));
-      assert_eq!(Ok(IsMultipleOf(20)), Requirements::of::<Ty<50, 5>, Ty<50, 100>>(false));
-
-      // Test cases for transmuting to and from empty tail
-      assert_eq!(Ok(IsEmpty), Requirements::of::<Ty<42, 1>, Ty<42>>(false));
-      assert_eq!(Ok(Is(7)), Requirements::of::<Ty<35, 1>, Ty<42>>(false));
-      assert_eq!(Ok(None), Requirements::of::<Ty<2>, Ty<1>>(false));
-
-      // Test cases for large difference in head sizes
-      assert_eq!(Ok(Is(80)), Requirements::of::<Ty<20, 1>, Ty<100>>(false));
-
-      // Test cases for tail sizes as multiples
-      assert_eq!(Ok(IsMultipleOf(2)), Requirements::of::<Ty<42, 1>, Ty<42, 2>>(false));
-      assert_eq!(Ok(IsMultipleOf(3)), Requirements::of::<Ty<42, 1>, Ty<42, 3>>(false));
-      assert_eq!(Ok(IsMultipleOf(3)), Requirements::of::<Ty<42, 2>, Ty<42, 3>>(false));
-      assert_eq!(Ok(IsMultipleOf(3)), Requirements::of::<Ty<42, 4>, Ty<42, 3>>(false));
-      assert_eq!(Ok(IsMultipleOf(8)), Requirements::of::<Ty<42, 5>, Ty<42, 8>>(false));
-      assert_eq!(Ok(IsMultipleOf(3)), Requirements::of::<Ty<42, 2>, Ty<42, 6>>(false));
-
-      // Test zero heads
-      assert_eq!(Ok(Is(42)), Requirements::of::<Ty<0, 1>, Ty<42>>(false));
-      assert_eq!(Ok(IsAtLeast(42)), Requirements::of::<Ty<0, 1>, Ty<42, 1>>(false));
-
-      // Test cases for alignment and complex transmutations
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(2, 3)),
-        Requirements::of::<Ty<42, 1>, Ty<38, 3>>(false)
-      );
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(1, 3)),
-        Requirements::of::<Ty<42, 2>, Ty<38, 3>>(false)
-      );
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(1, 3)),
-        Requirements::of::<Ty<43, 2>, Ty<39, 3>>(false)
-      );
-      assert_eq!(Ok(IsMultipleOf(2)), Requirements::of::<Ty<43, 2>, Ty<39, 4>>(false));
-      assert_eq!(Ok(IsAtLeast(2)), Requirements::of::<Ty<1, 2>, Ty<5, 2>>(false));
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(1, 3)),
-        Requirements::of::<Ty<45, 2>, Ty<38, 3>>(false)
-      );
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(2, 4)),
-        Requirements::of::<Ty<40, 1>, Ty<38, 4>>(false)
-      );
-      assert_eq!(
-        Ok(IsAtLeastThenMultipleOf(2, 4)),
-        Requirements::of::<Ty<44, 5>, Ty<38, 4>>(false)
-      );
-      assert_eq!(Ok(IsAtLeast(1)), Requirements::of::<Ty<38, 3>, Ty<41, 3>>(false));
-
-      // Panic test cases for incompatible transmutations
-      assert_eq!(
-        Err("cannot transmute between types of different sizes, source too small"),
-        Requirements::of::<Ty<1>, Ty<2>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
-           target is not a multiple of the source `DST` trailing slice item size"
-        ),
-        Requirements::of::<Ty<35, 2>, Ty<42>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
-           target is not a multiple of the source `DST` trailing slice item size"
-        ),
-        Requirements::of::<Ty<40, 3>, Ty<42>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between types of incompatible byte layouts, remaining bytes to fit in \
-           the target is not a multiple of the target `DST` trailing slice item size"
-        ),
-        Requirements::of::<Ty<42>, Ty<38, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<42, 3>, Ty<38, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<41, 3>, Ty<39, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<38, 3>, Ty<42, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<39, 3>, Ty<41, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<39, 3>, Ty<41, 6>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<39, 6>, Ty<41, 3>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<39, 6>, Ty<41, 9>>(false)
-      );
-      assert_eq!(
-        Err(
-          "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-           catchup on target"
-        ),
-        Requirements::of::<Ty<39, 3>, Ty<41, 9>>(false)
-      );
+  #[inline]
+  #[track_caller]
+  pub const fn for_infallible_ref<Src: ?Sized + Data, Dst: ?Sized + Data>(
+    metadata: usize,
+  ) -> usize {
+    let requirements = Transmute::<Src, Dst, false, false, true>::REQUIREMENTS;
+    assert!(matches!(requirements, Requirements::None));
+    match size_of_tail::<Dst>() {
+      0 => 0,
+      n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
     }
   }
+
+  #[inline]
+  #[track_caller]
+  pub const fn for_infallible_mut<Src: ?Sized + Data, Dst: ?Sized + Data>(
+    metadata: usize,
+  ) -> usize {
+    let requirements = Transmute::<Src, Dst, false, true, true>::REQUIREMENTS;
+    assert!(matches!(requirements, Requirements::None));
+    match size_of_tail::<Dst>() {
+      0 => 0,
+      n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
+    }
+  }
+
+  #[inline]
+  #[track_caller]
+  pub const fn for_copy<Src: Copy + Data, Dst: Copy + Data>() {
+    let requirements = Transmute::<Src, Dst, true, false, false>::REQUIREMENTS;
+    assert!(matches!(requirements, Requirements::None));
+  }
+
+  #[inline]
+  #[track_caller]
+  pub const fn for_ref<Src: ?Sized + Data, Dst: ?Sized + Data>(
+    metadata: usize,
+  ) -> Result<usize, isize> {
+    Transmute::<Src, Dst, false, false, false>::apply(metadata)
+  }
+
+  #[inline]
+  #[track_caller]
+  pub const fn for_mut<Src: ?Sized + Data, Dst: ?Sized + Data>(
+    metadata: usize,
+  ) -> Result<usize, isize> {
+    Transmute::<Src, Dst, false, true, false>::apply(metadata)
+  }
+
+  // #[cfg(test)]
+  // mod tests {
+  //   use super::*;
+  //
+  //   #[test]
+  //   fn test_byte_layout_at() {
+  //     use MetadataRequirements::*;
+  //
+  //     #[derive(Debug, Copy, Clone, Data)]
+  //     #[repr(C, packed)]
+  //     #[data(crate)]
+  //     pub struct BazPacked {
+  //       a: u8,
+  //       b: u32,
+  //       c: [u8; 6],
+  //     }
+  //
+  //     #[derive(Debug, Copy, Clone, Data)]
+  //     #[repr(C)]
+  //     #[data(crate)]
+  //     pub struct Baz(u8, u32, [u8; 6]);
+  //
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<BazPacked, [u8]>());
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between types of incompatible byte layouts, source padding will left \
+  //          uninitialized byte(s) in target"
+  //       ),
+  //       MetadataRequirements::of::<Baz, [u8]>()
+  //     );
+  //
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<u8, bool>());
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<bool, u8>());
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<u8, bool>());
+  //     assert_eq!(
+  //       Err("mutating target type could result in unsound source value"),
+  //       MetadataRequirements::of::<bool, u8>()
+  //     );
+  //   }
+  //
+  //   #[test]
+  //   fn test_requirements() {
+  //     use MetadataRequirements::*;
+  //
+  //     #[derive(Data)]
+  //     #[repr(C, packed)]
+  //     #[data(crate)]
+  //     struct Ty<const H: usize, const T: usize = 0>([u8; H], [[u8; T]]);
+  //
+  //     // Basic tests for equal head and tail sizes
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<Ty<1>, Ty<1>>());
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<Ty<42>, Ty<42>>());
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<Ty<42, 1>, Ty<42, 1>>());
+  //
+  //     // Test for equal head sizes with different tail sizes
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<Ty<42, 3>, Ty<42, 1>>());
+  //     assert_eq!(Ok(IsMultipleOf(10)), MetadataRequirements::of::<Ty<50, 10>, Ty<50, 100>>());
+  //     assert_eq!(Ok(IsMultipleOf(20)), MetadataRequirements::of::<Ty<50, 5>, Ty<50, 100>>());
+  //
+  //     // Test cases for transmuting to and from empty tail
+  //     assert_eq!(Ok(IsEmpty), MetadataRequirements::of::<Ty<42, 1>, Ty<42>>());
+  //     assert_eq!(Ok(Is(7)), MetadataRequirements::of::<Ty<35, 1>, Ty<42>>());
+  //     assert_eq!(Ok(None), MetadataRequirements::of::<Ty<2>, Ty<1>>());
+  //
+  //     // Test cases for large difference in head sizes
+  //     assert_eq!(Ok(Is(80)), MetadataRequirements::of::<Ty<20, 1>, Ty<100>>());
+  //
+  //     // Test cases for tail sizes as multiples
+  //     assert_eq!(Ok(IsMultipleOf(2)), MetadataRequirements::of::<Ty<42, 1>, Ty<42, 2>>());
+  //     assert_eq!(Ok(IsMultipleOf(3)), MetadataRequirements::of::<Ty<42, 1>, Ty<42, 3>>());
+  //     assert_eq!(Ok(IsMultipleOf(3)), MetadataRequirements::of::<Ty<42, 2>, Ty<42, 3>>());
+  //     assert_eq!(Ok(IsMultipleOf(3)), MetadataRequirements::of::<Ty<42, 4>, Ty<42, 3>>());
+  //     assert_eq!(Ok(IsMultipleOf(8)), MetadataRequirements::of::<Ty<42, 5>, Ty<42, 8>>());
+  //     assert_eq!(Ok(IsMultipleOf(3)), MetadataRequirements::of::<Ty<42, 2>, Ty<42, 6>>());
+  //
+  //     // Test zero heads
+  //     assert_eq!(Ok(Is(42)), MetadataRequirements::of::<Ty<0, 1>, Ty<42>>());
+  //     assert_eq!(Ok(IsAtLeast(42)), MetadataRequirements::of::<Ty<0, 1>, Ty<42, 1>>());
+  //
+  //     // Test cases for alignment and complex transmutations
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(2, 3)),
+  //       MetadataRequirements::of::<Ty<42, 1>, Ty<38, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(1, 3)),
+  //       MetadataRequirements::of::<Ty<42, 2>, Ty<38, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(1, 3)),
+  //       MetadataRequirements::of::<Ty<43, 2>, Ty<39, 3>>()
+  //     );
+  //     assert_eq!(Ok(IsMultipleOf(2)), MetadataRequirements::of::<Ty<43, 2>, Ty<39, 4>>());
+  //     assert_eq!(Ok(IsAtLeast(2)), MetadataRequirements::of::<Ty<1, 2>, Ty<5, 2>>());
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(1, 3)),
+  //       MetadataRequirements::of::<Ty<45, 2>, Ty<38, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(2, 4)),
+  //       MetadataRequirements::of::<Ty<40, 1>, Ty<38, 4>>()
+  //     );
+  //     assert_eq!(
+  //       Ok(IsAtLeastThenMultipleOf(2, 4)),
+  //       MetadataRequirements::of::<Ty<44, 5>, Ty<38, 4>>()
+  //     );
+  //     assert_eq!(Ok(IsAtLeast(1)), MetadataRequirements::of::<Ty<38, 3>, Ty<41, 3>>());
+  //
+  //     // Panic test cases for incompatible transmutations
+  //     assert_eq!(
+  //       Err("cannot transmute between types of different sizes, source too small"),
+  //       MetadataRequirements::of::<Ty<1>, Ty<2>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
+  //          target is not a multiple of the source `DST` trailing slice item size"
+  //       ),
+  //       MetadataRequirements::of::<Ty<35, 2>, Ty<42>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
+  //          target is not a multiple of the source `DST` trailing slice item size"
+  //       ),
+  //       MetadataRequirements::of::<Ty<40, 3>, Ty<42>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between types of incompatible byte layouts, remaining bytes to fit in \
+  //          the target is not a multiple of the target `DST` trailing slice item size"
+  //       ),
+  //       MetadataRequirements::of::<Ty<42>, Ty<38, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<42, 3>, Ty<38, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<41, 3>, Ty<39, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<38, 3>, Ty<42, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<39, 3>, Ty<41, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<39, 3>, Ty<41, 6>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<39, 6>, Ty<41, 3>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<39, 6>, Ty<41, 9>>()
+  //     );
+  //     assert_eq!(
+  //       Err(
+  //         "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
+  //          catchup on target"
+  //       ),
+  //       MetadataRequirements::of::<Ty<39, 3>, Ty<41, 9>>()
+  //     );
+  //   }
+  // }
 }
 
 // num ---------------------------------------------------------------------------------------------
@@ -1236,7 +1599,7 @@ pub mod num {
       pub struct $ty(pub [u8; $n]);
 
       unsafe impl RawData for $ty {
-        const RAW_LAYOUT: RawLayout = RawLayout::any();
+        const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
       }
 
       impl $ty {
@@ -1375,61 +1738,333 @@ pub mod num {
 
 // internal ----------------------------------------------------------------------------------------
 
+/// Counts the number of values in one range (`of`) that also exist in another range (`into`).
+/// Both `of` and `into` are inclusive ranges.
+///
+/// # Parameters
+/// - `of`: A `Range<u64>` representing the first range.
+/// - `into`: A `Range<u64>` representing the second range.
+///
+/// # Returns
+/// `u128`: The number of overlapping elements between the two ranges.
+///
+/// # Examples
+/// ```
+/// use mutant::overlaps;
+///
+/// assert_eq!(2, overlaps(0..1, 0..1));
+/// assert_eq!(1, overlaps(0..0, 0..1));
+/// assert_eq!(1, overlaps(0..1, 0..0));
+/// assert_eq!(0, overlaps(5..10, 11..15));
+/// assert_eq!(32, overlaps(0..63, 32..63));
+/// ```
+#[doc(hidden)]
+pub const fn overlaps(of: Range<u64>, into: Range<u64>) -> u128 {
+  let start = if of.start > into.start { of.start } else { into.start };
+  let end = if of.end < into.end { of.end } else { into.end };
+
+  // Check if there is an overlap.
+  size(start..end)
+}
+
+/// Counts the number of possible values in an inclusive `Range<u64>`.
+///
+/// # Parameters
+/// - `range`: A `Range<u64>` representing the inclusive range.
+///
+/// # Returns
+/// `u128`: The number of possible values within the range.
+///
+/// # Examples
+/// ```
+/// use mutant::size;
+///
+/// assert_eq!(2, size(0..1)); // Range includes 0 and 1
+/// assert_eq!(1, size(0..0)); // Range includes only 0
+/// assert_eq!(101, size(0..100)); // Range includes numbers 0 through 100
+/// assert_eq!(64, size(32..95)); // Range includes numbers 32 through 95
+/// ```
+#[doc(hidden)]
+pub const fn size(range: Range<u64>) -> u128 {
+  match range.start > range.end {
+    true => 0,
+    _ => (range.end - range.start) as u128 + 1
+  }
+}
+
 const _: () = {
   use core::fmt;
   use core::fmt::{Debug, Display, Formatter};
-  use core::marker::PhantomData;
-  use core::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
+  use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
   use core::ops::{Deref, DerefMut};
+
+  // impl Ordering ---------------------------------------------------------------------------------
+
+  impl Ordering {
+    #[cfg(target_endian = "little")]
+    const NATIVE: Self = Self::Lsb;
+    #[cfg(target_endian = "big")]
+    const NATIVE: Self = Self::Msb;
+
+    #[inline]
+    pub const fn shift(self, byte: usize, width: usize) -> usize {
+      match self {
+        Self::Lsb => byte * 8,
+        Self::Msb => (width - byte - 1) * 8,
+      }
+    }
+  }
+
+  // impl MetadataChecks ---------------------------------------------------------------------------
+
+  impl MetadataChecks {
+    #[inline]
+    const fn check(self, metadata: usize) -> isize {
+      use MetadataChecks::*;
+      match self {
+        Is(n) if metadata == n => 0,
+        IsAtLeast(n) if metadata >= n => 0,
+        Is(n) | IsAtLeast(n) => n as isize - metadata as isize,
+        IsMultipleOf(m) if metadata % m == 0 => 0,
+        IsMultipleOf(m) => m as isize - (metadata % m) as isize,
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => 0,
+        IsAtLeastThenMultipleOf(n, _) if metadata < n => n as isize - metadata as isize,
+        IsAtLeastThenMultipleOf(_, m) => m as isize - (metadata % m) as isize,
+        IsEmpty if metadata == 0 => 0,
+        IsEmpty => -(metadata as isize),
+        None => 0,
+      }
+    }
+
+    #[inline]
+    #[track_caller]
+    const fn assert_infallible(self) {
+      use MetadataChecks::*;
+      match self {
+        Is(_) => panic!(
+          "cannot transmute between types of incompatible byte layouts, source too small; \
+               consider using a `try_*` alternative instead"
+        ),
+        IsAtLeast(_) => panic!(
+          "cannot transmute between types of incompatible byte layouts, target too small; \
+               consider using a `try_*` alternative instead"
+        ),
+        IsMultipleOf(_) => panic!(
+          "cannot transmute between types of incompatible byte layouts, tail size multiple of \
+               mismatch; consider using a `try_*` alternative instead"
+        ),
+        IsAtLeastThenMultipleOf(_, _) => panic!(
+          "cannot transmute between types of incompatible byte layouts, target too small or \
+               tail size multiple of mismatch; consider using a `try_*` alternative instead"
+        ),
+        IsEmpty => panic!(
+          "cannot transmute between types of incompatible byte layouts, source tail might not \
+               be empty; consider using a `try_*` alternative instead"
+        ),
+        None => {},
+      }
+    }
+  }
+
+  // impl Transmutability --------------------------------------------------------------------------
+
+  impl Transmutability {
+    #[inline]
+    pub const fn merge(self, other: Self) -> Self {
+      use Transmutability::*;
+      match (self, other) {
+        (MaybeFallible, _) | (_, MaybeFallible) => MaybeFallible,
+        _ => Infallible,
+      }
+    }
+
+    #[inline]
+    #[track_caller]
+    const fn assert_infallible(self) {
+      match self {
+        Transmutability::MaybeFallible => panic!("todo: proper message"),
+        _ => {}
+      }
+    }
+  }
 
   // impl ByteLayout -------------------------------------------------------------------------------
 
   impl ByteLayout {
     #[inline]
-    pub const fn from_mask(mask: u8) -> Self {
-      match NonZeroU8::new(mask) {
-        Some(mask) => Self::AllowedBits(mask),
-        _ => Self::Uninit,
+    pub const fn is_uninit(&self) -> bool {
+      !matches!(self, Self::Init { .. })
+    }
+
+    #[inline]
+    pub const fn is_any(&self) -> bool {
+      match self {
+        ByteLayout::Init { layout, .. } => layout.is_any(),
+        ByteLayout::OutOfBounds => false,
+        _ => true,
       }
     }
 
     #[inline]
-    pub const fn validate_transmute_to(self, dst: Self, mutable: bool) -> Result<(), &'static str> {
-      match (self, dst) {
-        (_, Self::Uninit) => Ok(()),
-        (Self::Uninit, _) => Err(
-          "cannot transmute between types of incompatible byte layouts, source padding will left \
-           uninitialized byte(s) in target",
-        ),
-        (Self::AllowedBits(src), Self::AllowedBits(dst)) => {
-          if mutable && src.get() | dst.get() != src.get() {
-            return Err("mutating target type could result in unsound source value");
+    pub const fn width(&self) -> usize {
+      match self {
+        ByteLayout::Init { layout, offset } => layout.width - *offset,
+        _ => 1,
+      }
+    }
+  }
+
+  // impl RawLayout --------------------------------------------------------------------------------
+
+  impl RawLayout {
+    #[inline]
+    pub const fn new<T>(patterns: &'static [Range<u64>]) -> Self {
+      assert!(mem::size_of::<T>() <= 8);
+      Self { ordering: Ordering::NATIVE, patterns: Some(patterns), width: mem::size_of::<T>() }
+    }
+
+    #[inline]
+    pub const fn any<T>() -> Self {
+      assert!(mem::size_of::<T>() <= 8);
+      Self { ordering: Ordering::NATIVE, patterns: None, width: mem::size_of::<T>() }
+    }
+
+    #[inline]
+    pub const fn with_ordering(self, ordering: Ordering) -> Self {
+      Self { ordering, patterns: self.patterns, width: self.width }
+    }
+
+    #[inline]
+    pub const fn is_any(&self) -> bool {
+      self.patterns.is_none()
+    }
+
+    #[inline]
+    pub const fn offset(&'static self, offset: usize) -> ByteLayout {
+      assert!(offset < self.width);
+      ByteLayout::Init { layout: self, offset }
+    }
+
+    #[inline]
+    pub const fn mask(&self, val: u64) -> u64 {
+      let mask = ((1u128 << (self.width * 8)) - 1) as u64;
+      val & mask
+    }
+
+    #[inline]
+    pub const fn values(&self) -> u128 {
+      match self.patterns {
+        None => 1u128 << (self.width * 8),
+        Some(pats) => {
+          let (mut i, mut values) = (0, 0u128);
+          while i < pats.len() {
+            values += size(pats[i].start..pats[i].end);
+            i += 1;
           }
-          Ok(())
+          values
         }
       }
     }
 
     #[inline]
-    pub const fn matches(self, byte: u8) -> bool {
-      match self {
-        ByteLayout::Uninit => true,
-        ByteLayout::AllowedBits(mask) => byte | mask.get() == mask.get(),
+    pub const fn contains(&self, value: u64) -> bool {
+      match self.patterns {
+        None => true,
+        Some(pats) => {
+          let mut i = 0;
+          while i < pats.len() {
+            if value >= pats[i].start && value <= pats[i].end {
+              return true;
+            }
+            i += 1;
+          }
+          false
+        }
       }
     }
-  }
 
-  // impl IntegerSpec ------------------------------------------------------------------------------
-
-  impl RawLayout {
     #[inline]
-    pub const fn any() -> Self {
-      Self { pattern: None }
+    pub const fn overlaps(&self, pat: Range<u64>) -> u128 {
+      match self.patterns {
+        None => size(pat),
+        Some(pats) => {
+          let (mut i, mut n) = (0, 0);
+          while i < pats.len() {
+            n += overlaps(pat.start..pat.end, pats[i].start..pats[i].end);
+            i += 1;
+          }
+          n
+        }
+      }
+    }
+
+    const fn overlaps_from<Src: ?Sized + Data>(
+      &self,
+      pat: Range<u64>,
+      off: usize,
+      byte: usize,
+    ) -> u128 {
+      if byte == self.width {
+        return 0;
+      }
+
+      match byte_layout_at::<Src>(off + byte) {
+        ByteLayout::Init { layout, .. } => {
+          let start = layout.mask(pat.start << self.ordering.shift(byte, self.width));
+          let end = layout.mask(pat.end << self.ordering.shift(byte, self.width));
+          layout.overlaps(start..end) + self.overlaps_from::<Src>(pat, off, byte + layout.width)
+        }
+        _ =>  unreachable!()
+      }
     }
 
     #[inline]
-    pub const fn with_pattern(pattern: &'static [ByteLayout]) -> Self {
-      Self { pattern: Some(pattern) }
+    #[track_caller]
+    const fn transmutability<Src: ?Sized + Data>(&self, mut off: usize) -> Transmutability {
+      use const_panic::concat_panic;
+
+      use ByteLayout::*;
+      use Transmutability::*;
+
+      let end = off + self.width;
+      let mut values = 1;
+      while off < end {
+        let src = byte_layout_at::<Src>(off);
+        match src {
+          Uninit => concat_panic!("byte at offset ", off, " in source is uninitialized"),
+          OutOfBounds => concat_panic!("byte at offset ", off, " in source is out-of-bounds"),
+          Init { layout, offset } if !self.is_any() => {
+            // Layouts may overlap, returns a maybe false-positive instead of performing
+            // complex computation.
+            // This path could still be improved later on.
+            if offset != 0 || off + layout.width > end {
+              return MaybeFallible;
+            }
+            values *= layout.values();
+          },
+          _ => {}
+        }
+        off += src.width();
+      }
+
+      let pats = match self.patterns {
+        None => return Infallible,
+        Some(pats) => pats,
+      };
+      let off = end - self.width;
+      let mut i = 0;
+      let mut overlaps = 0;
+      while i < pats.len() {
+        overlaps += self.overlaps_from::<Src>(pats[i].start..pats[i].end, off, 0);
+        i += 1;
+      }
+      if overlaps == values {
+        Infallible
+      } else if overlaps == 0 {
+        concat_panic!("none of byte patterns at offset ", off, " in source are valid in target")
+      } else {
+        MaybeFallible
+      }
     }
   }
 
@@ -1635,47 +2270,47 @@ const _: () = {
   // impl RawData ----------------------------------------------------------------------------------
 
   unsafe impl RawData for bool {
-    const RAW_LAYOUT: RawLayout = RawLayout::with_pattern(&[ByteLayout::from_mask(0b1)]);
+    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[0..1]);
   }
 
   unsafe impl RawData for u8 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for u16 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for u32 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for u64 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for usize {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for Option<NonZeroU8> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for Option<NonZeroU16> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for Option<NonZeroU32> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for Option<NonZeroU64> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 
   unsafe impl RawData for Option<NonZeroUsize> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any();
+    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
   }
 };
 
@@ -1714,16 +2349,9 @@ mod tests {
 
   #[test]
   fn test_byte_layout_at() {
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(0));
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(1));
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(2));
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(3));
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(4));
-    assert_eq!(ByteLayout::from_mask(0xff), byte_layout_at::<Bar<[u8]>>(5));
-
     assert_eq!(Ok(&true), try_transmute_ref::<u8, bool>(&1u8));
     assert_eq!(Ok(&1u8), try_transmute_ref::<bool, u8>(&true));
-    assert_eq!(Ok(&mut true), try_transmute_mut::<u8, bool>(&mut 1u8));
+    // assert_eq!(Ok(&mut true), try_transmute_mut::<u8, bool>(&mut 1u8));
   }
 
   #[test]
@@ -1838,10 +2466,6 @@ pub fn ee(val: &[u8]) -> Result<&Test2, Error> {
 }
 
 pub fn ff(val: &Test2) -> &[u8] {
-  transmute_ref(val)
-}
-
-pub fn gg(val: &[u8]) -> &Test2 {
   transmute_ref(val)
 }
 

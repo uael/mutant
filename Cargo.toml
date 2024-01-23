@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 mutant-derive = { path = "derive" }
+const_panic = "0.2.8"
 
 [dev-dependencies]
 loop-code = "0.5.2"
