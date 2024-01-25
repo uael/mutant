@@ -83,8 +83,8 @@
 //!
 //! Transmute is checked at compile time:
 //! ```rust,compile_fail
-//! use mutant::try_transmute_mut;
-//! let _ = try_transmute_mut::<bool, u8>(&mut true);
+//! use mutant::transmute_mut;
+//! let _: &mut u8 = transmute_mut!(&mut true);
 //! ```
 //!
 //! # Why mutant?
@@ -153,15 +153,16 @@
 //!
 //! `mutant` is open-source software licensed under the MIT license. Feel free to use, modify,
 //! and distribute it in accordance with the license terms.
+use core::marker::PhantomData;
 use core::mem;
 use core::mem::ManuallyDrop;
 use core::num::NonZeroU8;
-use core::ops::Range;
-use core::marker::PhantomData;
 use core::num::NonZeroUsize;
+use core::ops::Range;
 
 use const_panic::concat_panic;
 
+use crate::MetadataChecks::{IsEmpty, NoneToRemove};
 pub use mutant_derive::Data;
 
 /// Represents errors that can arise within `mutant` operations.
@@ -205,16 +206,7 @@ pub enum MetadataChecks {
   IsMultipleOf(usize),
   IsAtLeastThenMultipleOf(usize, usize),
   IsEmpty,
-  None,
-}
-
-/// Represents the feasibility of a transmutation between two data types.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum Transmutability {
-  /// All possible byte patterns in the source are valid in the target.
-  Infallible,
-  /// Some, maybe all, byte patterns are valid.
-  MaybeFallible,
+  NoneToRemove,
 }
 
 /// Represents the memory layout of a type.
@@ -238,7 +230,7 @@ pub struct RawLayout {
   /// Byte ordering.
   ordering: Ordering,
   /// Allowed value ranges.
-  patterns: Option<&'static [Range<u64>]>,
+  bit_patterns: Option<&'static [Range<u64>]>,
   /// Data width in bytes.
   width: usize,
 }
@@ -331,17 +323,22 @@ pub unsafe trait RawData: Copy + Data {
 
 // Macros ------------------------------------------------------------------------------------------
 
+/// Helper marco to evaluate code at compile-time.
 #[doc(hidden)]
-macro_rules! evalc {
-  (|$src:ident, $dst:ident| => $e:expr) => { evalc!(|$src, $dst| () => $e) };
-  (|$src:ident, $dst:ident| $ty:ty => $e:expr) => {{
-    struct ConstEval<Src: ?Sized, Dst: ?Sized>(PhantomData<Src>, PhantomData<Dst>);
-
-    impl<Src: ?Sized + Data, Dst: ?Sized + Data> ConstEval<Src, Dst> {
-      const RESULT: $ty = $e;
-    }
-
-    ConstEval::<$src, $dst>::RESULT
+#[macro_export]
+macro_rules! comptime {
+  // default return type to `()` when none are provided.
+  (|$( $arg:ident $(: $b0:ident $(+ $bn:ident)*)? ),*| $e:expr) => {
+    $crate::comptime!(() |$( $arg $(: $b0 $(+ $bn)*)? ),*| $e)
+  };
+  // this use the `impl X { const Y: Ty = <expr>; }` trick.
+  ($ret:path |$( $arg:ident $(: $b0:ident $(+ $bn:ident)*)? ),*| $e:expr) => {{
+    // declare a private struct with all type arguments as `PhantomData`.
+    struct Comptime<$( $arg: ?Sized ),*>($( PhantomData<$arg> ),*);
+    // impl the struct and declare a `RESULT` constant assigned to `$e`.
+    impl<$( $arg: ?Sized $(+ $b0 $(+ $bn)*)? ),*> Comptime<$( $arg ),*> { const RESULT: $ret = $e; }
+    // returns the compile-time evaluated constant.
+    Comptime::<$( $arg ),*>::RESULT
   }};
 }
 
@@ -383,44 +380,102 @@ macro_rules! offset_of {
 }
 
 #[macro_export]
-macro_rules! transmute {
-  ($e:expr) => {{
-    const fn transmute<Src: Copy + Data, Dst: Copy + Data>(src: Src) -> Dst {
-      let _ = evalc!(|Src, Dst| () => $crate::transmutability::<Src, Dst>().assert_infallible());
-      union Transmute<T: Copy, U: Copy> { src: T, dst: U }
-      unsafe { Transmute { src }.dst }
+macro_rules! unwrap {
+  ($e:expr $(,)?) => {
+    match $e {
+      Ok(ok) => ok,
+      Err(err) => panic!("{}", err),
+    }
+  };
+}
+
+#[macro_export]
+macro_rules! bail {
+  ($e:expr $(,)?) => {
+    match $e {
+      Ok(ok) => ok,
+      Err(err) => return Err(err),
+    }
+  };
+}
+
+#[macro_export]
+macro_rules! transmutation {
+  ($($checks:ident),* $(,)?) => {{
+    struct Comptime<T: ?Sized, U: ?Sized>(::core::marker::PhantomData<(*const T, *const U)>);
+
+    impl<Src: ?Sized + $crate::Data, Dst: ?Sized + $crate::Data> Comptime<Src, Dst> {
+      const TRANSMUTATION: $crate::Transmutation2<Src, Dst> = {
+        let transmutation = $crate::Transmutation2::new();
+        $crate::unwrap!(transmutation.check());
+        $($crate::unwrap!(transmutation.$checks());)+
+        transmutation
+      };
     }
 
-    transmute($e)
+    Comptime::TRANSMUTATION
   }};
 }
 
 #[macro_export]
+macro_rules! transmute {
+  ($e:expr $(,)?) => (
+    $crate::transmutation!(check_no_size_mismatch, check_no_invalid_bit_pattern).transmute($e)
+  );
+}
+
+#[macro_export]
+macro_rules! transmute_copy {
+  ($e:expr $(,)?) => (
+    $crate::transmutation!(check_no_size_mismatch, check_no_invalid_bit_pattern).transmute_copy($e)
+  );
+}
+
+#[macro_export]
+macro_rules! transmute_mut {
+  ($e:expr $(,)?) => {
+    $crate::transmutation!(
+      check_no_alignment_mismatch, check_no_size_mismatch, check_no_invalid_bit_pattern, check_sound_target_mutation
+    ).transmute_mut($e)
+  };
+}
+
+#[macro_export]
+macro_rules! transmute_ref {
+  ($e:expr $(,)?) => {
+    $crate::transmutation!(
+      check_no_alignment_mismatch, check_no_size_mismatch, check_no_invalid_bit_pattern,
+    ).transmute_ref($e)
+  };
+}
+
+#[macro_export]
 macro_rules! try_transmute {
-  ($e:expr) => {{
-    const fn transmute<Src: Copy + Data, Dst: Copy + Data>(src: Src) -> Dst {
-      let _ = evalc!(|Src, Dst| () => { $crate::transmutability::<Src, Dst>(); });
-      union Transmute<T: Copy, U: Copy> { src: T, dst: U }
-      unsafe { Transmute { src }.dst }
-    }
-
-    let dst = transmute($e);
-    match $crate::is_bits_valid(&dst) {
-      true => Some(dst),
-      _ => None,
-    }
-  }};
+  ($e:expr $(,)?) => {
+    $crate::transmutation!(check_no_size_mismatch).try_transmute_copy(&$e)
+  };
 }
 
-#[test]
-fn test_() {
-  let _: u8 = transmute!(true);
-  let _: Option<bool> = try_transmute!(0u8);
+#[macro_export]
+macro_rules! try_transmute_copy {
+  ($e:expr $(,)?) => {
+    $crate::transmutation!(check_no_size_mismatch).try_transmute_copy($e)
+  };
 }
-// #[track_caller]
-// const fn test<T>(e: &T) {
-//   check!(e);
-// }
+
+#[macro_export]
+macro_rules! try_transmute_mut {
+  ($e:expr $(,)?) => {
+    $crate::transmutation!(check_no_invalid_bit_pattern).try_transmute_mut($e)
+  };
+}
+
+#[macro_export]
+macro_rules! try_transmute_ref {
+  ($e:expr $(,)?) => {
+    $crate::transmutation!().try_transmute_ref($e)
+  };
+}
 
 /// Safely reference unaligned data.
 #[macro_export]
@@ -469,7 +524,7 @@ pub const BIG_ALLOCATION: *const () = {
   ptr.cast()
 };
 
-/// Assert that a [`Data`] type is unaligned (ie. his alignment is equals to 1).
+/// Assert that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
 #[doc(hidden)]
 #[rustfmt::skip]
 #[inline]
@@ -708,8 +763,8 @@ pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Metada
     let missing = bh - ah;
     if bt.is_none() && missing % at != 0 {
       concat_panic!(
-        "cannot transmute between types of incompatible byte layouts, missing bytes to fit \
-           the target is not a multiple of the source `DST` trailing slice item size",
+        "cannot transmute between types of incompatible byte layouts, missing bytes to fit the \
+         target is not a multiple of the source `DST` trailing slice item size",
       );
     }
     min_at_count = (missing + at - 1) / at; // Ceiling of division.
@@ -718,14 +773,14 @@ pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Metada
       let remaining = ah - bh;
       if at.is_none() && remaining % bt.get() != 0 {
         concat_panic!(
-          "cannot transmute between types of incompatible byte layouts, remaining bytes to \
-             fit in the target is not a multiple of the target `DST` trailing slice item size",
+          "cannot transmute between types of incompatible byte layouts, remaining bytes to fit in \
+           the target is not a multiple of the target `DST` trailing slice item size",
         );
       }
     }
   }
   match (at, bt) {
-    (None, _) => MetadataChecks::None,
+    (None, _) => MetadataChecks::NoneToRemove,
     (Some(at), None) => {
       if ah < bh {
         MetadataChecks::Is((bh - ah) / at.get())
@@ -749,7 +804,7 @@ pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Metada
         if min_at_count * at > lcm {
           concat_panic!(
             "cannot transmute between `DST` types of incompatible byte layouts, source cannot \
-               catchup on target",
+             catchup on target",
           );
         }
         min_at_count += 1;
@@ -757,7 +812,7 @@ pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Metada
       // Compute the minimum number of times `at` must be repeated to reach a size that is a
       // multiple of `bt`.
       match (min_at_count, bt / gcd) {
-        (0, 1) => MetadataChecks::None,
+        (0, 1) => MetadataChecks::NoneToRemove,
         (0, m) => MetadataChecks::IsMultipleOf(m),
         (n, 1) => MetadataChecks::IsAtLeast(n),
         (n, m) => MetadataChecks::IsAtLeastThenMultipleOf(n, m),
@@ -769,29 +824,6 @@ pub const fn metadata_checks<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Metada
 #[inline]
 pub const fn min_size_of<T: ?Sized + Data>() -> usize {
   T::HEADER
-}
-
-#[inline]
-pub const fn transmute_metadata<Src: ?Sized + Data, Dst: ?Sized + Data>(metadata: usize)
-  -> Result<usize, isize>
-{
-  match evalc!(|Src, Dst| MetadataChecks => metadata_checks::<Src, Dst>()).check(metadata) {
-    0 if size_of_tail::<Dst>() == 0 => Ok(0),
-    0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
-    n => Err(n * size_of_tail::<Src>() as isize),
-  }
-}
-
-#[inline]
-#[track_caller]
-pub const fn transmute_min_size<Src: ?Sized + Data, Dst: ?Sized + Data>() -> usize {
-  use MetadataChecks::*;
-  match metadata_checks::<Src, Dst>() {
-    Is(n) | IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
-    IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
-    IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
-    IsEmpty | None => min_size_of::<Src>(),
-  }
 }
 
 #[inline]
@@ -823,6 +855,30 @@ pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::Tail])
 }
 
 #[inline]
+pub const fn transmute_metadata<Src: ?Sized + Data, Dst: ?Sized + Data>(
+  metadata: usize,
+) -> Result<usize, isize> {
+  let checks = comptime!(MetadataChecks |Src: Data, Dst: Data| metadata_checks::<Src, Dst>());
+  match checks.check(metadata) {
+    0 if size_of_tail::<Dst>() == 0 => Ok(0),
+    0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
+    n => Err(n * size_of_tail::<Src>() as isize),
+  }
+}
+
+#[inline]
+#[track_caller]
+pub const fn transmute_min_size<Src: ?Sized + Data, Dst: ?Sized + Data>() -> usize {
+  use MetadataChecks::*;
+  match metadata_checks::<Src, Dst>() {
+    Is(n) | IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+    IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
+    IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+    IsEmpty | NoneToRemove => min_size_of::<Src>(),
+  }
+}
+
+#[inline]
 pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, &[T::Tail])> {
   if mid < min_size_of::<T>() || mid > size_of_val(val) {
     return None;
@@ -845,8 +901,7 @@ pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, 
 
 #[inline]
 #[track_caller]
-pub const fn transmute<T: Copy + Data, U: Copy + Data>(src: T) -> U {
-  let _ = layout::for_infallible_copy::<T, U>();
+pub const unsafe fn transmute_unchecked<Src: Copy, Dst: Copy>(src: Src) -> Dst {
   union Transmute<T: Copy, U: Copy> {
     src: T,
     dst: U,
@@ -923,38 +978,677 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(src: &T) -> R
 
 /// # Examples
 /// ```
-/// use mutant::{transmutability, Transmutability::*};
+/// use mutant::{is_infallible};
 ///
-/// assert_eq!(Infallible, transmutability::<bool, u8>());
-/// assert_eq!(MaybeFallible, transmutability::<u8, bool>());
+/// assert_eq!(true, is_infallible::<bool, u8>());
+/// assert_eq!(false, is_infallible::<u8, bool>());
 ///
-/// assert_eq!(Infallible, transmutability::<(u8, u8), u16>());
-/// assert_eq!(Infallible, transmutability::<u16, (u8, u8)>());
+/// assert_eq!(true, is_infallible::<(u8, u8), u16>());
+/// assert_eq!(true, is_infallible::<u16, (u8, u8)>());
 ///
-/// assert_eq!(Infallible, transmutability::<(bool, bool), u16>());
-/// assert_eq!(MaybeFallible, transmutability::<u16, (bool, bool)>());
+/// assert_eq!(true, is_infallible::<(bool, bool), u16>());
+/// assert_eq!(false, is_infallible::<u16, (bool, bool)>());
 /// ```
 #[inline]
 #[track_caller]
-pub const fn transmutability<Src: ?Sized + Data, Dst: ?Sized + Data>() -> Transmutability {
+pub const fn is_infallible<Src: ?Sized + Data, Dst: ?Sized + Data>() -> bool {
   let (mut off, end) = (0, transmute_min_size::<Src, Dst>());
-  let mut res = Transmutability::Infallible;
   while off < end {
     let dst = byte_layout_at::<Dst>(off);
-    res = res.merge(match dst {
-      ByteLayout::Uninit => Transmutability::Infallible,
+    match dst {
       ByteLayout::OutOfBounds => unreachable!(),
-      ByteLayout::Init { layout, .. } => layout.transmutability::<Src>(off),
-    });
+      ByteLayout::Init { layout, .. } => match layout.static_analyze::<Src>(off) {
+        Err(err) => panic!("{}", err),
+        Ok((need_bits_check, _)) => {
+          if need_bits_check {
+            return false;
+          }
+        }
+      },
+      _ => {}
+    };
     off += dst.width();
   }
-  res
+  true
+}
+
+pub struct Transmute<Src: ?Sized, Dst: ?Sized> {
+  check_bits: bool,
+  check_metadata: Option<MetadataChecks>,
+  _types: PhantomData<(*const Src, *const Dst)>,
+}
+
+pub struct TransmuteInfallible<Src: ?Sized, Dst: ?Sized> {
+  _types: PhantomData<(*const Src, *const Dst)>,
+}
+
+pub struct TransmuteAligned<Src: ?Sized, Dst: ?Sized> {
+  _types: PhantomData<(*const Src, *const Dst)>,
+}
+
+#[derive(Copy, Clone)]
+pub struct Runtime<
+  const TARGET_MUTATION: bool = false,
+  const NO_SIZE_MISMATCH: bool = false,
+  const NO_ALIGNMENT_MISMATCH: bool = false,
+  const NO_INVALID_BIT_PATTERN: bool = false,
+>;
+
+#[derive(Copy, Clone)]
+pub struct Transmutation<Src: ?Sized, Dst: ?Sized, Rt = Runtime> {
+  sound_target_mutation: bool,
+  maybe_invalid_bit_pattern: bool,
+  maybe_size_mismatch: Option<MetadataChecks>,
+  _types: PhantomData<(Rt, *const Src, *const Dst)>,
+}
+
+pub struct Transmutation2<Src: ?Sized, Dst: ?Sized> {
+  source: PhantomData<Src>,
+  target: PhantomData<Dst>,
+}
+
+impl<Src: ?Sized, Dst: ?Sized> Copy for Transmutation2<Src, Dst> {}
+impl<Src: ?Sized, Dst: ?Sized> Clone for Transmutation2<Src, Dst> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+
+#[derive(Copy, Clone)]
+struct StaticAnalyze {
+  maybe_size_mismatch: Option<MetadataChecks>,
+  maybe_invalid_bit_pattern: bool,
+  sound_target_mutation: bool,
+}
+
+impl<Src: ?Sized + Data, Dst: ?Sized + Data> Transmutation2<Src, Dst> {
+  const STATIC_ANALYZE: Result<StaticAnalyze, &'static str> = static_analyze::<Src, Dst>();
+
+  pub const fn new() -> Self {
+    Self { source: PhantomData, target: PhantomData }
+  }
+
+  pub const fn check(self) -> Result<(), &'static str> {
+    bail!(Self::STATIC_ANALYZE);
+    Ok(())
+  }
+
+  pub const fn check_no_size_mismatch(self) -> Result<(), &'static str> {
+    if bail!(Self::STATIC_ANALYZE).maybe_size_mismatch.is_some() {
+      return Err(
+        "\n  source metadata is not directly convertible to fulfill target requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(())
+  }
+
+  pub const fn check_no_alignment_mismatch(self) -> Result<(), &'static str> {
+    if align_of::<Dst>() > align_of::<Src>() {
+      return Err(
+        "\n  source alignment is too small to fulfill target alignment requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(())
+  }
+
+  pub const fn check_no_invalid_bit_pattern(self) -> Result<(), &'static str> {
+    if bail!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
+      return Err(
+        "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
+         valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(())
+  }
+
+  pub const fn check_sound_target_mutation(self) -> Result<(), &'static str> {
+    if !bail!(Self::STATIC_ANALYZE).sound_target_mutation {
+      return Err(
+        "\n  mutating target could result in invalid bit patterns in source, hence mutation is \
+         disabled.\n",
+      );
+    }
+    Ok(())
+  }
+
+  pub const fn transmute(self, src: Src) -> Dst
+  where
+    Src: Copy,
+    Dst: Copy,
+  {
+    unwrap!(self.check());
+    unwrap!(self.check_no_size_mismatch());
+    unwrap!(self.check_no_invalid_bit_pattern());
+    unsafe { transmute_unchecked(src) }
+  }
+
+  pub const fn transmute_copy(self, src: &Src) -> Dst
+  where
+    Src: Copy,
+    Dst: Copy,
+  {
+    self.transmute(*src)
+  }
+
+  pub fn transmute_mut(self, src: &mut Src) -> &mut Dst {
+    unwrap!(self.check());
+    unwrap!(self.check_no_alignment_mismatch());
+    unwrap!(self.check_no_size_mismatch());
+    unwrap!(self.check_no_invalid_bit_pattern());
+    unwrap!(self.check_sound_target_mutation());
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
+    unsafe { &mut *ptr }
+  }
+
+  pub const fn transmute_ref(self, src: &Src) -> &Dst {
+    unwrap!(self.check());
+    unwrap!(self.check_no_alignment_mismatch());
+    unwrap!(self.check_no_size_mismatch());
+    unwrap!(self.check_no_invalid_bit_pattern());
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
+    unsafe { &*ptr }
+  }
+
+  pub const fn try_transmute_copy(self, src: &Src) -> Option<Dst>
+  where
+    Src: Copy,
+    Dst: Copy,
+  {
+    unwrap!(self.check());
+    unwrap!(self.check_no_size_mismatch());
+    let ptr = ptr::from_ref(src).cast::<Dst>();
+    match is_bits_valid(ptr) {
+      true => Some(unsafe { *ptr }),
+      _ => None,
+    }
+  }
+
+  pub fn try_transmute_mut(self, src: &mut Src) -> Result<&mut Dst, Error> {
+    unwrap!(self.check());
+    unwrap!(self.check_sound_target_mutation());
+    if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
+      return Err(Error::AlignmentMismatch);
+    }
+    let metadata = match self.try_convert_metadata(ptr::metadata(src)) {
+      Ok(metadata) => metadata,
+      Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+    };
+    let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
+    match is_bits_valid(ptr) {
+      true => Ok(unsafe { &mut *ptr }),
+      _ => Err(Error::InvalidBitPattern),
+    }
+  }
+
+  pub const fn try_transmute_ref(self, src: &Src) -> Result<&Dst, Error> {
+    unwrap!(self.check());
+    if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
+      return Err(Error::AlignmentMismatch);
+    }
+    let metadata = match self.try_convert_metadata(ptr::metadata(src)) {
+      Ok(metadata) => metadata,
+      Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+    };
+    let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
+    match is_bits_valid(ptr) {
+      true => Ok(unsafe { &*ptr }),
+      _ => Err(Error::InvalidBitPattern),
+    }
+  }
+
+  const fn convert_metadata(self, metadata: usize) -> usize {
+    unwrap!(self.check());
+    unwrap!(self.check_no_size_mismatch());
+    match size_of_tail::<Dst>() {
+      0 => 0,
+      n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
+    }
+  }
+
+  const fn try_convert_metadata(self, metadata: usize) -> Result<usize, isize> {
+    unwrap!(self.check());
+    use MetadataChecks::*;
+    let delta = match unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
+      None => 0,
+      Some(check) => match check {
+        Is(n) if metadata == n => 0,
+        IsAtLeast(n) if metadata >= n => 0,
+        Is(n) | IsAtLeast(n) => n as isize - metadata as isize,
+        IsMultipleOf(m) if metadata % m == 0 => 0,
+        IsMultipleOf(m) => m as isize - (metadata % m) as isize,
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => 0,
+        IsAtLeastThenMultipleOf(n, _) if metadata < n => n as isize - metadata as isize,
+        IsAtLeastThenMultipleOf(_, m) => m as isize - (metadata % m) as isize,
+        IsEmpty if metadata == 0 => 0,
+        IsEmpty => -(metadata as isize),
+        NoneToRemove => todo!(),
+      },
+    };
+    match delta {
+      0 if size_of_tail::<Dst>() == 0 => Ok(0),
+      0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
+      n => Err(n * size_of_tail::<Src>() as isize),
+    }
+  }
+}
+
+const fn static_analyze<Src, Dst>() -> Result<StaticAnalyze, &'static str>
+where
+  Src: ?Sized + Data,
+  Dst: ?Sized + Data,
+{
+  use MetadataChecks::*;
+
+  let (sh, st) = (min_size_of::<Src>(), size_of_tail::<Src>());
+  let (dh, dt) = (min_size_of::<Dst>(), size_of_tail::<Dst>());
+  let mut min_at_count = 0; // Minimum number of `at` required to align `sh[st]` and `dh[dt]`.
+  if sh < dh {
+    if st == 0 {
+      return Err("source too small");
+    }
+    let missing = dh - sh;
+    if dt == 0 && missing % st != 0 {
+      return Err(
+        "missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
+         item size",
+      );
+    }
+    min_at_count = (missing + st - 1) / st; // Ceiling of division.
+  } else if sh > dh && dt != 0 {
+    let remaining = sh - dh;
+    if st == 0 && remaining % dt != 0 {
+      return Err(
+        "remaining bytes to fit in the target is not a multiple of the target `DST` trailing \
+         slice item size",
+      );
+    }
+  }
+  let maybe_size_mismatch = match (st, dt) {
+    (0, _) => None,
+    (st, 0) if sh < dh => Some(Is((dh - sh) / st)),
+    (_, 0) => Some(IsEmpty),
+    (st, dt) => {
+      #[inline]
+      const fn gcd(a: usize, b: usize) -> usize {
+        match b {
+          0 => a,
+          _ => gcd(b, a % b),
+        }
+      }
+
+      let gcd = gcd(st, dt);
+      let lcm = (st * dt) / gcd;
+      while (sh + min_at_count * st - dh) % dt != 0 {
+        if min_at_count * st > lcm {
+          return Err("DST source cannot catchup on DST target");
+        }
+        min_at_count += 1;
+      }
+      // Compute the minimum number of times `st` must be repeated to reach a size that is a
+      // multiple of `dt`.
+      match (min_at_count, dt / gcd) {
+        (0, 1) => None,
+        (0, m) => Some(IsMultipleOf(m)),
+        (n, 1) => Some(IsAtLeast(n)),
+        (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+      }
+    }
+  };
+  let min_size = match maybe_size_mismatch {
+    Some(IsEmpty) | None => sh,
+    Some(IsMultipleOf(m)) => sh + (m * st),
+    Some(Is(n) | IsAtLeast(n) | IsAtLeastThenMultipleOf(n, _)) => sh + (n * st),
+    Some(NoneToRemove) => todo!(),
+  };
+  let mut off = 0;
+  let (mut maybe_invalid_bit_pattern, mut sound_target_mutation) = (false, true);
+  while off < min_size {
+    match byte_layout_at::<Dst>(off) {
+      ByteLayout::Init { layout, .. } => match layout.static_analyze::<Src>(off) {
+        Err(err) => return Err(err),
+        Ok(ok) => {
+          maybe_invalid_bit_pattern = maybe_invalid_bit_pattern || ok.0;
+          sound_target_mutation = sound_target_mutation && ok.1;
+          off += layout.width;
+        }
+      },
+      _ => off += 1,
+    }
+  }
+  Ok(StaticAnalyze { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation })
+}
+
+impl<Src: ?Sized, Dst: ?Sized, Rt: Copy> Transmutation<Src, Dst, Rt> {
+  const fn cast<NewRt>(self) -> Transmutation<Src, Dst, NewRt> {
+    Transmutation {
+      sound_target_mutation: self.sound_target_mutation,
+      maybe_invalid_bit_pattern: self.maybe_invalid_bit_pattern,
+      maybe_size_mismatch: self.maybe_size_mismatch,
+      _types: PhantomData,
+    }
+  }
+}
+
+impl<Src: ?Sized, Dst: ?Sized, const A: bool, const B: bool, const C: bool>
+  Transmutation<Src, Dst, Runtime<false, A, B, C>>
+{
+  pub const fn target_mutation(
+    self,
+  ) -> Result<Transmutation<Src, Dst, Runtime<true, A, B, C>>, &'static str> {
+    if !self.sound_target_mutation {
+      return Err(
+        "\n  mutating target could result in invalid bit patterns in source, hence mutation is \
+         disabled.\n",
+      );
+    }
+    Ok(self.cast())
+  }
+}
+
+impl<Src: ?Sized, Dst: ?Sized, const A: bool, const B: bool, const C: bool>
+  Transmutation<Src, Dst, Runtime<A, false, B, C>>
+{
+  pub const fn no_size_mismatch(
+    self,
+  ) -> Result<Transmutation<Src, Dst, Runtime<A, true, B, C>>, &'static str> {
+    if align_of::<Dst>() > align_of::<Src>() {
+      return Err(
+        "\n  source metadata is not directly convertible to fulfill target requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(self.cast())
+  }
+}
+
+impl<Src: ?Sized, Dst: ?Sized, const A: bool, const B: bool, const C: bool>
+  Transmutation<Src, Dst, Runtime<A, B, false, C>>
+{
+  pub const fn no_alignment_mismatch(
+    self,
+  ) -> Result<Transmutation<Src, Dst, Runtime<A, B, true, C>>, &'static str> {
+    if align_of::<Dst>() > align_of::<Src>() {
+      return Err(
+        "\n  source alignment is too small to fulfill target alignment requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(self.cast())
+  }
+}
+
+impl<Src: ?Sized, Dst: ?Sized, const A: bool, const B: bool, const C: bool>
+  Transmutation<Src, Dst, Runtime<A, B, C, false>>
+{
+  pub const fn no_invalid_bit_pattern(
+    self,
+  ) -> Result<Transmutation<Src, Dst, Runtime<A, B, C, true>>, &'static str> {
+    if self.maybe_invalid_bit_pattern {
+      return Err(
+        "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
+         valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(self.cast())
+  }
+}
+
+pub const fn transmute_checks<Src, Dst>() -> Result<Transmute<Src, Dst>, &'static str>
+where
+  Src: ?Sized + Data,
+  Dst: ?Sized + Data,
+{
+  use MetadataChecks::*;
+
+  let (sh, st) = (min_size_of::<Src>(), size_of_tail::<Src>());
+  let (dh, dt) = (min_size_of::<Dst>(), size_of_tail::<Dst>());
+  let mut min_at_count = 0; // Minimum number of `at` required to align `sh[st]` and `dh[dt]`.
+  if sh < dh {
+    if st == 0 {
+      return Err("source too small");
+    }
+    let missing = dh - sh;
+    if dt == 0 && missing % st != 0 {
+      return Err(
+        "missing bytes to fit the target is not a multiple of the source `DST` trailing slice \
+         item size",
+      );
+    }
+    min_at_count = (missing + st - 1) / st; // Ceiling of division.
+  } else if sh > dh && dt != 0 {
+    let remaining = sh - dh;
+    if st == 0 && remaining % dt != 0 {
+      return Err(
+        "remaining bytes to fit in the target is not a multiple of the target `DST` trailing \
+         slice item size",
+      );
+    }
+  }
+  let check_metadata = match (st, dt) {
+    (0, _) => None,
+    (st, 0) if sh < dh => Some(Is((dh - sh) / st)),
+    (_, 0) => Some(IsEmpty),
+    (st, dt) => {
+      #[inline]
+      const fn gcd(a: usize, b: usize) -> usize {
+        match b {
+          0 => a,
+          _ => gcd(b, a % b),
+        }
+      }
+
+      let gcd = gcd(st, dt);
+      let lcm = (st * dt) / gcd;
+      while (sh + min_at_count * st - dh) % dt != 0 {
+        if min_at_count * st > lcm {
+          return Err("DST source cannot catchup on DST target");
+        }
+        min_at_count += 1;
+      }
+      // Compute the minimum number of times `st` must be repeated to reach a size that is a
+      // multiple of `dt`.
+      match (min_at_count, dt / gcd) {
+        (0, 1) => None,
+        (0, m) => Some(IsMultipleOf(m)),
+        (n, 1) => Some(IsAtLeast(n)),
+        (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+      }
+    }
+  };
+  let min_size = match check_metadata {
+    Some(IsEmpty) | None => sh,
+    Some(IsMultipleOf(m)) => sh + (m * st),
+    Some(Is(n) | IsAtLeast(n) | IsAtLeastThenMultipleOf(n, _)) => sh + (n * st),
+    Some(NoneToRemove) => todo!(),
+  };
+  let mut off = 0;
+  let mut check_bits = false;
+  while off < min_size {
+    match byte_layout_at::<Dst>(off) {
+      ByteLayout::Init { layout, .. } => match layout.static_analyze::<Src>(off) {
+        Err(err) => return Err(err),
+        Ok((need_bits_check, _)) => {
+          check_bits = check_bits || need_bits_check;
+          off += layout.width;
+        }
+      },
+      _ => off += 1,
+    }
+  }
+  Ok(Transmute { check_bits, check_metadata, _types: PhantomData })
+}
+
+impl<Src: ?Sized + Data, Dst: ?Sized + Data> Transmute<Src, Dst> {
+  #[track_caller]
+  pub const fn into_infallible(self) -> Result<TransmuteInfallible<Src, Dst>, &'static str> {
+    if self.check_bits {
+      return Err(
+        "\n  target are not valid for all byte patterns.\n  but not all source byte patterns are \
+         valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    if self.check_metadata.is_some() {
+      return Err(
+        "\n  source metadata is not directly convertible to fulfill target requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(TransmuteInfallible { _types: PhantomData })
+  }
+
+  #[track_caller]
+  pub const fn into_infallible_aligned(self) -> Result<TransmuteAligned<Src, Dst>, &'static str> {
+    unwrap!(self.into_infallible()).into_aligned()
+  }
+
+  pub const fn convert_metadata(self, metadata: usize) -> Result<usize, isize> {
+    use MetadataChecks::*;
+    let delta = match self.check_metadata {
+      None => 0,
+      Some(check) => match check {
+        Is(n) if metadata == n => 0,
+        IsAtLeast(n) if metadata >= n => 0,
+        Is(n) | IsAtLeast(n) => n as isize - metadata as isize,
+        IsMultipleOf(m) if metadata % m == 0 => 0,
+        IsMultipleOf(m) => m as isize - (metadata % m) as isize,
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => 0,
+        IsAtLeastThenMultipleOf(n, _) if metadata < n => n as isize - metadata as isize,
+        IsAtLeastThenMultipleOf(_, m) => m as isize - (metadata % m) as isize,
+        IsEmpty if metadata == 0 => 0,
+        IsEmpty => -(metadata as isize),
+        NoneToRemove => todo!(),
+      },
+    };
+    match delta {
+      0 if size_of_tail::<Dst>() == 0 => Ok(0),
+      0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
+      n => Err(n * size_of_tail::<Src>() as isize),
+    }
+  }
+
+  pub const fn try_transmute_copy(self, src: &Src) -> Option<Dst>
+  where
+    Src: Copy,
+    Dst: Copy,
+  {
+    let ptr = ptr::from_ref(src).cast::<Dst>();
+    match is_bits_valid(ptr) {
+      true => Some(unsafe { *ptr }),
+      _ => None,
+    }
+  }
+
+  pub const fn try_transmute_ref(self, src: &Src) -> Result<&Dst, Error> {
+    if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
+      return Err(Error::AlignmentMismatch);
+    }
+    let metadata = match self.convert_metadata(ptr::metadata(src)) {
+      Ok(metadata) => metadata,
+      Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+    };
+    let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
+    match is_bits_valid(ptr) {
+      true => Ok(unsafe { &*ptr }),
+      _ => Err(Error::InvalidBitPattern),
+    }
+  }
+}
+
+impl<Src: ?Sized + Data, Dst: ?Sized + Data> TransmuteInfallible<Src, Dst> {
+  #[track_caller]
+  pub const fn into_aligned(self) -> Result<TransmuteAligned<Src, Dst>, &'static str> {
+    if align_of::<Dst>() > align_of::<Src>() {
+      return Err(
+        "\n  source alignment is too small to fulfill target alignment requirements, hence it \
+         requires a runtime check.\n  use `try_transmute!()` instead.\n",
+      );
+    }
+    Ok(TransmuteAligned { _types: PhantomData })
+  }
+
+  pub const fn transmute(self, src: Src) -> Dst
+  where
+    Src: Copy,
+    Dst: Copy,
+  {
+    unsafe { transmute_unchecked(src) }
+  }
+
+  const fn convert_metadata(self, metadata: usize) -> usize {
+    match size_of_tail::<Dst>() {
+      0 => 0,
+      n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
+    }
+  }
+
+  pub const fn try_transmute_ref(self, src: &Src) -> Option<&Dst> {
+    if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
+      return None;
+    }
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
+    Some(unsafe { &*ptr })
+  }
+
+  pub fn try_transmute_mut(self, src: &mut Src) -> Option<&mut Dst> {
+    if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
+      return None;
+    }
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
+    Some(unsafe { &mut *ptr })
+  }
+}
+
+impl<Src: ?Sized + Data, Dst: ?Sized + Data> TransmuteAligned<Src, Dst> {
+  const fn convert_metadata(self, metadata: usize) -> usize {
+    match size_of_tail::<Dst>() {
+      0 => 0,
+      n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
+    }
+  }
+
+  pub const fn transmute_ref(self, src: &Src) -> &Dst {
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
+    unsafe { &*ptr }
+  }
+
+  pub fn transmute_mut(self, src: &mut Src) -> &mut Dst {
+    let metadata = self.convert_metadata(ptr::metadata(src));
+    let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
+    unsafe { &mut *ptr }
+  }
 }
 
 // ptr ---------------------------------------------------------------------------------------------
 
 pub mod ptr {
   use core::mem;
+
+  /// Convert a reference to a raw pointer.
+  ///
+  /// This is equivalent to `r as *const T`, but is a bit safer since it will never silently change
+  /// type or mutability, in particular if the code is refactored.
+  #[inline(always)]
+  #[must_use]
+  pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
+    r
+  }
+
+  /// Convert a mutable reference to a raw pointer.
+  ///
+  /// This is equivalent to `r as *mut T`, but is a bit safer since it will never silently change
+  /// type or mutability, in particular if the code is refactored.
+  #[inline(always)]
+  #[must_use]
+  pub fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
+    r
+  }
 
   /// Extract the metadata component of a pointer.
   #[inline]
@@ -986,7 +1680,7 @@ pub mod ptr {
     // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
     // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
     //   has a provenance.
-    // - During const evalc, it is unsound to perform this transmutation if the pointer has no
+    // - During const eval, it is unsound to perform this transmutation if the pointer has no
     //   provenance; the above trick ensure just that.
     #[allow(clippy::transmutes_expressible_as_ptr_casts)]
     unsafe {
@@ -1266,9 +1960,13 @@ mod layout {
     > Transmute<Src, Dst, COPY, MUTATION, INFALLIBLE>
   {
     pub const MIN_SIZE: usize = match Self::REQUIREMENTS {
-      Requirements::Is(n) | Requirements::IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      Requirements::Is(n) | Requirements::IsAtLeast(n) => {
+        min_size_of::<Src>() + (n * size_of_tail::<Src>())
+      }
       Requirements::IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
-      Requirements::IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
+      Requirements::IsAtLeastThenMultipleOf(n, _) => {
+        min_size_of::<Src>() + (n * size_of_tail::<Src>())
+      }
       Requirements::IsEmpty | Requirements::None => min_size_of::<Src>(),
     };
     const REQUIREMENTS: Requirements = {
@@ -1282,13 +1980,13 @@ mod layout {
         Ok(req) => req,
         Err(reason) => panic!("{}", reason),
       };
-      // let transmutability = transmutability::<Src, Dst>(0, match req {
+      // let is_infallible = is_infallible::<Src, Dst>(0, match req {
       //   Requirements::Is(n) | Requirements::IsAtLeast(n) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
       //   Requirements::IsMultipleOf(m) => min_size_of::<Src>() + (m * size_of_tail::<Src>()),
       //   Requirements::IsAtLeastThenMultipleOf(n, _) => min_size_of::<Src>() + (n * size_of_tail::<Src>()),
       //   Requirements::IsEmpty | Requirements::None => min_size_of::<Src>(),
       // });
-      // match transmutability {
+      // match is_infallible {
       //   Transmutability::Unreachable => panic!("invalid transmute"),
       //   Transmutability::MaybeFallible if INFALLIBLE || MUTATION => panic!("use try_*"),
       //   _ => {},
@@ -1297,25 +1995,25 @@ mod layout {
         match req {
           Requirements::Is(_) => panic!(
             "cannot transmute between types of incompatible byte layouts, source too small; \
-               consider using a `try_*` alternative instead"
+             consider using a `try_*` alternative instead"
           ),
           Requirements::IsAtLeast(_) => panic!(
             "cannot transmute between types of incompatible byte layouts, target too small; \
-               consider using a `try_*` alternative instead"
+             consider using a `try_*` alternative instead"
           ),
           Requirements::IsMultipleOf(_) => panic!(
             "cannot transmute between types of incompatible byte layouts, tail size multiple of \
-               mismatch; consider using a `try_*` alternative instead"
+             mismatch; consider using a `try_*` alternative instead"
           ),
           Requirements::IsAtLeastThenMultipleOf(_, _) => panic!(
             "cannot transmute between types of incompatible byte layouts, target too small or \
-               tail size multiple of mismatch; consider using a `try_*` alternative instead"
+             tail size multiple of mismatch; consider using a `try_*` alternative instead"
           ),
           Requirements::IsEmpty => panic!(
             "cannot transmute between types of incompatible byte layouts, source tail might not \
-               be empty; consider using a `try_*` alternative instead"
+             be empty; consider using a `try_*` alternative instead"
           ),
-          Requirements::None => {},
+          Requirements::None => {}
         }
       }
       req
@@ -1788,7 +2486,7 @@ pub const fn overlaps(of: Range<u64>, into: Range<u64>) -> u128 {
 pub const fn size(range: Range<u64>) -> u128 {
   match range.start > range.end {
     true => 0,
-    _ => (range.end - range.start) as u128 + 1
+    _ => (range.end - range.start) as u128 + 1,
   }
 }
 
@@ -1832,7 +2530,7 @@ const _: () = {
         IsAtLeastThenMultipleOf(_, m) => m as isize - (metadata % m) as isize,
         IsEmpty if metadata == 0 => 0,
         IsEmpty => -(metadata as isize),
-        None => 0,
+        NoneToRemove => 0,
       }
     }
 
@@ -1841,49 +2539,27 @@ const _: () = {
     const fn assert_infallible(self) {
       use MetadataChecks::*;
       match self {
-        Is(_) => panic!(
+        Is(_) => concat_panic!(
           "cannot transmute between types of incompatible byte layouts, source too small; \
-               consider using a `try_*` alternative instead"
+           consider using a `try_*` alternative instead"
         ),
-        IsAtLeast(_) => panic!(
+        IsAtLeast(_) => concat_panic!(
           "cannot transmute between types of incompatible byte layouts, target too small; \
-               consider using a `try_*` alternative instead"
+           consider using a `try_*` alternative instead"
         ),
-        IsMultipleOf(_) => panic!(
+        IsMultipleOf(_) => concat_panic!(
           "cannot transmute between types of incompatible byte layouts, tail size multiple of \
-               mismatch; consider using a `try_*` alternative instead"
+           mismatch; consider using a `try_*` alternative instead"
         ),
-        IsAtLeastThenMultipleOf(_, _) => panic!(
-          "cannot transmute between types of incompatible byte layouts, target too small or \
-               tail size multiple of mismatch; consider using a `try_*` alternative instead"
+        IsAtLeastThenMultipleOf(_, _) => concat_panic!(
+          "cannot transmute between types of incompatible byte layouts, target too small or tail \
+           size multiple of mismatch; consider using a `try_*` alternative instead"
         ),
-        IsEmpty => panic!(
-          "cannot transmute between types of incompatible byte layouts, source tail might not \
-               be empty; consider using a `try_*` alternative instead"
+        IsEmpty => concat_panic!(
+          "cannot transmute between types of incompatible byte layouts, source tail might not be \
+           empty; consider using a `try_*` alternative instead"
         ),
-        None => {},
-      }
-    }
-  }
-
-  // impl Transmutability --------------------------------------------------------------------------
-
-  impl Transmutability {
-    #[inline]
-    pub const fn merge(self, other: Self) -> Self {
-      use Transmutability::*;
-      match (self, other) {
-        (MaybeFallible, _) | (_, MaybeFallible) => MaybeFallible,
-        _ => Infallible,
-      }
-    }
-
-    #[inline]
-    #[track_caller]
-    const fn assert_infallible(self) {
-      match self {
-        Transmutability::MaybeFallible => panic!("todo: proper message"),
-        _ => {}
+        NoneToRemove => {}
       }
     }
   }
@@ -1920,23 +2596,23 @@ const _: () = {
     #[inline]
     pub const fn new<T>(patterns: &'static [Range<u64>]) -> Self {
       assert!(mem::size_of::<T>() <= 8);
-      Self { ordering: Ordering::NATIVE, patterns: Some(patterns), width: mem::size_of::<T>() }
+      Self { ordering: Ordering::NATIVE, bit_patterns: Some(patterns), width: mem::size_of::<T>() }
     }
 
     #[inline]
     pub const fn any<T>() -> Self {
       assert!(mem::size_of::<T>() <= 8);
-      Self { ordering: Ordering::NATIVE, patterns: None, width: mem::size_of::<T>() }
+      Self { ordering: Ordering::NATIVE, bit_patterns: None, width: mem::size_of::<T>() }
     }
 
     #[inline]
     pub const fn with_ordering(self, ordering: Ordering) -> Self {
-      Self { ordering, patterns: self.patterns, width: self.width }
+      Self { ordering, bit_patterns: self.bit_patterns, width: self.width }
     }
 
     #[inline]
     pub const fn is_any(&self) -> bool {
-      self.patterns.is_none()
+      self.bit_patterns.is_none()
     }
 
     #[inline]
@@ -1952,8 +2628,8 @@ const _: () = {
     }
 
     #[inline]
-    pub const fn values(&self) -> u128 {
-      match self.patterns {
+    pub const fn bit_patterns(&self) -> u128 {
+      match self.bit_patterns {
         None => 1u128 << (self.width * 8),
         Some(pats) => {
           let (mut i, mut values) = (0, 0u128);
@@ -1968,7 +2644,7 @@ const _: () = {
 
     #[inline]
     pub const fn contains(&self, value: u64) -> bool {
-      match self.patterns {
+      match self.bit_patterns {
         None => true,
         Some(pats) => {
           let mut i = 0;
@@ -1985,7 +2661,7 @@ const _: () = {
 
     #[inline]
     pub const fn overlaps(&self, pat: Range<u64>) -> u128 {
-      match self.patterns {
+      match self.bit_patterns {
         None => size(pat),
         Some(pats) => {
           let (mut i, mut n) = (0, 0);
@@ -1998,7 +2674,7 @@ const _: () = {
       }
     }
 
-    const fn overlaps_from<Src: ?Sized + Data>(
+    const fn bit_pattern_overlaps<Src: ?Sized + Data>(
       &self,
       pat: Range<u64>,
       off: usize,
@@ -2010,60 +2686,83 @@ const _: () = {
 
       match byte_layout_at::<Src>(off + byte) {
         ByteLayout::Init { layout, .. } => {
-          let start = layout.mask(pat.start << self.ordering.shift(byte, self.width));
-          let end = layout.mask(pat.end << self.ordering.shift(byte, self.width));
-          layout.overlaps(start..end) + self.overlaps_from::<Src>(pat, off, byte + layout.width)
+          let start = layout.mask(pat.start >> self.ordering.shift(byte, self.width));
+          let end = layout.mask(pat.end >> self.ordering.shift(byte, self.width));
+          layout.overlaps(start..end)
+            + self.bit_pattern_overlaps::<Src>(pat, off, byte + layout.width)
         }
-        _ =>  unreachable!()
+        _ => unreachable!(),
       }
     }
 
     #[inline]
     #[track_caller]
-    const fn transmutability<Src: ?Sized + Data>(&self, mut off: usize) -> Transmutability {
-      use const_panic::concat_panic;
-
+    const fn static_analyze<Src: ?Sized + Data>(
+      &self,
+      mut off: usize,
+    ) -> Result<(bool, bool), &'static str> {
       use ByteLayout::*;
-      use Transmutability::*;
 
+      let (mut src_bit_patterns, dst_bit_patterns) = (1, self.bit_patterns());
+      let (mut src_is_overlapping, mut src_is_any_bit_pattern) = (false, true);
       let end = off + self.width;
-      let mut values = 1;
       while off < end {
-        let src = byte_layout_at::<Src>(off);
-        match src {
-          Uninit => concat_panic!("byte at offset ", off, " in source is uninitialized"),
-          OutOfBounds => concat_panic!("byte at offset ", off, " in source is out-of-bounds"),
-          Init { layout, offset } if !self.is_any() => {
-            // Layouts may overlap, returns a maybe false-positive instead of performing
-            // complex computation.
-            // This path could still be improved later on.
-            if offset != 0 || off + layout.width > end {
-              return MaybeFallible;
-            }
-            values *= layout.values();
-          },
-          _ => {}
+        match byte_layout_at::<Src>(off) {
+          Uninit => return Err("uninitialized bytes in source"),
+          OutOfBounds => unreachable!(),
+          Init { layout, offset } => {
+            src_is_overlapping = src_is_overlapping || offset != 0 || off + layout.width > end;
+            src_is_any_bit_pattern = src_is_any_bit_pattern && layout.is_any();
+            src_bit_patterns *= layout.bit_patterns();
+            // Continue with next source layout.
+            off += layout.width;
+          }
         }
-        off += src.width();
       }
-
-      let pats = match self.patterns {
-        None => return Infallible,
-        Some(pats) => pats,
+      // Check for target bit patterns, the target is considered as being "any bit pattern" when
+      // the [`RawLayout::patterns`] field is set to [`None`].
+      let bit_patterns = match self.bit_patterns {
+        // Target layout is "any bit pattern", returns:
+        // * `false`: The target layout is "any bit pattern", hence [`Error::InvalidBitPattern`]
+        //   is unreachable.
+        // * `src_is_overlapping`: Target mutation is only safe and sound if all source layouts are
+        //   "any bit pattern".
+        None => return Ok((false, src_is_any_bit_pattern)),
+        // Target layout isn't "any bit pattern" and source layouts overlaps with target, returns:
+        // * `true`: In case of layout overlaps prefer to return a maybe false-positive result
+        //   instead of performing complex computations. This path could still be improved later on.
+        //   ie. consider [`Error::InvalidBitPattern`] as "maybe" reachable.
+        // * `src_is_overlapping`: Target mutation is only safe and sound if all source layouts are
+        //   "any bit pattern".
+        Some(_) if src_is_overlapping => return Ok((true, src_is_any_bit_pattern)),
+        // Target layout isn't "any bit pattern", continue computation.
+        Some(bit_patterns) => bit_patterns,
       };
-      let off = end - self.width;
-      let mut i = 0;
-      let mut overlaps = 0;
-      while i < pats.len() {
-        overlaps += self.overlaps_from::<Src>(pats[i].start..pats[i].end, off, 0);
+      // Compute the number of valid bit patterns in source that are also valid in target.
+      let (mut i, mut bit_pattern_overlaps) = (0, 0);
+      while i < bit_patterns.len() {
+        let bit_pattern = bit_patterns[i].start..bit_patterns[i].end;
+        bit_pattern_overlaps += self.bit_pattern_overlaps::<Src>(bit_pattern, end - self.width, 0);
         i += 1;
       }
-      if overlaps == values {
-        Infallible
-      } else if overlaps == 0 {
-        concat_panic!("none of byte patterns at offset ", off, " in source are valid in target")
+      // Check valid bit pattern overlaps.
+      if src_bit_patterns == bit_pattern_overlaps {
+        // All possible bit patterns in source overlaps with valid bit patterns in target, returns:
+        // * `false`: All bit patterns are valid, hence [`Error::InvalidBitPattern`] is unreachable.
+        // * `dst_bit_patterns == src_bit_patterns`: Target mutation is only safe and sound if all
+        //   possible bit patterns in target are also valid in source.
+        Ok((false, dst_bit_patterns == src_bit_patterns))
+      } else if bit_pattern_overlaps == 0 {
+        // There is no valid bit pattern overlaps, abort.
+        Err("none of the bit patterns in source are valid in target")
       } else {
-        MaybeFallible
+        // Some, but not all, possible bit patterns in source overlaps with valid bit patterns
+        // in target, returns:
+        // * `true`: Not all bit patterns are valid, hence [`Error::InvalidBitPattern`] is
+        //   reachable.
+        // * `dst_bit_patterns == bit_pattern_overlaps`: Target mutation is only safe and sound if
+        //   all possible bit patterns in target are also valid in source.
+        Ok((true, dst_bit_patterns == bit_pattern_overlaps))
       }
     }
   }

@@ -1,40 +1,34 @@
 use core::ops::Range;
 
-/// Counts the number of values in one range (`of`) that also exist in another range (`into`).
-/// Both `of` and `into` are inclusive ranges.
-///
-/// # Parameters
-/// - `of`: A `Range<u64>` representing the first range.
-/// - `into`: A `Range<u64>` representing the second range.
-///
-/// # Returns
-/// `u128`: The number of overlapping elements between the two ranges.
-///
-/// # Examples
-/// ```
-/// assert_eq!(2, overlaps(0..1, 0..1));
-/// assert_eq!(1, overlaps(0..0, 0..1));
-/// assert_eq!(1, overlaps(0..1, 0..0));
-/// assert_eq!(0, overlaps(5..10, 11..15));
-/// assert_eq!(32, overlaps(0..63, 32..63));
-/// ```
-pub const fn overlaps(of: Range<u64>, into: Range<u64>) -> u128 {
-  let start = if of.start > into.start { of.start } else { into.start };
-  let end = if of.end < into.end { of.end } else { into.end };
+pub const fn shift(val: u64, width: usize, off: usize, end: usize) -> u64 {
+  assert!(width <= 8);
+  assert!(off < width);
+  assert!(end <= width);
+  assert!(end > off);
+  // Create the mask to isolate the desired bits
+  let mask = (1u128 << ((end - off) * 8)) - 1;
 
-  // Check if there is an overlap
-  if start > end {
-    0
-  } else {
-    // Since ranges are inclusive, add 1 to include the end value
-    (end - start + 1) as u128
-  }
+  // Shift the value to the right by the offset, then apply the mask
+  (val >> (off * 8)) & mask as u64
+}
+
+pub const fn pat_shift(pat: Range<u64>, width: usize, off: usize, end: usize) -> Range<u64> {
+  shift(pat.start, width, off, end)..shift(pat.end, width, off, end)
 }
 
 // tests
 fn main() {
-  assert_eq!(2, overlaps(0..1, 0..1));
-  assert_eq!(1, overlaps(0..0, 0..1));
-  assert_eq!(1, overlaps(0..1, 0..0));
-  assert_eq!(32, overlaps(0..63, 32..63));
+  assert_eq!(0xafbfcf, shift(0xafbfcf, 3, 0, 3));
+  assert_eq!(0xafbf, shift(0xafbfcf, 3, 1, 3));
+  assert_eq!(0xaf, shift(0xafbfcf, 3, 2, 3));
+  assert_eq!(0xbfcf, shift(0xafbfcf, 3, 0, 2));
+  assert_eq!(0xcf, shift(0xafbfcf, 3, 0, 1));
+  assert_eq!(0xbf, shift(0xafbfcf, 3, 1, 2));
+
+  assert_eq!(0xca..0xafbfcf, pat_shift(0xca..0xafbfcf, 3, 0, 3));
+  assert_eq!(0x00..0xafbf, pat_shift(0xca..0xafbfcf, 3, 1, 3));
+  assert_eq!(0x00..0xaf, pat_shift(0xca..0xafbfcf, 3, 2, 3));
+  assert_eq!(0xca..0xbfcf, pat_shift(0xca..0xafbfcf, 3, 0, 2));
+  assert_eq!(0xca..0xcf, pat_shift(0xca..0xafbfcf, 3, 0, 1));
+  assert_eq!(0x00..0xbf, pat_shift(0xca..0xafbfcf, 3, 1, 2));
 }
