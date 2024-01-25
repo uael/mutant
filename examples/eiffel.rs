@@ -2,46 +2,46 @@ use mutant::num::*;
 use mutant::*;
 
 fn main() {
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
-  );
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Event<[u8]>>(&[
-      21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
-    ])
-  );
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
-      21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-    ])
-  );
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Event<hci::DisconnectionComplete>>(&[
-      22, 9, 69, 69, 69, 69, 69, 69, 69, 69
-    ])
-  );
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
-      22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-    ])
-  );
-  println!(
-    "{:?}",
-    try_transmute_ref::<[u8], hci::Packet<hci::Event<[u8]>>>(&[
-      2, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-    ])
-  );
-  println!(
-    "{:#?}",
-    try_transmute_ref::<[u8], hci::Packet<hci::Event<hci::NumberOfCompletedPackets>>>(&[
-      2, 23, 9, 2, 1, 0, 2, 0, 3, 0, 4, 0
-    ])
-  );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
+  // );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Event<[u8]>>(&[
+  //     21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
+  //   ])
+  // );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
+  //     21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
+  //   ])
+  // );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Event<hci::DisconnectionComplete>>(&[
+  //     22, 9, 69, 69, 69, 69, 69, 69, 69, 69
+  //   ])
+  // );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
+  //     22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
+  //   ])
+  // );
+  // println!(
+  //   "{:?}",
+  //   try_transmute_ref::<[u8], hci::Packet<hci::Event<[u8]>>>(&[
+  //     2, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
+  //   ])
+  // );
+  // println!(
+  //   "{:#?}",
+  //   try_transmute_ref::<[u8], hci::Packet<hci::Event<hci::NumberOfCompletedPackets>>>(&[
+  //     2, 23, 9, 2, 1, 0, 2, 0, 3, 0, 4, 0
+  //   ])
+  // );
 }
 
 mod host {
@@ -73,16 +73,18 @@ mod host {
   impl<'rx, L: Socket> Host<'rx, L> {
     pub async fn get<T: ?Sized + PacketData>(&self) -> &T {
       loop {
-        if let Ok(value) = try_transmute_ref::<_, Packet<T>>(self.rx.get().await) {
-          break unaligned_ref!(value.data);
+        let packet: Result<&Packet<T>, _> = try_transmute_ref!(self.rx.get().await);
+        if let Ok(packet) = packet {
+          break unaligned_ref!(packet.data);
         }
       }
     }
 
     pub async fn get_event<T: ?Sized + EventData>(&self) -> &T {
       loop {
-        if let Ok(value) = try_transmute_ref::<_, Packet<Event<T>>>(self.rx.get().await) {
-          break unaligned_ref!(value.data.parameters);
+        let packet: Result<&Packet<Event<T>>, _> = try_transmute_ref!(self.rx.get().await);
+        if let Ok(packet) = packet {
+          break unaligned_ref!(packet.data.parameters);
         }
       }
     }
