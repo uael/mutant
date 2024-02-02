@@ -1,400 +1,390 @@
-use Ordering::*;
+use std::fmt::{Debug, Formatter};
+use mutant::bail;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum Ordering {
-  Native,
-  Lsb,
-  Msb,
-}
+use BitPatterns::*;
+use ByteLayout::*;
+use BytePattern::*;
 
-impl Ordering {
-  pub const fn is_msb(self) -> bool {
-    matches!(self, Msb) || (matches!(self, Native) && cfg!(target_endian = "big"))
+#[derive(Copy, Clone)]
+enum BytePattern { Mask(u8), Allow(u8), Discard(u8) }
+
+impl BytePattern {
+  pub const fn contains(self, other: Self) -> bool {
+    match (self, other) {
+      (Mask(a), Mask(b)) => a | b == a, // All bits in 'b' are allowed by 'a'.
+      (Mask(a), Allow(b)) => a & b == b, // 'b' is allowed by 'a'.
+      (Mask(a), Discard(b)) => a & b == 0, // No disallowed bits in 'b' by 'a'.
+      (Allow(a), Allow(b)) => a == b, // 'a' is exactly 'b'.
+      (Allow(_), _) => false, // 'Allow' can't contain 'Mask' or 'Discard'.
+      (Discard(a), Discard(b)) => a == b, // 'a' discards exactly what 'b' discards.
+      (Discard(a), Allow(b)) => a != b, // 'b' isn't discarded by 'a'.
+      (Discard(a), Mask(b)) => a & b != a, // None of the bits in 'a' can be produced by 'b'.
+    }
   }
 }
 
-/// Number layout.
-pub struct NumberLayout<P = Option<&'static [(u64, u64)]>> {
-  // Number bit patterns:
-  // * None: Number is "any bit pattern".
-  // * Some(ranges): ranges of allowed values, where `.end` is included.
-  //   The values in `ranges` never exceed the maximum value given the width (`max(width)`).
-  //   `ranges` may contain non-contiguous values (e.g. `[(0, 1), (3, 4)]` does not contain `2`).
-  bit_patterns: P,
-  // Byte ordering.
-  ordering: Ordering,
-  // Number width in bytes, between 1 and 8.
-  width: u8,
-}
-
-pub const fn min(a: u64, b: u64) -> u64 {
-  if a < b {
-    a
-  } else {
-    b
-  }
-}
-
-pub const fn max(a: u64, b: u64) -> u64 {
-  if a > b {
-    a
-  } else {
-    b
-  }
-}
-
-/// Maximum value for a number of `width` in bytes.
-pub const fn mask(width: u8) -> u64 {
-  assert!(width >= 1 && width <= 8);
-  ((1u128 << (width * 8)) - 1) as u64
-}
-
-/// Counts the number of possible values in an inclusive range.
-pub const fn size(range: (u64, u64)) -> u128 {
-  assert!(range.0 <= range.1);
-  (range.1 - range.0) as u128 + 1
-}
-
-/// Bit pattern of a number of 8 bytes maximum width.
 #[derive(Copy, Clone)]
 pub struct BitPattern {
-  /// Allowed value ranges for each part, where the width of a single `ranges[n]` is `widths[n]`.
-  /// Ranges are inclusive (i.e. in `(0, 0)` 0 is included).
-  ranges: [(u64, u64); 8],
-  /// Widths of `ranges`, where the sum of width is between 1 and 8.
-  widths: [u8; 8],
+  /// Pattern width in bytes, between 1 and 8.
+  width: usize,
+  /// Pattern.
+  pattern: [BytePattern; 8],
 }
 
 impl BitPattern {
-  pub const fn new() -> Self {
-    Self { ranges: [(0, 0); 8], widths: [0; 8] }
+  pub const fn new(width: usize, pattern: [BytePattern; 8]) -> Self {
+    assert!(width >= 1 && width <= 8);
+    BitPattern { width, pattern }
   }
 
-  pub const fn width(&self) -> u8 {
-    let (mut i, mut total_width) = (0, 0);
-    while i < self.ranges.len() {
-      total_width += self.widths[i];
+  pub const fn any(width: usize) -> Self {
+    assert!(width >= 1 && width <= 8);
+    let (mut i, mut pattern) = (0, [Mask(0); 8]);
+    while i < width {
+      pattern[i] = Mask(0xff);
       i += 1;
     }
-    assert!(total_width <= 8);
-    total_width
+    BitPattern { width, pattern }
   }
 
-  pub const fn extend(mut self, range: (u64, u64), width: u8) -> Self {
-    assert!(range.0 <= mask(width) && range.1 <= mask(width));
-    let (mut i, mut total_width) = (0, 0);
-    while i < self.ranges.len() {
-      match self.widths[i] {
-        0 => {
-          self.ranges[i] = range;
-          self.widths[i] = width;
-          return self;
-        }
-        n => total_width += n,
+  pub const fn contains(&self, other: &Self) -> bool {
+    assert!(self.width == other.width);
+    let mut i = 0;
+    while i < self.width {
+      if !self.pattern[i].contains(other.pattern[i]) {
+        return false;
       }
-      assert!(total_width + width <= 8, "bit pattern is already maxed out");
       i += 1;
     }
-    panic!("trying to `extend` an already complete bit pattern");
+    true
+  }
+}
+
+impl Debug for BitPattern {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    self.pattern.iter().take(self.width).fold(&mut f.debug_list(), |d, p| d.entry(&p)).finish()
+  }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum BitPatterns {
+  One([BytePattern; 8]),
+  OneOf(&'static [[BytePattern; 8]]),
+}
+
+impl BitPatterns {
+  pub const fn any() -> Self {
+    One([Mask(0xff); 8])
+  }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct RawLayout {
+  // Number width in bytes, between 1 and 8.
+  width: usize,
+  // Number bit patterns.
+  bit_patterns: BitPatterns,
+}
+
+#[derive(Copy, Clone)]
+pub enum ByteLayout {
+  Uninit,
+  OutOfBounds,
+  Init { layout: RawLayout, offset: usize }
+}
+
+impl Debug for BytePattern {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Mask(mask) if *mask == 0 => write!(f, "none"),
+      Mask(mask) if *mask == 0xff => write!(f, "any"),
+      Mask(mask) => write!(f, "{:#b}", mask),
+      Allow(byte) => write!(f, "{:#02x}", byte),
+      Discard(byte) => write!(f, "!{:#02x}", byte),
+    }
+  }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Pattern {
+  pattern: [BytePattern; 16],
+  start: usize,
+  end: usize,
+}
+
+impl Pattern {
+  pub const fn empty(off: usize) -> Self {
+    Self {
+      pattern: [Mask(0); 16],
+      start: off,
+      end: off,
+    }
   }
 
-  /// Returns the number of possible values allowed by this bit pattern.
-  pub const fn variety(&self) -> u128 {
-    assert!(self.width() >= 1);
-    let (mut i, mut variety) = (0, 1);
-    while i < self.ranges.len() {
-      if self.widths[i] == 0 {
-        break;
-      }
-      variety *= size(self.ranges[i]);
+  pub const fn len(&self) -> usize {
+    self.end - self.start
+  }
+
+  pub const fn goto(mut self, off: usize) -> Self {
+    assert!(self.end >= off);
+    let mut i = off;
+    while i < self.end {
+      self.pattern[i - off] = self.pattern[i - self.start];
       i += 1;
     }
-    variety
+    self.start = off;
+    self
   }
 
-  /// Returns the number of possible values in `range` that are also possible in this bit pattern.
-  pub const fn overlaps(&self, range: (u64, u64), width: u8, ordering: Ordering) -> u128 {
-    assert!(width <= self.width());
-    let mut total_overlaps = 1u128; // Start with 1 to multiply overlaps for each segment
+  pub const fn feed(mut self, pattern: &[BytePattern; 8], width: usize, rewind: usize) -> Self {
+    if rewind > 0 {
+      assert!(self.len() == 0);
+      assert!(self.start >= rewind);
+      self.start -= rewind;
+      self.end -= rewind;
+    }
 
-    let (mut i, mut byte) = (0, 0);
-    while i < self.ranges.len() && self.widths[i] != 0 {
-      // Compute segment shift.
-      let shift = if ordering.is_msb() { (width - byte - self.widths[i]) * 8 } else { byte * 8 };
-
-      // Calculate the segment-specific mask and shift the input range
-      let segment_start = (range.0 >> shift) & mask(self.widths[i]);
-      let segment_end = (range.1 >> shift) & mask(self.widths[i]);
-
-      // Determine the overlap with the allowed range for this segment
-      let overlap_start = max(segment_start, self.ranges[i].0);
-      let overlap_end = min(segment_end, self.ranges[i].1);
-
-      // Multiply the total overlap by this segment's overlap
-      total_overlaps *= if overlap_start <= overlap_end {
-        size((overlap_start, overlap_end))
-      } else {
-        0 // No overlap
-      };
-
-      // Move to the next segment
-      byte += self.widths[i];
+    let len = self.len();
+    assert!(len + width <= self.pattern.len());
+    let mut i = 0;
+    while i < width {
+      self.pattern[len + i] = pattern[i];
       i += 1;
     }
-
-    total_overlaps
+    self.end += width;
+    self
   }
-}
 
-impl NumberLayout {
-  pub const fn new(
-    bit_patterns: Option<&'static [(u64, u64)]>,
-    ordering: Ordering,
-    width: u8,
-  ) -> Self {
-    let max = mask(width);
-    if let Some(ranges) = bit_patterns {
-      let mut i = 0;
-      while i < ranges.len() {
-        assert!(ranges[i].0 <= max);
-        assert!(ranges[i].1 <= max);
-        assert!(ranges[i].0 <= ranges[i].1);
-        i += 1;
-      }
+  pub const fn to_pattern(&self, off: usize, width: usize) -> BitPattern {
+    assert!(width >= 1 && width <= 8);
+    assert!(off >= self.start);
+    assert!(off + width <= self.end);
+    let (mut i, mut pattern) = (0, [Mask(0); 8]);
+    while i < width {
+      pattern[i] = self.pattern[off - self.start + i];
+      i += 1;
     }
-    Self { bit_patterns, ordering, width }
+    BitPattern { width, pattern }
   }
 }
 
-pub const fn any(width: u8, ordering: Ordering) -> NumberLayout {
-  assert!(width >= 1 && width <= 8);
-  NumberLayout::new(None, ordering, width)
+struct Cx<'a> {
+  src: &'a [Option<RawLayout>],
+  dst: &'a [Option<RawLayout>],
 }
 
-pub const fn ne1(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Native, 1)
-}
-pub const fn ne2(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Native, 2)
-}
-pub const fn ne4(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Native, 4)
-}
-pub const fn ne8(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Native, 8)
-}
-pub const fn le1(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Lsb, 1)
-}
-pub const fn le2(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Lsb, 2)
-}
-pub const fn le4(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Lsb, 4)
-}
-pub const fn le8(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Lsb, 8)
-}
-pub const fn be1(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Msb, 1)
-}
-pub const fn be2(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Msb, 2)
-}
-pub const fn be4(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Msb, 4)
-}
-pub const fn be8(ranges: &'static [(u64, u64)]) -> NumberLayout {
-  NumberLayout::new(Some(ranges), Msb, 8)
-}
-
-/// Count the number of possible values in `src`.
-pub const fn count(src: &[NumberLayout], width: u8) -> u128 {
-  let (mut i, mut count) = (0, 1);
-  while i < src.len() {
-    count *= match src[i].bit_patterns {
-      Some(ranges) => {
-        let (mut j, mut count) = (0, 0);
-        while j < ranges.len() {
-          count += size((ranges[j].0, min(ranges[j].1, mask(width))));
-          j += 1;
-        }
-        count
-      }
-      None => mask(src[i].width) as u128 + 1,
+pub const fn byte_layout_at(layouts: &[Option<RawLayout>], offset: usize) -> ByteLayout {
+  let (mut i, mut cumulative_offset) = (0, 0);
+  while i < layouts.len() {
+    let next_offset = cumulative_offset + match &layouts[i] {
+      Some(layout) => layout.width,
+      _ => 1,
     };
+    // Check if the global offset falls within the current layout's range.
+    if offset >= cumulative_offset && offset < next_offset {
+      return match layouts[i] {
+        Some(layout) => {
+          // Calculate local offset within the current layout.
+          let offset = offset - cumulative_offset;
+          // Return the current layout and its local offset.
+          Init { layout, offset }
+        },
+        _ => Uninit,
+      }
+    }
+    // Update cumulative_offset for the next layout.
+    cumulative_offset = next_offset;
     i += 1;
   }
-  count
+  OutOfBounds
 }
 
-/// Count the number of overlapping possible values between `dst` and `src`.
-/// `dst.width` is always the sum of all `src` widths.
-/// This function assume little-endian ordering.
-pub const fn overlaps(dst: NumberLayout, src: &[NumberLayout]) -> u128 {
-  const fn rec(
-    dst: &NumberLayout<&[(u64, u64)]>,
-    src: &[NumberLayout],
-    i: usize,
-    pat: BitPattern,
-  ) -> u128 {
-    if i == src.len() {
-      let (mut j, mut total_overlaps) = (0, 0);
-      while j < dst.bit_patterns.len() {
-        total_overlaps += pat.overlaps(dst.bit_patterns[j], dst.width, dst.ordering);
-        j += 1;
-      }
-      return total_overlaps;
-    }
+#[derive(Debug, Copy, Clone)]
+struct StaticAnalyze {
+  all_src_in_dst: bool,
+  all_dst_in_src: bool,
+}
 
-    if let Some(bit_patterns) = src[i].bit_patterns {
-      let (mut j, mut total_overlaps) = (0, 0);
-      while j < bit_patterns.len() {
-        total_overlaps += rec(dst, src, i + 1, pat.extend(bit_patterns[j], src[i].width));
-        j += 1;
-      }
-      return total_overlaps;
-    }
-
-    rec(dst, src, i + 1, pat.extend((0, mask(src[i].width)), src[i].width))
+impl<'a> Cx<'a> {
+  pub const fn new(src: &'a [Option<RawLayout>], dst: &'a [Option<RawLayout>]) -> Self {
+    Self { src, dst }
   }
 
-  if let Some(bit_patterns) = dst.bit_patterns {
-    let dst = NumberLayout { bit_patterns, ordering: dst.ordering, width: dst.width };
-    return rec(&dst, src, 0, BitPattern::new());
+  const fn next(&self, mut off: usize) -> Option<(RawLayout, usize)> {
+    loop {
+      match byte_layout_at(self.dst, off) {
+        Uninit => off += 1,
+        OutOfBounds => break None,
+        Init { layout, offset } => {
+          assert!(offset == 0);
+          break Some((layout, off))
+        }
+      }
+    }
   }
 
-  count(src, dst.width)
+  fn sa(
+    &self,
+    mut src: Pattern,
+    dst: RawLayout,
+    off: usize,
+    mut sa: StaticAnalyze,
+  ) -> Result<StaticAnalyze, &'static str> {
+    // Catch up `src` on `off`
+    if off >= src.end {
+      src = Pattern::empty(off);
+    }
+
+    // Make sure `src` pattern is big enough to analyze `dst`.
+    while src.end < off + dst.width {
+      let (layout, offset) = match byte_layout_at(self.src, src.end) {
+        Uninit | OutOfBounds => return Err("error"),
+        Init { layout, offset } => (layout, offset)
+      };
+      match &layout.bit_patterns {
+        One(pattern) => src = src.feed(pattern, layout.width, offset),
+        OneOf(patterns) => {
+          let mut i = 0;
+          while i < patterns.len() {
+            sa = bail!(self.sa(src.feed(&patterns[i], layout.width, offset), dst, off, sa));
+            i += 1;
+          }
+          return Ok(sa);
+        }
+      }
+    }
+
+    let srcp = src.to_pattern(off, dst.width);
+    match dst.bit_patterns {
+      One(pattern) => {
+        let dstp = BitPattern::new(dst.width, pattern);
+        sa.all_dst_in_src &= srcp.contains(&dstp);
+        sa.all_src_in_dst &= dstp.contains(&srcp);
+        println!("-- at {off} check {:?} against {:?} -> {sa:?}", srcp, dstp);
+      },
+      OneOf(patterns) => {
+        let mut i = 0;
+        while i < patterns.len() {
+          let dst_pattern = BitPattern::new(dst.width, patterns[i]);
+          sa.all_dst_in_src &= srcp.contains(&dst_pattern);
+          sa.all_src_in_dst &= dst_pattern.contains(&srcp);
+          println!("-- at {off} check {:?} against {:?} -> {sa:?}", srcp, dst_pattern);
+          i += 1;
+        }
+      }
+    }
+
+    let end = off + dst.width;
+    match self.next(end) {
+      None => Ok(sa),
+      Some((dst, off)) => self.sa(src.goto(end), dst, off, sa)
+    }
+  }
+}
+
+impl RawLayout {
+  pub const fn new(width: usize, bit_patterns: BitPatterns) -> Self {
+    Self { width, bit_patterns }
+  }
+}
+
+pub fn sa(src: &[Option<RawLayout>], dst: &[Option<RawLayout>]) -> Result<StaticAnalyze, &'static str> {
+  let cx = Cx::new(src, dst);
+  let (dst, off) = match cx.next(0) {
+    None => return Err("invalid layout"),
+    Some((dst, off)) => (dst, off),
+  };
+  cx.sa(Pattern::empty(0), dst, off, StaticAnalyze { all_src_in_dst: true, all_dst_in_src: true })
+}
+
+pub const fn raw1(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(1, bit_patterns)) }
+pub const fn raw2(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(2, bit_patterns)) }
+pub const fn raw3(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(3, bit_patterns)) }
+pub const fn raw4(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(4, bit_patterns)) }
+pub const fn raw5(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(5, bit_patterns)) }
+pub const fn raw6(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(6, bit_patterns)) }
+pub const fn raw7(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(7, bit_patterns)) }
+pub const fn raw8(bit_patterns: BitPatterns) -> Option<RawLayout> { Some(RawLayout::new(8, bit_patterns)) }
+
+pub const fn ne1(a: u8)  -> [u8; 8] { [a, 0, 0, 0, 0, 0, 0, 0] }
+pub const fn ne2(v: u16) -> [u8; 8] { let [a, b] = v.to_ne_bytes(); [a, b, 0, 0, 0, 0, 0, 0] }
+pub const fn ne4(v: u32) -> [u8; 8] { let [a, b, c, d] = v.to_ne_bytes(); [a, b, c, d, 0, 0, 0, 0] }
+pub const fn ne8(v: u64) -> [u8; 8] { v.to_ne_bytes() }
+
+pub const fn le1(a: u8)  -> [u8; 8] { [a, 0, 0, 0, 0, 0, 0, 0] }
+pub const fn le2(v: u16) -> [u8; 8] { let [a, b] = v.to_le_bytes(); [a, b, 0, 0, 0, 0, 0, 0] }
+pub const fn le4(v: u32) -> [u8; 8] { let [a, b, c, d] = v.to_le_bytes(); [a, b, c, d, 0, 0, 0, 0] }
+pub const fn le8(v: u64) -> [u8; 8] { v.to_le_bytes() }
+
+pub const fn be1(a: u8)  -> [u8; 8] { [a, 0, 0, 0, 0, 0, 0, 0] }
+pub const fn be2(v: u16) -> [u8; 8] { let [a, b] = v.to_be_bytes(); [a, b, 0, 0, 0, 0, 0, 0] }
+pub const fn be4(v: u32) -> [u8; 8] { let [a, b, c, d] = v.to_be_bytes(); [a, b, c, d, 0, 0, 0, 0] }
+pub const fn be8(v: u64) -> [u8; 8] { v.to_be_bytes() }
+
+pub const fn pat<const N: usize>(b: [BytePattern; N]) -> [BytePattern; 8] {
+  assert!(N <= 8);
+  let (mut i, mut pattern) = (0, [Mask(0); 8]);
+  while i < N {
+    pattern[i] = b[i];
+    i += 1;
+  }
+  pattern
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
 
+  #[allow(non_upper_case_globals)]
   #[test]
-  fn test_utilities() {
-    // Test min and max functions
-    assert_eq!(min(1, 2), 1);
-    assert_eq!(max(1, 2), 2);
+  fn test_sa() {
+    const u8: Option<RawLayout> = raw1(BitPatterns::any());
+    const u16: Option<RawLayout> = raw2(BitPatterns::any());
+    const bool: Option<RawLayout> = raw1(One(pat([Mask(0x01)])));
+    const u8nz: Option<RawLayout> = raw1(OneOf(&[pat([Discard(0)])]));
+    const u16nz: Option<RawLayout> = raw2(OneOf(&[pat([Discard(0), Mask(0xff)])]));
+    const u32nz: Option<RawLayout> = raw4(OneOf(&[pat([Discard(0), Mask(0xff), Mask(0xff), Mask(0xff)])]));
 
-    // Test mask function for various widths
-    for width in 1..=7 {
-      assert_eq!(mask(width), (1u64 << (width * 8)) - 1);
-    }
+    let _ = dbg!(sa(&[u8], &[u8]));
+    let _ = dbg!(sa(&[bool], &[bool]));
+    let _ = dbg!(sa(&[bool], &[u8]));
+    let _ = dbg!(sa(&[u8], &[bool]));
+    let _ = dbg!(sa(&[bool, bool], &[u16]));
+    let _ = dbg!(sa(&[bool, bool], &[bool, bool]));
+    let _ = dbg!(sa(&[bool, bool], &[u16nz]));
+    let _ = dbg!(sa(&[u16nz, bool, u16nz], &[bool, u16nz, bool]));
 
-    // Test size function with different ranges
-    assert_eq!(size((0, 0)), 1);
-    assert_eq!(size((0, 10)), 11);
-  }
-
-  #[test]
-  fn test_bit_pattern() {
-    let mut pattern = BitPattern::new();
-
-    // Test extending the bit pattern and calculating width
-    pattern = pattern.extend((0, 1), 1);
-    assert_eq!(pattern.width(), 1);
-    assert_eq!(pattern.variety(), 2); // For range (0, 1) with width 1
-
-    // More complex pattern
-    pattern = pattern.extend((0, 3), 2); // Adding 2 more bytes, allowing values 0 to 3
-    assert_eq!(pattern.variety(), 8); // 2 * 4 = 8 possible combinations
-
-    // Test overlaps function
-    assert_eq!(2, pattern.overlaps((0, 0xFF), 3, Lsb)); // Only 2 values (0-1)
-    assert_eq!(8, pattern.overlaps((0, 0xFFFF), 3, Lsb)); // Only 2 values (0-1)
-  }
-
-  #[test]
-  fn test_count() {
-    assert_eq!(4, count(&[le1(&[(0, 1)]), le1(&[(0, 1)])], 2));
-    assert_eq!(25, count(&[le1(&[(5, 9)]), le1(&[(0, 4)])], 2));
-    assert_eq!(100, count(&[le1(&[(0, 99)])], 1));
-    assert_eq!(200, count(&[le2(&[(0, 99), (200, 299)])], 2));
-    assert_eq!(6, count(&[le1(&[(0, 1), (3, 4), (6, 7)])], 1));
-    assert_eq!(18, count(&[le1(&[(0, 2)]), le1(&[(0, 1), (3, 4), (6, 7)])], 2));
-    assert_eq!(256, count(&[any(1, Lsb)], 1));
-    assert_eq!(65536, count(&[any(2, Lsb)], 2));
-    assert_eq!(2, count(&[le8(&[(0, 1)])], 8));
-    assert_eq!(4, count(&[le8(&[(0, 1), (10, 11)])], 8));
-    assert_eq!(2, count(&[le8(&[(u64::MAX - 1, u64::MAX)])], 8));
-    assert_eq!(18446744073709551616, count(&[le8(&[(0, u64::MAX)])], 8));
-  }
-
-  #[test]
-  fn test_overlaps_lsb() {
-    assert_eq!(4, overlaps(any(2, Lsb), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
-    assert_eq!(4, overlaps(le2(&[(0, 1), (256, 257)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(le2(&[(0, 1)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(le2(&[(256, 257)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
-    assert_eq!(4, overlaps(le2(&[(512, 513), (768, 769)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
-    assert_eq!(2, overlaps(le2(&[(512, 513)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
-    assert_eq!(2, overlaps(le2(&[(768, 769)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
-    assert_eq!(0, overlaps(le2(&[(100, 200)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
-    assert_eq!(50, overlaps(le2(&[(50, 150)]), &[le1(&[(0, 99)]), le1(&[(0, 1)])]));
-    assert_eq!(65536, overlaps(any(2, Lsb), &[any(1, Lsb), any(1, Lsb)]));
-    assert_eq!(256, overlaps(le2(&[(0, 255)]), &[any(1, Lsb), le1(&[(0, 1)])]));
-    assert_eq!(
-      6,
-      overlaps(le2(&[(0, 1), (3, 4), (6, 7)]), &[le1(&[(0, 1), (3, 4), (6, 7)]), le1(&[(0, 2)])])
-    );
-    assert_eq!(
-      4,
-      overlaps(
-        le4(&[(0, u32::MAX as u64)]),
-        &[le2(&[(0, 1)]), le2(&[(u16::MAX as u64 - 1, u16::MAX as u64)])]
-      )
-    );
-    assert_eq!(u64::MAX as u128 + 1, overlaps(any(8, Lsb), &[any(4, Lsb), any(4, Lsb)]));
-    assert_eq!(11, overlaps(le2(&[(245, 255)]), &[le1(&[(240, 255)]), le1(&[(0, 255)])]));
-    assert_eq!(
-      16,
-      overlaps(
-        le2(&[(0, 3), (256, 259), (512, 515), (768, 771)]),
-        &[le1(&[(0, 3)]), le1(&[(0, 3)])]
-      )
-    );
-    assert_eq!(2, overlaps(ne2(&[(0, 1), (4, 5), (8, 9)]), &[ne1(&[(0, 3)]), ne1(&[(0, 3)])]));
-    assert_eq!(1, overlaps(ne4(&[(255, 255)]), &[ne2(&[(255, 255)]), ne2(&[(0, 255)])]));
-    assert_eq!(256, overlaps(ne2(&[(0, 255)]), &[any(1, Lsb), ne1(&[(0, 0)])]));
-  }
-
-  #[test]
-  fn test_overlaps_msb() {
-    assert_eq!(4, overlaps(any(2, Msb), &[be1(&[(0, 1)]), be1(&[(0, 1)])]));
-    assert_eq!(4, overlaps(be2(&[(0, 1), (256, 257)]), &[be1(&[(0, 1)]), be1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(be2(&[(0, 1)]), &[be1(&[(0, 1)]), be1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(be2(&[(256, 257)]), &[be1(&[(0, 1)]), be1(&[(0, 1)])]));
-    assert_eq!(4, overlaps(be2(&[(512, 513), (768, 769)]), &[be1(&[(2, 3)]), be1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(be2(&[(512, 513)]), &[be1(&[(2, 3)]), be1(&[(0, 1)])]));
-    assert_eq!(2, overlaps(be2(&[(768, 769)]), &[be1(&[(2, 3)]), be1(&[(0, 1)])]));
-    assert_eq!(0, overlaps(be2(&[(100, 200)]), &[be1(&[(2, 3)]), be1(&[(0, 1)])]));
-    assert_eq!(50, overlaps(be2(&[(50, 150)]), &[be1(&[(0, 1)]), be1(&[(0, 99)])]));
-    assert_eq!(65536, overlaps(any(2, Msb), &[any(1, Msb), any(1, Msb)]));
-    assert_eq!(256, overlaps(be2(&[(0, 255)]), &[be1(&[(0, 1)]), any(1, Msb)]));
-    assert_eq!(
-      6,
-      overlaps(be2(&[(0, 1), (3, 4), (6, 7)]), &[be1(&[(0, 2)]), be1(&[(0, 1), (3, 4), (6, 7)])])
-    );
-    assert_eq!(
-      4,
-      overlaps(
-        be4(&[(0, u32::MAX as u64)]),
-        &[be2(&[(0, 1)]), be2(&[(u16::MAX as u64 - 1, u16::MAX as u64)])]
-      )
-    );
-    assert_eq!(u64::MAX as u128 + 1, overlaps(any(8, Msb), &[any(4, Msb), any(4, Msb)]));
-    assert_eq!(11, overlaps(be2(&[(245, 255)]), &[be1(&[(0, 255)]), be1(&[(240, 255)])]));
-    assert_eq!(
-      16,
-      overlaps(
-        be2(&[(0, 3), (256, 259), (512, 515), (768, 771)]),
-        &[be1(&[(0, 3)]), be1(&[(0, 3)])]
-      )
-    );
-    assert_eq!(2, overlaps(ne2(&[(0, 1), (4, 5), (8, 9)]), &[ne1(&[(0, 3)]), ne1(&[(0, 3)])]));
-    assert_eq!(1, overlaps(ne4(&[(255, 255)]), &[ne2(&[(255, 255)]), ne2(&[(0, 255)])]));
-    assert_eq!(256, overlaps(ne2(&[(0, 255)]), &[any(1, Msb), ne1(&[(0, 0)])]));
+    // assert_eq!(4, overlaps(any(2, Lsb), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
+    // assert_eq!(4, overlaps(le2(&[(0, 1), (256, 257)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
+    // assert_eq!(2, overlaps(le2(&[(0, 1)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
+    // assert_eq!(2, overlaps(le2(&[(256, 257)]), &[le1(&[(0, 1)]), le1(&[(0, 1)])]));
+    // assert_eq!(4, overlaps(le2(&[(512, 513), (768, 769)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
+    // assert_eq!(2, overlaps(le2(&[(512, 513)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
+    // assert_eq!(2, overlaps(le2(&[(768, 769)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
+    // assert_eq!(0, overlaps(le2(&[(100, 200)]), &[le1(&[(0, 1)]), le1(&[(2, 3)])]));
+    // assert_eq!(50, overlaps(le2(&[(50, 150)]), &[le1(&[(0, 99)]), le1(&[(0, 1)])]));
+    // assert_eq!(65536, overlaps(any(2, Lsb), &[any(1, Lsb), any(1, Lsb)]));
+    // assert_eq!(256, overlaps(le2(&[(0, 255)]), &[any(1, Lsb), le1(&[(0, 1)])]));
+    // assert_eq!(
+    //   6,
+    //   overlaps(le2(&[(0, 1), (3, 4), (6, 7)]), &[le1(&[(0, 1), (3, 4), (6, 7)]), le1(&[(0, 2)])])
+    // );
+    // assert_eq!(
+    //   4,
+    //   overlaps(
+    //     le4(&[(0, u32::MAX as u64)]),
+    //     &[le2(&[(0, 1)]), le2(&[(u16::MAX as u64 - 1, u16::MAX as u64)])]
+    //   )
+    // );
+    // assert_eq!(u64::MAX as u128 + 1, overlaps(any(8, Lsb), &[any(4, Lsb), any(4, Lsb)]));
+    // assert_eq!(11, overlaps(le2(&[(245, 255)]), &[le1(&[(240, 255)]), le1(&[(0, 255)])]));
+    // assert_eq!(
+    //   16,
+    //   overlaps(
+    //     le2(&[(0, 3), (256, 259), (512, 515), (768, 771)]),
+    //     &[le1(&[(0, 3)]), le1(&[(0, 3)])]
+    //   )
+    // );
   }
 }
 
