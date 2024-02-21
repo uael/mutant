@@ -182,17 +182,17 @@ pub enum Error {
   /// This error occurs when the size of the source type does not match the size of the
   /// target type. The inner value (`isize`) represents the size difference.
   SizeMismatch(isize),
+  /// Source bit pattern is invalid.
   InvalidBitPattern,
 }
 
-/// Specifies the byte order for raw data layout.
-///
-/// This enum is used in specifying how multibyte data types are laid out in memory,
-/// particularly useful in scenarios like parsing binary data formats or interfacing
-/// with hardware.
+/// Represents a bit pattern for a whole unit `U`.
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Ordering { Lsb = 1, Msb }
+pub enum BitPattern<U = u8> { Mask(U), Allow(U), Discard(U) }
+
+/// Tye alias for bit patterns.
+pub type BitPatterns = &'static [[BitPattern; 8]];
 
 /// Represents the memory layout of a type.
 ///
@@ -201,24 +201,13 @@ pub enum Ordering { Lsb = 1, Msb }
 /// providing the necessary context for transmutation operations.
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Layout { Void, Slice, Array, Struct, Raw { layout: RawLayout } }
+pub enum Layout { Void, Slice, Array, Struct, Bits { patterns: BitPatterns } }
 
 /// Describes a byte-level memory layout. It is primarily used as the return type of
 /// the [`byte_layout_at`] function.
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum ByteLayout { Uninit, OutOfBounds, Init { layout: RawLayout, offset: usize } }
-
-/// Raw data layout (typically for integer types or enum discriminants).
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct RawLayout {
-  /// Byte ordering.
-  ordering: Ordering,
-  /// Allowed value ranges.
-  bit_patterns: Option<&'static [Range<u64>]>,
-  /// Data width in bytes.
-  width: usize,
-}
+pub enum ByteLayout { Uninit, Init { patterns: BitPatterns, offset: usize, width: usize } }
 
 /// A wrapper to ensure the inner type does not require dropping.
 ///
@@ -322,13 +311,13 @@ pub unsafe trait Data: 'static {
   const LAYOUT: Layout;
 
   /// Size in bytes of the sized part of `Self`.
-  /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`](mem::size_of)`::<Self>()`.
+  /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`]`::<Self>()`.
   #[doc(hidden)]
   const HEADER: usize;
 }
 
-pub unsafe trait RawData: Copy + Data {
-  const RAW_LAYOUT: RawLayout;
+pub unsafe trait Bits: Copy + Data {
+  const PATTERNS: BitPatterns;
 }
 
 // Macros ------------------------------------------------------------------------------------------
@@ -613,7 +602,7 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
 /// //assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<[Foo]>(4));
 /// ```
 #[inline]
-pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
+pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> Option<ByteLayout> {
   #[inline]
   const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
     offset >= R::OFFSET
@@ -621,10 +610,10 @@ pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
   }
 
   #[inline]
-  const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> ByteLayout {
+  const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> Option<ByteLayout> {
     match R::FIELDS {
       // Reached the end of the struct, returns an uninitialized layout.
-      0 => ByteLayout::Uninit,
+      0 => Some(ByteLayout::Uninit),
       // `offset` does offset in field, defer to its inner layout.
       _ if repr_contains::<R, T>(offset) => byte_layout_at::<R::Type>(offset - R::OFFSET),
       // `offset` does not offset in field, continue with next field.
@@ -634,17 +623,21 @@ pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> ByteLayout {
 
   // Check for `offset` to be in bounds.
   if is_sized::<T>() && offset >= min_size_of::<T>() {
-    return ByteLayout::OutOfBounds;
+    return None;
   }
   // Check for `ZST` slices.
   if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
-    return ByteLayout::OutOfBounds;
+    return None;
   }
   match &T::LAYOUT {
     Layout::Void => unreachable!(),
     Layout::Slice | Layout::Array => byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>()),
     Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
-    &Layout::Raw { layout } => ByteLayout::Init { layout, offset },
+    &Layout::Bits { patterns } => {
+      let width = min_size_of::<T>();
+      assert!(width >= 1 && width <= 8);
+      Some(ByteLayout::Init { patterns, offset, width })
+    }
   }
 }
 
@@ -722,16 +715,16 @@ const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
       }
       false
     }
-    Layout::Raw { layout } if layout.is_any() => true,
-    Layout::Raw { layout } => {
-      let (mut offset, mut val) = (0, 0);
-      while offset < min_size_of::<Dst>() {
-        // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
-        let byte = unsafe { ptr.cast::<u8>().add(offset).read() };
-        val |= (byte as u64) << layout.shift(offset);
-        offset += 1;
-      }
-      layout.contains(val)
+    Layout::Bits { patterns } => {
+      // let (mut offset, mut val) = (0, 0);
+      // while offset < min_size_of::<Dst>() {
+      //   // SAFETY: `ptr` came from a valid reference and `offset` is in type bounds.
+      //   let byte = unsafe { ptr.cast::<u8>().add(offset).read() };
+      //   val |= (byte as u64) << layout.shift(offset);
+      //   offset += 1;
+      // }
+      // layout.contains(val)
+      todo!()
     }
   }
 }
@@ -907,21 +900,21 @@ pub mod num {
       #[repr(transparent)]
       pub struct $ty(pub [u8; $n]);
 
-      unsafe impl RawData for $ty {
-        const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>().with_ordering(Ordering::$ordering);
+      unsafe impl Bits for $ty {
+        const PATTERNS: BitPatterns = private::any_bit_patterns();
       }
 
       impl $ty {
         pub const MIN: Self = Self::from_raw($raw::MIN);
         pub const MAX: Self = Self::from_raw($raw::MAX);
 
-        #[inline] pub const fn to_ne_bytes(self) -> [u8; $n] { swap!($ordering => NATIVE, self).0 }
-        #[inline] pub const fn to_le_bytes(self) -> [u8; $n] { swap!($ordering => Lsb, self).0 }
-        #[inline] pub const fn to_be_bytes(self) -> [u8; $n] { swap!($ordering => Msb, self).0 }
+        #[inline] pub const fn to_ne_bytes(self) -> [u8; $n] { swap!($ordering => ne, self).0 }
+        #[inline] pub const fn to_le_bytes(self) -> [u8; $n] { swap!($ordering => le, self).0 }
+        #[inline] pub const fn to_be_bytes(self) -> [u8; $n] { swap!($ordering => be, self).0 }
 
-        #[inline] pub const fn from_ne_bytes(b: [u8; $n]) -> Self { swap!(NATIVE => $ordering, Self(b)) }
-        #[inline] pub const fn from_le_bytes(b: [u8; $n]) -> Self { swap!(Lsb => $ordering, Self(b)) }
-        #[inline] pub const fn from_be_bytes(b: [u8; $n]) -> Self { swap!(Msb => $ordering, Self(b)) }
+        #[inline] pub const fn from_ne_bytes(b: [u8; $n]) -> Self { swap!(ne => $ordering, Self(b)) }
+        #[inline] pub const fn from_le_bytes(b: [u8; $n]) -> Self { swap!(le => $ordering, Self(b)) }
+        #[inline] pub const fn from_be_bytes(b: [u8; $n]) -> Self { swap!(be => $ordering, Self(b)) }
 
         #[inline]
         pub const fn from_raw(raw: $raw) -> Self {
@@ -988,32 +981,32 @@ pub mod num {
 
   #[rustfmt::skip]
   macro_rules! le_or_be {
-    (NATIVE, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
-    (Lsb, $le:expr, $be:expr $(,)?) => { $le };
-    (Msb, $le:expr, $be:expr $(,)?) => { $be };
+    (ne, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
+    (le, $le:expr, $be:expr $(,)?) => { $le };
+    (be, $le:expr, $be:expr $(,)?) => { $be };
   }
 
   #[rustfmt::skip]
   macro_rules! swap {
-    (NATIVE => NATIVE, $e:expr) => { $e };
-    (Lsb => Lsb, $e:expr) => { $e };
-    (Msb => Msb, $e:expr) => { $e };
-    (Lsb => Msb, $e:expr) => { $e.swap_bytes() };
-    (Msb => Lsb, $e:expr) => { $e.swap_bytes() };
-    (NATIVE => Lsb, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (NATIVE => Msb, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
-    (Lsb => NATIVE, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (Msb => NATIVE, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+    (ne => ne, $e:expr) => { $e };
+    (le => le, $e:expr) => { $e };
+    (be => be, $e:expr) => { $e };
+    (le => be, $e:expr) => { $e.swap_bytes() };
+    (be => le, $e:expr) => { $e.swap_bytes() };
+    (ne => le, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (ne => be, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+    (le => ne, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (be => ne, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
   }
 
   impl_num! {
-    u16le u16 2 Lsb, u16be u16 2 Msb,
-    u24le u32 3 Lsb, u24be u32 3 Msb, u24 u32 3 NATIVE,
-    u32le u32 4 Lsb, u32be u32 4 Msb,
-    u40le u64 5 Lsb, u40be u64 5 Msb, u40 u64 5 NATIVE,
-    u48le u64 6 Lsb, u48be u64 6 Msb, u48 u64 6 NATIVE,
-    u56le u64 7 Lsb, u56be u64 7 Msb, u56 u64 7 NATIVE,
-    u64le u64 8 Lsb, u64be u64 8 Msb
+    u16le u16 2 le, u16be u16 2 be,
+    u24le u32 3 le, u24be u32 3 be, u24 u32 3 ne,
+    u32le u32 4 le, u32be u32 4 be,
+    u40le u64 5 le, u40be u64 5 be, u40 u64 5 ne,
+    u48le u64 6 le, u48be u64 6 be, u48 u64 6 ne,
+    u56le u64 7 le, u56be u64 7 be, u56 u64 7 ne,
+    u64le u64 8 le, u64be u64 8 be
   }
 
   #[cfg(test)]
@@ -1047,423 +1040,38 @@ pub mod num {
 
 // internal ----------------------------------------------------------------------------------------
 
-/// Counts the number of values in one range (`of`) that also exist in another range (`into`).
-/// Both `of` and `into` are inclusive ranges.
-///
-/// # Parameters
-/// - `of`: A `Range<u64>` representing the first range.
-/// - `into`: A `Range<u64>` representing the second range.
-///
-/// # Returns
-/// `u128`: The number of overlapping elements between the two ranges.
-///
-/// # Examples
-/// ```
-/// use mutant::overlaps;
-///
-/// assert_eq!(2, overlaps(0..1, 0..1));
-/// assert_eq!(1, overlaps(0..0, 0..1));
-/// assert_eq!(1, overlaps(0..1, 0..0));
-/// assert_eq!(0, overlaps(5..10, 11..15));
-/// assert_eq!(32, overlaps(0..63, 32..63));
-/// ```
-#[doc(hidden)]
-pub const fn overlaps(of: Range<u64>, into: Range<u64>) -> u128 {
-  let start = if of.start > into.start { of.start } else { into.start };
-  let end = if of.end < into.end { of.end } else { into.end };
-
-  // Check if there is an overlap.
-  size(start..end)
-}
-
-/// Counts the number of possible values in an inclusive `Range<u64>`.
-///
-/// # Parameters
-/// - `range`: A `Range<u64>` representing the inclusive range.
-///
-/// # Returns
-/// `u128`: The number of possible values within the range.
-///
-/// # Examples
-/// ```
-/// use mutant::size;
-///
-/// assert_eq!(2, size(0..1)); // Range includes 0 and 1
-/// assert_eq!(1, size(0..0)); // Range includes only 0
-/// assert_eq!(101, size(0..100)); // Range includes numbers 0 through 100
-/// assert_eq!(64, size(32..95)); // Range includes numbers 32 through 95
-/// ```
-#[doc(hidden)]
-pub const fn size(range: Range<u64>) -> u128 {
-  match range.start > range.end {
-    true => 0,
-    _ => (range.end - range.start) as u128 + 1,
-  }
-}
-
 mod private {
   use core::fmt;
   use core::fmt::{Debug, Display, Formatter};
   use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
   use core::ops::{Deref, DerefMut};
 
+  use MetadataChecks::*;
+  use ByteLayout::*;
+  use BitPattern::*;
+
   use crate::*;
 
-  // impl Ordering ---------------------------------------------------------------------------------
+  // impl BitPattern -----------------------------------------------------------------------------
 
-  impl Ordering {
-    #[cfg(target_endian = "little")]
-    pub const NATIVE: Self = Self::Lsb;
-    #[cfg(target_endian = "big")]
-    pub const NATIVE: Self = Self::Msb;
-  }
-
-  // impl ByteLayout -------------------------------------------------------------------------------
-
-  impl ByteLayout {
-    #[inline]
-    pub const fn is_uninit(&self) -> bool {
-      !matches!(self, Self::Init { .. })
-    }
-
-    #[inline]
-    pub const fn is_any(&self) -> bool {
-      match self {
-        ByteLayout::Init { layout, .. } => layout.is_any(),
-        ByteLayout::OutOfBounds => false,
-        _ => true,
+  impl BitPattern {
+    const fn contains(self, other: Self) -> bool {
+      match (self, other) {
+        (Mask(a), Mask(b)) => a | b == a, // All bits in 'b' are allowed by 'a'.
+        (Mask(a), Allow(b)) => a & b == b, // 'b' is allowed by 'a'.
+        (Mask(a), Discard(b)) => a & b == 0, // No disallowed bits in 'b' by 'a'.
+        (Allow(a), Allow(b)) => a == b, // 'a' is exactly 'b'.
+        (Allow(_), _) => false, // 'Allow' can't contain 'Mask' or 'Discard'.
+        (Discard(a), Discard(b)) => a == b, // 'a' discards exactly what 'b' discards.
+        (Discard(a), Allow(b)) => a != b, // 'b' isn't discarded by 'a'.
+        (Discard(a), Mask(b)) => a & b != a, // None of the bits in 'a' can be produced by 'b'.
       }
     }
   }
-
-  // impl RawLayout --------------------------------------------------------------------------------
-
-  #[derive(Debug, Copy, Clone)]
-  struct StaticAnalyzePending {
-    src_bit_patterns: u128,
-    bit_pattern_overlaps: u128,
-    src_is_overlapping: bool,
-    src_is_any_bit_pattern: bool,
-  }
-
-  impl StaticAnalyzePending {
-    pub const fn new() -> Self {
-      Self {
-        src_bit_patterns: 1,
-        bit_pattern_overlaps: 0,
-        src_is_overlapping: false,
-        src_is_any_bit_pattern: true,
-      }
-    }
-  }
-
-  #[derive(Debug, Copy, Clone)]
-  enum StaticAnalyzeState {
-    Pending(StaticAnalyzePending),
-    Done { maybe_invalid_bit_pattern: bool, sound_target_mutation: bool },
-  }
-
-  impl RawLayout {
-    #[inline]
-    pub const fn new<T>(patterns: &'static [Range<u64>]) -> Self {
-      assert!(mem::size_of::<T>() <= 8);
-      Self { ordering: Ordering::NATIVE, bit_patterns: Some(patterns), width: mem::size_of::<T>() }
-    }
-
-    #[inline]
-    pub const fn any<T>() -> Self {
-      assert!(mem::size_of::<T>() <= 8);
-      Self { ordering: Ordering::NATIVE, bit_patterns: None, width: mem::size_of::<T>() }
-    }
-
-    #[inline]
-    pub const fn with_ordering(self, ordering: Ordering) -> Self {
-      Self { ordering, bit_patterns: self.bit_patterns, width: self.width }
-    }
-
-    #[inline]
-    pub const fn is_any(&self) -> bool {
-      self.bit_patterns.is_none()
-    }
-
-    #[inline]
-    pub(crate) const fn shift(self, byte: usize) -> usize {
-      assert!(byte < self.width);
-      match self.ordering {
-        Ordering::Lsb => byte * 8,
-        Ordering::Msb => (self.width - byte - 1) * 8,
-      }
-    }
-
-    #[inline]
-    pub(crate) const fn contains(&self, value: u64) -> bool {
-      match self.bit_patterns {
-        None => true,
-        Some(pats) => {
-          let mut i = 0;
-          while i < pats.len() {
-            if value >= pats[i].start && value <= pats[i].end {
-              return true;
-            }
-            i += 1;
-          }
-          false
-        }
-      }
-    }
-
-    #[inline]
-    const fn bit_patterns(&self) -> u128 {
-      match self.bit_patterns {
-        None => 1u128 << (self.width * 8),
-        Some(pats) => {
-          let (mut i, mut values) = (0, 0u128);
-          while i < pats.len() {
-            values += size(pats[i].start..pats[i].end);
-            i += 1;
-          }
-          values
-        }
-      }
-    }
-
-    #[inline]
-    const fn overlaps(&self, bit_pattern: Range<u64>) -> u128 {
-      let mask = ((1u128 << (self.width * 8)) - 1) as u64;
-      let bit_pattern = (bit_pattern.start & mask)..(bit_pattern.end & mask);
-      match self.bit_patterns {
-        None => size(bit_pattern),
-        Some(pats) => {
-          let (mut i, mut n) = (0, 0);
-          while i < pats.len() {
-            n += overlaps(bit_pattern.start..bit_pattern.end, pats[i].start..pats[i].end);
-            i += 1;
-          }
-          n
-        }
-      }
-    }
-
-    #[cfg(test)]
-    const fn test_static_analyze(&self, src: &[ByteLayout]) -> Result<(bool, bool), &'static str> {
-      use ByteLayout::*;
-
-      let (mut sa, mut byte, mut i) = (StaticAnalyzePending::new(), 0, 0);
-      while byte < self.width {
-        sa = match self.static_analyze_extend(sa, src[i], byte) {
-          Ok(StaticAnalyzeState::Done { maybe_invalid_bit_pattern, sound_target_mutation }) => {
-            return Ok((maybe_invalid_bit_pattern, sound_target_mutation))
-          }
-          Ok(StaticAnalyzeState::Pending(sa)) => sa,
-          Err(err) => return Err(err),
-        };
-        byte += match src[i] {
-          Init { layout, offset } => layout.width - offset,
-          _ => 1,
-        };
-        i += 1;
-      }
-      Err("invalid input")
-    }
-
-    const fn static_analyze_extend(
-      &self,
-      mut sa: StaticAnalyzePending,
-      src: ByteLayout,
-      byte: usize,
-    ) -> Result<StaticAnalyzeState, &'static str> {
-      use ByteLayout::*;
-
-      let (src, off) = match src {
-        // Return an error if uninitialized bytes are encountered in the source layout.
-        Uninit => return Err("uninitialized bytes in source"),
-        // Return an error if the analysis exceeds the bounds of the source layout.
-        OutOfBounds => return Err("out-of-bounds"),
-        // Process each initialized byte within the source layout.
-        Init { layout, offset } => (layout, offset),
-      };
-      // * Update `src_is_overlapping`: Determine if the source overlaps with the target.
-      //   This is true if the offset is non-zero, or if the combined width of the layout
-      //   and `off` exceeds `end`.
-      // * Update `src_is_any_bit_pattern`: The source is "any bit pattern" if all its
-      //   inner layouts are.
-      // * Update `src_bit_patterns`: Aggregate the bit patterns of the source by multiplying
-      //   with the layout's bit patterns.
-      sa.src_is_overlapping = sa.src_is_overlapping || off != 0 || byte + src.width > self.width;
-      sa.src_is_any_bit_pattern = sa.src_is_any_bit_pattern && src.is_any();
-      sa.src_bit_patterns *= src.bit_patterns();
-      // Compute the number of valid bit patterns in source that are also valid in target.
-      if let Some(bit_patterns) = self.bit_patterns {
-        let mut i = 0;
-        while i < bit_patterns.len() {
-          sa.bit_pattern_overlaps += src.overlaps(Range {
-            start: bit_patterns[i].start >> self.shift(byte),
-            end: bit_patterns[i].end >> self.shift(byte),
-          });
-          i += 1;
-        }
-      }
-      // Advance the offset to the next segment of the source layout.
-      if byte + src.width < self.width {
-        return Ok(StaticAnalyzeState::Pending(sa));
-      }
-      // Check for target bit patterns, the target is considered as being "any bit pattern" when
-      // the [`RawLayout::patterns`] field is set to [`None`].
-      let (maybe_invalid_bit_pattern, sound_target_mutation) = if self.is_any() {
-        // Target layout is "any bit pattern", returns:
-        // * `false`: The target layout is "any bit pattern", hence [`Error::InvalidBitPattern`]
-        //   is unreachable.
-        // * `src_is_overlapping`: Target mutation is only safe and sound if all source layouts are
-        //   "any bit pattern".
-        (false, sa.src_is_any_bit_pattern)
-      } else if sa.src_is_overlapping {
-        // Target layout isn't "any bit pattern" and source layouts overlaps with target, returns:
-        // * `true`: In case of layout overlaps prefer to return a maybe false-positive result
-        //   instead of performing complex computations. This path could still be improved later on.
-        //   i.e. consider [`Error::InvalidBitPattern`] as "maybe" reachable.
-        // * `sa.src_is_overlapping`: Target mutation is only safe and sound if all source layouts
-        //   are "any bit pattern".
-        (true, sa.src_is_any_bit_pattern)
-      } else if sa.src_bit_patterns == sa.bit_pattern_overlaps {
-        // All possible bit patterns in source overlaps with valid bit patterns in target, returns:
-        // * `false`: All bit patterns are valid, hence [`Error::InvalidBitPattern`] is unreachable.
-        // * `sa.src_bit_patterns == self.bit_patterns()`: Target mutation is only safe and sound if
-        //   all possible bit patterns in target are also valid in source.
-        (false, sa.src_bit_patterns == self.bit_patterns())
-      } else if sa.bit_pattern_overlaps != 0 {
-        // Some, but not all, possible bit patterns in source overlaps with valid bit patterns
-        // in target, returns:
-        // * `true`: Not all bit patterns are valid, hence [`Error::InvalidBitPattern`] is
-        //   reachable.
-        // * `sa.bit_pattern_overlaps == self.bit_patterns()`: Target mutation is only safe and
-        //   sound if all possible bit patterns in target are also valid in source.
-        (true, sa.bit_pattern_overlaps == self.bit_patterns())
-      } else {
-        // There is no valid bit pattern overlaps, abort.
-        return Err("none of the bit patterns in source are valid in target");
-      };
-      Ok(StaticAnalyzeState::Done { maybe_invalid_bit_pattern, sound_target_mutation })
-    }
-
-    /// Performs static analysis to determine the validity of bit patterns in the source relative to
-    /// the target layout. This function is designed to be used at compile-time to assert the safety
-    /// and correctness of memory layout transformations.
-    const fn static_analyze<Src: ?Sized + Data>(
-      &self,
-      mut off: usize,
-    ) -> Result<(bool, bool), &'static str> {
-      use ByteLayout::*;
-
-      // Initialize `src_bit_patterns` to track the total number of bit patterns in the source,
-      // and `bit_pattern_overlaps` to store the number bit patterns that are valid for both the
-      // source and the target.
-      let (mut src_bit_patterns, mut bit_pattern_overlaps) = (1, 0);
-      // Flags to keep track of whether the source overlaps with the target (`src_is_overlapping`)
-      // and whether the source can be any bit pattern (`src_is_any_bit_pattern`).
-      let (mut src_is_overlapping, mut src_is_any_bit_pattern) = (false, true);
-      // Calculate the end position of the analysis, based on the offset and the width of `self`.
-      let end = off + self.width;
-      // Iteratively analyze the byte layout of `Src` starting from `off` and ending at `end`.
-      while off < end {
-        match byte_layout_at::<Src>(off) {
-          // Return an error if uninitialized bytes are encountered in the source layout.
-          Uninit => return Err("uninitialized bytes in source"),
-          // Return an error if the analysis exceeds the bounds of the source layout.
-          OutOfBounds => return Err("out-of-bounds"),
-          // Process each initialized byte within the source layout.
-          Init { layout, offset } => {
-            // * Update `src_is_overlapping`: Determine if the source overlaps with the target.
-            //   This is true if the offset is non-zero, or if the combined width of the layout
-            //   and `off` exceeds `end`.
-            // * Update `src_is_any_bit_pattern`: The source is "any bit pattern" if all its
-            //   inner layouts are.
-            // * Update `src_bit_patterns`: Aggregate the bit patterns of the source by multiplying
-            //   with the layout's bit patterns.
-            src_is_overlapping = src_is_overlapping || offset != 0 || off + layout.width > end;
-            src_is_any_bit_pattern = src_is_any_bit_pattern && layout.is_any();
-            src_bit_patterns *= layout.bit_patterns();
-            // Compute the number of valid bit patterns in source that are also valid in target.
-            if let Some(bit_patterns) = self.bit_patterns {
-              let mut i = 0;
-              while i < bit_patterns.len() {
-                bit_pattern_overlaps += layout.overlaps(Range {
-                  start: bit_patterns[i].start >> self.shift(end - self.width - off),
-                  end: bit_patterns[i].end >> self.shift(end - self.width - off),
-                });
-                i += 1;
-              }
-            }
-            // Advance the offset to the next segment of the source layout.
-            off += layout.width;
-          }
-        }
-      }
-      // Check for target bit patterns, the target is considered as being "any bit pattern" when
-      // the [`RawLayout::patterns`] field is set to [`None`].
-      if self.is_any() {
-        // Target layout is "any bit pattern", returns:
-        // * `false`: The target layout is "any bit pattern", hence [`Error::InvalidBitPattern`]
-        //   is unreachable.
-        // * `src_is_overlapping`: Target mutation is only safe and sound if all source layouts are
-        //   "any bit pattern".
-        Ok((false, src_is_any_bit_pattern))
-      } else if src_is_overlapping {
-        // Target layout isn't "any bit pattern" and source layouts overlaps with target, returns:
-        // * `true`: In case of layout overlaps prefer to return a maybe false-positive result
-        //   instead of performing complex computations. This path could still be improved later on.
-        //   i.e. consider [`Error::InvalidBitPattern`] as "maybe" reachable.
-        // * `src_is_overlapping`: Target mutation is only safe and sound if all source layouts are
-        //   "any bit pattern".
-        Ok((true, src_is_any_bit_pattern))
-      } else if src_bit_patterns == bit_pattern_overlaps {
-        // All possible bit patterns in source overlaps with valid bit patterns in target, returns:
-        // * `false`: All bit patterns are valid, hence [`Error::InvalidBitPattern`] is unreachable.
-        // * `src_bit_patterns == self.bit_patterns()`: Target mutation is only safe and sound if
-        //   all possible bit patterns in target are also valid in source.
-        Ok((false, src_bit_patterns == self.bit_patterns()))
-      } else if bit_pattern_overlaps != 0 {
-        // Some, but not all, possible bit patterns in source overlaps with valid bit patterns
-        // in target, returns:
-        // * `true`: Not all bit patterns are valid, hence [`Error::InvalidBitPattern`] is
-        //   reachable.
-        // * `bit_pattern_overlaps == self.bit_patterns()`: Target mutation is only safe and sound
-        //   if all possible bit patterns in target are also valid in source.
-        Ok((true, bit_pattern_overlaps == self.bit_patterns()))
-      } else {
-        // There is no valid bit pattern overlaps, abort.
-        Err("none of the bit patterns in source are valid in target")
-      }
-    }
-  }
-
-  #[cfg(test)]
-  #[test]
-  fn test_raw_layout() {
-    use ByteLayout::*;
-
-    macro_rules! sa {
-      (@raw $ty:ident) => { RawLayout::any::<$ty>() };
-      (@raw ($ty:ident in $($pat:expr),+)) => { RawLayout::new::<$ty>(&[$($pat),+]) };
-      (@byte _) => { Uninit };
-      (@byte $tt:tt) => { Init { layout: sa!(@raw $tt), offset: 0 } };
-      (@byte ($tt:tt[$offset:literal])) => { Init { layout: sa!(@raw $tt), offset: $offset } };
-      ($dst:tt <= $($src:tt),+) => {
-        sa!(@raw $dst).test_static_analyze(&[$(sa!(@byte $src)),+])
-      };
-    }
-
-    println!("{:?}", sa!(u16 <= u16));
-    println!("{:?}", sa!((u16 in 0xca..0xcafe) <= u16));
-    println!("{:?}", sa!((u16 in 0xca..0xcafe) <= (u16 in 0xca..0xcafe)));
-    println!("{:?}", sa!((u16 in 0xca..0xcafe) <= (u8 in 0x00..0xfe), (u8 in 0xca..0xff)));
-  }
-
-  // pub const fn shift(range: Range<u64>, byte: u8, width: u8) -> Range<u64> {
-  //
-  // }
 
   // impl Transmutation ----------------------------------------------------------------------------
 
+  /// Static analyze result.
   #[derive(Copy, Clone)]
   struct StaticAnalyze {
     maybe_size_mismatch: Option<MetadataChecks>,
@@ -1693,6 +1301,14 @@ mod private {
     }
   }
 
+  impl<Src: ?Sized, Dst: ?Sized> Copy for Transmutation<Src, Dst> {}
+
+  impl<Src: ?Sized, Dst: ?Sized> Clone for Transmutation<Src, Dst> {
+    fn clone(&self) -> Self {
+      *self
+    }
+  }
+
   /// Performs static analysis to check if the transmutation from `Src` to `Dst` is safe.
   ///
   /// This function computes various checks to ensure that the transmutation adheres to the
@@ -1715,7 +1331,6 @@ mod private {
     Src: ?Sized + Data,
     Dst: ?Sized + Data,
   {
-    use MetadataChecks::*;
     // Calculate header (fixed-size part) and tail (variable-size part) sizes for both
     // source and destination types.
     let (sh, st) = (min_size_of::<Src>(), size_of_tail::<Src>());
@@ -1781,35 +1396,170 @@ mod private {
       Some(IsMultipleOf(m)) => sh + (m * st),
       Some(Is(n) | IsAtLeast(n) | IsAtLeastThenMultipleOf(n, _)) => sh + (n * st),
     };
-    // Variables to keep track of the analysis status.
-    let mut maybe_invalid_bit_pattern = false;
-    let mut sound_target_mutation = true;
-    // Analyze each byte layout in the destination type, ensuring its compatible with the source.
-    let mut off = 0;
-    while off < min_size {
-      match byte_layout_at::<Dst>(off) {
-        // For initialized layouts, further analysis is required.
-        ByteLayout::Init { layout, .. } => match layout.static_analyze::<Src>(off) {
-          Err(err) => return Err(err),
-          Ok(ok) => {
-            maybe_invalid_bit_pattern = maybe_invalid_bit_pattern || ok.0;
-            sound_target_mutation = sound_target_mutation && ok.1;
-            off += layout.width;
+
+    /// Static analyze context.
+    #[derive(Debug, Copy, Clone)]
+    struct Flags {
+      any_target_in_source: bool, // At least one target bit pattern exists in source.
+      all_target_in_source: bool, // All target bit patterns exists in source.
+      all_source_in_target: bool, // All source bit patterns exists in target.
+    }
+
+    /// Static analyze source context.
+    #[derive(Debug, Copy, Clone)]
+    struct Source {
+      // Currently analyzed source bit pattern (aggregate of source(s) layout(s)).
+      // Note: `22` is maximum number of byte pattern needed to analyze a complete target layout,
+      // Where the worst case requires at least 3 full width source layouts (`3 * 8`) with a
+      // minimum of 2 overlapping bytes, hence `3 * 8 - 2 == 22`.
+      // The algorithm could be improved a bit to reduce this by always truncating the unused
+      // first bytes.
+      pattern: [BitPattern; 22],
+      start: usize, // Start offset in the **whole** layout.
+      end: usize, // End offset in the **whole** layout.
+    }
+
+    /// Static analyze target context.
+    #[derive(Debug, Copy, Clone)]
+    struct Target {
+      patterns: &'static [[BitPattern; 8]], // Target patterns.
+      width: usize, // Target width (`[1-8]`).
+    }
+
+    /// Compute next target `at` offset.
+    const fn target_at<Dst: ?Sized + Data>(mut at: usize, end: usize) -> Option<(usize, Target)> {
+      loop {
+        if at >= end {
+          break None
+        }
+        match byte_layout_at::<Dst>(at) {
+          None => break None,
+          Some(Uninit) => at += 1,
+          Some(Init { patterns, offset, width }) => {
+            assert!(offset == 0);
+            break Some((at, Target { patterns, width }))
           }
-        },
-        // Move to the next byte if the current layout is not initialized.
-        _ => off += 1,
+        }
       }
     }
-    Ok(StaticAnalyze { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation })
-  }
 
-  impl<Src: ?Sized, Dst: ?Sized> Copy for Transmutation<Src, Dst> {}
+    const fn static_analyze_inner<Src: ?Sized + Data, Dst: ?Sized + Data>(
+      mut source: Source,
+      target: Target,
+      end: usize,
+      mut cx: Flags,
+    ) -> Result<Flags, &'static str> {
+      // Make sure `source` pattern is big enough to analyze `target`.
+      while source.start + target.width > source.end {
+        let (patterns, offset, width) = match byte_layout_at::<Src>(source.end) {
+          // We should have already checked for out-of-bounds.
+          None => panic!("internal error"),
+          Some(Uninit) => return Err("uninitialized bytes in source"),
+          Some(Init { patterns, offset, width }) => (patterns, offset, width),
+        };
+        if patterns.len() == 1 {
+          source = source.feed(&patterns[0], offset, width);
+          continue
+        }
+        let mut i = 0;
+        while i < patterns.len() {
+          let source = source.feed(&patterns[i], offset, width);
+          cx = bail!(static_analyze_inner::<Src, Dst>(source, target, end, cx));
+          i += 1;
+        }
+        return Ok(cx);
+      }
 
-  impl<Src: ?Sized, Dst: ?Sized> Clone for Transmutation<Src, Dst> {
-    fn clone(&self) -> Self {
-      *self
+      let mut i = 0;
+      while i < target.patterns.len() {
+        cx = source.analyze(&target.patterns[i], target.width, cx);
+        i += 1;
+      }
+
+      match target_at::<Dst>(source.start + target.width, end) {
+        None => Ok(cx),
+        Some((offset, target)) => {
+          source = source.seek(offset);
+          static_analyze_inner::<Src, Dst>(source, target, end, cx)
+        }
+      }
     }
+
+    impl Source {
+      /// Create an empty source bit pattern.
+      const fn new(start: usize) -> Self {
+        Self { pattern: [Mask(0); 22], start, end: start }
+      }
+
+      /// Compute currently covered width in bytes.
+      const fn len(&self) -> usize {
+        self.end - self.start
+      }
+
+      /// Seek current source pattern to `start` offset, i.e. truncate byte patterns up to
+      /// `start` offset.
+      const fn seek(mut self, start: usize) -> Self {
+        // Check for `start` to be in source pattern bounds.
+        assert!(start > self.start, "internal error");
+        // Truncate patterns from `self.start` to `start`.
+        let mut i = start;
+        while i < self.end {
+          self.pattern[i - start] = self.pattern[i - self.start];
+          i += 1;
+        }
+        // Advance start to `start` offset.
+        self.start = start;
+        if start > self.end {
+          self.end = start;
+        }
+        self
+      }
+
+      /// Feed a `pattern` from `offset` to `width` into source bit pattern.
+      const fn feed(mut self, pattern: &[BitPattern; 8], offset: usize, width: usize) -> Self {
+        let len = self.len();
+        assert!(len + width - offset <= self.pattern.len(), "internal error");
+        // Append `width - offset` patterns to source.
+        let mut i = offset;
+        while i < width {
+          self.pattern[len + i] = pattern[i];
+          i += 1;
+        }
+        // Advance end by `width - offset` bytes.
+        self.end += width - offset;
+        self
+      }
+
+      const fn analyze(&self, pattern: &[BitPattern; 8], width: usize, cx: Flags) -> Flags {
+        // TODO
+        cx
+      }
+    }
+
+    let (offset, target) = match target_at::<Dst>(0, min_size) {
+      None => return Err("invalid layout"),
+      Some(target) => target,
+    };
+
+    let mut cx = Flags {
+      any_target_in_source: false,
+      all_target_in_source: true,
+      all_source_in_target: true,
+    };
+
+    cx = match static_analyze_inner::<Src, Dst>(Source::new(offset), target, min_size, cx) {
+      Err(err) => return Err(err),
+      Ok(cx) => cx,
+    };
+
+    if !cx.any_target_in_source {
+      return Err("none of the bit patterns in source are valid in target");
+    }
+
+    // Static analyze result.
+    let maybe_invalid_bit_pattern = !cx.all_target_in_source;
+    let sound_target_mutation = cx.all_source_in_target;
+    Ok(StaticAnalyze { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation })
   }
 
   // impl Dropless ---------------------------------------------------------------------------------
@@ -1978,11 +1728,11 @@ mod private {
     const HEADER: usize = mem::size_of::<Self>();
   }
 
-  unsafe impl<T: RawData> Data for T {
+  unsafe impl<T: Bits> Data for T {
     type Item = ();
     type Tail = ();
     type Repr = ();
-    const LAYOUT: Layout = Layout::Raw { layout: T::RAW_LAYOUT };
+    const LAYOUT: Layout = Layout::Bits { patterns: T::PATTERNS };
     const HEADER: usize = mem::size_of::<Self>();
   }
 
@@ -2038,73 +1788,122 @@ mod private {
 
   // impl RawData ----------------------------------------------------------------------------------
 
-  unsafe impl RawData for u8 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn any_bit_patterns() -> BitPatterns {
+    const ANY: BitPatterns = &[[Mask(0xff); 8]];
+    ANY
   }
 
-  unsafe impl RawData for u16 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn bit_pattern<const N: usize>(b: [BitPattern; N]) -> [BitPattern; 8] {
+    assert!(N <= 8);
+    let (mut i, mut pattern) = (0, [Mask(0x00); 8]);
+    while i < N {
+      pattern[i] = b[i];
+      i += 1;
+    }
+    pattern
   }
 
-  unsafe impl RawData for u32 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn is<const N: usize>(bytes: [u8; N]) -> [BitPattern; 8] {
+    assert!(N <= 8);
+    let (mut i, mut pattern) = (0, [Mask(0x00); 8]);
+    while i < bytes.len() {
+      pattern[i] = Allow(bytes[i]);
+      i += 1;
+    }
+    pattern
   }
 
-  unsafe impl RawData for u64 {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn isnt<const N: usize>(bytes: [u8; N]) -> [BitPattern; 8] {
+    assert!(N <= 8);
+    let (mut i, mut pattern) = (0, [Mask(0x00); 8]);
+    while i < bytes.len() {
+      pattern[i] = Discard(bytes[i]);
+      i += 1;
+    }
+    pattern
   }
 
-  unsafe impl RawData for usize {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn isnt_ne2(val: u16) -> [BitPattern; 8] {
+    isnt(val.to_ne_bytes())
   }
 
-  unsafe impl RawData for Option<NonZeroU8> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn isnt_ne4(val: u32) -> [BitPattern; 8] {
+    isnt(val.to_ne_bytes())
   }
 
-  unsafe impl RawData for Option<NonZeroU16> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn isnt_ne8(val: u64) -> [BitPattern; 8] {
+    isnt(val.to_ne_bytes())
   }
 
-  unsafe impl RawData for Option<NonZeroU32> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  pub const fn isnt_usize(val: usize) -> [BitPattern; 8] {
+    isnt(val.to_ne_bytes())
   }
 
-  unsafe impl RawData for Option<NonZeroU64> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  unsafe impl Bits for u8 {
+    const PATTERNS: BitPatterns = any_bit_patterns();
   }
 
-  unsafe impl RawData for Option<NonZeroUsize> {
-    const RAW_LAYOUT: RawLayout = RawLayout::any::<Self>();
+  unsafe impl Bits for u16 {
+    const PATTERNS: BitPatterns = any_bit_patterns();
   }
 
-  unsafe impl RawData for bool {
+  unsafe impl Bits for u32 {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for u64 {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for usize {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for Option<NonZeroU8> {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for Option<NonZeroU16> {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for Option<NonZeroU32> {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for Option<NonZeroU64> {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for Option<NonZeroUsize> {
+    const PATTERNS: BitPatterns = any_bit_patterns();
+  }
+
+  unsafe impl Bits for bool {
+    const PATTERNS: BitPatterns = &[bit_pattern([Mask(0b1)])];
+  }
+
+  unsafe impl Bits for NonZeroU8 {
+    const PATTERNS: BitPatterns = &[bit_pattern([Discard(0)])];
+  }
+
+  unsafe impl Bits for NonZeroU16 {
     #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[0..1]);
+    const PATTERNS: BitPatterns = &[isnt_ne2(0)];
   }
 
-  unsafe impl RawData for NonZeroU8 {
+  unsafe impl Bits for NonZeroU32 {
     #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[1..u8::MAX as u64]);
+    const PATTERNS: BitPatterns = &[isnt_ne4(0)];
   }
 
-  unsafe impl RawData for NonZeroU16 {
+  unsafe impl Bits for NonZeroU64 {
     #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[1..u16::MAX as u64]);
+    const PATTERNS: BitPatterns = &[isnt_ne8(0)];
   }
 
-  unsafe impl RawData for NonZeroU32 {
+  unsafe impl Bits for NonZeroUsize {
     #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[1..u32::MAX as u64]);
-  }
-
-  unsafe impl RawData for NonZeroU64 {
-    #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[1..u64::MAX]);
-  }
-
-  unsafe impl RawData for NonZeroUsize {
-    #[allow(clippy::single_range_in_vec_init)]
-    const RAW_LAYOUT: RawLayout = RawLayout::new::<Self>(&[1..u64::MAX]);
+    const PATTERNS: BitPatterns = &[isnt_usize(0)];
   }
 }
