@@ -90,18 +90,17 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     Fields::Named(fields) if !fields.named.is_empty() => &fields.named,
     Fields::Unnamed(fields) if !fields.unnamed.is_empty() => &fields.unnamed,
     // Empty struct, impl as `Layout::Void`.
-    _ => {
-      return proc_macro::TokenStream::from(quote! {
-        unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-          type Item = ();
-          type Tail = ();
-          type Repr = ();
+    _ => return proc_macro::TokenStream::from(quote! {
+      unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
+        type Item = ();
+        type Tail = ();
+        type Repr = ();
+        type Word = ();
 
-          const LAYOUT: #root::Layout = #root::Layout::Void;
-          const HEADER: usize = 0;
-        }
-      })
-    }
+        const LAYOUT: #root::Layout<()> = #root::Layout::Word { layout: #root::WordLayout::any() };
+        const HEADER: usize = 0;
+      }
+    })
   };
 
   // Compute head.
@@ -191,8 +190,9 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         type Item = ();
         type Tail = <#tail_ty as #root::Data>::Tail;
         type Repr = #fields;
+        type Word = ();
 
-        const LAYOUT: #root::Layout = #root::Layout::Struct;
+        const LAYOUT: #root::Layout<Self::Word> = #root::Layout::Struct;
         const HEADER: usize = #header;
       }
     };
