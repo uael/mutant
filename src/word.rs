@@ -73,12 +73,32 @@ impl<T: Word> BitPattern<T> {
 
   #[inline(always)]
   pub const fn matches(&self, value: T) -> bool {
+    macro_rules! matches {
+      ($val:ident as $ty:ty) => {{
+        let (val, pat): ($ty, $ty) = unsafe { (cast_unchecked($val), cast_unchecked(self.bytes)) };
+        match self.kind {
+          MASK => val | pat == pat,
+          ALLOW => val == pat,
+          DISCARD => val != pat,
+          _ => unsafe { hint::unreachable_unchecked() }
+        }
+      }};
+    }
+
+    const unsafe fn cast_unchecked<Src: Copy, Dst: Copy>(src: Src) -> Dst {
+      union Cast<Src: Copy, Dst: Copy> {
+        src: Src,
+        dst: Dst,
+      }
+      Cast { src }.dst
+    }
+    
     match mem::size_of::<T>() {
-      1 => self.matches1(value),
-      2 => self.matches2(value),
-      4 => self.matches4(value),
-      8 => self.matches8(value),
-      16 => self.matches16(value),
+      1 => matches!(value as u8),
+      2 => matches!(value as u16),
+      4 => matches!(value as u32),
+      8 => matches!(value as u64),
+      16 => matches!(value as u128),
       _ => unreachable!(),
     }
   }
@@ -95,33 +115,6 @@ impl<T: Word> BitPattern<T> {
     weave
   }
 }
-
-macro_rules! impl_matches {
-  ($($name:ident $ty:ty),+) => {$(
-    impl<T: Word> BitPattern<T> {
-      const fn $name(&self, val: T) -> bool {
-        assert!(self.width() == mem::size_of::<$ty>());
-        let (val, pat): ($ty, $ty) = unsafe { (cast_unchecked(val), cast_unchecked(self.bytes)) };
-        match self.kind {
-          MASK => val | pat == pat,
-          ALLOW => val == pat,
-          DISCARD => val != pat,
-          _ => unsafe { hint::unreachable_unchecked() }
-        }
-      }
-    }
-  )+};
-}
-
-const unsafe fn cast_unchecked<Src: Copy, Dst: Copy>(src: Src) -> Dst {
-  union Cast<Src: Copy, Dst: Copy> {
-    src: Src,
-    dst: Dst,
-  }
-  Cast { src }.dst
-}
-
-impl_matches!(matches1 u8, matches2 u16, matches4 u32, matches8 u64, matches16 u128);
 
 impl<T: Word> WordLayout<T> {
   #[inline(always)]
