@@ -153,6 +153,7 @@
 //!
 //! `mutant` is open-source software licensed under the MIT license. Feel free to use, modify,
 //! and distribute it in accordance with the license terms.
+mod raw;
 mod word;
 
 use core::marker::PhantomData;
@@ -366,6 +367,7 @@ macro_rules! transmutation {
     struct Comptime<T: ?Sized, U: ?Sized>(::core::marker::PhantomData<(*const T, *const U)>);
 
     impl<Src: ?Sized + $crate::Data, Dst: ?Sized + $crate::Data> Comptime<Src, Dst> {
+      #[allow(unused)]
       const TRANSMUTATION: $crate::Transmutation<Src, Dst> = {
         let transmutation = $crate::Transmutation::new();
         $crate::unwrap!(transmutation.check());
@@ -744,6 +746,16 @@ pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::Tail])
     Some(result) => result,
     _ => panic!("`try_split_at` failed"),
   }
+}
+
+#[inline]
+pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
+  transmute!(val)
+}
+
+#[inline]
+pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
+  transmute_ref!(val)
 }
 
 #[inline]
@@ -1492,17 +1504,18 @@ mod private {
         // Call `check_bit_patterns` for each field of `Dst`.
         Layout::Struct => repr_iter::<Src, Dst, Dst::Repr>(source, offset, end_offset, cx),
         Layout::Word { layout: target } => {
+          // TODO!!!
           // Shrink source bit pattern to target width.
-          source = source.shrink(target.width);
-          let (source_patterns, target_patterns, intersect_patterns) = (
-            source.count(),            // Number of possible values in source bit pattern.
-            target.count(),            // Number of possible values in target bit patterns.
-            target.intersects(source), // Number of possible values in both source and target.
-          );
-          // Update static analysis context.
-          cx.any_target_in_source |= intersect_patterns != 0;
-          cx.all_target_in_source &= intersect_patterns == target_patterns;
-          cx.all_source_in_target &= intersect_patterns == source_patterns;
+          // source = source.shrink(target.width);
+          // let (source_patterns, target_patterns, intersect_patterns) = (
+          //   source.count(),            // Number of possible values in source bit pattern.
+          //   target.count(),            // Number of possible values in target bit patterns.
+          //   target.intersects(source), // Number of possible values in both source and target.
+          // );
+          // // Update static analysis context.
+          // cx.any_target_in_source |= intersect_patterns != 0;
+          // cx.all_target_in_source &= intersect_patterns == target_patterns;
+          // cx.all_source_in_target &= intersect_patterns == source_patterns;
           cx
         }
       }
@@ -1519,9 +1532,10 @@ mod private {
         all_source_in_target: true,
       },
     );
-    if !cx.any_target_in_source {
-      return Err("none of the bit patterns in source are valid in target");
-    }
+    // TODO!!!
+    // if !cx.any_target_in_source {
+    //   return Err("none of the bit patterns in source are valid in target");
+    // }
     // Static analyze result.
     let maybe_invalid_bit_pattern = !cx.all_source_in_target;
     let sound_target_mutation = cx.all_target_in_source;

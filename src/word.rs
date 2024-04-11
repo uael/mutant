@@ -80,7 +80,7 @@ impl<T: Word> BitPattern<T> {
           MASK => val | pat == pat,
           ALLOW => val == pat,
           DISCARD => val != pat,
-          _ => unsafe { hint::unreachable_unchecked() }
+          _ => unsafe { hint::unreachable_unchecked() },
         }
       }};
     }
@@ -92,7 +92,7 @@ impl<T: Word> BitPattern<T> {
       }
       Cast { src }.dst
     }
-    
+
     match mem::size_of::<T>() {
       1 => matches!(value as u8),
       2 => matches!(value as u16),
