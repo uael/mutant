@@ -5,15 +5,7 @@ use core::ptr::read_unaligned;
 
 use crate::ptr;
 
-use Branch::*;
-
-/// `check_bit_patterns` transmutability context.
-#[derive(Debug, Copy, Clone, PartialEq)]
-struct Transmutability {
-  reachable: bool,  // At least one source bit pattern exists in target.
-  infallible: bool, // All source bit patterns exists in target.
-  mutable: bool,    // All target bit patterns exists in source.
-}
+use BytePattern::*;
 
 #[derive(Debug, PartialEq, Hash)]
 pub struct WordLayout {
@@ -34,18 +26,26 @@ pub enum ByteLayout<'a> {
   Init(InitLayout<'a>),
 }
 
+/// `check_bit_patterns` transmutability context.
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Transmutability {
+  reachable: bool,  // At least one source bit pattern exists in target.
+  infallible: bool, // All source bit patterns exists in target.
+  mutable: bool,    // All target bit patterns exists in source.
+}
+
 #[derive(Debug, Copy, Clone)]
 struct BytesLayout<'a> {
   width: usize,
   offset: usize,
+  branches: BranchIter,
   layouts_count: usize,
   layouts: [&'a WordLayout; 16],
-  branches: [BranchIter; 16],
   transmutability: Transmutability,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash)]
-enum Branch {
+enum BytePattern {
   Any,
   Allow(u8),
   Discard(u8),
@@ -96,32 +96,45 @@ macro_rules! layout {
   ));
 }
 
-impl Branch {
+impl BytePattern {
+  /// Returns whatever this pattern contains at least one of the possible values of `other`.
   #[inline(always)]
   pub const fn contains_any(self, other: Self) -> bool {
     match (self, other) {
-      (_, Any) | (Any, _) => true,
-      (Allow(a), Allow(b)) | (Discard(a), Discard(b)) => a == b,
-      (Allow(a), Discard(b)) | (Discard(a), Allow(b)) => a != b,
+      (Any, _) => true,                   // Any contains any pattern.
+      (_, Any) => true,                   // Not any contains at least one in any.
+      (Allow(a), Allow(b)) => a == b,     // `a` contains `b` only if `a == b`.
+      (Allow(a), Discard(b)) => a != b,   // `a` contains any but `b` only if `a != b`.
+      (Discard(a), Allow(b)) => a != b,   // Any but `a` contains `b` only if `a != b`.
+      (Discard(a), Discard(b)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
     }
   }
 
+  /// Returns whatever this pattern contains all possible values of `other`.
   #[inline(always)]
   pub const fn contains_all(self, other: Self) -> bool {
     match (self, other) {
-      (Any, _) => true,  // All exists in any.
-      (_, Any) => false, // All any cant exists in not any.
-
-      (Allow(b), Allow(a)) => a == b,
-      (Discard(b), Allow(a)) => a != b,
-
-      (Allow(_), Discard(_)) => false,
-      (Discard(b), Discard(a)) => a == b,
+      (Any, _) => true,                   // Any contains any pattern.
+      (_, Any) => false,                  // Not any cannot contain any.
+      (Allow(b), Allow(a)) => a == b,     // `a` contains `b` only if `a == b`.
+      (Allow(_), Discard(_)) => false,    // `a` cannot contain any but `b`.
+      (Discard(b), Allow(a)) => a != b,   // Any but `a` contains `b` only if `a != b`.
+      (Discard(b), Discard(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
     }
   }
 }
 
 impl Transmutability {
+  #[inline(always)]
+  pub const fn unreachable() -> Self {
+    Self { reachable: false, infallible: true, mutable: true }
+  }
+
+  #[inline(always)]
+  pub const fn reachable() -> Self {
+    Self { reachable: true, infallible: false, mutable: false }
+  }
+
   #[inline(always)]
   pub const fn reachable_infallible_mutable() -> Self {
     Self { reachable: true, infallible: true, mutable: true }
@@ -135,16 +148,6 @@ impl Transmutability {
   #[inline(always)]
   pub const fn reachable_mutable() -> Self {
     Self { reachable: true, infallible: false, mutable: true }
-  }
-
-  #[inline(always)]
-  pub const fn reachable() -> Self {
-    Self { reachable: true, infallible: false, mutable: false }
-  }
-
-  #[inline(always)]
-  pub const fn unreachable() -> Self {
-    Self { reachable: false, infallible: true, mutable: true }
   }
 
   #[inline(always)]
@@ -174,6 +177,9 @@ impl BranchIter {
 
   #[inline(always)]
   pub const fn new(branches: usize) -> Self {
+    if branches == 0 {
+      return Self(0);
+    }
     Self(u64::MAX >> (64 - branches))
   }
 
@@ -195,12 +201,6 @@ impl BranchIter {
   pub const fn invalidate(self, index: usize) -> Self {
     Self(self.0 & !(1 << index))
   }
-}
-
-#[doc(hidden)]
-#[inline(always)]
-pub const fn mask(bits: usize) -> u128 {
-  u128::MAX >> (128 - bits)
 }
 
 impl WordLayout {
@@ -245,6 +245,9 @@ impl WordLayout {
 
   #[inline(always)]
   pub const fn branches(&self) -> usize {
+    if self.width() == 0 {
+      return 0;
+    }
     match self.flags {
       bits::ALLOW => self.bytes.len() / self.width as usize,
       _ => 1,
@@ -310,13 +313,38 @@ impl<'a> InitLayout<'a> {
   }
 
   #[inline(always)]
-  pub const fn branch(&self, branch: usize) -> Branch {
+  const fn branch(&self, branch: usize) -> BytePattern {
     assert!(branch < self.branches());
     match self.layout.flags {
       bits::DISCARD => Discard(self.layout.bytes[self.offset]),
       bits::ALLOW => Allow(self.layout.bytes[(branch * self.layout.width()) + self.offset]),
       _ => Any,
     }
+  }
+
+  #[inline(always)]
+  const fn transmutability(
+    mut self,
+    mut dst: InitLayout,
+    branches: (usize, usize),
+  ) -> Transmutability {
+    let mut result = Transmutability::reachable_infallible_mutable();
+    // Iterate over all bytes of this branch.
+    while dst.width() > 0 && self.width() > 0 {
+      // Compute both source and target branch patterns.
+      let pattern = (
+        self.branch(branches.0),
+        dst.branch(branches.1),
+      );
+      // Aggregate results.
+      result.reachable &= pattern.0.contains_any(pattern.1);
+      result.mutable &= pattern.0.contains_all(pattern.1);
+      result.infallible &= pattern.1.contains_all(pattern.0);
+      // Move to next offset.
+      self.offset += 1;
+      dst.offset += 1;
+    }
+    result
   }
 }
 
@@ -336,9 +364,9 @@ impl<'a> BytesLayout<'a> {
     Self {
       width: 0,
       offset: 0,
+      branches: BranchIter::empty(),
       layouts_count: 0,
       layouts: [WordLayout::ANY; 16],
-      branches: [BranchIter::empty(); 16],
       transmutability: Transmutability::reachable_infallible_mutable(),
     }
   }
@@ -357,7 +385,9 @@ impl<'a> BytesLayout<'a> {
         (BranchIter::new(layout.branches()), layout.layout, layout.width())
       }
     };
-    self.branches[self.layouts_count] = branches;
+    if self.layouts_count == 0 {
+      self.branches = branches;
+    }
     self.layouts[self.layouts_count] = layout;
     self.width += width;
     self.layouts_count += 1;
@@ -366,13 +396,32 @@ impl<'a> BytesLayout<'a> {
 
   /// Shift right the aggregate by `n` bytes.
   #[inline(always)]
-  pub const fn shift(self, n: usize) -> Self {
+  pub const fn shift_bytes(self, n: usize) -> Self {
     let mut shifted = Self::empty();
     shifted.transmutability = self.transmutability;
     while shifted.width + n < self.width {
       shifted = shifted.append(self.offset(shifted.width + n));
     }
     shifted
+  }
+
+  /// Shift out the head layout.
+  #[inline(always)]
+  pub const fn shift(mut self) -> Self {
+    if self.width == 0 {
+      return self;
+    }
+    self.width -= self.layouts[0].width() - self.offset;
+    let mut i = 1;
+    while i < self.layouts_count {
+      self.layouts[i - 1] = self.layouts[i];
+      i += 1;
+    }
+    self.layouts[i - 1] = WordLayout::ANY;
+    self.layouts_count -= 1;
+    self.offset = 0;
+    self.branches = BranchIter::new(self.layouts[0].branches());
+    self
   }
 
   #[inline(always)]
@@ -394,32 +443,43 @@ impl<'a> BytesLayout<'a> {
   }
 
   #[inline(always)]
-  pub fn intersects2(mut self, layout: &WordLayout) -> Self {
+  pub fn intersects(mut self, layout: &WordLayout) -> Self {
     assert!(layout.width() <= self.width);
+    let mut offset = 0; // Offset in bytes withing `layout`.
     let mut dst_branches = BranchIter::new(layout.branches());
-    let mut offset = 0;
-    let mut i = 0;
     // Keep track of the full transmutability against target.
     let mut full_t = Transmutability::reachable_infallible_mutable();
     // Iterate over all source layouts until target is fully covered.
-    while offset < layout.width() && i < self.layouts_count {
+    loop {
+      assert!(self.layouts_count > 0);
+      let src = InitLayout { offset: self.offset, layout: self.layouts[0] };
       let dst = InitLayout { offset, layout };
       // Keep track of the target covered branches for this source.
       let mut dst_coverage = 0u64;
       // Keep track of this source chunk transmutability against target.
       let mut chunk_t = Transmutability::unreachable();
       // Try each source branches, invalidate unreachable ones.
-      let mut src_branches = self.branches[i].next();
+      let mut src_branches = self.branches.next();
       while let Some(src_branch) = src_branches.0 {
         // Keep track of this branch transmutability against target.
-        let branch_t;
-        (branch_t, dst_coverage) =
-          self.branch_transmutability(i, dst, dst_branches, dst_coverage, src_branch);
+        let mut branch_t = Transmutability::unreachable();
+        // Try each target branches.
+        let mut dst_branch_iter = dst_branches.next();
+        while let Some(dst_branch) = dst_branch_iter.0 {
+          let t = src.transmutability(dst, (src_branch, dst_branch));
+          branch_t = branch_t.or(t);
+          // If this branch combination is reachable, mark this target branch as covered.
+          if t.reachable {
+            dst_coverage |= 1 << dst_branch;
+          }
+          // Move to next target branch.
+          dst_branch_iter = dst_branch_iter.1.next();
+        }
         // Or branches into chunk transmutability.
         chunk_t = chunk_t.or(branch_t);
         // If this source branch is unreachable, mark it as invalid.
         if !branch_t.reachable {
-          self.branches[i] = self.branches[i].invalidate(src_branch);
+          self.branches = self.branches.invalidate(src_branch);
         }
         // Move to next source branch.
         src_branches = src_branches.1.next();
@@ -428,75 +488,28 @@ impl<'a> BytesLayout<'a> {
       full_t = full_t.and(chunk_t);
       // Only continue with target covered branches.
       dst_branches = BranchIter(dst_coverage);
-      // Advance target offset by the width of the source layout at index `i`.
-      offset += match i {
-        0 => self.layouts[i].width() - self.offset, // The first source layout can be offset.
-        _ => self.layouts[i].width(),
-      };
       // Are all chunk branches covered ?
-      full_t.infallible &= self.branches[i].branches() == self.layouts[i].branches();
-      // Move to next source layout.
-      i += 1;
+      full_t.infallible &= self.branches.branches() == self.layouts[0].branches();
+      // Move to next chunk if necessary.
+      let chunk_width = self.layouts[0].width() - self.offset;
+      if offset + chunk_width > layout.width() {
+        // Source chunk is bigger than target, offset by the consumed bytes.
+        self.width -= layout.width() - offset;
+        self.offset += layout.width() - offset;
+        break;
+      }
+      // Source is smaller or equals than target, consume whole chunk.
+      self = self.shift();
+      offset += chunk_width;
+      if offset == layout.width() {
+        break;
+      }
     }
     // Are all target branches covered ?
     full_t.mutable &= dst_branches.branches() == layout.branches();
     // And this transmutability to global state.
     self.transmutability = self.transmutability.and(full_t);
     self
-  }
-
-  pub const fn branches_transmutability(
-    &self,
-    i: usize,
-    mut dst: InitLayout,
-    branches: (usize, usize),
-  ) -> Transmutability {
-    let mut result = Transmutability::reachable_infallible_mutable();
-    // Compute source offset.
-    let mut src_offset = match i {
-      0 => self.offset,
-      _ => 0,
-    };
-    // Iterate over all bytes of this branch.
-    while dst.width() > 0 && src_offset < self.layouts[i].width() {
-      // Compute both source and target branch patterns.
-      let pattern = (
-        InitLayout { offset: src_offset, layout: self.layouts[i] }.branch(branches.0),
-        dst.branch(branches.1),
-      );
-      // Aggregate results.
-      result.reachable &= pattern.0.contains_any(pattern.1);
-      result.mutable &= pattern.0.contains_all(pattern.1);
-      result.infallible &= pattern.1.contains_all(pattern.0);
-      // Move to next offset.
-      src_offset += 1;
-      dst.offset += 1;
-    }
-    result
-  }
-
-  pub const fn branch_transmutability(
-    &self,
-    i: usize,
-    dst: InitLayout,
-    dst_branches: BranchIter,
-    mut dst_coverage: u64,
-    src_branch: usize,
-  ) -> (Transmutability, u64) {
-    let mut result = Transmutability::unreachable();
-    // Try each target branches.
-    let mut dst_branch_iter = dst_branches.next();
-    while let Some(dst_branch) = dst_branch_iter.0 {
-      let transmutability = self.branches_transmutability(i, dst, (src_branch, dst_branch));
-      result = result.or(transmutability);
-      // If this branch combination is reachable, mark this target branch as covered.
-      if transmutability.reachable {
-        dst_coverage |= 1 << dst_branch;
-      }
-      // Move to next target branch.
-      dst_branch_iter = dst_branch_iter.1.next();
-    }
-    (result, dst_coverage)
   }
 }
 
@@ -605,8 +618,8 @@ fn test() {
         src_index += 1;
       }
       bytes = match dst[dst_index] {
-        ByteLayout::Init(init) => bytes.intersects2(init.layout).shift(init.width()),
-        _ => bytes.shift(1),
+        ByteLayout::Init(init) => bytes.intersects(init.layout),
+        _ => bytes.shift_bytes(1),
       };
       dst_index += 1;
     }
@@ -655,4 +668,7 @@ fn test() {
   test_transmutability!((bool _ _ bool) -> (u8 _ _ u8) => reachable_infallible);
 
   test_transmutability!((u8 bool UpTo2u16) -> (UpTo2u8 UpTo2u16 u8) => reachable);
+  test_transmutability!((u8 bool u32) -> (u8 u16 u16 u8) => reachable_infallible);
+  test_transmutability!((u8 bool u32 u8) -> (u8 u16 u16 u16) => reachable_infallible);
+  test_transmutability!((u8 u8 u32 u8) -> (u8 u16 u16 u16) => reachable_infallible_mutable);
 }
