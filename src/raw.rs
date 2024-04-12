@@ -35,12 +35,12 @@ struct Transmutability {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct BytesLayout<'a> {
+struct Source<'a> {
+  len: usize,
   width: usize,
   offset: usize,
   branches: BranchIter,
-  layouts_count: usize,
-  layouts: [&'a WordLayout; 16],
+  chunks: [&'a WordLayout; 16],
   transmutability: Transmutability,
 }
 
@@ -204,7 +204,7 @@ impl BranchIter {
 }
 
 impl WordLayout {
-  const ANY: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
+  const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
 
   #[inline(always)]
   pub const fn from_bytes(bytes: &[u8]) -> &Self {
@@ -332,10 +332,7 @@ impl<'a> InitLayout<'a> {
     // Iterate over all bytes of this branch.
     while dst.width() > 0 && self.width() > 0 {
       // Compute both source and target branch patterns.
-      let pattern = (
-        self.branch(branches.0),
-        dst.branch(branches.1),
-      );
+      let pattern = (self.branch(branches.0), dst.branch(branches.1));
       // Aggregate results.
       result.reachable &= pattern.0.contains_any(pattern.1);
       result.mutable &= pattern.0.contains_all(pattern.1);
@@ -358,15 +355,15 @@ impl<'a> ByteLayout<'a> {
   }
 }
 
-impl<'a> BytesLayout<'a> {
+impl<'a> Source<'a> {
   #[inline(always)]
   pub const fn empty() -> Self {
     Self {
+      len: 0,
       width: 0,
       offset: 0,
       branches: BranchIter::empty(),
-      layouts_count: 0,
-      layouts: [WordLayout::ANY; 16],
+      chunks: [WordLayout::VOID; 16],
       transmutability: Transmutability::reachable_infallible_mutable(),
     }
   }
@@ -374,23 +371,23 @@ impl<'a> BytesLayout<'a> {
   /// Append a layout to the aggregate.
   #[inline(always)]
   pub const fn append(mut self, layout: ByteLayout<'a>) -> Self {
-    assert!(self.layouts_count < self.layouts.len());
-    let (branches, layout, width) = match layout {
-      ByteLayout::Uninit => (BranchIter::empty(), WordLayout::ANY, 1),
+    assert!(self.len < self.chunks.len());
+    let (layout, width) = match layout {
+      ByteLayout::Uninit => (WordLayout::VOID, 1),
       ByteLayout::Init(layout) => {
         if layout.offset != 0 {
-          assert!(self.layouts_count == 0 && self.offset == 0);
+          assert!(self.len == 0 && self.offset == 0);
           self.offset = layout.offset;
         }
-        (BranchIter::new(layout.branches()), layout.layout, layout.width())
+        if self.len == 0 {
+          self.branches = BranchIter::new(layout.branches());
+        }
+        (layout.layout, layout.width())
       }
     };
-    if self.layouts_count == 0 {
-      self.branches = branches;
-    }
-    self.layouts[self.layouts_count] = layout;
+    self.chunks[self.len] = layout;
     self.width += width;
-    self.layouts_count += 1;
+    self.len += 1;
     self
   }
 
@@ -411,16 +408,16 @@ impl<'a> BytesLayout<'a> {
     if self.width == 0 {
       return self;
     }
-    self.width -= self.layouts[0].width() - self.offset;
+    self.width -= self.chunks[0].width() - self.offset;
     let mut i = 1;
-    while i < self.layouts_count {
-      self.layouts[i - 1] = self.layouts[i];
+    while i < self.len {
+      self.chunks[i - 1] = self.chunks[i];
       i += 1;
     }
-    self.layouts[i - 1] = WordLayout::ANY;
-    self.layouts_count -= 1;
+    self.len -= 1;
     self.offset = 0;
-    self.branches = BranchIter::new(self.layouts[0].branches());
+    self.chunks[i - 1] = WordLayout::VOID;
+    self.branches = BranchIter::new(self.chunks[0].branches());
     self
   }
 
@@ -428,13 +425,13 @@ impl<'a> BytesLayout<'a> {
   pub const fn offset(self, mut offset: usize) -> ByteLayout<'a> {
     assert!(offset < self.width);
     let mut i = 0;
-    while i < self.layouts_count {
-      let mut width = self.layouts[i].width();
+    while i < self.len {
+      let mut width = self.chunks[i].width();
       if i == 0 {
         width -= self.offset;
       }
       if offset < width {
-        return ByteLayout::Init(InitLayout { offset, layout: self.layouts[i] });
+        return ByteLayout::Init(InitLayout { offset, layout: self.chunks[i] });
       }
       i += 1;
       offset -= width;
@@ -443,17 +440,16 @@ impl<'a> BytesLayout<'a> {
   }
 
   #[inline(always)]
-  pub fn intersects(mut self, layout: &WordLayout) -> Self {
-    assert!(layout.width() <= self.width);
+  pub fn intersects(mut self, dst: &WordLayout) -> Self {
+    assert!(dst.width() <= self.width);
     let mut offset = 0; // Offset in bytes withing `layout`.
-    let mut dst_branches = BranchIter::new(layout.branches());
+    let mut dst_branches = BranchIter::new(dst.branches());
     // Keep track of the full transmutability against target.
     let mut full_t = Transmutability::reachable_infallible_mutable();
     // Iterate over all source layouts until target is fully covered.
-    loop {
-      assert!(self.layouts_count > 0);
-      let src = InitLayout { offset: self.offset, layout: self.layouts[0] };
-      let dst = InitLayout { offset, layout };
+    while offset != dst.width() {
+      let src = InitLayout { offset: self.offset, layout: self.chunks[0] };
+      let dst = InitLayout { offset, layout: dst };
       // Keep track of the target covered branches for this source.
       let mut dst_coverage = 0u64;
       // Keep track of this source chunk transmutability against target.
@@ -467,6 +463,7 @@ impl<'a> BytesLayout<'a> {
         let mut dst_branch_iter = dst_branches.next();
         while let Some(dst_branch) = dst_branch_iter.0 {
           let t = src.transmutability(dst, (src_branch, dst_branch));
+          // Or this branches combination into this source branch transmutability.
           branch_t = branch_t.or(t);
           // If this branch combination is reachable, mark this target branch as covered.
           if t.reachable {
@@ -475,7 +472,7 @@ impl<'a> BytesLayout<'a> {
           // Move to next target branch.
           dst_branch_iter = dst_branch_iter.1.next();
         }
-        // Or branches into chunk transmutability.
+        // Or this source branch into chunk transmutability.
         chunk_t = chunk_t.or(branch_t);
         // If this source branch is unreachable, mark it as invalid.
         if !branch_t.reachable {
@@ -489,24 +486,20 @@ impl<'a> BytesLayout<'a> {
       // Only continue with target covered branches.
       dst_branches = BranchIter(dst_coverage);
       // Are all chunk branches covered ?
-      full_t.infallible &= self.branches.branches() == self.layouts[0].branches();
+      full_t.infallible &= self.branches.branches() == src.branches();
       // Move to next chunk if necessary.
-      let chunk_width = self.layouts[0].width() - self.offset;
-      if offset + chunk_width > layout.width() {
+      if src.width() > dst.width() {
         // Source chunk is bigger than target, offset by the consumed bytes.
-        self.width -= layout.width() - offset;
-        self.offset += layout.width() - offset;
+        self.width -= dst.width();
+        self.offset += dst.width();
         break;
       }
       // Source is smaller or equals than target, consume whole chunk.
       self = self.shift();
-      offset += chunk_width;
-      if offset == layout.width() {
-        break;
-      }
+      offset += src.width();
     }
     // Are all target branches covered ?
-    full_t.mutable &= dst_branches.branches() == layout.branches();
+    full_t.mutable &= dst_branches.branches() == dst.branches();
     // And this transmutability to global state.
     self.transmutability = self.transmutability.and(full_t);
     self
@@ -611,7 +604,7 @@ fn test() {
   pub fn transmutability(src: &[ByteLayout], dst: &[ByteLayout]) -> Transmutability {
     let mut src_index = 0;
     let mut dst_index = 0;
-    let mut bytes = BytesLayout::empty();
+    let mut bytes = Source::empty();
     while dst_index < dst.len() {
       while bytes.width < dst[dst_index].width() {
         bytes = bytes.append(src[src_index]);
