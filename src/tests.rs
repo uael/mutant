@@ -88,6 +88,7 @@ impl_pack!(
   Pack9 (A B C D E F G H I)
 );
 
+#[allow(unused)]
 #[derive(Copy, Clone)]
 struct Uninit(u8);
 
@@ -168,8 +169,7 @@ fn test_static_analyze() {
   test!((u8, [u8]) u8 => infallible_mutable(IsEmpty));
   test!((u16, [u8]) u16 => infallible_mutable(IsEmpty));
   
-  // TODO:
-  // test!([u8] [bool] => fallible_mutable);
+  test!([u8] [bool] => fallible_mutable);
   test!((bool) [bool] => infallible_mutable);
   test!((bool, bool) [bool] => infallible_mutable);
   test!((bool, bool, bool) [bool] => infallible_mutable);

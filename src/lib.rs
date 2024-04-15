@@ -1273,25 +1273,25 @@ mod internal {
   }
 
   impl StaticAnalyze {
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: false }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: true }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: false }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: true }
@@ -1402,24 +1402,25 @@ mod internal {
       Self { reachable: false, infallible: true, mutable: true }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn reachable() -> Self {
       Self { reachable: true, infallible: false, mutable: false }
     }
 
+    #[allow(unused)]
     #[inline(always)]
     pub const fn reachable_infallible_mutable() -> Self {
       Self { reachable: true, infallible: true, mutable: true }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn reachable_infallible() -> Self {
       Self { reachable: true, infallible: true, mutable: false }
     }
 
-    #[cfg(test)]
+    #[allow(unused)]
     #[inline(always)]
     pub const fn reachable_mutable() -> Self {
       Self { reachable: true, infallible: false, mutable: true }
@@ -1930,18 +1931,25 @@ mod internal {
         }
       }
     };
-    // Minimum size calculation for the source type based on the size check.
-    let min_size = match maybe_size_mismatch {
+    // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
+    // compatibility (transmutability).
+    let min_check_size = match maybe_size_mismatch {
+      None if st != 0 => sh + st,
       Some(IsEmpty) | None => sh,
       Some(IsMultipleOf(m)) => sh + (m * st),
-      Some(Is(n) | IsAtLeast(n) | IsAtLeastThenMultipleOf(n, _)) => sh + (n * st),
+      Some(Is(n)) => sh + (n * st),
+      Some(IsAtLeast(n)) => sh + (n * st) + st,
+      Some(IsAtLeastThenMultipleOf(n, m)) => sh + (n * st) + (m * st),
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
     let mut src = Source::empty();
     let (mut src_offset, mut dst_offset) = (0, 0);
-    while dst_offset < min_size {
+    while dst_offset < min_check_size {
       let dst = match byte_layout_at::<Dst>(dst_offset) {
-        Some(layout) => layout,
+        Some(layout) => {
+          dst_offset += layout.width();
+          layout
+        },
         _ => panic!("internal error"),
       };
       while src.width < dst.width() {
@@ -1953,7 +1961,6 @@ mod internal {
           _ => panic!("internal error"),
         });
       }
-      dst_offset += dst.width();
       src = match dst {
         Init(init) => bail!(src.intersects(init.layout)),
         _ => src.shift_bytes(1),
