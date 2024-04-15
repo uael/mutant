@@ -147,7 +147,7 @@ fn test_static_analyze() {
       assert_eq!(static_analyze::<test!(@$src), test!(@$dst)>(), Ok(StaticAnalyze::$res(Some($check))))
     );
   }
-  
+
   test!(u8 u8 => infallible_mutable);
   test!((u8, u8) (u8, u8) => infallible_mutable);
   test!((u8, [u8]) (u8, [u8]) => infallible_mutable);
@@ -156,19 +156,19 @@ fn test_static_analyze() {
   test!(bool bool => infallible_mutable);
   test!(u8 bool => fallible_mutable);
   test!(bool u8 => infallible);
-  
+
   test!((bool, _, _, bool) (u8, _, _, u8) => infallible);
-  
+
   test!(u32 [u8] => infallible_mutable);
   test!(u32 (u8, [u8]) => infallible_mutable);
   test!(u32 (u32, [u8]) => infallible_mutable);
-  
+
   test!([u8] u8 => infallible_mutable(Is(1)));
   test!([u8] u16 => infallible_mutable(Is(2)));
-  
+
   test!((u8, [u8]) u8 => infallible_mutable(IsEmpty));
   test!((u16, [u8]) u16 => infallible_mutable(IsEmpty));
-  
+
   test!([u8] [bool] => fallible_mutable);
   test!((bool) [bool] => infallible_mutable);
   test!((bool, bool) [bool] => infallible_mutable);

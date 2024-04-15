@@ -1217,7 +1217,7 @@ mod internal {
     }
 
     #[inline(always)]
-    const fn transmutability(
+    const fn intersects(
       mut self,
       mut dst: InitLayout,
       branches: (usize, usize),
@@ -1253,15 +1253,82 @@ mod internal {
 
   // impl Transmutation ----------------------------------------------------------------------------
 
-  /// Represents the checks that needs to be done over the source metadata for a transmutation
-  /// between two data types.
+  /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
+  ///
+  /// # Internals
+  /// DSTs metadata represents the length of it's trailing slice, such as `.1` in `(u16, [u16])`.
+  /// These checks [validate](MetadataChecks::validate) such metadata to ensure safe and correct
+  /// transmutations.
   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
   pub(crate) enum MetadataChecks {
-    Is(usize),
-    IsAtLeast(usize),
-    IsMultipleOf(usize),
-    IsAtLeastThenMultipleOf(usize, usize),
-    IsEmpty,
+    Is(usize),                             // Is equals to `n`
+    IsAtLeast(usize),                      // Is at least `n`
+    IsMultipleOf(usize),                   // Is a multiple of `m`.
+    IsAtLeastThenMultipleOf(usize, usize), // Is at least `n` and a multiple of `m`.
+    IsEmpty,                               // Implies no data, i.e. should be zero.
+  }
+
+  impl MetadataChecks {
+    /// Validates `metadata` against constraints.
+    /// In case of an error `Err(e)`, a positive `e` indicates an overflow of `metadata` by `e`,
+    /// while a negative value signifies an underflow by `-e`.
+    #[inline(always)]
+    pub const fn validate(self, metadata: usize) -> Result<(), isize> {
+      match self {
+        Is(n) if metadata == n => Ok(()),
+        IsAtLeast(n) if metadata >= n => Ok(()),
+        Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
+        IsMultipleOf(m) if metadata % m == 0 => Ok(()),
+        IsMultipleOf(m) => Err(m as isize - (metadata % m) as isize),
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => Ok(()),
+        IsAtLeastThenMultipleOf(n, _) if metadata < n => Err(n as isize - metadata as isize),
+        IsAtLeastThenMultipleOf(_, m) => Err(m as isize - (metadata % m) as isize),
+        IsEmpty if metadata == 0 => Ok(()),
+        IsEmpty => Err(-(metadata as isize)),
+      }
+    }
+  }
+
+  /// Enumerates the most generic bit patterns for individual bytes.
+  ///
+  /// # Internals
+  /// This enum is used to describe potential byte patterns within a type `A`. During transmutation
+  /// checks into another type `B`, as implemented in [`InitLayout::intersects`], this is utilized
+  /// through the [`BytePattern::contains_any`] and [`BytePattern::contains_all`] methods to compute
+  /// the [transmutability](Transmutability) from `A` to `B`, over each potential combination.
+  #[derive(Copy, Clone, PartialEq, Hash)]
+  enum BytePattern {
+    Any,         // Is any possible byte pattern, indicating no specific constraints.
+    Allow(u8),   // Exactly match the given `value`.
+    Discard(u8), // Is any other byte pattern than `value`.
+  }
+
+  impl BytePattern {
+    /// Returns whatever this pattern contains at least one of the possible values of `other`.
+    pub const fn contains_any(self, other: Self) -> bool {
+      use BytePattern::*;
+      match (self, other) {
+        (Any, _) => true,                   // Any contains any pattern.
+        (_, Any) => true,                   // Not any contains at least one in any.
+        (Allow(a), Allow(b)) => a == b,     // `a` contains `b` only if `a == b`.
+        (Allow(a), Discard(b)) => a != b,   // `a` contains any but `b` only if `a != b`.
+        (Discard(a), Allow(b)) => a != b,   // Any but `a` contains `b` only if `a != b`.
+        (Discard(a), Discard(b)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
+      }
+    }
+
+    /// Returns whatever this pattern contains all possible values of `other`.
+    pub const fn contains_all(self, other: Self) -> bool {
+      use BytePattern::*;
+      match (self, other) {
+        (Any, _) => true,                   // Any contains any pattern.
+        (_, Any) => false,                  // Not any cannot contain any.
+        (Allow(b), Allow(a)) => a == b,     // `a` contains `b` only if `a == b`.
+        (Allow(_), Discard(_)) => false,    // `a` cannot contain any but `b`.
+        (Discard(b), Allow(a)) => a != b,   // Any but `a` contains `b` only if `a != b`.
+        (Discard(b), Discard(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
+      }
+    }
   }
 
   /// Static analyze result.
@@ -1311,43 +1378,6 @@ mod internal {
       let mut d = f.debug_tuple(tag);
       d.field(&self.maybe_size_mismatch);
       d.finish()
-    }
-  }
-
-  #[derive(Copy, Clone, PartialEq, Hash)]
-  enum BytePattern {
-    Any,
-    Allow(u8),
-    Discard(u8),
-  }
-
-  impl BytePattern {
-    /// Returns whatever this pattern contains at least one of the possible values of `other`.
-    #[inline(always)]
-    pub const fn contains_any(self, other: Self) -> bool {
-      use BytePattern::*;
-      match (self, other) {
-        (Any, _) => true,                   // Any contains any pattern.
-        (_, Any) => true,                   // Not any contains at least one in any.
-        (Allow(a), Allow(b)) => a == b,     // `a` contains `b` only if `a == b`.
-        (Allow(a), Discard(b)) => a != b,   // `a` contains any but `b` only if `a != b`.
-        (Discard(a), Allow(b)) => a != b,   // Any but `a` contains `b` only if `a != b`.
-        (Discard(a), Discard(b)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
-      }
-    }
-
-    /// Returns whatever this pattern contains all possible values of `other`.
-    #[inline(always)]
-    pub const fn contains_all(self, other: Self) -> bool {
-      use BytePattern::*;
-      match (self, other) {
-        (Any, _) => true,                   // Any contains any pattern.
-        (_, Any) => false,                  // Not any cannot contain any.
-        (Allow(b), Allow(a)) => a == b,     // `a` contains `b` only if `a == b`.
-        (Allow(_), Discard(_)) => false,    // `a` cannot contain any but `b`.
-        (Discard(b), Allow(a)) => a != b,   // Any but `a` contains `b` only if `a != b`.
-        (Discard(b), Discard(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
-      }
     }
   }
 
@@ -1586,7 +1616,7 @@ mod internal {
           // Try each target branches.
           let mut dst_branch_iter = dst_branches.next();
           while let Some(dst_branch) = dst_branch_iter.0 {
-            let t = src.transmutability(dst, (src_branch, dst_branch));
+            let t = src.intersects(dst, (src_branch, dst_branch));
             // Or this branches combination into this source branch transmutability.
             branch_t = branch_t.or(t);
             // If this branch combination is reachable, mark this target branch as covered.
@@ -1818,26 +1848,14 @@ mod internal {
     #[inline(always)]
     const fn try_convert_metadata(self, metadata: usize) -> Result<usize, isize> {
       unwrap!(self.check());
-      use MetadataChecks::*;
-      let delta = match unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
-        None => 0,
-        Some(check) => match check {
-          Is(n) if metadata == n => 0,
-          IsAtLeast(n) if metadata >= n => 0,
-          Is(n) | IsAtLeast(n) => n as isize - metadata as isize,
-          IsMultipleOf(m) if metadata % m == 0 => 0,
-          IsMultipleOf(m) => m as isize - (metadata % m) as isize,
-          IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => 0,
-          IsAtLeastThenMultipleOf(n, _) if metadata < n => n as isize - metadata as isize,
-          IsAtLeastThenMultipleOf(_, m) => m as isize - (metadata % m) as isize,
-          IsEmpty if metadata == 0 => 0,
-          IsEmpty => -(metadata as isize),
-        },
+      let check = match unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
+        None => Ok(()),
+        Some(check) => check.validate(metadata),
       };
-      match delta {
-        0 if size_of_tail::<Dst>() == 0 => Ok(0),
-        0 => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
-        n => Err(n * size_of_tail::<Src>() as isize),
+      match check {
+        Err(n) => Err(n * size_of_tail::<Src>() as isize),
+        _ if size_of_tail::<Dst>() == 0 => Ok(0),
+        _ => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
       }
     }
   }
@@ -1949,7 +1967,7 @@ mod internal {
         Some(layout) => {
           dst_offset += layout.width();
           layout
-        },
+        }
         _ => panic!("internal error"),
       };
       while src.width < dst.width() {
