@@ -95,9 +95,8 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         type Item = ();
         type Tail = ();
         type Repr = ();
-        type Word = ();
 
-        const LAYOUT: #root::Layout<()> = #root::Layout::Word { layout: #root::WordLayout::any() };
+        const LAYOUT: #root::Layout = #root::Layout::Word { layout: #root::layout!(any) };
         const HEADER: usize = 0;
       }
     })
@@ -190,9 +189,8 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         type Item = ();
         type Tail = <#tail_ty as #root::Data>::Tail;
         type Repr = #fields;
-        type Word = ();
 
-        const LAYOUT: #root::Layout<Self::Word> = #root::Layout::Struct;
+        const LAYOUT: #root::Layout = #root::Layout::Struct;
         const HEADER: usize = #header;
       }
     };
