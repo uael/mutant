@@ -1,55 +1,24 @@
 use mutant::num::*;
 use mutant::*;
+use hci::*;
 
 fn main() {
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Event<[u8]>>(&[21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69])
-  // );
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Event<[u8]>>(&[
-  //     21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69, 1, 2, 3
-  //   ])
-  // );
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
-  //     21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-  //   ])
-  // );
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Event<hci::DisconnectionComplete>>(&[
-  //     22, 9, 69, 69, 69, 69, 69, 69, 69, 69
-  //   ])
-  // );
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Event<hci::ConnectionComplete>>(&[
-  //     22, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-  //   ])
-  // );
-  // println!(
-  //   "{:?}",
-  //   try_transmute_ref::<[u8], hci::Packet<hci::Event<[u8]>>>(&[
-  //     2, 21, 9, 69, 69, 69, 69, 69, 69, 69, 69, 69
-  //   ])
-  // );
-  // println!(
-  //   "{:#?}",
-  //   try_transmute_ref::<[u8], hci::Packet<hci::Event<hci::NumberOfCompletedPackets>>>(&[
-  //     2, 23, 9, 2, 1, 0, 2, 0, 3, 0, 4, 0
-  //   ])
-  // );
+  let evt = NumberOfCompletedPackets::new([
+    CompletedPackets { handle: 1.into(), number_of_completed_packets: 2.into() },
+    CompletedPackets { handle: 3.into(), number_of_completed_packets: 4.into() },
+  ]).into_event().into_packet();
+  assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
+  
+  let evt = DisconnectionComplete::new([1, 2, 3, 4, 5, 6], 0x1234).into_event().into_packet();
+  assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
 }
 
 mod host {
   use core::future::Future;
   use core::pin::pin;
+  use futures::FutureExt;
 
   use super::*;
-  use crate::hci::*;
 
   pub struct Host<'rx, L: Socket>
   where
@@ -60,45 +29,39 @@ mod host {
   }
 
   impl<'rx, L: Socket> Socket for Host<'rx, L> {
-    async fn recv(&self) -> &Packet<[u8]> {
+    async fn socket_recv(&self) -> &Packet<[u8]> {
       self.rx.take().await
     }
 
-    async fn send<T: ?Sized + PacketData>(&self, tx: &Packet<T>) {
+    async fn socket_send<T: ?Sized + PacketData>(&self, tx: &Packet<T>) {
       // TODO: flow-control
-      self.lower.send(tx).await
+      self.lower.socket_send(tx).await
     }
   }
 
   impl<'rx, L: Socket> Host<'rx, L> {
-    pub async fn get<T: ?Sized + PacketData>(&self) -> &T {
+    pub async fn recv<T: ?Sized + PacketData>(&self) -> &T {
       loop {
-        let packet: Result<&Packet<T>, _> = try_transmute_ref!(self.rx.get().await);
-        if let Ok(packet) = packet {
+        if let Ok(packet) = self.rx.get().await.try_cast_ref::<Packet<T>>() {
           break unaligned_ref!(packet.data);
         }
       }
     }
 
-    pub async fn get_event<T: ?Sized + EventData>(&self) -> &T {
+    pub async fn recv_event<T: ?Sized + EventData>(&self) -> &T {
       loop {
-        let packet: Result<&Packet<Event<T>>, _> = try_transmute_ref!(self.rx.get().await);
-        if let Ok(packet) = packet {
+        if let Ok(packet) = self.rx.get().await.try_cast_ref::<Packet<Event<T>>>() {
           break unaligned_ref!(packet.data.parameters);
         }
       }
     }
 
-    pub async fn command<T: CommandData>(&self, command: Command<T>) -> &T::ResultParameters {
-      let packet = Packet { r#type: 0, data: Dropless::new(command) };
-      self.send(&packet).await;
-      // futures::future::select(
-      //   self.get_event::<CommandComplete<T::ResultParameters>>()
-      //     .then(|evt| async move { unaligned_ref!(evt.result_parameters).deref() }),
-      //   self.get_event::<CommandStatus>()
-      //     .then(|evt| async move { transmute_ref(&()) })
-      // ).await
-      todo!()
+    pub async fn send_command<T: CommandData>(&self, command: Command<T>) -> &T::ResultParameters {
+      self.socket_send(&Packet::with_data(command)).await;
+      futures::select_biased! {
+        e = self.recv_event::<CommandComplete<T>>().fuse() => unaligned_ref!(e.result_parameters),
+        _ = self.recv_event::<CommandStatus>().fuse() => transmute_ref(&())
+      }
     }
   }
 
@@ -110,7 +73,7 @@ mod host {
       if let Some(value) = unsync::poll_once(f.as_mut()).await {
         break value;
       }
-      host.rx.set(host.lower.recv().await).await;
+      host.rx.set(host.lower.socket_recv().await).await;
     }
   }
 
@@ -118,14 +81,14 @@ mod host {
     host: &Host<'_, T>,
     f: impl FnOnce(u16le) -> F,
   ) -> Option<F::Output> {
-    let connection_handle = host.get_event::<ConnectionComplete>().await.handle;
+    let connection_handle = host.recv_event::<ConnectionComplete>().await.handle;
     let mut f = pin!(f(connection_handle));
     loop {
       // Poll `f` once.
       if let Some(value) = unsync::poll_once(f.as_mut()).await {
         break Some(value);
       }
-      let disconnection = host.get_event::<DisconnectionComplete>().await;
+      let disconnection = host.recv_event::<DisconnectionComplete>().await;
       if disconnection.handle == connection_handle {
         break None;
       }
@@ -137,49 +100,66 @@ mod hci {
   use super::*;
   use core::fmt;
   use core::fmt::{Debug, Formatter};
+  use std::mem;
 
   pub trait Socket {
-    async fn recv(&self) -> &Packet<[u8]>;
-    async fn send<T: ?Sized + PacketData>(&self, tx: &Packet<T>);
+    async fn socket_recv(&self) -> &Packet<[u8]>;
+    async fn socket_send<T: ?Sized + PacketData>(&self, tx: &Packet<T>);
   }
 
-  #[derive(Copy, Clone, Data)]
+  #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct Packet<T: ?Sized + PacketData> {
-    pub r#type: u8,
+    pub r#type: T::PacketType,
     pub data: Dropless<T>,
   }
 
+  impl<T: PacketData> Packet<T> {
+    pub fn with_data(data: T) -> Self
+    where
+      T::PacketType: Default,
+    {
+      Self { r#type: T::PacketType::default(), data: Dropless::new(data) }
+    }
+  }
+
   pub trait PacketData: Data {
-    const TYPE: Option<u8>;
+    type PacketType: Word<Raw = u8>;
+
+    fn into_packet(self) -> Packet<Self> where Self: Sized, Self::PacketType: Default {
+      Packet::with_data(self)
+    }
   }
 
   impl PacketData for [u8] {
-    const TYPE: Option<u8> = None;
+    type PacketType = u8;
   }
 
   impl<T: ?Sized + EventData> PacketData for Event<T> {
-    const TYPE: Option<u8> = Some(1);
+    type PacketType = u8c<1>;
   }
 
   impl<T: ?Sized + Data> PacketData for Acl<T> {
-    const TYPE: Option<u8> = Some(2);
+    type PacketType = u8c<2>;
   }
 
   impl<T: ?Sized + CommandData> PacketData for Command<T> {
-    const TYPE: Option<u8> = Some(3);
+    type PacketType = u8c<3>;
   }
 
-  impl<T: ?Sized + Debug + PacketData> Debug for Packet<T> {
+  impl<T: ?Sized + Debug + PacketData> Debug for Packet<T>
+  where
+    T::PacketType: Debug,
+  {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       f.debug_struct("Packet")
-        .field("type", &self.r#type)
+        .field("type", &unaligned_ref!(self.r#type))
         .field("data", &unaligned_ref!(self.data))
         .finish()
     }
   }
 
-  #[derive(Copy, Clone, Data)]
+  #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct Acl<T: ?Sized> {
     pub handle_and_flags: u16le,
@@ -197,58 +177,75 @@ mod hci {
     }
   }
 
-  #[derive(Copy, Clone, Data)]
+  #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct Event<T: ?Sized + EventData> {
-    pub event_code: u8,
+    pub event_code: T::EventCode,
     pub parameters_len: u8,
     pub parameters: Dropless<T>,
   }
 
+  impl<T: EventData> Event<T> {
+    pub fn with_data(data: T) -> Self
+    where
+      T::EventCode: Default,
+    {
+      Self {
+        event_code: T::EventCode::default(),
+        parameters_len: mem::size_of::<T>() as u8,
+        parameters: Dropless::new(data),
+      }
+    }
+  }
+
   pub trait EventData: Data {
-    const EVENT_CODE: Option<u8>;
+    type EventCode: Word<Raw = u8>;
+    
+    fn into_event(self) -> Event<Self> where Self: Sized, Self::EventCode: Default {
+      Event::with_data(self)
+    }
   }
 
   impl EventData for [u8] {
-    const EVENT_CODE: Option<u8> = None;
+    type EventCode = u8;
   }
 
   impl EventData for ConnectionComplete {
-    const EVENT_CODE: Option<u8> = Some(21);
+    type EventCode = u8c<21>;
   }
 
   impl EventData for DisconnectionComplete {
-    const EVENT_CODE: Option<u8> = Some(22);
+    type EventCode = u8c<22>;
   }
 
-  impl EventData for NumberOfCompletedPackets {
-    const EVENT_CODE: Option<u8> = Some(23);
+  impl<T: ?Sized + Many<CompletedPackets>> EventData for NumberOfCompletedPackets<T> {
+    type EventCode = u8c<23>;
   }
 
   impl EventData for CommandStatus {
-    const EVENT_CODE: Option<u8> = Some(24);
+    type EventCode = u8c<24>;
   }
 
-  impl<T: ?Sized + Data> EventData for CommandComplete<T> {
-    const EVENT_CODE: Option<u8> = Some(25);
+  impl<T: ?Sized + CommandData> EventData for CommandComplete<T> {
+    type EventCode = u8c<25>;
   }
 
-  #[derive(Debug, Copy, Clone, Data)]
+  #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct CommandStatus {
     pub op_code: u16le,
     pub status: u8,
   }
 
-  #[derive(Debug, Copy, Clone, Data)]
+  #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
-  pub struct CommandComplete<T: ?Sized + Data> {
-    pub op_code: u16le,
+  pub struct CommandComplete<T: ?Sized + CommandData> {
+    pub op_code: T::OpCode,
     pub status: u8,
-    pub result_parameters: Dropless<T>,
+    pub result_parameters: Dropless<T::ResultParameters>,
   }
 
-  #[derive(Debug, Copy, Clone, Data)]
+  #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct ConnectionComplete {
     pub address: [u8; 6],
@@ -256,51 +253,77 @@ mod hci {
     pub link_type: u8,
   }
 
-  #[derive(Debug, Copy, Clone, Data)]
+  #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct DisconnectionComplete {
     pub address: [u8; 6],
     pub handle: u16le,
   }
 
-  #[derive(Debug, Copy, Clone, Data)]
+  impl DisconnectionComplete {
+    pub fn new(address: [u8; 6], handle: u16) -> Self {
+      Self { address, handle: handle.into() }
+    }
+  }
+
+  #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct CompletedPackets {
     pub handle: u16le,
     pub number_of_completed_packets: u16le,
   }
 
-  #[derive(Data)]
+  #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
-  pub struct NumberOfCompletedPackets {
+  pub struct NumberOfCompletedPackets<T: ?Sized + Many<CompletedPackets> = [CompletedPackets]> {
     pub num_handles: u8,
-    pub completed_packets: [CompletedPackets],
+    pub completed_packets: Dropless<T>,
   }
 
-  #[derive(Copy, Clone, Data)]
+  impl<T: Many<CompletedPackets>> NumberOfCompletedPackets<T> {
+    pub fn new(completed_packets: T) -> Self {
+      Self {
+        num_handles: as_slice(&completed_packets).len() as u8,
+        completed_packets: Dropless::new(completed_packets),
+      }
+    }
+  }
+
+  #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct Command<T: ?Sized + CommandData> {
-    pub op_code: u16le,
+    pub op_code: T::OpCode,
     pub parameters_len: u8,
     pub parameters: Dropless<T>,
   }
 
   pub trait CommandData: Data {
+    type OpCode: Word<Raw = u16le>;
     type ResultParameters: ?Sized + Data;
-    const OP_CODE: Option<u16le>;
   }
 
-  impl<T: ?Sized + Debug + EventData> Debug for Event<T> {
+  #[derive(Copy, Clone, PartialEq, Data)]
+  pub struct Reset;
+
+  impl CommandData for Reset {
+    type OpCode = u16lec<0x2345>;
+    type ResultParameters = ();
+  }
+
+  impl<T: ?Sized + Debug + EventData> Debug for Event<T>
+  where
+    T::EventCode: Debug,
+  {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       f.debug_struct("Event")
-        .field("event_code", &self.event_code)
+        .field("event_code", &unaligned_ref!(self.event_code))
         .field("parameters_len", &self.parameters_len)
         .field("parameters", &unaligned_ref!(self.parameters))
         .finish()
     }
   }
 
-  impl Debug for NumberOfCompletedPackets {
+  impl<T: ?Sized + Many<CompletedPackets> + Debug> Debug for NumberOfCompletedPackets<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       f.debug_struct("NumberOfCompletedPackets")
         .field("num_handles", &self.num_handles)

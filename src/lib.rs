@@ -323,6 +323,11 @@ pub unsafe trait Word: Copy + 'static {
   const WORD_LAYOUT: &'static WordLayout;
 }
 
+pub unsafe trait Many<T: Copy + Data>: Data<Item = T> {}
+
+unsafe impl<T: Copy + Data> Many<T> for [T] {}
+unsafe impl<T: Copy + Data, const N: usize> Many<T> for [T; N] {}
+
 pub unsafe trait Data: 'static {
   /// Type of slice or array item.
   type Item: Copy + Data;
@@ -337,7 +342,113 @@ pub unsafe trait Data: 'static {
   /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`]`::<Self>()`.
   #[doc(hidden)]
   const HEADER: usize;
+
+  #[inline]
+  fn cast<T: Data + Copy>(self) -> T
+  where
+    Self: Copy,
+  {
+    transmute!(self)
+  }
+
+  #[inline]
+  fn cast_copy<T: Data + Copy>(&self) -> T
+  where
+    Self: Copy,
+  {
+    transmute_copy!(self)
+  }
+
+  #[inline]
+  fn cast_ref<T: Data + ?Sized>(&self) -> &T {
+    transmute_ref!(self)
+  }
+
+  #[inline]
+  fn cast_mut<T: Data + ?Sized>(&mut self) -> &mut T {
+    transmute_mut!(self)
+  }
+
+  #[inline]
+  fn try_cast<T: Data + Copy>(self) -> Option<T>
+  where
+    Self: Copy,
+  {
+    try_transmute!(self)
+  }
+
+  #[inline]
+  fn try_cast_copy<T: Data + Copy>(&self) -> Option<T>
+  where
+    Self: Copy,
+  {
+    try_transmute_copy!(self)
+  }
+
+  #[inline]
+  fn try_cast_ref<T: Data + ?Sized>(&self) -> Result<&T, Error> {
+    try_transmute_ref!(self)
+  }
+
+  #[inline]
+  fn try_cast_mut<T: Data + ?Sized>(&mut self) -> Result<&mut T, Error> {
+    try_transmute_mut!(self)
+  }
 }
+
+// TODO --------------------------------------------------------------------------------------------
+
+#[macro_export]
+#[allow(non_snake_case)]
+macro_rules! Pack {
+  ($($t:ty),+ $(,)?) => { $crate::Pack!(@ $($t),+, ($($t),+)) };
+  (@ $a:ty, ($($t:ty),+)) => { $crate::Pack1<$($t),+> };
+  (@ $a:ty, $b:ty, ($($t:ty),+)) => { $crate::Pack2<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, ($($t:ty),+)) => { $crate::Pack3<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, ($($t:ty),+)) => { $crate::Pack4<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, ($($t:ty),+)) => { $crate::Pack5<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, $f:ty, ($($t:ty),+)) => { $crate::Pack6<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, $f:ty, $g:ty, ($($t:ty),+)) => { $crate::Pack7<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, $f:ty, $g:ty, $h:ty, ($($t:ty),+)) => { $crate::Pack8<$($t),+> };
+  (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, $f:ty, $g:ty, $h:ty, $i:ty, ($($t:ty),+)) => { $crate::Pack9<$($t),+> };
+}
+
+#[macro_export]
+macro_rules! pack {
+  ($($v:expr),+ $(,)?) => { $crate::pack!(@ $($v),+, ($($crate::Dropless::new($v)),+)) };
+  (@ $a:expr, ($($v:expr),+)) => { $crate::Pack1($($v),+) };
+  (@ $a:expr, $b:expr, ($($v:expr),+)) => { $crate::Pack2($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, ($($v:expr),+)) => { $crate::Pack3($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, ($($v:expr),+)) => { $crate::Pack4($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, ($($v:expr),+)) => { $crate::Pack5($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, ($($v:expr),+)) => { $crate::Pack6($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, ($($v:expr),+)) => { $crate::Pack7($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, ($($v:expr),+)) => { $crate::Pack8($($v),+) };
+  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr, ($($v:expr),+)) => { $crate::Pack9($($v),+) };
+}
+
+macro_rules! impl_pack {
+  ($($name:ident ($($t:ident)+))+) => {
+    $(
+      #[repr(C, packed)]
+      #[derive(Data)]
+      #[data(crate)]
+      pub struct $name<$($t),+: ?Sized>($(pub Dropless<$t>),+);
+    )+
+  };
+}
+
+impl_pack!(
+  Pack1 (A)
+  Pack2 (A B)
+  Pack3 (A B C)
+  Pack4 (A B C D)
+  Pack5 (A B C D E)
+  Pack6 (A B C D E F)
+  Pack7 (A B C D E F G)
+  Pack8 (A B C D E F G H)
+  Pack9 (A B C D E F G H I)
+);
 
 // Macros ------------------------------------------------------------------------------------------
 
@@ -484,19 +595,20 @@ macro_rules! try_transmute_ref {
 /// Safely reference unaligned data.
 #[macro_export]
 macro_rules! unaligned_ref {
-  ($base:tt.$field:tt.$($fields:tt).+) => {{
-    let base = $crate::unaligned_ref!($base.$field);
-    $crate::unaligned_ref!(base.$($fields).+)
-  }};
-  ($base:tt.$field:tt) => {{
-    let _ref: &_ = $base;
-    let addr = core::ptr::addr_of!($base.$field);
+  ($base:expr, $($fields:tt).+) => {{
+    let base: &_ = $base;
+    let addr = core::ptr::addr_of!(base.$($fields).+);
     $crate::const_assert_unaligned(addr);
     // SAFETY:
     // - `_ref` has been checked to be a valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &*addr }
   }};
+  ($base:tt.$field:tt.$($fields:tt).+) => {{
+    let base = $crate::unaligned_ref!($base.$field);
+    $crate::unaligned_ref!(base.$($fields).+)
+  }};
+  ($base:tt.$field:tt) => ($crate::unaligned_ref!($base, $field));
 }
 
 /// Safely mutably reference unaligned data.
@@ -552,7 +664,7 @@ pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
 // Functions ---------------------------------------------------------------------------------------
 
 /// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
-/// With the difference that it also accept unsized types with relaxed `?Sized` bound.
+/// With the difference that it also accept unsized types with relaxed `?`[`Sized`] bound.
 ///
 /// # Examples
 /// ```
@@ -608,33 +720,6 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
 }
 
 /// Returns the [`ByteLayout`] of a type at a given `offset`.
-///
-/// For out-of-bounds `offset`, [`ByteLayout::Uninit`] is always returned.
-///
-/// # Examples
-/// ```
-/// //TODO:
-/// // use mutant::{ByteLayout, Data};
-///
-/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<u16>(1));
-/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<u16>(2));
-///
-/// //#[derive(Copy, Clone, Data)]
-/// //#[repr(C)]
-/// //struct Foo {
-/// //  a: bool,
-/// //  b: u16,
-/// //}
-///
-/// //assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<Foo>(0));
-/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(1));
-/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(2));
-/// //assert_eq!(ByteLayout::from_mask(0xff), mutant::byte_layout_at::<Foo>(3));
-/// //assert_eq!(ByteLayout::Uninit, mutant::byte_layout_at::<Foo>(4));
-///
-/// //// And for a slice:
-/// //assert_eq!(ByteLayout::from_mask(0b01), mutant::byte_layout_at::<[Foo]>(4));
-/// ```
 #[inline]
 pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> Option<ByteLayout<'static>> {
   #[inline]
@@ -768,7 +853,7 @@ pub const fn min_size_of<T: ?Sized + Data>() -> usize {
 }
 
 #[doc(hidden)]
-#[inline(always)]
+#[inline]
 pub const fn raw<T: Word>(raw: T::Raw) -> T::Raw {
   assert!(mem::size_of::<T>() == mem::size_of::<T::Raw>());
   assert!(<T::Raw as Word>::WORD_LAYOUT.is_any());
@@ -809,8 +894,33 @@ pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
 }
 
 #[inline]
+pub const fn transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> U {
+  transmute_copy!(val)
+}
+
+#[inline]
 pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
   transmute_ref!(val)
+}
+
+#[inline]
+pub fn try_transmute<T: Data + Copy, U: Data + Copy>(val: T) -> Option<U> {
+  try_transmute!(val)
+}
+
+#[inline]
+pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Option<U> {
+  try_transmute_copy!(val)
+}
+
+#[inline]
+pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Result<&mut U, Error> {
+  try_transmute_mut!(val)
+}
+
+#[inline]
+pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> Result<&U, Error> {
+  try_transmute_ref!(val)
 }
 
 #[inline]
@@ -853,7 +963,7 @@ pub mod ptr {
   ///
   /// This is equivalent to `r as *const T`, but is a bit safer since it will never silently change
   /// type or mutability, in particular if the code is refactored.
-  #[inline(always)]
+  #[inline]
   #[must_use]
   pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
     r
@@ -863,7 +973,7 @@ pub mod ptr {
   ///
   /// This is equivalent to `r as *mut T`, but is a bit safer since it will never silently change
   /// type or mutability, in particular if the code is refactored.
-  #[inline(always)]
+  #[inline]
   #[must_use]
   pub fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
     r
@@ -949,50 +1059,47 @@ pub mod ptr {
 
 pub mod num {
   use super::*;
-  use core::fmt::{Debug, Display, Formatter};
+  use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
 
   macro_rules! impl_num {
-    { $($ty:ident $raw:ident $bytes:literal $ordering:ident),+ } => {
-      $(impl_num!($ty $raw $bytes { mem::size_of::<$raw>() - $bytes } $ordering);)+
-    };
-    ($ty:ident $raw:ident $n:literal $rest:tt $ordering:ident) => {
+    (($T:ident $Raw:ident $N:literal $ordering:ident)) => {
       #[allow(non_camel_case_types)]
       #[derive(Eq, PartialEq, Copy, Clone, Hash)]
       #[repr(transparent)]
-      pub struct $ty(pub [u8; $n]);
+      pub struct $T(pub [u8; $N]);
 
-      unsafe impl Word for $ty {
-        type Raw = $ty;
+      unsafe impl Word for $T {
+        type Raw = $T;
         const WORD_LAYOUT: &'static WordLayout = layout!(any);
       }
 
-      impl $ty {
-        pub const MIN: Self = Self::from_raw($raw::MIN);
-        pub const MAX: Self = Self::from_raw($raw::MAX);
+      impl $T {
+        pub const MIN: Self = Self::from_raw($Raw::MIN);
+        pub const MAX: Self = Self::from_raw($Raw::MAX);
 
-        #[inline] pub const fn to_ne_bytes(self) -> [u8; $n] { swap!($ordering => ne, self).0 }
-        #[inline] pub const fn to_le_bytes(self) -> [u8; $n] { swap!($ordering => le, self).0 }
-        #[inline] pub const fn to_be_bytes(self) -> [u8; $n] { swap!($ordering => be, self).0 }
+        #[inline] pub const fn to_ne_bytes(self) -> [u8; $N] { swap!($ordering => ne, self).0 }
+        #[inline] pub const fn to_le_bytes(self) -> [u8; $N] { swap!($ordering => le, self).0 }
+        #[inline] pub const fn to_be_bytes(self) -> [u8; $N] { swap!($ordering => be, self).0 }
 
-        #[inline] pub const fn from_ne_bytes(b: [u8; $n]) -> Self { swap!(ne => $ordering, Self(b)) }
-        #[inline] pub const fn from_le_bytes(b: [u8; $n]) -> Self { swap!(le => $ordering, Self(b)) }
-        #[inline] pub const fn from_be_bytes(b: [u8; $n]) -> Self { swap!(be => $ordering, Self(b)) }
+        #[inline] pub const fn from_ne_bytes(b: [u8; $N]) -> Self { swap!(ne => $ordering, Self(b)) }
+        #[inline] pub const fn from_le_bytes(b: [u8; $N]) -> Self { swap!(le => $ordering, Self(b)) }
+        #[inline] pub const fn from_be_bytes(b: [u8; $N]) -> Self { swap!(be => $ordering, Self(b)) }
 
         #[inline]
-        pub const fn from_raw(raw: $raw) -> Self {
-          let (mut off, mut bytes) = (0, [0; $n]);
-          while off < $n {
-            bytes[off] = (raw >> (le_or_be!($ordering, off, $n - off - 1) * 8)) as u8;
+        pub const fn from_raw(raw: $Raw) -> Self {
+          let (mut off, mut bytes) = (0, [0; $N]);
+          while off < $N {
+            bytes[off] = (raw >> (le_or_be!($ordering, off, $N - off - 1) * 8)) as u8;
             off += 1;
           }
           Self(bytes)
         }
 
         #[inline]
-        pub const fn into_raw(self) -> $raw {
+        pub const fn into_raw(self) -> $Raw {
           let (mut off, mut raw) = (0, 0);
-          while off < $n {
-            raw |= (self.0[off] as $raw) << (le_or_be!($ordering, off, $n - off - 1) * 8);
+          while off < $N {
+            raw |= (self.0[off] as $Raw) << (le_or_be!($ordering, off, $N - off - 1) * 8);
             off += 1;
           }
           raw
@@ -1001,43 +1108,178 @@ pub mod num {
         #[inline]
         pub const fn swap_bytes(mut self) -> Self {
           let mut i = 0;
-          while i < $n / 2 {
+          while i < $N / 2 {
             let tmp = self.0[i];
-            self.0[i] = self.0[$n - i - 1];
-            self.0[$n - i - 1] = tmp;
+            self.0[i] = self.0[$N - i - 1];
+            self.0[$N - i - 1] = tmp;
             i += 1;
           }
           self
         }
       }
 
-      impl From<$raw> for $ty {
+      impl From<$Raw> for $T {
         #[inline]
-        fn from(raw: $raw) -> Self {
+        fn from(raw: $Raw) -> Self {
           Self::from_raw(raw)
         }
       }
 
-      impl From<$ty> for $raw {
+      impl From<$T> for $Raw {
         #[inline]
-        fn from(value: $ty) -> Self {
+        fn from(value: $T) -> Self {
           value.into_raw()
         }
       }
 
-      impl Debug for $ty {
+      impl Debug for $T {
         #[inline]
-        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-          <$raw as Debug>::fmt(&self.into_raw(), f)
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as Debug>::fmt(&self.into_raw(), f)
         }
       }
 
-      impl Display for $ty {
+      impl Display for $T {
         #[inline]
-        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-          <$raw as Display>::fmt(&self.into_raw(), f)
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as Display>::fmt(&self.into_raw(), f)
         }
       }
+
+      impl Binary for $T {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as Binary>::fmt(&self.into_raw(), f)
+        }
+      }
+
+      impl Octal for $T {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as Octal>::fmt(&self.into_raw(), f)
+        }
+      }
+
+      impl LowerHex for $T {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as LowerHex>::fmt(&self.into_raw(), f)
+        }
+      }
+
+      impl UpperHex for $T {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          <$Raw as UpperHex>::fmt(&self.into_raw(), f)
+        }
+      }
+    };
+    ($($tt:tt)+) => {
+      $(impl_num!($tt);)+
+    };
+  }
+
+  macro_rules! impl_const_num {
+    (($ConstT:ident $T:ident)) => {
+      impl_const_num!(($ConstT $T $T V));
+    };
+    (($ConstT:ident $T:ident $VT:ident)) => {
+      impl_const_num!(($ConstT $T $VT $T::from_raw(V)));
+    };
+    (($ConstT:ident $T:ident $VT:ident $v2raw:expr)) => {
+      #[allow(non_camel_case_types)]
+      #[derive(Eq, PartialEq, Copy, Clone, Hash)]
+      #[repr(transparent)]
+      pub struct $ConstT<const V: $VT>($T);
+
+      unsafe impl<const V: $VT> Word for $ConstT<V> {
+        type Raw = $T;
+        const WORD_LAYOUT: &'static WordLayout = layout!($v2raw);
+      }
+
+      impl<const V: $VT> $ConstT<V> {
+        #[inline]
+        pub const fn new() -> Self {
+          Self($v2raw)
+        }
+
+        #[inline]
+        pub const fn into_raw(self) -> $T {
+          $v2raw
+        }
+      }
+
+      impl<const V: $VT> TryFrom<$T> for $ConstT<V> {
+        type Error = ();
+
+        #[inline]
+        fn try_from(value: $T) -> Result<Self, Self::Error> {
+          if value == $v2raw {
+            Ok(Self::new())
+          } else {
+            Err(())
+          }
+        }
+      }
+
+      impl<const V: $VT> From<$ConstT<V>> for $T {
+        #[inline]
+        fn from(value: $ConstT<V>) -> Self {
+          value.0
+        }
+      }
+
+      impl<const V: $VT> Default for $ConstT<V> {
+        #[inline]
+        fn default() -> Self {
+          Self::new()
+        }
+      }
+
+      impl<const V: $VT> Display for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          Display::fmt(&V, f)
+        }
+      }
+
+      impl<const V: $VT> Debug for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          Debug::fmt(&V, f)
+        }
+      }
+
+      impl<const V: $VT> Binary for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          Binary::fmt(&V, f)
+        }
+      }
+
+      impl<const V: $VT> Octal for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          Octal::fmt(&V, f)
+        }
+      }
+
+      impl<const V: $VT> LowerHex for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          LowerHex::fmt(&V, f)
+        }
+      }
+
+      impl<const V: $VT> UpperHex for $ConstT<V> {
+        #[inline]
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+          UpperHex::fmt(&V, f)
+        }
+      }
+    };
+    ($($tt:tt)+) => {
+      $(impl_const_num!($tt);)+
     };
   }
 
@@ -1062,14 +1304,43 @@ pub mod num {
   }
 
   impl_num! {
-    u16le u16 2 le, u16be u16 2 be,
-    u24le u32 3 le, u24be u32 3 be, u24 u32 3 ne,
-    u32le u32 4 le, u32be u32 4 be,
-    u40le u64 5 le, u40be u64 5 be, u40 u64 5 ne,
-    u48le u64 6 le, u48be u64 6 be, u48 u64 6 ne,
-    u56le u64 7 le, u56be u64 7 be, u56 u64 7 ne,
-    u64le u64 8 le, u64be u64 8 be
+    (u16le u16 2 le) (u16be u16 2 be)
+    (u24le u32 3 le) (u24be u32 3 be) (u24 u32 3 ne)
+    (u32le u32 4 le) (u32be u32 4 be)
+    (u40le u64 5 le) (u40be u64 5 be) (u40 u64 5 ne)
+    (u48le u64 6 le) (u48be u64 6 be) (u48 u64 6 ne)
+    (u56le u64 7 le) (u56be u64 7 be) (u56 u64 7 ne)
+    (u64le u64 8 le) (u64be u64 8 be)
+    (u72le u128 9 le) (u72be u128 9 be) (u72 u128 9 ne)
+    (u80le u128 10 le) (u80be u128 10 be) (u80 u128 10 ne)
+    (u88le u128 11 le) (u88be u128 11 be) (u88 u128 11 ne)
+    (u96le u128 12 le) (u96be u128 12 be) (u96 u128 12 ne)
+    (u104le u128 13 le) (u104be u128 13 be) (u104 u128 13 ne)
+    (u112le u128 14 le) (u112be u128 14 be) (u112 u128 14 ne)
+    (u120le u128 15 le) (u120be u128 15 be) (u120 u128 15 ne)
+    (u128le u128 16 le) (u128be u128 16 be)
   }
+
+  impl_const_num!(
+    (usizec usize) (isizec isize)
+    (u8c u8) (u16c u16) (u32c u32) (u64c u64) (u128c u128)
+    (i8c i8) (i16c i16) (i32c i32) (i64c i64) (i128c i128)
+    (u16lec u16le u16) (u16bec u16be u16)
+    (u24lec u24le u32) (u24bec u24be u32) (u24c u24 u32)
+    (u32lec u32le u32) (u32bec u32be u32)
+    (u40lec u40le u64) (u40bec u40be u64) (u40c u40 u64)
+    (u48lec u48le u64) (u48bec u48be u64) (u48c u48 u64)
+    (u56lec u56le u64) (u56bec u56be u64) (u56c u56 u64)
+    (u64lec u64le u64) (u64bec u64be u64)
+    (u72lec u72le u128) (u72bec u72be u128) (u72c u72 u128)
+    (u80lec u80le u128) (u80bec u80be u128) (u80c u80 u128)
+    (u88lec u88le u128) (u88bec u88be u128) (u88c u88 u128)
+    (u96lec u96le u128) (u96bec u96be u128) (u96c u96 u128)
+    (u104lec u104le u128) (u104bec u104be u128) (u104c u104 u128)
+    (u112lec u112le u128) (u112bec u112be u128) (u112c u112 u128)
+    (u120lec u120le u128) (u120bec u120be u128) (u120c u120 u128)
+    (u128lec u128le u128) (u128bec u128be u128)
+  );
 }
 
 // internal ----------------------------------------------------------------------------------------
@@ -1091,7 +1362,7 @@ mod internal {
   impl WordLayout {
     pub(crate) const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
 
-    #[inline(always)]
+    #[inline]
     pub const fn from_bytes(bytes: &[u8]) -> &Self {
       assert!(bytes.len() >= 2);
       assert!(bytes[0] == 0 || (bytes[0].is_power_of_two() && bytes[0] <= 16));
@@ -1114,27 +1385,27 @@ mod internal {
       unsafe { &*ptr::from_raw_parts(bytes.as_ptr().cast(), values_bytes) }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn from_ref<const W: usize, const N: usize>(x: &(u8, u8, [[u8; W]; N])) -> &Self {
       Self::from_bytes(unsafe { &*ptr::from_raw_parts(ptr::from_ref(x).cast(), 2 + W * N) })
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_uninit(&self) -> bool {
       self.flags == bits::UNINIT
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn is_any(&self) -> bool {
       self.flags == bits::ANY
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn width(&self) -> usize {
       self.width as usize
     }
 
-    #[inline(always)]
+    #[inline]
     const fn branches(&self) -> usize {
       if self.width() == 0 {
         return 0;
@@ -1145,7 +1416,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn matches<T: Word>(&self, word: &T) -> bool {
       if self.width as usize != mem::size_of::<T>() {
         return false;
@@ -1157,7 +1428,7 @@ mod internal {
 
     /// # Safety
     /// `ptr` is valid for read up to `self.width` bytes.
-    #[inline(always)]
+    #[inline]
     pub const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
       macro_rules! inner {
         ($ptr:ident, $ty:ident) => {{
@@ -1195,17 +1466,17 @@ mod internal {
   // impl InitLayout -------------------------------------------------------------------------------
 
   impl<'a> InitLayout<'a> {
-    #[inline(always)]
+    #[inline]
     pub const fn width(&self) -> usize {
       self.layout.width() - self.offset
     }
 
-    #[inline(always)]
+    #[inline]
     const fn branches(&self) -> usize {
       self.layout.branches()
     }
 
-    #[inline(always)]
+    #[inline]
     const fn branch(&self, branch: usize) -> BytePattern {
       use BytePattern::*;
       assert!(branch < self.branches());
@@ -1216,7 +1487,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     const fn intersects(
       mut self,
       mut dst: InitLayout,
@@ -1242,7 +1513,7 @@ mod internal {
   // impl ByteLayout -------------------------------------------------------------------------------
 
   impl<'a> ByteLayout<'a> {
-    #[inline(always)]
+    #[inline]
     pub const fn width(&self) -> usize {
       match self {
         Uninit => 1,
@@ -1272,7 +1543,7 @@ mod internal {
     /// Validates `metadata` against constraints.
     /// In case of an error `Err(e)`, a positive `e` indicates an overflow of `metadata` by `e`,
     /// while a negative value signifies an underflow by `-e`.
-    #[inline(always)]
+    #[inline]
     pub const fn validate(self, metadata: usize) -> Result<(), isize> {
       match self {
         Is(n) if metadata == n => Ok(()),
@@ -1341,25 +1612,25 @@ mod internal {
 
   impl StaticAnalyze {
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: false }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: true }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: false }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: true }
     }
@@ -1367,7 +1638,7 @@ mod internal {
 
   #[cfg(test)]
   impl Debug for StaticAnalyze {
-    #[inline(always)]
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation) {
         (true, false) => "fallible",
@@ -1385,12 +1656,12 @@ mod internal {
   struct Branches(u64);
 
   impl Branches {
-    #[inline(always)]
+    #[inline]
     pub const fn empty() -> Self {
       Self(0)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn new(branches: usize) -> Self {
       if branches == 0 {
         return Self(0);
@@ -1398,12 +1669,12 @@ mod internal {
       Self(u64::MAX >> (64 - branches))
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn branches(self) -> usize {
       self.0.count_ones() as usize
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn next(self) -> (Option<usize>, Self) {
       if self.0 == 0 {
         return (None, self);
@@ -1412,7 +1683,7 @@ mod internal {
       (Some(index), self.invalidate(index))
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn invalidate(self, index: usize) -> Self {
       Self(self.0 & !(1 << index))
     }
@@ -1427,36 +1698,36 @@ mod internal {
   }
 
   impl Transmutability {
-    #[inline(always)]
+    #[inline]
     pub const fn unreachable() -> Self {
       Self { reachable: false, infallible: true, mutable: true }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn reachable() -> Self {
       Self { reachable: true, infallible: false, mutable: false }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn reachable_infallible_mutable() -> Self {
       Self { reachable: true, infallible: true, mutable: true }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn reachable_infallible() -> Self {
       Self { reachable: true, infallible: true, mutable: false }
     }
 
     #[allow(unused)]
-    #[inline(always)]
+    #[inline]
     pub const fn reachable_mutable() -> Self {
       Self { reachable: true, infallible: false, mutable: true }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn and(mut self, other: Self) -> Self {
       self.reachable &= other.reachable;
       self.mutable &= other.mutable;
@@ -1464,7 +1735,7 @@ mod internal {
       self
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn or(mut self, other: Self) -> Self {
       self.reachable |= other.reachable;
       if other.reachable {
@@ -1499,7 +1770,7 @@ mod internal {
   }
 
   impl<'a> Source<'a> {
-    #[inline(always)]
+    #[inline]
     pub const fn empty() -> Self {
       Self {
         len: 0,
@@ -1512,7 +1783,7 @@ mod internal {
     }
 
     /// Append a layout to the aggregate.
-    #[inline(always)]
+    #[inline]
     pub const fn append(mut self, layout: ByteLayout<'a>) -> Self {
       assert!(self.len < self.chunks.len());
       let (layout, width) = match layout {
@@ -1532,7 +1803,7 @@ mod internal {
     }
 
     /// Shift right the aggregate by `n` bytes.
-    #[inline(always)]
+    #[inline]
     pub const fn shift_bytes(self, n: usize) -> Self {
       let mut shifted = Self::empty();
       shifted.transmutability = self.transmutability;
@@ -1543,7 +1814,7 @@ mod internal {
     }
 
     /// Shift out the head layout.
-    #[inline(always)]
+    #[inline]
     pub const fn shift(mut self) -> Self {
       if self.width == 0 {
         return self;
@@ -1561,7 +1832,7 @@ mod internal {
       self
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn offset(self, mut offset: usize) -> ByteLayout<'a> {
       assert!(offset < self.width);
       let mut i = 0;
@@ -1579,7 +1850,7 @@ mod internal {
       unreachable!()
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn finish(self) -> Transmutability {
       if !self.transmutability.reachable {
         return Transmutability::unreachable();
@@ -1587,7 +1858,7 @@ mod internal {
       self.transmutability
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn intersects(mut self, dst: &WordLayout) -> Result<Self, &'static str> {
       assert!(dst.width() <= self.width);
       let mut offset = 0; // Offset in bytes withing `layout`.
@@ -1665,13 +1936,13 @@ mod internal {
       Self { source: PhantomData, target: PhantomData }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn check(self) -> Result<(), &'static str> {
       bail!(Self::STATIC_ANALYZE);
       Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn check_no_size_mismatch(self) -> Result<(), &'static str> {
       if let Some(checks) = bail!(Self::STATIC_ANALYZE).maybe_size_mismatch {
         use MetadataChecks::*;
@@ -1701,7 +1972,7 @@ mod internal {
       Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn check_no_alignment_mismatch(self) -> Result<(), &'static str> {
       if align_of::<Dst>() > align_of::<Src>() {
         return Err(
@@ -1712,7 +1983,7 @@ mod internal {
       Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn check_no_invalid_bit_pattern(self) -> Result<(), &'static str> {
       if bail!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
         return Err(
@@ -1723,7 +1994,7 @@ mod internal {
       Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn check_sound_target_mutation(self) -> Result<(), &'static str> {
       if !bail!(Self::STATIC_ANALYZE).sound_target_mutation {
         return Err(
@@ -1734,7 +2005,7 @@ mod internal {
       Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn transmute(self, src: Src) -> Dst
     where
       Src: Copy,
@@ -1750,7 +2021,7 @@ mod internal {
       unsafe { Transmute { src }.dst }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn transmute_copy(self, src: &Src) -> Dst
     where
       Src: Copy,
@@ -1759,7 +2030,7 @@ mod internal {
       self.transmute(*src)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn transmute_mut(self, src: &mut Src) -> &mut Dst {
       unwrap!(self.check());
       unwrap!(self.check_no_alignment_mismatch());
@@ -1771,7 +2042,7 @@ mod internal {
       unsafe { &mut *ptr }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn transmute_ref(self, src: &Src) -> &Dst {
       unwrap!(self.check());
       unwrap!(self.check_no_alignment_mismatch());
@@ -1782,7 +2053,7 @@ mod internal {
       unsafe { &*ptr }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn try_transmute_copy(self, src: &Src) -> Option<Dst>
     where
       Src: Copy,
@@ -1797,7 +2068,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn try_transmute_mut(self, src: &mut Src) -> Result<&mut Dst, Error> {
       unwrap!(self.check());
       unwrap!(self.check_sound_target_mutation());
@@ -1815,7 +2086,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn try_transmute_ref(self, src: &Src) -> Result<&Dst, Error> {
       unwrap!(self.check());
       if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
@@ -1832,7 +2103,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     const fn convert_metadata(self, metadata: usize) -> usize {
       unwrap!(self.check());
       unwrap!(self.check_no_size_mismatch());
@@ -1842,7 +2113,7 @@ mod internal {
       }
     }
 
-    #[inline(always)]
+    #[inline]
     const fn try_convert_metadata(self, metadata: usize) -> Result<usize, isize> {
       unwrap!(self.check());
       let check = match unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {

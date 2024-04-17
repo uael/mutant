@@ -65,29 +65,6 @@ unsafe impl Word for UpTo2u16 {
   const WORD_LAYOUT: &'static WordLayout = layout!(0 | 1 | 2);
 }
 
-macro_rules! impl_pack {
-  ($($name:ident ($($t:ident)+))+) => {
-    $(
-      #[repr(C, packed)]
-      #[derive(Data)]
-      #[data(crate)]
-      struct $name<$($t),+: ?Sized>($(pub Dropless<$t>),+);
-    )+
-  };
-}
-
-impl_pack!(
-  Pack1 (A)
-  Pack2 (A B)
-  Pack3 (A B C)
-  Pack4 (A B C D)
-  Pack5 (A B C D E)
-  Pack6 (A B C D E F)
-  Pack7 (A B C D E F G)
-  Pack8 (A B C D E F G H)
-  Pack9 (A B C D E F G H I)
-);
-
 #[allow(unused)]
 #[derive(Copy, Clone)]
 struct Uninit(u8);
@@ -101,28 +78,38 @@ unsafe impl Word for Uninit {
 fn test_num() {
   use crate::num::*;
   use core::array::from_fn;
+  use rand::Rng;
 
   #[rustfmt::skip]
   macro_rules! test {
-      ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal, $val:literal) => {$(
-        assert_eq!($sz, mem::size_of::<$ty>());
-        assert_eq!($max, $ty::MAX.into());
-        assert_eq!($min, $ty::from($min).into());
-        assert_eq!($max, $ty::from($max).into());
-        assert_eq!($val, $ty::from($val).into());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
-        assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
-      )+};
-    }
+    ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
+      let val = rand::thread_rng().gen_range($min..=$max);
+      assert_eq!($sz, mem::size_of::<$ty>());
+      assert_eq!($max, $ty::MAX.into());
+      assert_eq!($min, $ty::from($min).into());
+      assert_eq!($max, $ty::from($max).into());
+      assert_eq!(val, $ty::from(val).into());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
+    )+};
+  }
 
-  test!(2, [u16, u16le, u16be], 0u16, 0xffffu16, 0x0f1fu16);
-  test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32, 0x0f1f2fu32);
-  test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32, 0x0f1f2f3fu32);
-  test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64, 0x0f1f2f3f4fu64);
-  test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64, 0x0f1f2f3f4f5fu64);
-  test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64, 0x0f1f2f3f4f5f6fu64);
-  test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64, 0x0f1f2f3f4f5f6f7fu64);
+  test!(2, [u16, u16le, u16be], 0u16, 0xffffu16);
+  test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32);
+  test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32);
+  test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64);
+  test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64);
+  test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64);
+  test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64);
+  test!(9, [u72, u72le, u72be], 0u128, 0xffffffffffffffffffu128);
+  test!(10, [u80, u80le, u80be], 0u128, 0xffffffffffffffffffffu128);
+  test!(11, [u88, u88le, u88be], 0u128, 0xffffffffffffffffffffffu128);
+  test!(12, [u96, u96le, u96be], 0u128, 0xffffffffffffffffffffffffu128);
+  test!(13, [u104, u104le, u104be], 0u128, 0xffffffffffffffffffffffffffu128);
+  test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
+  test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
+  test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
 }
 
 #[test]
