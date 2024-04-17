@@ -1517,14 +1517,11 @@ mod internal {
       assert!(self.len < self.chunks.len());
       let (layout, width) = match layout {
         Uninit => (WordLayout::VOID, 1),
+        Init(layout) if self.len != 0 => (layout.layout, layout.width()),
         Init(layout) => {
-          if layout.offset != 0 {
-            assert!(self.len == 0 && self.offset == 0);
-            self.offset = layout.offset;
-          }
-          if self.len == 0 {
-            self.branches = Branches::new(layout.branches());
-          }
+          assert!(self.offset == 0 && self.width == 0);
+          self.offset = layout.offset;
+          self.branches = Branches::new(layout.branches());
           (layout.layout, layout.width())
         }
       };
