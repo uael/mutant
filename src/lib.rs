@@ -164,12 +164,272 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
 use core::mem::ManuallyDrop;
 use core::ops::Range;
 
 pub use mutant_derive::Data;
+
+// Internal public API -----------------------------------------------------------------------------
+// Even if part of the public API, the following items are not meant to be used directly by the
+// user. They are used internally by the derive macro and other parts of the library and are subject
+// to change without notice.
+// -------------------------------------------------------------------------------------------------
+
+/// Represents either an initialized or uninitialized byte layout.
+#[doc(hidden)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+pub enum ByteLayout<'a> {
+  Uninit,
+  Init(InitLayout<'a>),
+}
+
+/// Represents the layout of a type in memory.
+///
+/// The [`Layout`] enum is used to categorize the memory representation of a type, which is
+/// essential for safe and correct transmutation. It describes how data is laid out in memory,
+/// providing the necessary context for transmutation operations.
+#[doc(hidden)]
+#[rustfmt::skip]
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+pub enum Layout { Slice, Array, Struct, Word { layout: &'static WordLayout } }
+
+/// Represents the layout of a [`Word`] type in memory.
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Hash)]
+pub struct WordLayout {
+  width: u8,
+  flags: u8,
+  bytes: [u8],
+}
+
+/// Describes a byte layout at a specific offset within a larger data structure.
+#[doc(hidden)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+pub struct InitLayout<'a> {
+  offset: usize,
+  layout: &'a WordLayout,
+}
+
+/// This is used as a compile-time field list for struct layout.
+#[doc(hidden)]
+pub unsafe trait Repr<T: ?Sized + Data> {
+  type Type: ?Sized + Data;
+  type Rest: Repr<T>;
+  const OFFSET: usize;
+  const FIELDS: usize;
+}
+
+/// A pointer to an aligned allocation of size 2^20.
+/// Used to compute the offset of a field within a type using [`offset_of`].
+#[doc(hidden)]
+pub const BIG_ALLOCATION: *const () = {
+  #[repr(C, align(1048576))]
+  struct Big([u8; 1 << 20]);
+
+  const REF: &Big = &Big([0; 1 << 20]);
+  let ptr: *const Big = REF;
+  ptr.cast()
+};
+
+/// Helper to create a [`WordLayout`] reference.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! layout {
+  (any) => (
+    $crate::WordLayout::from_ref::<0, 0>(&(::core::mem::size_of::<Self>() as u8, 0b1, []))
+  );
+  (!$discard:expr) => ($crate::layout!(__impl DISCARD $discard));
+  ($($allow:tt)|+) => ($crate::layout!(__impl ALLOW $($allow),+));
+  (__impl $flags:ident $($values:expr),+) => ($crate::WordLayout::from_ref(&(
+    ::core::mem::size_of::<Self>() as u8,
+    $crate::bits::$flags,
+    [$($crate::raw::<Self>($values).to_ne_bytes()),+])
+  ));
+}
+
+/// Expands to the offset in bytes of a field from the beginning of the given type.
+///
+/// `offset_of!` produces code which is valid in a `const` context.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! offset_of {
+  ($Container:ty, $($fields:tt).+) => {{
+    let ptr = $crate::ptr::from_raw_parts::<$Container>($crate::BIG_ALLOCATION, 0);
+    // SAFETY:
+    // `(*ptr)` pointer deference syntax is required for `addr_of!` to work
+    // but the content of deference is never actually read.
+    #[allow(unused_unsafe)]
+    let field = unsafe { ::core::ptr::addr_of!((*ptr).$($fields).+) };
+    // SAFETY:
+    // - Both `ptr` and `field` are derived from the same allocated object.
+    // - `addr_of!` ensure result provenance, hence `field` is in bounds of that
+    //   allocated object.
+    // - The distance, in bytes, between `ptr` and `field` is required to be
+    //   a multiple of the size of `u8`, which is trivially true because
+    //   `u8`'s size is 1.
+    // - The distance, in bytes, cannot overflow `isize`. This is guaranteed
+    //   because no allocated object can have a size larger than can fit in
+    //   `isize`. [1]
+    // - The distance being in-bounds cannot rely on wrapping around the
+    //   address space. This is guaranteed because the same is guaranteed of
+    //   allocated objects. [1]
+    //
+    // [1] TODO(#429), TODO(https://github.com/rust-lang/rust/pull/116675):
+    //     Once these are guaranteed in the Reference, cite it.
+    #[allow(unused_unsafe)]
+    let offset = unsafe { field.cast::<u8>().offset_from(ptr.cast::<u8>()) };
+    // Guaranteed not to be lossy: `field` comes after `ptr`, so the offset
+    // from `ptr` to `field` is guaranteed to be positive.
+    assert!(offset >= 0);
+    offset as usize
+  }};
+}
+
+/// Assert that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
+#[inline]
+#[doc(hidden)]
+#[rustfmt::skip]
+pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
+  struct Assert<T: ?Sized>(*const T);
+  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
+  #[allow(clippy::let_unit_value)]
+  let _ = Assert::<T>::ASSERT_UNALIGNED;
+}
+
+/// Assert that a [`Data`] type is sized.
+#[inline]
+#[doc(hidden)]
+#[rustfmt::skip]
+pub const fn const_assert_sized<T: ?Sized + Data>(_: *const T) {
+  struct Assert<T: ?Sized>(*const T);
+  impl<T: ?Sized + Data> Assert<T> { const ASSERT_SIZED: () = assert!(is_sized::<T>()); }
+  #[allow(clippy::let_unit_value)]
+  let _ = Assert::<T>::ASSERT_SIZED;
+}
+
+/// Identity function used by the [`layout`] macro.
+#[inline]
+#[doc(hidden)]
+pub const fn raw<T: Word>(raw: T::Raw) -> T::Raw {
+  assert!(mem::size_of::<T>() == mem::size_of::<T::Raw>());
+  assert!(<T::Raw as Word>::WORD_LAYOUT.is_any());
+  raw
+}
+
+/// Constants used to declare bits pattern for [`WordLayout`] in the [`layout`] macro.
+#[doc(hidden)]
+pub mod bits {
+  pub const UNINIT: u8 = 0;
+  pub const ANY: u8 = 0b1;
+  pub const ALLOW: u8 = 0b10;
+  pub const DISCARD: u8 = 0b100;
+}
+
+#[doc(hidden)]
+pub mod ptr {
+  use core::mem;
+
+  /// Convert a reference to a raw pointer.
+  ///
+  /// This is equivalent to `r as *const T`, but is a bit safer since it will never silently change
+  /// type or mutability, in particular if the code is refactored.
+  #[inline]
+  #[must_use]
+  pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
+    r
+  }
+
+  /// Convert a mutable reference to a raw pointer.
+  ///
+  /// This is equivalent to `r as *mut T`, but is a bit safer since it will never silently change
+  /// type or mutability, in particular if the code is refactored.
+  #[inline]
+  #[must_use]
+  pub fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
+    r
+  }
+
+  /// Extract the metadata component of a pointer.
+  #[inline]
+  pub const fn metadata<T: ?Sized>(ptr: *const T) -> usize {
+    unsafe { PtrRepr::empty().set_const(ptr).components.metadata }
+  }
+
+  /// Forms a (possibly-wide) raw pointer from a data address and metadata.
+  #[inline]
+  pub const fn from_raw_parts<T: ?Sized>(address: *const (), metadata: usize) -> *const T {
+    unsafe { PtrRepr::with_components(address, metadata).const_ptr }
+  }
+
+  /// Performs the same functionality as [`from_raw_parts`], except that a
+  /// raw `*mut` pointer is returned, as opposed to a raw `*const` pointer.
+  #[inline]
+  pub const fn from_raw_parts_mut<T: ?Sized>(address: *mut (), metadata: usize) -> *mut T {
+    unsafe { PtrRepr::with_components(address, metadata).mut_ptr }
+  }
+
+  /// Extract the address component of a non-dangling pointer.
+  #[inline]
+  pub(crate) const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
+    // Compute `ptr` raw pointer `ptr`.
+    let ptr = ptr.cast::<()>();
+    // SAFETY: This no-op trick ensure that `ptr` has a provenance:
+    // This will result in a compile-error if `ptr` is a dangling pointer (has no provenance).
+    #[cfg(not(miri))] // Disable for Miri as it throw out-of-bounds pointer arithmetic error.
+    let _ = unsafe { core::ptr::addr_of!((*(ptr as *const (u8, ()))).1) };
+    // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
+    // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
+    //   has a provenance.
+    // - During const eval, it is unsound to perform this transmutation if the pointer has no
+    //   provenance; the above trick ensure just that.
+    #[allow(clippy::transmutes_expressible_as_ptr_casts)]
+    unsafe {
+      mem::transmute(ptr)
+    }
+  }
+
+  #[repr(C)]
+  union PtrRepr<T: ?Sized> {
+    const_ptr: *const T,
+    mut_ptr: *mut T,
+    components: PtrComponents,
+  }
+
+  #[repr(C)]
+  #[derive(Copy, Clone)]
+  struct PtrComponents {
+    address: *const (),
+    metadata: usize,
+  }
+
+  impl<T: ?Sized> PtrRepr<T> {
+    #[inline]
+    const fn empty() -> Self {
+      Self::empty_with(core::ptr::null())
+    }
+
+    #[inline]
+    const fn empty_with(address: *const ()) -> Self {
+      Self::with_components(address, 0)
+    }
+
+    #[inline]
+    const fn with_components(address: *const (), metadata: usize) -> Self {
+      Self { components: PtrComponents { address, metadata } }
+    }
+
+    #[inline]
+    const fn set_const(mut self, const_ptr: *const T) -> Self {
+      self.const_ptr = const_ptr;
+      self
+    }
+  }
+}
+
+// Public API --------------------------------------------------------------------------------------
 
 /// Represents errors that can arise within `mutant` operations.
 ///
@@ -194,37 +454,6 @@ pub enum Error {
   /// Source bits pattern is invalid for target.
   InvalidBitPattern,
 }
-
-/// Represents the layout of a [`Word`] type in memory.
-#[derive(Debug, PartialEq, Hash)]
-pub struct WordLayout {
-  width: u8,
-  flags: u8,
-  bytes: [u8],
-}
-
-/// Describes a byte layout at a specific offset within a larger data structure.
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub struct InitLayout<'a> {
-  pub offset: usize,
-  pub layout: &'a WordLayout,
-}
-
-/// Represents either an initialized or uninitialized byte layout.
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub enum ByteLayout<'a> {
-  Uninit,
-  Init(InitLayout<'a>),
-}
-
-/// Represents the layout of a type in memory.
-///
-/// The [`Layout`] enum is used to categorize the memory representation of a type, which is
-/// essential for safe and correct transmutation. It describes how data is laid out in memory,
-/// providing the necessary context for transmutation operations.
-#[rustfmt::skip]
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub enum Layout { Slice, Array, Struct, Word { layout: &'static WordLayout } }
 
 /// A wrapper to ensure the inner type does not require dropping.
 ///
@@ -285,43 +514,58 @@ pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
 #[repr(C, packed)]
 pub struct Unalign<T>(pub T);
 
-pub unsafe trait Repr<T: ?Sized + Data> {
-  type Type: ?Sized + Data;
-  type Rest: Repr<T>;
-  const OFFSET: usize;
-  const FIELDS: usize;
-}
-
 /// Marker trait for plain word types (e.g. integers or enum discriminants).
 ///
 /// # Safety
-/// - Word types are fully initialized types, i.e. contains no uninitialized bytes.
-/// - Implementor is responsible for `WORD_LAYOUT` to represents only valid values for `Self`.
-/// - The size of `Self::Raw` must be equals to the size of `Self`.
-/// - The `Self::Raw` type must accept any bit pattern.
+/// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
 pub unsafe trait Word: Copy + 'static {
+  /// Raw type representation of `Self` that can accept any bit pattern.
+  /// The size of `Self::Raw` is equals to the size of `Self`.
   type Raw: Word<Raw = Self::Raw>;
+
   /// Valid bits pattern for this type.
+  ///
+  /// # Safety
+  /// - Word types are fully initialized types, i.e. contains no uninitialized bytes.
+  /// - Implementor is responsible for `WORD_LAYOUT` to represents only valid values for `Self`.
+  #[doc(hidden)]
   const WORD_LAYOUT: &'static WordLayout;
 }
 
-pub unsafe trait Many<T: Copy + Data>: Data<Item = T> {}
+/// Marker trait for types of many `T`, like arrays or slices.
+///
+/// # Safety
+/// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
+pub unsafe trait Many: Data {}
 
-unsafe impl<T: Copy + Data> Many<T> for [T] {}
-unsafe impl<T: Copy + Data, const N: usize> Many<T> for [T; N] {}
-
+/// Marker trait for "data" types. "data" types are types that can be safely transmuted between each
+/// other. They contain no references, pointers or drops types, but they can contain uninitialized
+/// bytes.
+///
+/// # Safety
+/// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
 pub unsafe trait Data: 'static {
   /// Type of slice or array item.
   type Item: Copy + Data;
+
   /// Type of the trailing slice item.
+  /// This is part of the internal implementation and is subject to change without notice.
+  #[doc(hidden)]
   type Tail: Copy + Data;
+
   /// Fields of `Self`. Non-empty only for `struct` types.
+  /// This is part of the internal implementation and is subject to change without notice.
+  #[doc(hidden)]
   type Repr: Repr<Self>;
+
   /// Layout of `Self`.
+  /// This is part of the internal implementation and is subject to change without notice.
+  #[doc(hidden)]
   const LAYOUT: Layout;
 
   /// Size in bytes of the sized part of `Self`.
   /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`]`::<Self>()`.
+  /// This is part of the internal implementation and is subject to change without notice.
   #[doc(hidden)]
   const HEADER: usize;
 
@@ -378,8 +622,7 @@ pub unsafe trait Data: 'static {
   }
 }
 
-// TODO --------------------------------------------------------------------------------------------
-
+/// Pack up to 9 types into a single packed type (i.e. without padding bytes).
 #[macro_export]
 #[allow(non_snake_case)]
 macro_rules! Pack {
@@ -395,104 +638,55 @@ macro_rules! Pack {
   (@ $a:ty, $b:ty, $c:ty, $d:ty, $e:ty, $f:ty, $g:ty, $h:ty, $i:ty, ($($t:ty),+)) => { $crate::Pack9<$($t),+> };
 }
 
+/// Pack up to 9 values into a single packed value (i.e. without padding bytes).
 #[macro_export]
 macro_rules! pack {
-  ($($v:expr),+ $(,)?) => { $crate::pack!(@ $($v),+, ($($crate::Dropless::new($v)),+)) };
-  (@ $a:expr, ($($v:expr),+)) => { $crate::Pack1($($v),+) };
-  (@ $a:expr, $b:expr, ($($v:expr),+)) => { $crate::Pack2($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, ($($v:expr),+)) => { $crate::Pack3($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, ($($v:expr),+)) => { $crate::Pack4($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, ($($v:expr),+)) => { $crate::Pack5($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, ($($v:expr),+)) => { $crate::Pack6($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, ($($v:expr),+)) => { $crate::Pack7($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, ($($v:expr),+)) => { $crate::Pack8($($v),+) };
-  (@ $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr, ($($v:expr),+)) => { $crate::Pack9($($v),+) };
-}
-
-macro_rules! impl_pack {
-  ($($name:ident ($($t:ident)+))+) => {
-    $(
-      #[repr(C, packed)]
-      #[derive(Data)]
-      #[data(crate)]
-      pub struct $name<$($t),+: ?Sized>($(pub Dropless<$t>),+);
-    )+
+  ($a:expr) => {
+    $crate::Pack1(Dropless::new($a))
+  };
+  ($a:expr, $b:expr) => {
+    $crate::Pack2($a, Dropless::new($b))
+  };
+  ($a:expr, $b:expr, $c:expr) => {
+    $crate::Pack3($a, $b, Dropless::new($c))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr) => {
+    $crate::Pack4($a, $b, $c, Dropless::new($d))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr) => {
+    $crate::Pack5($a, $b, $c, $d, Dropless::new($e))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr) => {
+    $crate::Pack6($a, $b, $c, $d, $e, Dropless::new($f))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr) => {
+    $crate::Pack7($a, $b, $c, $d, $e, $f, Dropless::new($g))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr) => {
+    $crate::Pack8($a, $b, $c, $d, $e, $f, $g, Dropless::new($h))
+  };
+  ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr) => {
+    $crate::Pack9($a, $b, $c, $d, $e, $f, $g, $h, Dropless::new($i))
   };
 }
 
-impl_pack!(
-  Pack1 (A)
-  Pack2 (A B)
-  Pack3 (A B C)
-  Pack4 (A B C D)
-  Pack5 (A B C D E)
-  Pack6 (A B C D E F)
-  Pack7 (A B C D E F G)
-  Pack8 (A B C D E F G H)
-  Pack9 (A B C D E F G H I)
-);
-
-// Macros ------------------------------------------------------------------------------------------
-
+/// Safely read unaligned data.
 #[macro_export]
-macro_rules! bail {
-  ($e:expr $(,)?) => {
-    match $e {
-      Ok(ok) => ok,
-      Err(err) => return Err(err),
-    }
-  };
-}
-
-#[macro_export]
-macro_rules! layout {
-  (any) => (
-    $crate::WordLayout::from_ref::<0, 0>(&(::core::mem::size_of::<Self>() as u8, 0b1, []))
-  );
-  (!$discard:expr) => ($crate::layout!(__impl DISCARD $discard));
-  ($($allow:tt)|+) => ($crate::layout!(__impl ALLOW $($allow),+));
-  (__impl $flags:ident $($values:expr),+) => ($crate::WordLayout::from_ref(&(
-    ::core::mem::size_of::<Self>() as u8,
-    $crate::bits::$flags,
-    [$($crate::raw::<Self>($values).to_ne_bytes()),+])
-  ));
-}
-
-/// Expands to the offset in bytes of a field from the beginning of the given type.
-///
-/// `offset_of!` produces code which is valid in a `const` context.
-#[macro_export]
-macro_rules! offset_of {
-  ($Container:ty, $($fields:tt).+) => {{
-    let ptr = $crate::ptr::from_raw_parts::<$Container>($crate::BIG_ALLOCATION, 0);
+macro_rules! read_unaligned {
+  ($base:expr, $($fields:tt).+) => {{
+    let base: &_ = $base;
+    let addr = core::ptr::addr_of!(base.$($fields).+);
+    $crate::const_assert_sized(addr);
     // SAFETY:
-    // `(*ptr)` pointer deference syntax is required for `addr_of!` to work
-    // but the content of deference is never actually read.
-    #[allow(unused_unsafe)]
-    let field = unsafe { ::core::ptr::addr_of!((*ptr).$($fields).+) };
-    // SAFETY:
-    // - Both `ptr` and `field` are derived from the same allocated object.
-    // - `addr_of!` ensure result provenance, hence `field` is in bounds of that
-    //   allocated object.
-    // - The distance, in bytes, between `ptr` and `field` is required to be
-    //   a multiple of the size of `u8`, which is trivially true because
-    //   `u8`'s size is 1.
-    // - The distance, in bytes, cannot overflow `isize`. This is guaranteed
-    //   because no allocated object can have a size larger than can fit in
-    //   `isize`. [1]
-    // - The distance being in-bounds cannot rely on wrapping around the
-    //   address space. This is guaranteed because the same is guaranteed of
-    //   allocated objects. [1]
-    //
-    // [1] TODO(#429), TODO(https://github.com/rust-lang/rust/pull/116675):
-    //     Once these are guaranteed in the Reference, cite it.
-    #[allow(unused_unsafe)]
-    let offset = unsafe { field.cast::<u8>().offset_from(ptr.cast::<u8>()) };
-    // Guaranteed not to be lossy: `field` comes after `ptr`, so the offset
-    // from `ptr` to `field` is guaranteed to be positive.
-    assert!(offset >= 0);
-    offset as usize
+    // - `_ref` has been checked to be a valid reference hence not a dangling pointer.
+    // - The call to `const_assert_sized` ensure field is sized.
+    unsafe { ::core::ptr::read_unaligned(addr) }
   }};
+  ($base:tt.$field:tt.$($fields:tt).+) => {{
+    let base = $crate::read_unaligned!($base.$field);
+    $crate::read_unaligned!(base.$($fields).+)
+  }};
+  ($base:tt.$field:tt) => ($crate::read_unaligned!($base, $field));
 }
 
 /// Safely reference unaligned data.
@@ -517,54 +711,62 @@ macro_rules! unaligned_ref {
 /// Safely mutably reference unaligned data.
 #[macro_export]
 macro_rules! unaligned_mut {
-  ($base:tt.$field:tt.$($fields:tt).+) => {{
-    let base = $crate::unaligned_mut!($base.$field);
-    $crate::unaligned_mut!(base.$($fields).+)
-  }};
-  ($base:tt.$field:tt) => {{
-    let _ref: &mut _ = $base;
-    let addr = core::ptr::addr_of_mut!($base.$field);
+  ($base:expr, $($fields:tt).+) => {{
+    let base: &mut _ = $base;
+    let addr = core::ptr::addr_of_mut!(base.$($fields).+);
     $crate::const_assert_unaligned(addr);
     // SAFETY:
     // - `_ref` has been checked to be a valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &mut *addr }
   }};
+  ($base:tt.$field:tt.$($fields:tt).+) => {{
+    let base = $crate::unaligned_mut!($base.$field);
+    $crate::unaligned_mut!(base.$($fields).+)
+  }};
+  ($base:tt.$field:tt) => ($crate::unaligned_mut!($base, $field));
 }
 
-#[macro_export]
-macro_rules! unwrap {
-  ($e:expr $(,)?) => {
-    match $e {
-      Ok(ok) => ok,
-      Err(err) => panic!("{}", err),
+macro_rules! decl_pack {
+  ($($name:ident ($($t:ident)*) ($($f:tt)*) ($tt:ident $ft:tt))+) => {$(
+    /// Same as tuple but `#[repr(C, packed)]`.
+    #[repr(C, packed)]
+    #[derive(Data, Copy, Clone)]
+    #[data(crate)]
+    pub struct $name<$($t,)* $tt: ?Sized>($(pub $t,)* pub Dropless<$tt>);
+
+    impl<$($t: Data + Debug,)* $tt: Data + Debug + ?Sized> Debug for $name<$($t,)* $tt> {
+      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("")
+          $(.field(&&read_unaligned!(self.$f)))*
+          .field(&unaligned_ref!(self.$ft))
+          .finish()
+      }
     }
-  };
+
+    impl<$($t: Data + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt> {}
+
+    impl<$($t: Data + PartialEq,)* $tt: Data + PartialEq + ?Sized> PartialEq for $name<$($t,)* $tt>
+    {
+      fn eq(&self, other: &Self) -> bool {
+        $(read_unaligned!(self.$f).eq(&read_unaligned!(other.$f)) &&)*
+          unaligned_ref!(self.$ft).eq(unaligned_ref!(other.$ft))
+      }
+    }
+  )+};
 }
 
-/// A pointer to an aligned allocation of size 2^20.
-#[doc(hidden)]
-pub const BIG_ALLOCATION: *const () = {
-  #[repr(C, align(1048576))]
-  struct Big([u8; 1 << 20]);
-
-  const REF: &Big = &Big([0; 1 << 20]);
-  let ptr: *const Big = REF;
-  ptr.cast()
-};
-
-/// Assert that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
-#[doc(hidden)]
-#[rustfmt::skip]
-#[inline]
-pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
-  struct Assert<T: ?Sized>(*const T);
-  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
-  #[allow(clippy::let_unit_value)]
-  let _ = Assert::<T>::ASSERT_UNALIGNED;
+decl_pack! {
+  Pack1 () () (A 0)
+  Pack2 (A) (0) (B 1)
+  Pack3 (A B) (0 1) (C 2)
+  Pack4 (A B C) (0 1 2) (D 3)
+  Pack5 (A B C D) (0 1 2 3) (E 4)
+  Pack6 (A B C D E) (0 1 2 3 4) (F 5)
+  Pack7 (A B C D E F) (0 1 2 3 4 5) (G 6)
+  Pack8 (A B C D E F G) (0 1 2 3 4 5 6) (H 7)
+  Pack9 (A B C D E F G H) (0 1 2 3 4 5 6 7) (I 8)
 }
-
-// Functions ---------------------------------------------------------------------------------------
 
 /// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
 /// With the difference that it also accept unsized types with relaxed `?`[`Sized`] bound.
@@ -597,7 +799,7 @@ pub const fn align_of<T: ?Sized>() -> usize {
 }
 
 #[inline]
-pub fn as_mut_slice<T: ?Sized + Data>(val: &mut T) -> &mut [T::Item] {
+pub fn as_mut_slice<T: ?Sized + Many>(val: &mut T) -> &mut [T::Item] {
   let ptr: *mut T = val;
   let ptr = ptr.cast::<T::Item>();
   let len = match T::LAYOUT {
@@ -610,7 +812,7 @@ pub fn as_mut_slice<T: ?Sized + Data>(val: &mut T) -> &mut [T::Item] {
 }
 
 #[inline]
-pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
+pub const fn as_slice<T: ?Sized + Many>(val: &T) -> &[T::Item] {
   let ptr: *const T = val;
   let ptr = ptr.cast::<T::Item>();
   let len = match T::LAYOUT {
@@ -622,85 +824,30 @@ pub const fn as_slice<T: ?Sized + Data>(val: &T) -> &[T::Item] {
   unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
-/// Returns the [`ByteLayout`] of a type at a given `offset`.
+/// Returns whatever a value of type `T` is aligned to `align`.
 #[inline]
-pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> Option<ByteLayout<'static>> {
-  #[inline]
-  const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
-    offset >= R::OFFSET
-      && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
-  }
-
-  #[inline]
-  const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(
-    offset: usize,
-  ) -> Option<ByteLayout<'static>> {
-    match R::FIELDS {
-      // Reached the end of the struct, returns an uninitialized layout.
-      0 => Some(ByteLayout::Uninit),
-      // `offset` does offset in field, defer to its inner layout.
-      _ if repr_contains::<R, T>(offset) => byte_layout_at::<R::Type>(offset - R::OFFSET),
-      // `offset` does not offset in field, continue with next field.
-      _ => repr_byte_layout_at::<R::Rest, T>(offset),
-    }
-  }
-
-  // Check for `offset` to be in bounds.
-  if is_sized::<T>() && offset >= min_size_of::<T>() {
-    return None;
-  }
-  // Check for `ZST` slices.
-  if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
-    return None;
-  }
-  match T::LAYOUT {
-    Layout::Slice | Layout::Array => byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>()),
-    Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
-    Layout::Word { layout } if layout.is_uninit() => Some(ByteLayout::Uninit),
-    Layout::Word { layout } => Some(ByteLayout::Init(InitLayout { offset, layout })),
-  }
-}
-
-#[inline]
-pub const fn convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(metadata: usize) -> usize {
-  #[allow(clippy::let_unit_value)]
-  let _ = (
-    internal::Transmutation::<T, U>::CHECK,
-    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
-  );
-
-  match size_of_tail::<U>() {
-    0 => 0,
-    n => (size_of_with::<T>(metadata) - min_size_of::<U>()) / n,
-  }
-}
-
-#[inline]
-pub const fn try_convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(
-  metadata: usize,
-) -> Result<usize, isize> {
-  #[allow(clippy::let_unit_value)]
-  let _ = internal::Transmutation::<T, U>::CHECK;
-
-  let check = match unwrap!(internal::Transmutation::<T, U>::STATIC_ANALYZE).maybe_size_mismatch {
-    None => Ok(()),
-    Some(check) => check.validate(metadata),
-  };
-  match check {
-    Err(n) => Err(n * size_of_tail::<T>() as isize),
-    _ if size_of_tail::<U>() == 0 => Ok(0),
-    _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail::<U>()),
-  }
+pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
+  is_aligned_to_raw(val, align)
 }
 
 /// Returns whatever a value of type `T` is aligned to `align`.
 #[inline]
-pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
+pub const fn is_aligned_to_raw<T: ?Sized + Data>(val: *const T, align: usize) -> bool {
   assert!(align.is_power_of_two(), "alignment must be power of 2");
   // `value` is aligned for `U` if `T` alignment is already big enough.
   align <= align_of::<T>()
     // or if the value address is a multiple of `U` alignment.
     || ptr::addr_of(val) & (align - 1) == 0
+}
+
+#[inline]
+pub const fn is_sized_val<T: ?Sized + Data>(_: &T) -> bool {
+  !is_sized::<T>()
+}
+
+#[inline]
+pub const fn is_sized_val_raw<T: ?Sized + Data>(_: *const T) -> bool {
+  !is_sized::<T>()
 }
 
 #[inline]
@@ -727,57 +874,6 @@ pub const fn is_unsized<T: ?Sized + Data>() -> bool {
 }
 
 #[inline]
-const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
-  #[inline]
-  const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
-    assert!(R::FIELDS != 0);
-    ptr::from_raw_parts(
-      // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
-      unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
-      match is_sized::<R::Type>() {
-        true => 0,
-        _ => ptr::metadata(ptr),
-      },
-    )
-  }
-
-  #[inline]
-  const fn repr_is_bits_valid<R: Repr<Dst>, Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
-    match R::FIELDS {
-      0 => true,
-      _ => is_bits_valid(repr_field::<R, _>(ptr)) && repr_is_bits_valid::<R::Rest, _>(ptr),
-    }
-  }
-
-  match Dst::LAYOUT {
-    Layout::Struct => repr_is_bits_valid::<Dst::Repr, Dst>(ptr),
-    Layout::Slice | Layout::Array => {
-      // Compute the length of `ptr`.
-      let len = match Dst::LAYOUT {
-        Layout::Array => min_size_of::<Dst>() / mem::size_of::<Dst::Item>(),
-        _ => ptr::metadata(ptr),
-      };
-      // Call `is_bits_valid` on each item of `ptr`.
-      let mut i = 0;
-      while i < len {
-        // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
-        if !is_bits_valid(unsafe { ptr.cast::<Dst::Item>().add(i) }) {
-          return false;
-        }
-        i += 1;
-      }
-      true
-    }
-    Layout::Word { layout } => {
-      // SAFETY: `ptr` is valid for read since
-      // - `ptr` came from a valid reference,
-      // - Read type `Dst::Word::Raw` is any bit pattern.
-      unsafe { layout.matches_ptr(ptr.cast()) }
-    }
-  }
-}
-
-#[inline]
 pub const fn matches<T: Word>(raw: &T::Raw) -> bool {
   T::WORD_LAYOUT.matches(raw)
 }
@@ -785,14 +881,6 @@ pub const fn matches<T: Word>(raw: &T::Raw) -> bool {
 #[inline]
 pub const fn min_size_of<T: ?Sized + Data>() -> usize {
   T::HEADER
-}
-
-#[doc(hidden)]
-#[inline]
-pub const fn raw<T: Word>(raw: T::Raw) -> T::Raw {
-  assert!(mem::size_of::<T>() == mem::size_of::<T::Raw>());
-  assert!(<T::Raw as Word>::WORD_LAYOUT.is_any());
-  raw
 }
 
 #[inline]
@@ -811,7 +899,7 @@ pub const fn size_of_val<T: ?Sized + Data>(val: &T) -> usize {
 }
 
 #[inline]
-const fn size_of_with<T: ?Sized + Data>(metadata: usize) -> usize {
+pub const fn size_of_with<T: ?Sized + Data>(metadata: usize) -> usize {
   min_size_of::<T>() + metadata * size_of_tail::<T>()
 }
 
@@ -938,7 +1026,7 @@ pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> &mut U 
     internal::Transmutation::<T, U>::CHECK_SOUND_TARGET_MUTATION,
   );
 
-  let metadata = convert_metadata::<T, U>(ptr::metadata(val));
+  let metadata = internal::convert_metadata::<T, U>(ptr::metadata(val));
   let ptr = ptr::from_raw_parts_mut::<U>(ptr::from_mut(val).cast(), metadata);
   unsafe { &mut *ptr }
 }
@@ -971,7 +1059,7 @@ pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
   );
 
-  let metadata = convert_metadata::<T, U>(ptr::metadata(val));
+  let metadata = internal::convert_metadata::<T, U>(ptr::metadata(val));
   let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
   unsafe { &*ptr }
 }
@@ -991,7 +1079,7 @@ pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Opti
   );
 
   let ptr = ptr::from_ref(val).cast::<U>();
-  match is_bits_valid(ptr) {
+  match internal::is_bits_valid(ptr) {
     true => Some(unsafe { *ptr }),
     _ => None,
   }
@@ -1009,12 +1097,12 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Res
   if !is_aligned_to::<T>(val, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = match try_convert_metadata::<T, U>(ptr::metadata(val)) {
+  let metadata = match internal::try_convert_metadata::<T, U>(ptr::metadata(val)) {
     Ok(metadata) => metadata,
     Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
   };
   let ptr = ptr::from_raw_parts_mut::<U>(ptr::from_mut(val).cast(), metadata);
-  match is_bits_valid(ptr) {
+  match internal::is_bits_valid(ptr) {
     true => Ok(unsafe { &mut *ptr }),
     _ => Err(Error::InvalidBitPattern),
   }
@@ -1023,20 +1111,18 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Res
 #[inline]
 pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> Result<&U, Error> {
   #[allow(clippy::let_unit_value)]
-  let _ = (
-    internal::Transmutation::<T, U>::CHECK,
-    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
-  );
+  let _ =
+    (internal::Transmutation::<T, U>::CHECK, internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE);
 
   if !is_aligned_to::<T>(val, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
   }
-  let metadata = match try_convert_metadata::<T, U>(ptr::metadata(val)) {
+  let metadata = match internal::try_convert_metadata::<T, U>(ptr::metadata(val)) {
     Ok(metadata) => metadata,
     Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
   };
   let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
-  match is_bits_valid(ptr) {
+  match internal::is_bits_valid(ptr) {
     true => Ok(unsafe { &*ptr }),
     _ => Err(Error::InvalidBitPattern),
   }
@@ -1062,120 +1148,6 @@ pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, 
   );
   Some(unsafe { (&*val_ptr, &*rest_ptr) })
 }
-
-// bits --------------------------------------------------------------------------------------------
-
-#[doc(hidden)]
-pub mod bits {
-  pub const UNINIT: u8 = 0;
-  pub const ANY: u8 = 0b1;
-  pub const ALLOW: u8 = 0b10;
-  pub const DISCARD: u8 = 0b100;
-}
-
-// ptr ---------------------------------------------------------------------------------------------
-
-pub mod ptr {
-  use core::mem;
-
-  /// Convert a reference to a raw pointer.
-  ///
-  /// This is equivalent to `r as *const T`, but is a bit safer since it will never silently change
-  /// type or mutability, in particular if the code is refactored.
-  #[inline]
-  #[must_use]
-  pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
-    r
-  }
-
-  /// Convert a mutable reference to a raw pointer.
-  ///
-  /// This is equivalent to `r as *mut T`, but is a bit safer since it will never silently change
-  /// type or mutability, in particular if the code is refactored.
-  #[inline]
-  #[must_use]
-  pub fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
-    r
-  }
-
-  /// Extract the metadata component of a pointer.
-  #[inline]
-  pub const fn metadata<T: ?Sized>(ptr: *const T) -> usize {
-    unsafe { PtrRepr::empty().set_const(ptr).components.metadata }
-  }
-
-  /// Forms a (possibly-wide) raw pointer from a data address and metadata.
-  #[inline]
-  pub const fn from_raw_parts<T: ?Sized>(address: *const (), metadata: usize) -> *const T {
-    unsafe { PtrRepr::with_components(address, metadata).const_ptr }
-  }
-
-  /// Performs the same functionality as [`from_raw_parts`], except that a
-  /// raw `*mut` pointer is returned, as opposed to a raw `*const` pointer.
-  #[inline]
-  pub const fn from_raw_parts_mut<T: ?Sized>(address: *mut (), metadata: usize) -> *mut T {
-    unsafe { PtrRepr::with_components(address, metadata).mut_ptr }
-  }
-
-  /// Extract the address component of a non-dangling pointer.
-  #[inline]
-  pub(super) const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
-    // Compute `ptr` raw pointer `ptr`.
-    let ptr = ptr.cast::<()>();
-    // SAFETY: This no-op trick ensure that `ptr` has a provenance:
-    // This will result in a compile-error if `ptr` is a dangling pointer (has no provenance).
-    #[cfg(not(miri))] // Disable for Miri as it throw out-of-bounds pointer arithmetic error.
-    let _ = unsafe { core::ptr::addr_of!((*(ptr as *const (u8, ()))).1) };
-    // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
-    // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
-    //   has a provenance.
-    // - During const eval, it is unsound to perform this transmutation if the pointer has no
-    //   provenance; the above trick ensure just that.
-    #[allow(clippy::transmutes_expressible_as_ptr_casts)]
-    unsafe {
-      mem::transmute(ptr)
-    }
-  }
-
-  #[repr(C)]
-  union PtrRepr<T: ?Sized> {
-    const_ptr: *const T,
-    mut_ptr: *mut T,
-    components: PtrComponents,
-  }
-
-  #[repr(C)]
-  #[derive(Copy, Clone)]
-  struct PtrComponents {
-    address: *const (),
-    metadata: usize,
-  }
-
-  impl<T: ?Sized> PtrRepr<T> {
-    #[inline]
-    const fn empty() -> Self {
-      Self::empty_with(core::ptr::null())
-    }
-
-    #[inline]
-    const fn empty_with(address: *const ()) -> Self {
-      Self::with_components(address, 0)
-    }
-
-    #[inline]
-    const fn with_components(address: *const (), metadata: usize) -> Self {
-      Self { components: PtrComponents { address, metadata } }
-    }
-
-    #[inline]
-    const fn set_const(mut self, const_ptr: *const T) -> Self {
-      self.const_ptr = const_ptr;
-      self
-    }
-  }
-}
-
-// num ---------------------------------------------------------------------------------------------
 
 pub mod num {
   use super::*;
@@ -1206,6 +1178,11 @@ pub mod num {
         #[inline] pub const fn from_be_bytes(b: [u8; $N]) -> Self { swap!(be => $ordering, Self(b)) }
 
         #[inline]
+        pub const fn new(raw: $Raw) -> Self {
+          Self::from_raw(raw)
+        }
+
+        #[inline]
         pub const fn from_raw(raw: $Raw) -> Self {
           let (mut off, mut bytes) = (0, [0; $N]);
           while off < $N {
@@ -1213,6 +1190,11 @@ pub mod num {
             off += 1;
           }
           Self(bytes)
+        }
+
+        #[inline]
+        pub const fn into_inner(self) -> $Raw {
+          self.into_raw()
         }
 
         #[inline]
@@ -1441,7 +1423,7 @@ pub mod num {
     (u128le u128 16 le) (u128be u128 16 be)
   }
 
-  impl_const_num!(
+  impl_const_num! {
     (usizec usize) (isizec isize)
     (u8c u8) (u16c u16) (u32c u32) (u64c u64) (u128c u128)
     (i8c i8) (i16c i16) (i32c i32) (i64c i64) (i128c i128)
@@ -1460,10 +1442,8 @@ pub mod num {
     (u112lec u112le u128) (u112bec u112be u128) (u112c u112 u128)
     (u120lec u120le u128) (u120bec u120be u128) (u120c u120 u128)
     (u128lec u128le u128) (u128bec u128be u128)
-  );
+  }
 }
-
-// internal ----------------------------------------------------------------------------------------
 
 mod internal {
   use core::fmt;
@@ -1477,170 +1457,281 @@ mod internal {
   use ByteLayout::*;
   use MetadataChecks::*;
 
-  // impl WordLayout -------------------------------------------------------------------------------
-
-  impl WordLayout {
-    pub(crate) const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
-
-    #[inline]
-    pub const fn from_bytes(bytes: &[u8]) -> &Self {
-      assert!(bytes.len() >= 2);
-      assert!(bytes[0] == 0 || (bytes[0].is_power_of_two() && bytes[0] <= 16));
-      let values_bytes = bytes.len() - 2;
-      let values = match bytes[0] {
-        0 => values_bytes,
-        _ => {
-          assert!(values_bytes % bytes[0] as usize == 0);
-          values_bytes / bytes[0] as usize
-        }
-      };
-      match bytes[1] {
-        bits::UNINIT => assert!(values == 0),
-        bits::ANY => assert!(values == 0),
-        bits::ALLOW => assert!(values != 0 && values < 64),
-        bits::DISCARD => assert!(values == 1),
-        _ => panic!("invalid bits pattern type"),
+  /// Unwrap a `Result` and panic with the error if it is `Err`.
+  macro_rules! unwrap {
+    ($e:expr $(,)?) => {
+      match $e {
+        Ok(ok) => ok,
+        Err(err) => panic!("{}", err),
       }
-      // SAFETY: above checks ensure a valid layout.
-      unsafe { &*ptr::from_raw_parts(bytes.as_ptr().cast(), values_bytes) }
+    };
+  }
+
+  #[inline]
+  pub(crate) const fn byte_layout_at<T: ?Sized + Data>(
+    offset: usize,
+  ) -> Option<ByteLayout<'static>> {
+    #[inline]
+    const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
+      offset >= R::OFFSET
+        && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
     }
 
     #[inline]
-    pub const fn from_ref<const W: usize, const N: usize>(x: &(u8, u8, [[u8; W]; N])) -> &Self {
-      Self::from_bytes(unsafe { &*ptr::from_raw_parts(ptr::from_ref(x).cast(), 2 + W * N) })
-    }
-
-    #[inline]
-    pub const fn is_uninit(&self) -> bool {
-      self.flags == bits::UNINIT
-    }
-
-    #[inline]
-    pub const fn is_any(&self) -> bool {
-      self.flags == bits::ANY
-    }
-
-    #[inline]
-    pub const fn width(&self) -> usize {
-      self.width as usize
-    }
-
-    #[inline]
-    const fn branches(&self) -> usize {
-      if self.width() == 0 {
-        return 0;
-      }
-      match self.flags {
-        bits::ALLOW => self.bytes.len() / self.width as usize,
-        _ => 1,
+    const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(
+      offset: usize,
+    ) -> Option<ByteLayout<'static>> {
+      match R::FIELDS {
+        // Reached the end of the struct, returns an uninitialized layout.
+        0 => Some(Uninit),
+        // `offset` does offset in field, defer to its inner layout.
+        _ if repr_contains::<R, T>(offset) => byte_layout_at::<R::Type>(offset - R::OFFSET),
+        // `offset` does not offset in field, continue with next field.
+        _ => repr_byte_layout_at::<R::Rest, T>(offset),
       }
     }
 
-    #[inline]
-    pub const fn matches<T: Word>(&self, word: &T) -> bool {
-      if self.width as usize != mem::size_of::<T>() {
-        return false;
+    // Check for `offset` to be in bounds.
+    if is_sized::<T>() && offset >= min_size_of::<T>() {
+      return None;
+    }
+    // Check for `ZST` slices.
+    if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
+      return None;
+    }
+    match T::LAYOUT {
+      Layout::Slice | Layout::Array => {
+        byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>())
       }
-      // SAFETY: `word` is a valid reference and the above check
-      // make sure `word` is valid up to `self.width`.
-      unsafe { self.matches_ptr(ptr::from_ref(word).cast()) }
+      Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
+      Layout::Word { layout } if layout.is_uninit() => Some(Uninit),
+      Layout::Word { layout } => Some(Init(InitLayout { offset, layout })),
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(
+    metadata: usize,
+  ) -> usize {
+    #[allow(clippy::let_unit_value)]
+    let _ = (
+      Transmutation::<T, U>::CHECK,
+      Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    );
+
+    match size_of_tail::<U>() {
+      0 => 0,
+      n => (size_of_with::<T>(metadata) - min_size_of::<U>()) / n,
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn try_convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(
+    metadata: usize,
+  ) -> Result<usize, isize> {
+    #[allow(clippy::let_unit_value)]
+    let _ = Transmutation::<T, U>::CHECK;
+
+    let check = match Transmutation::<T, U>::STATIC_ANALYZE {
+      Err(_) => unreachable!(),
+      Ok(static_analysis) => match static_analysis.maybe_size_mismatch {
+        Some(check) => check.validate(metadata),
+        _ => Ok(()),
+      },
+    };
+    match check {
+      Err(n) => Err(n * size_of_tail::<T>() as isize),
+      _ if size_of_tail::<U>() == 0 => Ok(0),
+      _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail::<U>()),
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
+    #[inline]
+    const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
+      assert!(R::FIELDS != 0);
+      ptr::from_raw_parts(
+        // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
+        unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
+        match is_sized::<R::Type>() {
+          true => 0,
+          _ => ptr::metadata(ptr),
+        },
+      )
     }
 
-    /// # Safety
-    /// `ptr` is valid for read up to `self.width` bytes.
     #[inline]
-    pub const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
-      macro_rules! inner {
-        ($ptr:ident, $ty:ident) => {{
-          let val = ::core::ptr::read_unaligned::<$ty>($ptr.cast());
-          let mut query = self.bytes.as_ptr().cast::<$ty>();
-          match self.flags & (bits::ALLOW | bits::DISCARD) {
-            bits::DISCARD => val != ::core::ptr::read_unaligned(query),
-            bits::ALLOW => {
-              let end_ptr = self.bytes.as_ptr().add(self.bytes.len());
-              while ptr::addr_of(query) != ptr::addr_of(end_ptr) {
-                let allow = ::core::ptr::read_unaligned(query);
-                if val == allow {
-                  return true;
-                }
-                query = query.add(1);
-              }
-              false
-            }
-            _ => true,
-          }
-        }};
-      }
-      match self.width {
+    const fn repr_is_bits_valid<R: Repr<Dst>, Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
+      match R::FIELDS {
         0 => true,
-        1 => inner!(ptr, u8),
-        2 => inner!(ptr, u16),
-        4 => inner!(ptr, u32),
-        8 => inner!(ptr, u64),
-        16 => inner!(ptr, u128),
-        _ => unsafe { hint::unreachable_unchecked() },
+        _ => is_bits_valid(repr_field::<R, _>(ptr)) && repr_is_bits_valid::<R::Rest, _>(ptr),
+      }
+    }
+
+    match Dst::LAYOUT {
+      Layout::Struct => repr_is_bits_valid::<Dst::Repr, Dst>(ptr),
+      Layout::Slice | Layout::Array => {
+        // Compute the length of `ptr`.
+        let len = match Dst::LAYOUT {
+          Layout::Array => min_size_of::<Dst>() / mem::size_of::<Dst::Item>(),
+          _ => ptr::metadata(ptr),
+        };
+        // Call `is_bits_valid` on each item of `ptr`.
+        let mut i = 0;
+        while i < len {
+          // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
+          if !is_bits_valid(unsafe { ptr.cast::<Dst::Item>().add(i) }) {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      Layout::Word { layout } => {
+        // SAFETY: `ptr` is valid for read since
+        // - `ptr` came from a valid reference,
+        // - Read type `Dst::Word::Raw` is any bit pattern.
+        unsafe { layout.matches_ptr(ptr.cast()) }
       }
     }
   }
 
-  // impl InitLayout -------------------------------------------------------------------------------
-
-  impl<'a> InitLayout<'a> {
-    #[inline]
-    pub const fn width(&self) -> usize {
-      self.layout.width() - self.offset
-    }
-
-    #[inline]
-    const fn branches(&self) -> usize {
-      self.layout.branches()
-    }
-
-    #[inline]
-    const fn branch(&self, branch: usize) -> BytePattern {
-      use BytePattern::*;
-      assert!(branch < self.branches());
-      match self.layout.flags {
-        bits::DISCARD => Discard(self.layout.bytes[self.offset]),
-        bits::ALLOW => Allow(self.layout.bytes[(branch * self.layout.width()) + self.offset]),
-        _ => Any,
+  /// Performs static analysis to check if the transmutation from `Src` to `Dst` is safe.
+  ///
+  /// This function computes various checks to ensure that the transmutation adheres to the
+  /// rules around alignment, size, and valid bit patterns. It takes into account the sizes
+  /// and layouts of the source (`Src`) and destination (`Dst`) types, especially considering
+  /// dynamically-sized types and their metadata.
+  ///
+  /// # Type Parameters
+  ///
+  /// - `Src`: The source type for the transmutation.
+  /// - `Dst`: The destination type for the transmutation.
+  ///
+  /// # Returns
+  ///
+  /// `Result<StaticAnalyze, &str>`: A `Result` which is `Ok` if the transmutation is
+  /// considered safe, containing a `StaticAnalyze` struct with details of the analysis. Returns
+  /// `Err` with a string literal describing the reason if the transmutation is potentially unsafe.
+  pub(crate) const fn static_analyze<Src, Dst>() -> Result<StaticAnalyze, &'static str>
+  where
+    Src: ?Sized + Data,
+    Dst: ?Sized + Data,
+  {
+    // Calculate header (fixed-size part) and tail (variable-size part) sizes for both
+    // source and destination types.
+    let (sh, st) = (min_size_of::<Src>(), size_of_tail::<Src>());
+    let (dh, dt) = (min_size_of::<Dst>(), size_of_tail::<Dst>());
+    // Initial calculations to determine the minimum adjustments needed to align
+    // source and destination sizes.
+    let mut min_at_count = 0;
+    if sh < dh {
+      if st == 0 {
+        return Err("source too small");
+      }
+      let missing = dh - sh;
+      if dt == 0 && missing % st != 0 {
+        return Err(
+          "missing bytes to fit the target is not a multiple of the source DST trailing slice \
+           item size",
+        );
+      }
+      min_at_count = (missing + st - 1) / st; // Ceiling division.
+    } else if sh > dh && dt != 0 {
+      let remaining = sh - dh;
+      if st == 0 && remaining % dt != 0 {
+        return Err(
+          "remaining bytes to fit in the target is not a multiple of the target DST trailing \
+           slice item size",
+        );
       }
     }
+    let maybe_size_mismatch = match (st, dt) {
+      (0, _) => None,
+      (st, 0) if sh < dh => Some(Is((dh - sh) / st)),
+      (_, 0) => Some(IsEmpty),
+      (st, dt) => {
+        // Greatest common divisor and least common multiple calculations to
+        // determine the alignment and size compatibility.
+        #[inline]
+        const fn gcd(a: usize, b: usize) -> usize {
+          match b {
+            0 => a,
+            _ => gcd(b, a % b),
+          }
+        }
 
-    #[inline]
-    const fn intersects(
-      mut self, mut dst: InitLayout, branches: (usize, usize),
-    ) -> Transmutability {
-      let mut result = Transmutability::reachable_infallible_mutable();
-      // Iterate over all bytes of this branch.
-      while dst.width() > 0 && self.width() > 0 {
-        // Compute both source and target branch patterns.
-        let pattern = (self.branch(branches.0), dst.branch(branches.1));
-        // Aggregate results.
-        result.reachable &= pattern.0.contains_any(pattern.1);
-        result.mutable &= pattern.0.contains_all(pattern.1);
-        result.infallible &= pattern.1.contains_all(pattern.0);
-        // Move to next offset.
-        self.offset += 1;
-        dst.offset += 1;
+        let gcd = gcd(st, dt);
+        let lcm = (st * dt) / gcd;
+        while (sh + min_at_count * st - dh) % dt != 0 {
+          if min_at_count * st > lcm {
+            return Err("DST source cannot catchup on DST target");
+          }
+          min_at_count += 1;
+        }
+        match (min_at_count, dt / gcd) {
+          (0, 1) => None,
+          (0, m) => Some(IsMultipleOf(m)),
+          (n, 1) => Some(IsAtLeast(n)),
+          (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+        }
       }
-      result
+    };
+    // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
+    // compatibility (transmutability).
+    let min_check_size = match maybe_size_mismatch {
+      None if st != 0 => sh + st,
+      None => dh,
+      Some(IsEmpty) => sh,
+      Some(IsMultipleOf(m)) => sh + (m * st),
+      Some(Is(n)) => sh + (n * st),
+      Some(IsAtLeast(n)) => sh + (n * st) + st,
+      Some(IsAtLeastThenMultipleOf(n, m)) => sh + (n * st) + (m * st),
+    };
+    // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
+    let mut src = Source::empty();
+    let (mut src_offset, mut dst_offset) = (0, 0);
+    while dst_offset < min_check_size {
+      let dst = match byte_layout_at::<Dst>(dst_offset) {
+        Some(layout) => {
+          dst_offset += layout.width();
+          layout
+        }
+        _ => panic!("internal error"),
+      };
+      while src.width < dst.width() {
+        src = src.append(match byte_layout_at::<Src>(src_offset) {
+          Some(layout) => {
+            src_offset += layout.width();
+            layout
+          }
+          _ => panic!("internal error"),
+        });
+      }
+      src = match dst {
+        Init(init) => match src.intersects(init.layout) {
+          Ok(src) => src,
+          Err(e) => return Err(e),
+        },
+        _ => src.shift_bytes(1),
+      };
     }
+    let t = src.finish();
+    if !t.reachable {
+      return Err("none of the bit patterns in source are valid in target");
+    }
+    // Static analyze result.
+    let maybe_invalid_bit_pattern = !t.infallible;
+    let sound_target_mutation = t.mutable;
+    let truncate = sh > dh && dt == 0;
+    Ok(StaticAnalyze::new(
+      maybe_size_mismatch,
+      maybe_invalid_bit_pattern,
+      sound_target_mutation,
+      truncate,
+    ))
   }
-
-  // impl ByteLayout -------------------------------------------------------------------------------
-
-  impl<'a> ByteLayout<'a> {
-    #[inline]
-    pub const fn width(&self) -> usize {
-      match self {
-        Uninit => 1,
-        Init(layout) => layout.width(),
-      }
-    }
-  }
-
-  // impl Transmutation ----------------------------------------------------------------------------
 
   /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
   ///
@@ -1669,7 +1760,7 @@ mod internal {
         Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
         IsMultipleOf(m) if metadata % m == 0 => Ok(()),
         IsMultipleOf(m) => Err(m as isize - (metadata % m) as isize),
-        IsAtLeastThenMultipleOf(n, m) if metadata >= n && metadata % m == 0 => Ok(()),
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && (metadata - n) % m == 0 => Ok(()),
         IsAtLeastThenMultipleOf(n, _) if metadata < n => Err(n as isize - metadata as isize),
         IsAtLeastThenMultipleOf(_, m) => Err(m as isize - (metadata % m) as isize),
         IsEmpty if metadata == 0 => Ok(()),
@@ -1697,12 +1788,12 @@ mod internal {
     pub const fn contains_any(self, other: Self) -> bool {
       use BytePattern::*;
       match (self, other) {
-        (Any, _) => true,                   // Any contains any pattern.
-        (_, Any) => true,                   // Not any contains at least one in any.
-        (Allow(a), Allow(b)) => a == b,     // `a` contains `b` only if `a == b`.
-        (Allow(a), Discard(b)) => a != b,   // `a` contains any but `b` only if `a != b`.
-        (Discard(a), Allow(b)) => a != b,   // Any but `a` contains `b` only if `a != b`.
-        (Discard(a), Discard(b)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
+        (Any, _) => true,                 // Any contains any pattern.
+        (_, Any) => true,                 // Not any contains at least one in any.
+        (Allow(a), Allow(b)) => a == b,   // `a` contains `b` only if `a == b`.
+        (Allow(a), Discard(b)) => a != b, // `a` contains any but `b` only if `a != b`.
+        (Discard(a), Allow(b)) => a != b, // Any but `a` contains `b` only if `a != b`.
+        (Discard(_), Discard(_)) => true, // Any but `a` contains any but `b`.
       }
     }
 
@@ -1717,93 +1808,6 @@ mod internal {
         (Discard(b), Allow(a)) => a != b,   // Any but `a` contains `b` only if `a != b`.
         (Discard(b), Discard(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
       }
-    }
-  }
-
-  /// Static analyze result.
-  #[derive(Copy, Clone, Eq, PartialEq)]
-  pub(crate) struct StaticAnalyze {
-    pub(crate) maybe_size_mismatch: Option<MetadataChecks>,
-    pub(crate) maybe_invalid_bit_pattern: bool,
-    pub(crate) sound_target_mutation: bool,
-    pub(crate) truncate: bool,
-  }
-
-  impl StaticAnalyze {
-    #[inline]
-    const fn new(
-      maybe_size_mismatch: Option<MetadataChecks>, maybe_invalid_bit_pattern: bool,
-      sound_target_mutation: bool, truncate: bool
-    ) -> Self {
-      Self { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation, truncate }
-    }
-    
-    #[allow(unused)]
-    #[inline]
-    pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, true, false, false)
-    }
-    
-    #[allow(unused)]
-    #[inline]
-    pub const fn fallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, true, false, true)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, true, true, false)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn fallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, true, true, true)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, false, false, false)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn infallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, false, false, true)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, false, true, false)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn infallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self::new(maybe_size_mismatch, false, true, true)
-    }
-  }
-
-  #[cfg(test)]
-  impl Debug for StaticAnalyze {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation, self.truncate) {
-        (true, false, false) => "fallible",
-        (true, true, false) => "fallible_mutable",
-        (false, false, false) => "infallible",
-        (false, true, false) => "infallible_mutable",
-        (true, false, true) => "fallible_truncate",
-        (true, true, true) => "fallible_mutable_truncate",
-        (false, false, true) => "infallible_truncate",
-        (false, true, true) => "infallible_mutable_truncate",
-      };
-      let mut d = f.debug_tuple(tag);
-      d.field(&self.maybe_size_mismatch);
-      d.finish()
     }
   }
 
@@ -1858,28 +1862,9 @@ mod internal {
       Self { reachable: false, infallible: true, mutable: true }
     }
 
-    #[allow(unused)]
-    #[inline]
-    pub const fn reachable() -> Self {
-      Self { reachable: true, infallible: false, mutable: false }
-    }
-
-    #[allow(unused)]
     #[inline]
     pub const fn reachable_infallible_mutable() -> Self {
       Self { reachable: true, infallible: true, mutable: true }
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn reachable_infallible() -> Self {
-      Self { reachable: true, infallible: true, mutable: false }
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub const fn reachable_mutable() -> Self {
-      Self { reachable: true, infallible: false, mutable: true }
     }
 
     #[inline]
@@ -2083,6 +2068,93 @@ mod internal {
     }
   }
 
+  /// Static analyze result.
+  #[derive(Copy, Clone, Eq, PartialEq)]
+  pub(crate) struct StaticAnalyze {
+    pub(crate) maybe_size_mismatch: Option<MetadataChecks>,
+    pub(crate) maybe_invalid_bit_pattern: bool,
+    pub(crate) sound_target_mutation: bool,
+    pub(crate) truncate: bool,
+  }
+
+  impl StaticAnalyze {
+    #[inline]
+    const fn new(
+      maybe_size_mismatch: Option<MetadataChecks>, maybe_invalid_bit_pattern: bool,
+      sound_target_mutation: bool, truncate: bool,
+    ) -> Self {
+      Self { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation, truncate }
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, false, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, false, true)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, true, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, true, true)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, false, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, false, true)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, true, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, true, true)
+    }
+  }
+
+  #[cfg(test)]
+  impl Debug for StaticAnalyze {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+      let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation, self.truncate) {
+        (true, false, false) => "fallible",
+        (true, true, false) => "fallible_mutable",
+        (false, false, false) => "infallible",
+        (false, true, false) => "infallible_mutable",
+        (true, false, true) => "fallible_truncate",
+        (true, true, true) => "fallible_mutable_truncate",
+        (false, false, true) => "infallible_truncate",
+        (false, true, true) => "infallible_mutable_truncate",
+      };
+      let mut d = f.debug_tuple(tag);
+      d.field(&self.maybe_size_mismatch);
+      d.finish()
+    }
+  }
+
   /// Static-analyze a transmutation at compile-time.
   pub(crate) struct Transmutation<Src: ?Sized, Dst: ?Sized> {
     source: PhantomData<Src>,
@@ -2159,132 +2231,167 @@ mod internal {
     };
   }
 
-  /// Performs static analysis to check if the transmutation from `Src` to `Dst` is safe.
-  ///
-  /// This function computes various checks to ensure that the transmutation adheres to the
-  /// rules around alignment, size, and valid bit patterns. It takes into account the sizes
-  /// and layouts of the source (`Src`) and destination (`Dst`) types, especially considering
-  /// dynamically-sized types and their metadata.
-  ///
-  /// # Type Parameters
-  ///
-  /// - `Src`: The source type for the transmutation.
-  /// - `Dst`: The destination type for the transmutation.
-  ///
-  /// # Returns
-  ///
-  /// `Result<StaticAnalyze, &str>`: A `Result` which is `Ok` if the transmutation is
-  /// considered safe, containing a `StaticAnalyze` struct with details of the analysis. Returns
-  /// `Err` with a string literal describing the reason if the transmutation is potentially unsafe.
-  pub(crate) const fn static_analyze<Src, Dst>() -> Result<StaticAnalyze, &'static str>
-  where
-    Src: ?Sized + Data,
-    Dst: ?Sized + Data,
-  {
-    // Calculate header (fixed-size part) and tail (variable-size part) sizes for both
-    // source and destination types.
-    let (sh, st) = (min_size_of::<Src>(), size_of_tail::<Src>());
-    let (dh, dt) = (min_size_of::<Dst>(), size_of_tail::<Dst>());
-    // Initial calculations to determine the minimum adjustments needed to align
-    // source and destination sizes.
-    let mut min_at_count = 0;
-    if sh < dh {
-      if st == 0 {
-        return Err("source too small");
-      }
-      let missing = dh - sh;
-      if dt == 0 && missing % st != 0 {
-        return Err(
-          "missing bytes to fit the target is not a multiple of the source DST trailing slice \
-           item size",
-        );
-      }
-      min_at_count = (missing + st - 1) / st; // Ceiling division.
-    } else if sh > dh && dt != 0 {
-      let remaining = sh - dh;
-      if st == 0 && remaining % dt != 0 {
-        return Err(
-          "remaining bytes to fit in the target is not a multiple of the target DST trailing \
-           slice item size",
-        );
-      }
-    }
-    let maybe_size_mismatch = match (st, dt) {
-      (0, _) => None,
-      (st, 0) if sh < dh => Some(Is((dh - sh) / st)),
-      (_, 0) => Some(IsEmpty),
-      (st, dt) => {
-        // Greatest common divisor and least common multiple calculations to
-        // determine the alignment and size compatibility.
-        #[inline]
-        const fn gcd(a: usize, b: usize) -> usize {
-          match b {
-            0 => a,
-            _ => gcd(b, a % b),
-          }
-        }
+  // impl WordLayout -------------------------------------------------------------------------------
 
-        let gcd = gcd(st, dt);
-        let lcm = (st * dt) / gcd;
-        while (sh + min_at_count * st - dh) % dt != 0 {
-          if min_at_count * st > lcm {
-            return Err("DST source cannot catchup on DST target");
-          }
-          min_at_count += 1;
+  impl WordLayout {
+    pub(crate) const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
+
+    #[inline]
+    pub const fn from_bytes(bytes: &[u8]) -> &Self {
+      assert!(bytes.len() >= 2);
+      assert!(bytes[0] == 0 || (bytes[0].is_power_of_two() && bytes[0] <= 16));
+      let values_bytes = bytes.len() - 2;
+      let values = match bytes[0] {
+        0 => values_bytes,
+        _ => {
+          assert!(values_bytes % bytes[0] as usize == 0);
+          values_bytes / bytes[0] as usize
         }
-        match (min_at_count, dt / gcd) {
-          (0, 1) => None,
-          (0, m) => Some(IsMultipleOf(m)),
-          (n, 1) => Some(IsAtLeast(n)),
-          (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
-        }
-      }
-    };
-    // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
-    // compatibility (transmutability).
-    let min_check_size = match maybe_size_mismatch {
-      None if st != 0 => sh + st,
-      None => dh,
-      Some(IsEmpty) => sh,
-      Some(IsMultipleOf(m)) => sh + (m * st),
-      Some(Is(n)) => sh + (n * st),
-      Some(IsAtLeast(n)) => sh + (n * st) + st,
-      Some(IsAtLeastThenMultipleOf(n, m)) => sh + (n * st) + (m * st),
-    };
-    // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
-    let mut src = Source::empty();
-    let (mut src_offset, mut dst_offset) = (0, 0);
-    while dst_offset < min_check_size {
-      let dst = match byte_layout_at::<Dst>(dst_offset) {
-        Some(layout) => {
-          dst_offset += layout.width();
-          layout
-        }
-        _ => panic!("internal error"),
       };
-      while src.width < dst.width() {
-        src = src.append(match byte_layout_at::<Src>(src_offset) {
-          Some(layout) => {
-            src_offset += layout.width();
-            layout
-          }
-          _ => panic!("internal error"),
-        });
+      match bytes[1] {
+        bits::UNINIT => assert!(values == 0),
+        bits::ANY => assert!(values == 0),
+        bits::ALLOW => assert!(values != 0 && values < 64),
+        bits::DISCARD => assert!(values == 1),
+        _ => panic!("invalid bits pattern type"),
       }
-      src = match dst {
-        Init(init) => bail!(src.intersects(init.layout)),
-        _ => src.shift_bytes(1),
-      };
+      // SAFETY: above checks ensure a valid layout.
+      unsafe { &*ptr::from_raw_parts(bytes.as_ptr().cast(), values_bytes) }
     }
-    let t = src.finish();
-    if !t.reachable {
-      return Err("none of the bit patterns in source are valid in target");
+
+    #[inline]
+    pub const fn from_ref<const W: usize, const N: usize>(x: &(u8, u8, [[u8; W]; N])) -> &Self {
+      Self::from_bytes(unsafe { &*ptr::from_raw_parts(ptr::from_ref(x).cast(), 2 + W * N) })
     }
-    // Static analyze result.
-    let maybe_invalid_bit_pattern = !t.infallible;
-    let sound_target_mutation = t.mutable;
-    let truncate = sh > dh && dt == 0;
-    Ok(StaticAnalyze::new(maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation, truncate))
+
+    #[inline]
+    pub const fn is_uninit(&self) -> bool {
+      self.flags == bits::UNINIT
+    }
+
+    #[inline]
+    pub const fn is_any(&self) -> bool {
+      self.flags == bits::ANY
+    }
+
+    #[inline]
+    pub const fn width(&self) -> usize {
+      self.width as usize
+    }
+
+    #[inline]
+    const fn branches(&self) -> usize {
+      if self.width() == 0 {
+        return 0;
+      }
+      match self.flags {
+        bits::ALLOW => self.bytes.len() / self.width as usize,
+        _ => 1,
+      }
+    }
+
+    #[inline]
+    pub const fn matches<T: Word>(&self, word: &T) -> bool {
+      if self.width as usize != mem::size_of::<T>() {
+        return false;
+      }
+      // SAFETY: `word` is a valid reference and the above check
+      // make sure `word` is valid up to `self.width`.
+      unsafe { self.matches_ptr(ptr::from_ref(word).cast()) }
+    }
+
+    /// # Safety
+    /// `ptr` is valid for read up to `self.width` bytes.
+    #[inline]
+    pub const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
+      macro_rules! inner {
+        ($ptr:ident, $ty:ident) => {{
+          let val = ::core::ptr::read_unaligned::<$ty>($ptr.cast());
+          let mut query = self.bytes.as_ptr().cast::<$ty>();
+          match self.flags & (bits::ALLOW | bits::DISCARD) {
+            bits::DISCARD => val != ::core::ptr::read_unaligned(query),
+            bits::ALLOW => {
+              let end_ptr = self.bytes.as_ptr().add(self.bytes.len());
+              while ptr::addr_of(query) != ptr::addr_of(end_ptr) {
+                let allow = ::core::ptr::read_unaligned(query);
+                if val == allow {
+                  return true;
+                }
+                query = query.add(1);
+              }
+              false
+            }
+            _ => true,
+          }
+        }};
+      }
+      match self.width {
+        0 => true,
+        1 => inner!(ptr, u8),
+        2 => inner!(ptr, u16),
+        4 => inner!(ptr, u32),
+        8 => inner!(ptr, u64),
+        16 => inner!(ptr, u128),
+        _ => unsafe { hint::unreachable_unchecked() },
+      }
+    }
+  }
+
+  // impl InitLayout -------------------------------------------------------------------------------
+
+  impl<'a> InitLayout<'a> {
+    #[inline]
+    pub const fn width(&self) -> usize {
+      self.layout.width() - self.offset
+    }
+
+    #[inline]
+    const fn branches(&self) -> usize {
+      self.layout.branches()
+    }
+
+    #[inline]
+    const fn branch(&self, branch: usize) -> BytePattern {
+      use BytePattern::*;
+      assert!(branch < self.branches());
+      match self.layout.flags {
+        bits::DISCARD => Discard(self.layout.bytes[self.offset]),
+        bits::ALLOW => Allow(self.layout.bytes[(branch * self.layout.width()) + self.offset]),
+        _ => Any,
+      }
+    }
+
+    #[inline]
+    const fn intersects(
+      mut self, mut dst: InitLayout, branches: (usize, usize),
+    ) -> Transmutability {
+      let mut result = Transmutability::reachable_infallible_mutable();
+      // Iterate over all bytes of this branch.
+      while dst.width() > 0 && self.width() > 0 {
+        // Compute both source and target branch patterns.
+        let pattern = (self.branch(branches.0), dst.branch(branches.1));
+        // Aggregate results.
+        result.reachable &= pattern.0.contains_any(pattern.1);
+        result.mutable &= pattern.0.contains_all(pattern.1);
+        result.infallible &= pattern.1.contains_all(pattern.0);
+        // Move to next offset.
+        self.offset += 1;
+        dst.offset += 1;
+      }
+      result
+    }
+  }
+
+  // impl ByteLayout -------------------------------------------------------------------------------
+
+  impl<'a> ByteLayout<'a> {
+    #[inline]
+    pub const fn width(&self) -> usize {
+      match self {
+        Uninit => 1,
+        Init(layout) => layout.width(),
+      }
+    }
   }
 
   // impl Dropless ---------------------------------------------------------------------------------
@@ -2418,6 +2525,12 @@ mod internal {
     const OFFSET: usize = 0;
     const FIELDS: usize = 0;
   }
+
+  // impl Many -------------------------------------------------------------------------------------
+
+  unsafe impl<T: Copy + Data> Many for [T] {}
+
+  unsafe impl<T: Copy + Data, const N: usize> Many for [T; N] {}
 
   // impl Data -------------------------------------------------------------------------------------
 

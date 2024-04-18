@@ -48,14 +48,14 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
         .parse_nested_meta(|meta| {
           // #[data(crate(<Path>))]
           if meta.path.is_ident("crate") {
-            if meta.input.peek(token::Paren) {
+            root = if meta.input.peek(token::Paren) {
               let content;
               parenthesized!(content in meta.input);
               let path: Path = content.parse()?;
-              root = quote!(#path);
+              quote!(#path)
             } else {
-              root = quote!(crate);
-            }
+              quote!(crate)
+            };
             return Ok(());
           }
 
