@@ -1,14 +1,16 @@
+use hci::*;
 use mutant::num::*;
 use mutant::*;
-use hci::*;
 
 fn main() {
   let evt = NumberOfCompletedPackets::new([
     CompletedPackets { handle: 1.into(), number_of_completed_packets: 2.into() },
     CompletedPackets { handle: 3.into(), number_of_completed_packets: 4.into() },
-  ]).into_event().into_packet();
+  ])
+  .into_event()
+  .into_packet();
   assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
-  
+
   let evt = DisconnectionComplete::new([1, 2, 3, 4, 5, 6], 0x1234).into_event().into_packet();
   assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
 }
@@ -78,8 +80,7 @@ mod host {
   }
 
   pub async fn accept<T: Socket, F: Future>(
-    host: &Host<'_, T>,
-    f: impl FnOnce(u16le) -> F,
+    host: &Host<'_, T>, f: impl FnOnce(u16le) -> F,
   ) -> Option<F::Output> {
     let connection_handle = host.recv_event::<ConnectionComplete>().await.handle;
     let mut f = pin!(f(connection_handle));
@@ -126,7 +127,11 @@ mod hci {
   pub trait PacketData: Data {
     type PacketType: Word<Raw = u8>;
 
-    fn into_packet(self) -> Packet<Self> where Self: Sized, Self::PacketType: Default {
+    fn into_packet(self) -> Packet<Self>
+    where
+      Self: Sized,
+      Self::PacketType: Default,
+    {
       Packet::with_data(self)
     }
   }
@@ -200,8 +205,12 @@ mod hci {
 
   pub trait EventData: Data {
     type EventCode: Word<Raw = u8>;
-    
-    fn into_event(self) -> Event<Self> where Self: Sized, Self::EventCode: Default {
+
+    fn into_event(self) -> Event<Self>
+    where
+      Self: Sized,
+      Self::EventCode: Default,
+    {
       Event::with_data(self)
     }
   }

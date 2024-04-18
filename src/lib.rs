@@ -50,6 +50,7 @@
 //!   legendary: bool,
 //! }
 //!
+//! // Create a `Loot` instance with some items.
 //! let mut loot = Loot {
 //!   position: (21, 12),
 //!   player: 0xcafe.into(),
@@ -63,21 +64,27 @@
 //! #[repr(C)]
 //! struct Position { x: u8, y: u8 }
 //!
-//! assert_eq!(&Position { x: 21, y: 12 }, mutant::transmute_ref!(&loot.position));
-//! assert_eq!(Position { x: 21, y: 12 }, mutant::transmute!(loot.position)); // Position is `Copy`
+//! // Transmute the `position` field to a `Position` struct.
+//! assert_eq!(&Position { x: 21, y: 12 }, mutant::transmute_ref(&loot.position));
+//! assert_eq!(Position { x: 21, y: 12 }, mutant::transmute(loot.position)); // Position is `Copy`
 //!
-//! let mut position: &mut Position = mutant::transmute_mut!(&mut loot.position);
+//! // Modify the `position` field in place.
+//! let mut position: &mut Position = mutant::transmute_mut(&mut loot.position);
 //! position.x *= 2;
 //!
+//! // Transmute the entire `Loot` struct to bytes.
 //! let loot: &Loot<[Item]> = &loot;
-//! let loot_bytes: &[u8] = mutant::transmute_ref!(loot);
+//! let loot_bytes: &[u8] = mutant::transmute_ref(loot);
 //! assert_eq!(
 //!   &[21 * 2, 12, 0xfe, 0xca, 0x42, 1, 0x21, 0],
 //!   loot_bytes
 //! );
 //!
-//! // let loot2: &Loot<[Item]> = mutant::transmute_ref!(loot_bytes); Compile fail !
-//! let loot2: Result<&Loot<[Item]>, _> = mutant::try_transmute_ref!(loot_bytes);
+//! // This fail to compile as it requires runtime checks.
+//! // let loot2: &Loot<[Item]> = mutant::transmute_ref(loot_bytes);
+//!
+//! // Transmute the bytes back to a `Loot` struct.
+//! let loot2: Result<&Loot<[Item]>, _> = mutant::try_transmute_ref(loot_bytes);
 //! assert_eq!(Ok(loot), loot2);
 //! ```
 //!
@@ -154,6 +161,7 @@
 //! `mutant` is open-source software licensed under the MIT license. Feel free to use, modify,
 //! and distribute it in accordance with the license terms.
 #![cfg_attr(not(test), no_std)]
+
 #[cfg(test)]
 mod tests;
 
@@ -184,7 +192,7 @@ pub enum Error {
   /// This error occurs when the size of the source type does not match the size of the
   /// target type. The inner value (`isize`) represents the size difference.
   SizeMismatch(isize),
-  /// Source bit pattern is invalid.
+  /// Source bits pattern is invalid for target.
   InvalidBitPattern,
 }
 
@@ -278,31 +286,6 @@ pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
 #[repr(C, packed)]
 pub struct Unalign<T>(pub T);
 
-/// Static-analyze a transmutation at compile-time.
-///
-/// # Examples
-/// ```
-/// use mutant::Transmutation;
-///
-/// let bool_to_u8 = Transmutation::<bool, u8>::new();
-/// assert!(bool_to_u8.check().is_ok());
-/// assert!(bool_to_u8.check_no_size_mismatch().is_ok());
-/// assert!(bool_to_u8.check_no_invalid_bit_pattern().is_ok());
-/// assert!(bool_to_u8.check_no_alignment_mismatch().is_ok());
-/// assert!(bool_to_u8.check_sound_target_mutation().is_err());
-///
-/// let u8_to_bool = Transmutation::<u8, bool>::new();
-/// assert!(u8_to_bool.check().is_ok());
-/// assert!(u8_to_bool.check_no_size_mismatch().is_ok());
-/// assert!(u8_to_bool.check_no_invalid_bit_pattern().is_err());
-/// assert!(u8_to_bool.check_no_alignment_mismatch().is_ok());
-/// assert!(u8_to_bool.check_sound_target_mutation().is_ok());
-/// ```
-pub struct Transmutation<Src: ?Sized, Dst: ?Sized> {
-  source: PhantomData<Src>,
-  target: PhantomData<Dst>,
-}
-
 pub unsafe trait Repr<T: ?Sized + Data> {
   type Type: ?Sized + Data;
   type Rest: Repr<T>;
@@ -348,7 +331,7 @@ pub unsafe trait Data: 'static {
   where
     Self: Copy,
   {
-    transmute!(self)
+    transmute(self)
   }
 
   #[inline]
@@ -356,17 +339,17 @@ pub unsafe trait Data: 'static {
   where
     Self: Copy,
   {
-    transmute_copy!(self)
+    transmute_copy(self)
   }
 
   #[inline]
   fn cast_ref<T: Data + ?Sized>(&self) -> &T {
-    transmute_ref!(self)
+    transmute_ref(self)
   }
 
   #[inline]
   fn cast_mut<T: Data + ?Sized>(&mut self) -> &mut T {
-    transmute_mut!(self)
+    transmute_mut(self)
   }
 
   #[inline]
@@ -374,7 +357,7 @@ pub unsafe trait Data: 'static {
   where
     Self: Copy,
   {
-    try_transmute!(self)
+    try_transmute(self)
   }
 
   #[inline]
@@ -382,17 +365,17 @@ pub unsafe trait Data: 'static {
   where
     Self: Copy,
   {
-    try_transmute_copy!(self)
+    try_transmute_copy(self)
   }
 
   #[inline]
   fn try_cast_ref<T: Data + ?Sized>(&self) -> Result<&T, Error> {
-    try_transmute_ref!(self)
+    try_transmute_ref(self)
   }
 
   #[inline]
   fn try_cast_mut<T: Data + ?Sized>(&mut self) -> Result<&mut T, Error> {
-    try_transmute_mut!(self)
+    try_transmute_mut(self)
   }
 }
 
@@ -511,85 +494,6 @@ macro_rules! offset_of {
     assert!(offset >= 0);
     offset as usize
   }};
-}
-
-#[macro_export]
-macro_rules! transmutation {
-  ($($checks:ident),* $(,)?) => {{
-    struct Comptime<T: ?Sized, U: ?Sized>(::core::marker::PhantomData<(*const T, *const U)>);
-
-    impl<Src: ?Sized + $crate::Data, Dst: ?Sized + $crate::Data> Comptime<Src, Dst> {
-      #[allow(unused)]
-      const TRANSMUTATION: $crate::Transmutation<Src, Dst> = {
-        let transmutation = $crate::Transmutation::new();
-        $crate::unwrap!(transmutation.check());
-        $($crate::unwrap!(transmutation.$checks());)*
-        transmutation
-      };
-    }
-
-    Comptime::TRANSMUTATION
-  }};
-}
-
-#[macro_export]
-macro_rules! transmute {
-  ($e:expr $(,)?) => (
-    $crate::transmutation!(check_no_size_mismatch, check_no_invalid_bit_pattern).transmute($e)
-  );
-}
-
-#[macro_export]
-macro_rules! transmute_copy {
-  ($e:expr $(,)?) => (
-    $crate::transmutation!(check_no_size_mismatch, check_no_invalid_bit_pattern).transmute_copy($e)
-  );
-}
-
-#[macro_export]
-macro_rules! transmute_mut {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!(
-      check_no_alignment_mismatch, check_no_size_mismatch, check_no_invalid_bit_pattern, check_sound_target_mutation
-    ).transmute_mut($e)
-  };
-}
-
-#[macro_export]
-macro_rules! transmute_ref {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!(
-      check_no_alignment_mismatch, check_no_size_mismatch, check_no_invalid_bit_pattern,
-    ).transmute_ref($e)
-  };
-}
-
-#[macro_export]
-macro_rules! try_transmute {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!(check_no_size_mismatch).try_transmute_copy(&$e)
-  };
-}
-
-#[macro_export]
-macro_rules! try_transmute_copy {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!(check_no_size_mismatch).try_transmute_copy($e)
-  };
-}
-
-#[macro_export]
-macro_rules! try_transmute_mut {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!(check_no_invalid_bit_pattern).try_transmute_mut($e)
-  };
-}
-
-#[macro_export]
-macro_rules! try_transmute_ref {
-  ($e:expr $(,)?) => {
-    $crate::transmutation!().try_transmute_ref($e)
-  };
 }
 
 /// Safely reference unaligned data.
@@ -758,6 +662,38 @@ pub const fn byte_layout_at<T: ?Sized + Data>(offset: usize) -> Option<ByteLayou
   }
 }
 
+#[inline]
+pub const fn convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(metadata: usize) -> usize {
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+  );
+
+  match size_of_tail::<U>() {
+    0 => 0,
+    n => (size_of_with::<T>(metadata) - min_size_of::<U>()) / n,
+  }
+}
+
+#[inline]
+pub const fn try_convert_metadata<T: ?Sized + Data, U: ?Sized + Data>(
+  metadata: usize,
+) -> Result<usize, isize> {
+  #[allow(clippy::let_unit_value)]
+  let _ = internal::Transmutation::<T, U>::CHECK;
+
+  let check = match unwrap!(internal::Transmutation::<T, U>::STATIC_ANALYZE).maybe_size_mismatch {
+    None => Ok(()),
+    Some(check) => check.validate(metadata),
+  };
+  match check {
+    Err(n) => Err(n * size_of_tail::<T>() as isize),
+    _ if size_of_tail::<U>() == 0 => Ok(0),
+    _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail::<U>()),
+  }
+}
+
 /// Returns whatever a value of type `T` is aligned to `align`.
 #[inline]
 pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
@@ -888,39 +824,184 @@ pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::Tail])
   }
 }
 
+/// Safe transmute from a value of type `T` to a value of type `U`. The safety of this transmutation
+/// is guaranteed by static analysis at compile time, hence a call to [`transmute`] that compile is
+/// safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// assert_eq!(0, mutant::transmute::<_, u8>(false));
+/// assert_eq!(1, mutant::transmute::<_, u8>(true));
+///
+/// // With arrays:
+/// assert_eq!([0, 1], mutant::transmute::<_, [u8; 2]>([false, true]));
+/// assert_eq!(0, mutant::transmute::<_, u16>([false, false]));
+/// ```
 #[inline]
 pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
-  transmute!(val)
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+  );
+
+  union Transmute<T: Copy, U: Copy> {
+    val: T,
+    dst: U,
+  }
+  unsafe { Transmute { val }.dst }
 }
 
+/// Safe transmute from a reference of type `T` to a value of type `U`. The safety of this
+/// transmutation is guaranteed by static analysis at compile time, hence a call to
+/// [`transmute_copy`] that compile is safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// use mutant::Unalign;
+///
+/// assert_eq!(0, mutant::transmute_copy::<_, u8>(&false));
+/// assert_eq!(1, mutant::transmute_copy::<_, u8>(&true));
+///
+/// // With arrays:
+/// assert_eq!([0, 0], mutant::transmute_copy::<_, [u8; 2]>(&[false, false]));
+/// assert_eq!(0, mutant::transmute_copy::<_, u16>(&[false, false]));
+/// ```
 #[inline]
 pub const fn transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> U {
-  transmute_copy!(val)
+  transmute(*val)
 }
 
+/// Safe transmute from a mutable reference of type `T` to a mutable reference of type `U`. The
+/// safety of this transmutation is guaranteed by static analysis at compile time, hence a call to
+/// [`transmute_mut`] that compile is safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// use mutant::num::*;
+///
+/// let mut value = u16le::from_raw(0xcafe);
+/// mutant::transmute_mut::<_, [u8; 2]>(&mut value)[0] = 0xef;
+/// mutant::transmute_mut::<_, [u8; 2]>(&mut value)[1] = 0xbe;
+/// assert_eq!(0xbeef, value.into_raw());
+///
+/// // With arrays:
+/// assert_eq!(&mut [0, 0], mutant::transmute_mut::<_, [u8; 2]>(&mut 0u16));
+/// ```
+#[inline]
+pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> &mut U {
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_ALIGNMENT_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+    internal::Transmutation::<T, U>::CHECK_SOUND_TARGET_MUTATION,
+  );
+
+  let metadata = convert_metadata::<T, U>(ptr::metadata(val));
+  let ptr = ptr::from_raw_parts_mut::<U>(ptr::from_mut(val).cast(), metadata);
+  unsafe { &mut *ptr }
+}
+
+/// Safe transmute from a reference of type `T` to a value of type `U`. The safety of this
+/// transmutation is guaranteed by static analysis at compile time, hence a call to
+/// [`transmute_ref`] that compile is safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// use mutant::Unalign;
+///
+/// assert_eq!(&0, mutant::transmute_ref::<_, u8>(&false));
+/// assert_eq!(&1, mutant::transmute_ref::<_, u8>(&true));
+///
+/// // With arrays:
+/// assert_eq!(&[0, 1], mutant::transmute_ref::<_, [u8; 2]>(&[false, true]));
+/// assert_eq!(&Unalign::new(0), mutant::transmute_ref::<_, Unalign<u16>>(&[false, false]));
+/// ```
 #[inline]
 pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
-  transmute_ref!(val)
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_ALIGNMENT_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+  );
+
+  let metadata = convert_metadata::<T, U>(ptr::metadata(val));
+  let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
+  unsafe { &*ptr }
 }
 
 #[inline]
 pub fn try_transmute<T: Data + Copy, U: Data + Copy>(val: T) -> Option<U> {
-  try_transmute!(val)
+  try_transmute_copy(&val)
 }
 
 #[inline]
 pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Option<U> {
-  try_transmute_copy!(val)
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+  );
+
+  let ptr = ptr::from_ref(val).cast::<U>();
+  match is_bits_valid(ptr) {
+    true => Some(unsafe { *ptr }),
+    _ => None,
+  }
 }
 
 #[inline]
 pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Result<&mut U, Error> {
-  try_transmute_mut!(val)
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_SOUND_TARGET_MUTATION,
+  );
+
+  if !is_aligned_to::<T>(val, align_of::<U>()) {
+    return Err(Error::AlignmentMismatch);
+  }
+  let metadata = match try_convert_metadata::<T, U>(ptr::metadata(val)) {
+    Ok(metadata) => metadata,
+    Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+  };
+  let ptr = ptr::from_raw_parts_mut::<U>(ptr::from_mut(val).cast(), metadata);
+  match is_bits_valid(ptr) {
+    true => Ok(unsafe { &mut *ptr }),
+    _ => Err(Error::InvalidBitPattern),
+  }
 }
 
 #[inline]
 pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> Result<&U, Error> {
-  try_transmute_ref!(val)
+  #[allow(clippy::let_unit_value)]
+  let _ = internal::Transmutation::<T, U>::CHECK;
+
+  if !is_aligned_to::<T>(val, align_of::<U>()) {
+    return Err(Error::AlignmentMismatch);
+  }
+  let metadata = match try_convert_metadata::<T, U>(ptr::metadata(val)) {
+    Ok(metadata) => metadata,
+    Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+  };
+  let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
+  match is_bits_valid(ptr) {
+    true => Ok(unsafe { &*ptr }),
+    _ => Err(Error::InvalidBitPattern),
+  }
 }
 
 #[inline]
@@ -1005,6 +1086,7 @@ pub mod ptr {
     let ptr = ptr.cast::<()>();
     // SAFETY: This no-op trick ensure that `ptr` has a provenance:
     // This will result in a compile-error if `ptr` is a dangling pointer (has no provenance).
+    #[cfg(not(miri))] // Disable for Miri as it throw out-of-bounds pointer arithmetic error.
     let _ = unsafe { core::ptr::addr_of!((*(ptr as *const (u8, ()))).1) };
     // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
     // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
@@ -1489,9 +1571,7 @@ mod internal {
 
     #[inline]
     const fn intersects(
-      mut self,
-      mut dst: InitLayout,
-      branches: (usize, usize),
+      mut self, mut dst: InitLayout, branches: (usize, usize),
     ) -> Transmutability {
       let mut result = Transmutability::reachable_infallible_mutable();
       // Iterate over all bytes of this branch.
@@ -1928,212 +2008,70 @@ mod internal {
     }
   }
 
-  impl<Src: ?Sized + Data, Dst: ?Sized + Data> Transmutation<Src, Dst> {
-    const STATIC_ANALYZE: Result<StaticAnalyze, &'static str> = static_analyze::<Src, Dst>();
-
-    #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-      Self { source: PhantomData, target: PhantomData }
-    }
-
-    #[inline]
-    pub const fn check(self) -> Result<(), &'static str> {
-      bail!(Self::STATIC_ANALYZE);
-      Ok(())
-    }
-
-    #[inline]
-    pub const fn check_no_size_mismatch(self) -> Result<(), &'static str> {
-      if let Some(checks) = bail!(Self::STATIC_ANALYZE).maybe_size_mismatch {
-        use MetadataChecks::*;
-        return Err(match checks {
-          Is(_) => {
-            "\n  cannot transmute between types of incompatible byte layouts, source too small.\n  \
-             consider using a `try_*` alternative instead.\n"
-          }
-          IsAtLeast(_) => {
-            "\n  cannot transmute between types of incompatible byte layouts, target too small.\n  \
-             consider using a `try_*` alternative instead.\n"
-          }
-          IsMultipleOf(_) => {
-            "\n  cannot transmute between types of incompatible byte layouts, tail size multiple \
-             of mismatch.\n  consider using a `try_*` alternative instead.\n"
-          }
-          IsAtLeastThenMultipleOf(_, _) => {
-            "\n  cannot transmute between types of incompatible byte layouts, target too small or \
-             tail size multiple of mismatch.\n  consider using a `try_*` alternative instead.\n"
-          }
-          IsEmpty => {
-            "\n  cannot transmute between types of incompatible byte layouts, source tail might \
-             not be empty.\n  consider using a `try_*` alternative instead.\n"
-          }
-        });
-      }
-      Ok(())
-    }
-
-    #[inline]
-    pub const fn check_no_alignment_mismatch(self) -> Result<(), &'static str> {
-      if align_of::<Dst>() > align_of::<Src>() {
-        return Err(
-          "\n  source alignment is too small to fulfill target alignment requirements, hence it \
-           requires a runtime check.\n  use `try_transmute!()` instead.\n",
-        );
-      }
-      Ok(())
-    }
-
-    #[inline]
-    pub const fn check_no_invalid_bit_pattern(self) -> Result<(), &'static str> {
-      if bail!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
-        return Err(
-          "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
-           valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
-        );
-      }
-      Ok(())
-    }
-
-    #[inline]
-    pub const fn check_sound_target_mutation(self) -> Result<(), &'static str> {
-      if !bail!(Self::STATIC_ANALYZE).sound_target_mutation {
-        return Err(
-          "\n  mutating target could result in invalid bit patterns in source, hence mutation is \
-           disabled.\n",
-        );
-      }
-      Ok(())
-    }
-
-    #[inline]
-    pub const fn transmute(self, src: Src) -> Dst
-    where
-      Src: Copy,
-      Dst: Copy,
-    {
-      unwrap!(self.check());
-      unwrap!(self.check_no_size_mismatch());
-      unwrap!(self.check_no_invalid_bit_pattern());
-      union Transmute<T: Copy, U: Copy> {
-        src: T,
-        dst: U,
-      }
-      unsafe { Transmute { src }.dst }
-    }
-
-    #[inline]
-    pub const fn transmute_copy(self, src: &Src) -> Dst
-    where
-      Src: Copy,
-      Dst: Copy,
-    {
-      self.transmute(*src)
-    }
-
-    #[inline]
-    pub fn transmute_mut(self, src: &mut Src) -> &mut Dst {
-      unwrap!(self.check());
-      unwrap!(self.check_no_alignment_mismatch());
-      unwrap!(self.check_no_size_mismatch());
-      unwrap!(self.check_no_invalid_bit_pattern());
-      unwrap!(self.check_sound_target_mutation());
-      let metadata = self.convert_metadata(ptr::metadata(src));
-      let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
-      unsafe { &mut *ptr }
-    }
-
-    #[inline]
-    pub const fn transmute_ref(self, src: &Src) -> &Dst {
-      unwrap!(self.check());
-      unwrap!(self.check_no_alignment_mismatch());
-      unwrap!(self.check_no_size_mismatch());
-      unwrap!(self.check_no_invalid_bit_pattern());
-      let metadata = self.convert_metadata(ptr::metadata(src));
-      let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
-      unsafe { &*ptr }
-    }
-
-    #[inline]
-    pub const fn try_transmute_copy(self, src: &Src) -> Option<Dst>
-    where
-      Src: Copy,
-      Dst: Copy,
-    {
-      unwrap!(self.check());
-      unwrap!(self.check_no_size_mismatch());
-      let ptr = ptr::from_ref(src).cast::<Dst>();
-      match is_bits_valid(ptr) {
-        true => Some(unsafe { *ptr }),
-        _ => None,
-      }
-    }
-
-    #[inline]
-    pub fn try_transmute_mut(self, src: &mut Src) -> Result<&mut Dst, Error> {
-      unwrap!(self.check());
-      unwrap!(self.check_sound_target_mutation());
-      if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
-        return Err(Error::AlignmentMismatch);
-      }
-      let metadata = match self.try_convert_metadata(ptr::metadata(src)) {
-        Ok(metadata) => metadata,
-        Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
-      };
-      let ptr = ptr::from_raw_parts_mut::<Dst>(ptr::from_mut(src).cast(), metadata);
-      match is_bits_valid(ptr) {
-        true => Ok(unsafe { &mut *ptr }),
-        _ => Err(Error::InvalidBitPattern),
-      }
-    }
-
-    #[inline]
-    pub const fn try_transmute_ref(self, src: &Src) -> Result<&Dst, Error> {
-      unwrap!(self.check());
-      if !is_aligned_to::<Src>(src, align_of::<Dst>()) {
-        return Err(Error::AlignmentMismatch);
-      }
-      let metadata = match self.try_convert_metadata(ptr::metadata(src)) {
-        Ok(metadata) => metadata,
-        Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
-      };
-      let ptr = ptr::from_raw_parts::<Dst>(ptr::from_ref(src).cast(), metadata);
-      match is_bits_valid(ptr) {
-        true => Ok(unsafe { &*ptr }),
-        _ => Err(Error::InvalidBitPattern),
-      }
-    }
-
-    #[inline]
-    const fn convert_metadata(self, metadata: usize) -> usize {
-      unwrap!(self.check());
-      unwrap!(self.check_no_size_mismatch());
-      match size_of_tail::<Dst>() {
-        0 => 0,
-        n => (size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / n,
-      }
-    }
-
-    #[inline]
-    const fn try_convert_metadata(self, metadata: usize) -> Result<usize, isize> {
-      unwrap!(self.check());
-      let check = match unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
-        None => Ok(()),
-        Some(check) => check.validate(metadata),
-      };
-      match check {
-        Err(n) => Err(n * size_of_tail::<Src>() as isize),
-        _ if size_of_tail::<Dst>() == 0 => Ok(0),
-        _ => Ok((size_of_with::<Src>(metadata) - min_size_of::<Dst>()) / size_of_tail::<Dst>()),
-      }
-    }
+  /// Static-analyze a transmutation at compile-time.
+  pub(crate) struct Transmutation<Src: ?Sized, Dst: ?Sized> {
+    source: PhantomData<Src>,
+    target: PhantomData<Dst>,
   }
 
-  impl<Src: ?Sized, Dst: ?Sized> Copy for Transmutation<Src, Dst> {}
+  impl<Src: ?Sized + Data, Dst: ?Sized + Data> Transmutation<Src, Dst> {
+    pub(crate) const STATIC_ANALYZE: Result<StaticAnalyze, &'static str> =
+      static_analyze::<Src, Dst>();
 
-  impl<Src: ?Sized, Dst: ?Sized> Clone for Transmutation<Src, Dst> {
-    fn clone(&self) -> Self {
-      *self
-    }
+    pub const CHECK: () = {
+      unwrap!(Self::STATIC_ANALYZE);
+    };
+    pub const CHECK_NO_SIZE_MISMATCH: () = {
+      if let Some(checks) = unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
+        use MetadataChecks::*;
+        match checks {
+          Is(_) => panic!(
+            "\n  cannot transmute between types of incompatible byte layouts, source too small.\n  \
+            consider using a `try_*` alternative instead.\n"
+          ),
+          IsAtLeast(_) => panic! (
+            "\n  cannot transmute between types of incompatible byte layouts, target too small.\n  \
+             consider using a `try_*` alternative instead.\n"
+          ),
+          IsMultipleOf(_) => panic!(
+            "\n  cannot transmute between types of incompatible byte layouts, tail size multiple \
+             of mismatch.\n  consider using a `try_*` alternative instead.\n"
+          ),
+          IsAtLeastThenMultipleOf(_, _) => panic!(
+            "\n  cannot transmute between types of incompatible byte layouts, target too small or \
+             tail size multiple of mismatch.\n  consider using a `try_*` alternative instead.\n"
+          ),
+          IsEmpty => panic!(
+            "\n  cannot transmute between types of incompatible byte layouts, source tail might \
+             not be empty.\n  consider using a `try_*` alternative instead.\n"
+          ),
+        }
+      }
+    };
+    pub const CHECK_NO_ALIGNMENT_MISMATCH: () = {
+      if align_of::<Dst>() > align_of::<Src>() {
+        panic!(
+          "\n  source alignment is too small to fulfill target alignment requirements, hence it \
+           requires a runtime check.\n  use `try_transmute!()` instead.\n",
+        )
+      }
+    };
+    pub const CHECK_NO_INVALID_BIT_PATTERN: () = {
+      if unwrap!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
+        panic!(
+          "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
+           valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
+        )
+      }
+    };
+    pub const CHECK_SOUND_TARGET_MUTATION: () = {
+      if !unwrap!(Self::STATIC_ANALYZE).sound_target_mutation {
+        panic!(
+          "\n  mutating target could result in invalid bit patterns in source, hence mutation is \
+           disabled.\n",
+        )
+      }
+    };
   }
 
   /// Performs static analysis to check if the transmutation from `Src` to `Dst` is safe.
@@ -2221,7 +2159,8 @@ mod internal {
     // compatibility (transmutability).
     let min_check_size = match maybe_size_mismatch {
       None if st != 0 => sh + st,
-      Some(IsEmpty) | None => sh,
+      None => dh,
+      Some(IsEmpty) => sh,
       Some(IsMultipleOf(m)) => sh + (m * st),
       Some(Is(n)) => sh + (n * st),
       Some(IsAtLeast(n)) => sh + (n * st) + st,

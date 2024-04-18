@@ -161,4 +161,7 @@ fn test_static_analyze() {
   test!((bool, bool) [bool] => infallible_mutable);
   test!((bool, bool, bool) [bool] => infallible_mutable);
   test!((bool, bool, bool, bool) [bool] => infallible_mutable);
+
+  test!(u32 u8 => infallible_mutable);
+  test!(u8 u32 => "source too small");
 }
