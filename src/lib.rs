@@ -90,8 +90,7 @@
 //!
 //! Transmute is checked at compile time:
 //! ```rust,compile_fail
-//! use mutant::transmute_mut;
-//! let _: &mut u8 = transmute_mut!(&mut true);
+//! let _: &mut u8 = mutant::transmute_mut(&mut true);
 //! ```
 //!
 //! # Why mutant?
@@ -844,6 +843,38 @@ pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+  );
+
+  union Transmute<T: Copy, U: Copy> {
+    val: T,
+    dst: U,
+  }
+  unsafe { Transmute { val }.dst }
+}
+
+/// Safe transmute & truncate from a value of type `T` to a value of type `U`. The safety of this
+/// transmutation is guaranteed by static analysis at compile time, hence a call to [`truncate`]
+/// that compile is safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// assert_eq!(123u8, mutant::truncate(123u32));
+///
+/// // With arrays:
+/// assert_eq!([0, 1], mutant::truncate::<_, [u8; 2]>([false, true, false]));
+/// assert_eq!(0, mutant::truncate::<_, u16>([false, false, false]));
+/// ```
+#[inline]
+pub const fn truncate<T: Data + Copy, U: Data + Copy>(val: T) -> U {
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
   );
@@ -900,6 +931,7 @@ pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> &mut U 
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_ALIGNMENT_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
@@ -933,6 +965,7 @@ pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_ALIGNMENT_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
@@ -953,6 +986,7 @@ pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Opti
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
   );
 
@@ -968,6 +1002,7 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Res
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_SOUND_TARGET_MUTATION,
   );
 
@@ -988,7 +1023,10 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Res
 #[inline]
 pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> Result<&U, Error> {
   #[allow(clippy::let_unit_value)]
-  let _ = internal::Transmutation::<T, U>::CHECK;
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
+  );
 
   if !is_aligned_to::<T>(val, align_of::<U>()) {
     return Err(Error::AlignmentMismatch);
@@ -1688,31 +1726,64 @@ mod internal {
     pub(crate) maybe_size_mismatch: Option<MetadataChecks>,
     pub(crate) maybe_invalid_bit_pattern: bool,
     pub(crate) sound_target_mutation: bool,
+    pub(crate) truncate: bool,
   }
 
   impl StaticAnalyze {
+    #[inline]
+    const fn new(
+      maybe_size_mismatch: Option<MetadataChecks>, maybe_invalid_bit_pattern: bool,
+      sound_target_mutation: bool, truncate: bool
+    ) -> Self {
+      Self { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation, truncate }
+    }
+    
     #[allow(unused)]
     #[inline]
     pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: false }
+      Self::new(maybe_size_mismatch, true, false, false)
+    }
+    
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, false, true)
     }
 
     #[allow(unused)]
     #[inline]
     pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self { maybe_size_mismatch, maybe_invalid_bit_pattern: true, sound_target_mutation: true }
+      Self::new(maybe_size_mismatch, true, true, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn fallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, true, true, true)
     }
 
     #[allow(unused)]
     #[inline]
     pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: false }
+      Self::new(maybe_size_mismatch, false, false, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, false, true)
     }
 
     #[allow(unused)]
     #[inline]
     pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
-      Self { maybe_size_mismatch, maybe_invalid_bit_pattern: false, sound_target_mutation: true }
+      Self::new(maybe_size_mismatch, false, true, false)
+    }
+
+    #[allow(unused)]
+    #[inline]
+    pub const fn infallible_mutable_truncate(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
+      Self::new(maybe_size_mismatch, false, true, true)
     }
   }
 
@@ -1720,11 +1791,15 @@ mod internal {
   impl Debug for StaticAnalyze {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation) {
-        (true, false) => "fallible",
-        (true, true) => "fallible_mutable",
-        (false, false) => "infallible",
-        (false, true) => "infallible_mutable",
+      let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation, self.truncate) {
+        (true, false, false) => "fallible",
+        (true, true, false) => "fallible_mutable",
+        (false, false, false) => "infallible",
+        (false, true, false) => "infallible_mutable",
+        (true, false, true) => "fallible_truncate",
+        (true, true, true) => "fallible_mutable_truncate",
+        (false, false, true) => "infallible_truncate",
+        (false, true, true) => "infallible_mutable_truncate",
       };
       let mut d = f.debug_tuple(tag);
       d.field(&self.maybe_size_mismatch);
@@ -2021,6 +2096,16 @@ mod internal {
     pub const CHECK: () = {
       unwrap!(Self::STATIC_ANALYZE);
     };
+    pub const CHECK_TRUNCATE: () = {
+      if !unwrap!(Self::STATIC_ANALYZE).truncate {
+        panic!("\n  does not need to be truncated.\n  use `transmute` instead.\n")
+      }
+    };
+    pub const CHECK_NO_TRUNCATE: () = {
+      if unwrap!(Self::STATIC_ANALYZE).truncate {
+        panic!("\n  target is too small.\n  use `truncate()` instead.\n")
+      }
+    };
     pub const CHECK_NO_SIZE_MISMATCH: () = {
       if let Some(checks) = unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
         use MetadataChecks::*;
@@ -2052,7 +2137,7 @@ mod internal {
       if align_of::<Dst>() > align_of::<Src>() {
         panic!(
           "\n  source alignment is too small to fulfill target alignment requirements, hence it \
-           requires a runtime check.\n  use `try_transmute!()` instead.\n",
+           requires a runtime check.\n  use `try_transmute()` instead.\n",
         )
       }
     };
@@ -2060,7 +2145,7 @@ mod internal {
       if unwrap!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
         panic!(
           "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
-           valid for target, which requires a runtime check.\n  use `try_transmute!()` instead.\n",
+           valid for target, which requires a runtime check.\n  use `try_transmute()` instead.\n",
         )
       }
     };
@@ -2198,7 +2283,8 @@ mod internal {
     // Static analyze result.
     let maybe_invalid_bit_pattern = !t.infallible;
     let sound_target_mutation = t.mutable;
-    Ok(StaticAnalyze { maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation })
+    let truncate = sh > dh && dt == 0;
+    Ok(StaticAnalyze::new(maybe_size_mismatch, maybe_invalid_bit_pattern, sound_target_mutation, truncate))
   }
 
   // impl Dropless ---------------------------------------------------------------------------------
