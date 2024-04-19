@@ -363,12 +363,12 @@ fn test_try_transmute() {
   ];
   
   let packed = pack!(
-    TestEnum::A,             // 4
-    u16lec::<0xcafe>::new(), // 4 + 2 = 6
+    TestEnum::A,
+    u16lec::<0xcafe>::new(),
     [
       pack!(u8c::<0x42>::new(), Unalign::new(TestEnum::B)),
       pack!(u8c::<0x42>::new(), Unalign::new(TestEnum::C))
-    ]  // 6 + 2 * (1 + 4) = 16
+    ]
   );
 
   assert_eq!(Some(packed), try_transmute(bytes));
