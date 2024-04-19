@@ -1,7 +1,8 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
-  parenthesized, parse_macro_input, token, Attribute, Data, DeriveInput, Error, Fields, Index, Path,
+  parenthesized, parse2, parse_macro_input, token, Attribute, Data, DeriveInput, Error, Fields,
+  Index, Path,
 };
 
 macro_rules! bail {
@@ -20,8 +21,9 @@ enum Repr {
   Transparant,
 }
 
-fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
+fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, bool, TokenStream) {
   let mut repr = Repr::Rust;
+  let mut packed = false;
   let mut root = quote!(::mutant);
   for attr in attrs {
     if attr.path().is_ident("repr") {
@@ -38,6 +40,10 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
           // #[repr(Rust)]
           if meta.path.is_ident("Rust") {
             repr = Repr::Rust;
+          }
+          // #[repr(packed)]
+          if meta.path.is_ident("packed") {
+            packed = true;
           }
           Ok(())
         })
@@ -64,13 +70,13 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
         .unwrap();
     }
   }
-  (repr, root)
+  (repr, packed, root)
 }
 
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
-  let (repr, root) = parse_derive_attr(&input.attrs);
+  let (repr, packed, root) = parse_derive_attr(&input.attrs);
 
   let data = match input.data {
     Data::Struct(data) => data,
@@ -90,16 +96,18 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     Fields::Named(fields) if !fields.named.is_empty() => &fields.named,
     Fields::Unnamed(fields) if !fields.unnamed.is_empty() => &fields.unnamed,
     // Empty struct, impl as `Layout::Void`.
-    _ => return proc_macro::TokenStream::from(quote! {
-      unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-        type Item = ();
-        type Tail = ();
-        type Repr = ();
+    _ => {
+      return proc_macro::TokenStream::from(quote! {
+        unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
+          type Item = ();
+          type Head = ();
+          type Tail = ();
+          type Repr = ();
 
-        const LAYOUT: #root::Layout = #root::Layout::Word { layout: #root::layout!(any) };
-        const HEADER: usize = 0;
-      }
-    })
+          const LAYOUT: #root::Layout = #root::Layout::Word { layout: #root::layout!(any) };
+        }
+      })
+    }
   };
 
   // Compute head.
@@ -108,13 +116,6 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     _ => unreachable!(),
   };
   let tail_ty = &tail.ty;
-  let tail_ident = match &tail.ident {
-    Some(ident) => quote!(#ident),
-    _ => {
-      let ident = Index { index: (input_fields.len() - 1) as u32, span: Span::call_site() };
-      quote!(#ident)
-    }
-  };
 
   // Compute `where` clause.
   let predicates = match repr {
@@ -140,8 +141,10 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
   };
 
-  // Compute head fields.
-  let mut impl_fields = vec![];
+  // Tokens that prefix `Data` implementation.
+  let mut prefix = vec![];
+
+  // Compute `Repr` fields.
   let fields = input_fields.iter().enumerate().rfold(quote!(()), |tail, (i, head)| {
     let ty = &head.ty;
     let field_ident = match &head.ident {
@@ -153,7 +156,7 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     };
     let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
     let fields = input_fields.len() - i;
-    impl_fields.push(quote! {
+    prefix.push(quote! {
       #[allow(non_camel_case_types)]
       #vis struct #struct_ident;
 
@@ -167,31 +170,92 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     quote!(#struct_ident)
   });
 
-  // Compute header size.
-  let header = match repr {
-    Repr::Rust => quote!(::core::mem::size_of::<Self>()),
-    Repr::C | Repr::Transparant => quote!({
-      let size = #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>();
-      if !#root::is_sized::<#tail_ty>() {
-        size
-      } else {
-        let align = #root::align_of::<Self>();
-        size.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
-      }
-    }),
+  // Compute head type.
+  let head = match repr {
+    Repr::Rust => quote!(Self),
+    Repr::Transparant => quote!(<#tail_ty as #root::Data>::Head),
+    Repr::C if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Head),
+    Repr::C => {
+      let ident = format_ident!("__{}Head", ident.to_string());
+      let map_tail_type = |new_type| {
+        let mut field = tail.clone();
+        field.ty = parse2(new_type).unwrap();
+        field
+      };
+      let fields = input_fields
+        .iter()
+        .take(input_fields.len() - 1)
+        .cloned()
+        .chain([
+          map_tail_type(quote!(<#tail_ty as #root::Data>::Head)),
+          map_tail_type(quote!([<#tail_ty as #root::Data>::Tail; 0])),
+        ])
+        .map(|mut field| {
+          field.ident = None;
+          field
+        })
+        .collect::<Vec<_>>();
+      let repr = fields.iter().enumerate().rfold(quote!(()), |tail, (i, head)| {
+        let ty = &head.ty;
+        let field_ident = {
+          let ident = Index { index: i as u32, span: Span::call_site() };
+          quote!(#ident)
+        };
+        let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
+        let fields = fields.len() - i;
+        prefix.push(quote! {
+          #[allow(non_camel_case_types)]
+          #vis struct #struct_ident;
+
+          unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
+            type Type = #ty;
+            type Rest = #tail;
+            const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
+            const FIELDS: usize = #fields;
+          }
+        });
+        quote!(#struct_ident)
+      });
+      let field_types = fields.iter().map(|field| &field.ty);
+      let repr_attr = if packed { quote!(#[repr(packed)]) } else { quote!(#[repr(C, packed)]) };
+      prefix.push(quote! {
+        #[allow(non_camel_case_types)]
+        #repr_attr
+        #vis struct #ident #impl_generics (#(#field_types),*) #where_clause;
+
+        impl #impl_generics ::core::marker::Copy for #ident #ty_generics #where_clause {}
+
+        impl #impl_generics ::core::clone::Clone for #ident #ty_generics #where_clause {
+          #[inline(always)]
+          fn clone(&self) -> Self {
+            *self
+          }
+        }
+
+        unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
+          type Item = ();
+          type Head = Self;
+          type Tail = ();
+          type Repr = #repr;
+
+          const LAYOUT: #root::Layout = #root::Layout::Struct;
+        }
+      });
+      quote!(#ident #ty_generics)
+    }
   };
 
   proc_macro::TokenStream::from(quote!(
     const _: () = {
-      #(#impl_fields)*
+      #(#prefix)*
 
       unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
         type Item = ();
+        type Head = #head;
         type Tail = <#tail_ty as #root::Data>::Tail;
         type Repr = #fields;
 
         const LAYOUT: #root::Layout = #root::Layout::Struct;
-        const HEADER: usize = #header;
       }
     };
   ))

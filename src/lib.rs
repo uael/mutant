@@ -168,7 +168,6 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
 use core::mem::ManuallyDrop;
-use core::ops::Range;
 
 pub use mutant_derive::Data;
 
@@ -544,6 +543,11 @@ pub unsafe trait Data: 'static {
   /// Type of slice or array item.
   type Item: Copy + Data;
 
+  /// Representation of the sized part of `Self`, equals to `Self` for [`Sized`] types.
+  /// This is part of the internal implementation and is subject to change without notice.
+  #[doc(hidden)]
+  type Head: Copy + Data;
+
   /// Type of the trailing slice item.
   /// This is part of the internal implementation and is subject to change without notice.
   #[doc(hidden)]
@@ -558,12 +562,6 @@ pub unsafe trait Data: 'static {
   /// This is part of the internal implementation and is subject to change without notice.
   #[doc(hidden)]
   const LAYOUT: Layout;
-
-  /// Size in bytes of the sized part of `Self`.
-  /// For [`Sized`](Sized) types, this is equals to [`mem::size_of`]`::<Self>()`.
-  /// This is part of the internal implementation and is subject to change without notice.
-  #[doc(hidden)]
-  const HEADER: usize;
 
   #[inline]
   fn cast<T: Data + Copy>(self) -> T
@@ -875,7 +873,7 @@ pub const fn matches<T: Word>(raw: &T::Raw) -> bool {
 
 #[inline]
 pub const fn min_size_of<T: ?Sized + Data>() -> usize {
-  T::HEADER
+  mem::size_of::<T::Head>()
 }
 
 #[inline]
@@ -1509,10 +1507,7 @@ mod internal {
     metadata: usize,
   ) -> usize {
     #[allow(clippy::let_unit_value)]
-    let _ = (
-      Transmutation::<T, U>::CHECK,
-      Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
-    );
+    let _ = (Transmutation::<T, U>::CHECK, Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH);
 
     match size_of_tail::<U>() {
       0 => 0,
@@ -2513,26 +2508,26 @@ mod internal {
 
   unsafe impl<T: Word> Data for T {
     type Item = ();
+    type Head = Self;
     type Tail = ();
     type Repr = ();
     const LAYOUT: Layout = Layout::Word { layout: T::WORD_LAYOUT };
-    const HEADER: usize = mem::size_of::<Self>();
   }
 
   unsafe impl<T: Copy + Data> Data for [T] {
     type Item = T;
+    type Head = ();
     type Tail = T;
     type Repr = ();
     const LAYOUT: Layout = Layout::Slice;
-    const HEADER: usize = 0;
   }
 
   unsafe impl<T: Copy + Data, const N: usize> Data for [T; N] {
     type Item = T;
+    type Head = Self;
     type Tail = ();
     type Repr = ();
     const LAYOUT: Layout = Layout::Array;
-    const HEADER: usize = mem::size_of::<Self>();
   }
 
   pub struct ManuallyDropRepr;
@@ -2546,12 +2541,12 @@ mod internal {
 
   unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
     type Item = ();
+    type Head = T::Head;
     type Tail = T::Tail;
     type Repr = ManuallyDropRepr;
-    const LAYOUT: Layout = Layout::Struct;
-    const HEADER: usize = {
+    const LAYOUT: Layout = {
       assert!(!mem::needs_drop::<T>());
-      T::HEADER
+      Layout::Struct
     };
   }
 
@@ -2574,35 +2569,10 @@ mod internal {
 
   unsafe impl<A: Copy + Data, B: Copy + Data> Data for (A, B) {
     type Item = ();
+    type Head = Self;
     type Tail = B::Tail;
     type Repr = Tuple0;
     const LAYOUT: Layout = Layout::Struct;
-    const HEADER: usize = mem::size_of::<Self>();
-  }
-
-  pub struct Start;
-  pub struct End;
-
-  unsafe impl<T: Copy + Data> Repr<Range<T>> for Start {
-    type Type = T;
-    type Rest = End;
-    const OFFSET: usize = offset_of!(Range<T>, start);
-    const FIELDS: usize = 2;
-  }
-
-  unsafe impl<T: Copy + Data> Repr<Range<T>> for End {
-    type Type = T;
-    type Rest = ();
-    const OFFSET: usize = offset_of!(Range<T>, end);
-    const FIELDS: usize = 1;
-  }
-
-  unsafe impl<T: Copy + Data> Data for Range<T> {
-    type Item = ();
-    type Tail = ();
-    type Repr = Start;
-    const LAYOUT: Layout = Layout::Struct;
-    const HEADER: usize = mem::size_of::<Self>();
   }
 
   // impl Word -------------------------------------------------------------------------------------
