@@ -101,7 +101,7 @@ mod hci {
   use super::*;
   use core::fmt;
   use core::fmt::{Debug, Formatter};
-  use std::mem;
+  use core::mem::{self, ManuallyDrop};
 
   pub trait Socket {
     async fn socket_recv(&self) -> &Packet<[u8]>;
@@ -112,7 +112,7 @@ mod hci {
   #[repr(C, packed)]
   pub struct Packet<T: ?Sized + PacketData> {
     pub r#type: T::PacketType,
-    pub data: Dropless<T>,
+    pub data: ManuallyDrop<T>,
   }
 
   impl<T: PacketData> Packet<T> {
@@ -120,7 +120,7 @@ mod hci {
     where
       T::PacketType: Default,
     {
-      Self { r#type: T::PacketType::default(), data: Dropless::new(data) }
+      Self { r#type: T::PacketType::default(), data: ManuallyDrop::new(data) }
     }
   }
 
@@ -169,7 +169,7 @@ mod hci {
   pub struct Acl<T: ?Sized> {
     pub handle_and_flags: u16le,
     pub data_total_len: u16le,
-    pub parameters: Dropless<T>,
+    pub parameters: ManuallyDrop<T>,
   }
 
   impl<T: ?Sized + Debug + Data> Debug for Acl<T> {
@@ -187,7 +187,7 @@ mod hci {
   pub struct Event<T: ?Sized + EventData> {
     pub event_code: T::EventCode,
     pub parameters_len: u8,
-    pub parameters: Dropless<T>,
+    pub parameters: ManuallyDrop<T>,
   }
 
   impl<T: EventData> Event<T> {
@@ -198,7 +198,7 @@ mod hci {
       Self {
         event_code: T::EventCode::default(),
         parameters_len: mem::size_of::<T>() as u8,
-        parameters: Dropless::new(data),
+        parameters: ManuallyDrop::new(data),
       }
     }
   }
@@ -251,7 +251,7 @@ mod hci {
   pub struct CommandComplete<T: ?Sized + CommandData> {
     pub op_code: T::OpCode,
     pub status: u8,
-    pub result_parameters: Dropless<T::ResultParameters>,
+    pub result_parameters: ManuallyDrop<T::ResultParameters>,
   }
 
   #[derive(Debug, Copy, Clone, PartialEq, Data)]
@@ -288,14 +288,14 @@ mod hci {
     T: ?Sized + Many<Item = CompletedPackets> = [CompletedPackets],
   > {
     pub num_handles: u8,
-    pub completed_packets: Dropless<T>,
+    pub completed_packets: ManuallyDrop<T>,
   }
 
   impl<T: Many<Item = CompletedPackets>> NumberOfCompletedPackets<T> {
     pub fn new(completed_packets: T) -> Self {
       Self {
         num_handles: as_slice(&completed_packets).len() as u8,
-        completed_packets: Dropless::new(completed_packets),
+        completed_packets: ManuallyDrop::new(completed_packets),
       }
     }
   }
@@ -305,7 +305,7 @@ mod hci {
   pub struct Command<T: ?Sized + CommandData> {
     pub op_code: T::OpCode,
     pub parameters_len: u8,
-    pub parameters: Dropless<T>,
+    pub parameters: ManuallyDrop<T>,
   }
 
   pub trait CommandData: Data {

@@ -168,6 +168,7 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
 use core::mem::ManuallyDrop;
+use core::ops::Deref;
 
 pub use mutant_derive::Data;
 
@@ -287,7 +288,7 @@ macro_rules! offset_of {
   }};
 }
 
-/// Assert that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
+/// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
 #[inline]
 #[doc(hidden)]
 #[rustfmt::skip]
@@ -295,14 +296,8 @@ pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
   struct Assert<T: ?Sized>(*const T);
   impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
   #[allow(clippy::let_unit_value)]
-  let _ = Assert::<T>::ASSERT_UNALIGNED;
+    let _ = Assert::<T>::ASSERT_UNALIGNED;
 }
-
-/// Assert that a [`Data`] type is sized.
-#[inline]
-#[doc(hidden)]
-#[rustfmt::skip]
-pub const fn const_assert_sized<T: Data>(_: *const T) {}
 
 /// Identity function used by the [`layout`] macro.
 #[inline]
@@ -449,33 +444,6 @@ pub enum Error {
   InvalidBitPattern,
 }
 
-/// A wrapper to ensure the inner type does not require dropping.
-///
-/// `Dropless` is used to encapsulate types within packed structs, verifying that
-/// they do not implement the `Drop` trait. This check is essential to prevent
-/// undefined behavior that can arise if Rust automatically tries to drop a field
-/// in a packed struct, where standard drop semantics might lead to memory safety issues.
-///
-/// # Examples
-///
-/// ```
-/// use mutant::Dropless;
-///
-/// #[repr(packed)]
-/// struct FooPacked<T: ?Sized>(u8, Dropless<T>);
-///
-/// // Example usage with a packed struct
-/// let foo = FooPacked(1, Dropless::new(1234));
-/// // The `Dropless` wrapper checks that `1234` (the inner data) does not need to be dropped.
-/// ```
-///
-/// In this example, `Dropless` is used in `FooPacked` to wrap the value `1234`.
-/// It ensures that this value, as the inner data, does not require drop semantics.
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
-#[data(crate)]
-#[repr(transparent)]
-pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
-
 /// A wrapper to un-align types that originally require alignment (align > 1).
 ///
 /// `Unalign` is used to safely encapsulate types within structures while
@@ -507,7 +475,7 @@ pub struct Dropless<T: ?Sized>(ManuallyDrop<T>);
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
 #[data(crate)]
 #[repr(C, packed)]
-pub struct Unalign<T: ?Sized>(ManuallyDrop<T>);
+pub struct Unalign<T>(ManuallyDrop<T>);
 
 /// Marker trait for plain word types (e.g. integers or enum discriminants).
 ///
@@ -549,8 +517,6 @@ pub unsafe trait Data: 'static {
   type Head: Copy + Data;
 
   /// Type of the trailing slice item.
-  /// This is part of the internal implementation and is subject to change without notice.
-  #[doc(hidden)]
   type Tail: Copy + Data;
 
   /// Fields of `Self`. Non-empty only for `struct` types.
@@ -636,53 +602,54 @@ macro_rules! Pack {
 #[macro_export]
 macro_rules! pack {
   ($a:expr $(,)?) => {
-    $crate::Pack1(Dropless::new($a))
+    $crate::Pack1(::core::mem::ManuallyDrop::new($a))
   };
   ($a:expr, $b:expr $(,)?) => {
-    $crate::Pack2($a, Dropless::new($b))
+    $crate::Pack2($a, ::core::mem::ManuallyDrop::new($b))
   };
   ($a:expr, $b:expr, $c:expr $(,)?) => {
-    $crate::Pack3($a, $b, Dropless::new($c))
+    $crate::Pack3($a, $b, ::core::mem::ManuallyDrop::new($c))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr $(,)?) => {
-    $crate::Pack4($a, $b, $c, Dropless::new($d))
+    $crate::Pack4($a, $b, $c, ::core::mem::ManuallyDrop::new($d))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr $(,)?) => {
-    $crate::Pack5($a, $b, $c, $d, Dropless::new($e))
+    $crate::Pack5($a, $b, $c, $d, ::core::mem::ManuallyDrop::new($e))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr $(,)?) => {
-    $crate::Pack6($a, $b, $c, $d, $e, Dropless::new($f))
+    $crate::Pack6($a, $b, $c, $d, $e, ::core::mem::ManuallyDrop::new($f))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr $(,)?) => {
-    $crate::Pack7($a, $b, $c, $d, $e, $f, Dropless::new($g))
+    $crate::Pack7($a, $b, $c, $d, $e, $f, ::core::mem::ManuallyDrop::new($g))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr $(,)?) => {
-    $crate::Pack8($a, $b, $c, $d, $e, $f, $g, Dropless::new($h))
+    $crate::Pack8($a, $b, $c, $d, $e, $f, $g, ::core::mem::ManuallyDrop::new($h))
   };
   ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr $(,)?) => {
-    $crate::Pack9($a, $b, $c, $d, $e, $f, $g, $h, Dropless::new($i))
+    $crate::Pack9($a, $b, $c, $d, $e, $f, $g, $h, ::core::mem::ManuallyDrop::new($i))
   };
-}
-
-/// Safely read unaligned data.
-#[macro_export]
-macro_rules! unaligned_copy {
-  ($base:expr, $($fields:tt).+) => {{
-    let base: &_ = $base;
-    let addr = core::ptr::addr_of!(base.$($fields).+);
-    $crate::const_assert_sized(addr);
-    // SAFETY:
-    // - `base` has been checked to be a valid reference hence not a dangling pointer.
-    unsafe { ::core::ptr::read_unaligned(addr) }
-  }};
-  ($base:tt.$field:tt.$($fields:tt).+) => {{
-    let base = $crate::unaligned_copy!($base.$field);
-    $crate::unaligned_copy!(base.$($fields).+)
-  }};
-  ($base:tt.$field:tt) => ($crate::unaligned_copy!($base, $field));
 }
 
 /// Safely reference unaligned data.
+///
+/// # Examples
+/// ```
+/// use mutant::unaligned_ref;
+///
+/// #[repr(C, packed)]
+/// struct Unaligned {
+///   a: u8,
+///   b: u16,
+///   c: u8,
+/// }
+///
+/// let unaligned = &Unaligned { a: 1, b: 2, c: 3 };
+/// // `unaligned.a` alignment is 1, hence safe to reference:
+/// assert_eq!(&1, unaligned_ref!(unaligned.a));
+/// // But `unaligned.b` alignment is 2, hence not safe to reference directly:
+/// // let b = unaligned_ref!(&unaligned, b); // this does not compile.
+/// unaligned_ref!(unaligned.b @b in assert_eq!(&2, b));
+/// ```
 #[macro_export]
 macro_rules! unaligned_ref {
   ($base:expr, $($fields:tt).+) => {{
@@ -690,15 +657,43 @@ macro_rules! unaligned_ref {
     let addr = core::ptr::addr_of!(base.$($fields).+);
     $crate::const_assert_unaligned(addr);
     // SAFETY:
-    // - `base` has been checked to be a valid reference hence not a dangling pointer.
+    // - `addr` came from valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &*addr }
   }};
-  ($base:tt.$field:tt.$($fields:tt).+) => {{
-    let base = $crate::unaligned_ref!($base.$field);
-    $crate::unaligned_ref!(base.$($fields).+)
+  ($base:expr, $($fields:tt).+ @$var:ident in $ex:expr) => {{
+    let base: &_ = $base;
+    let mut addr = core::ptr::addr_of!(base.$($fields).+);
+    if $crate::is_sized_val_raw(addr) && $crate::align_of_val_raw(addr) > 1 {
+      #[inline] // A function for typing inference.
+      const fn downcast<T: ?Sized + $crate::Data>(ptr: *const T) -> *const T::Head { ptr.cast() }
+
+      // `T` is `Sized` hence `T::Head` is equals to `T`:
+      // 1. Load `T::Head` to stack.
+      // SAFETY: `addr` came from valid reference hence not a dangling pointer.
+      let head = unsafe { ::core::ptr::read_unaligned(downcast(addr)) };
+      // 2. Make `addr` point to `head` instead.
+      addr = $crate::ptr::from_raw_parts($crate::ptr::from_ref(&head).cast(), 0);
+      // SAFETY: `addr` came from valid reference hence not a dangling pointer.
+      let $var = unsafe { &*addr };
+      $ex
+    } else {
+      // `T` is `!Sized`: assert that `T` has no alignment requirement.
+      assert!($crate::align_of_val_raw(addr) == 1);
+      // SAFETY:
+      // - `addr` came from valid reference hence not a dangling pointer.
+      // - The call to `assert_unaligned` ensure field un-alignment.
+      let $var = unsafe { &*addr };
+      $ex
+    }
   }};
-  ($base:tt.$field:tt) => ($crate::unaligned_ref!($base, $field));
+  ($base:tt.$field:tt.$($fields:tt).+ $(@$var:ident in $ex:expr)?) => {{
+    let base = $crate::unaligned_ref!($base.$field);
+    $crate::unaligned_ref!(base.$($fields).+ $(@$var in $ex)?)
+  }};
+  ($base:tt.$field:tt $(@$var:ident in $ex:expr)?) => (
+    $crate::unaligned_ref!($base, $field $(@$var in $ex)?)
+  );
 }
 
 /// Safely mutably reference unaligned data.
@@ -709,7 +704,7 @@ macro_rules! unaligned_mut {
     let addr = core::ptr::addr_of_mut!(base.$($fields).+);
     $crate::const_assert_unaligned(addr);
     // SAFETY:
-    // - `base` has been checked to be a valid reference hence not a dangling pointer.
+    // - `addr` came from valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &mut *addr }
   }};
@@ -726,26 +721,28 @@ macro_rules! decl_pack {
     #[repr(C, packed)]
     #[derive(Data, Copy, Clone)]
     #[data(crate)]
-    pub struct $name<$($t,)* $tt: ?Sized>($(pub $t,)* pub Dropless<$tt>);
+    pub struct $name<$($t,)* $tt: Data + ?Sized>($(pub $t,)* pub ::core::mem::ManuallyDrop<$tt>);
 
-    impl<$($t: Data + Debug,)* $tt: Data + Debug + ?Sized> Debug for $name<$($t,)* $tt> {
+    impl<$($t: Copy + Debug,)* $tt: Data + Debug + ?Sized> Debug for $name<$($t,)* $tt>
+    where <$tt as Data>::Head: Debug {
       fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("")
-          $(.field(&unaligned_copy!(self.$f)))*
-          .field(&unaligned_ref!(self.$ft))
-          .finish()
+        let mut d = f.debug_tuple("");
+        $(d.field(&{ self.$f });)*
+        unaligned_ref!(self.$ft @tail in d.field(&tail.deref()));
+        d.finish()
       }
     }
 
-    impl<$($t: Data + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt> {}
-
-    impl<$($t: Data + PartialEq,)* $tt: Data + PartialEq + ?Sized> PartialEq for $name<$($t,)* $tt>
-    {
+    impl<$($t: Copy + PartialEq,)* $tt: Data + PartialEq + ?Sized> PartialEq for $name<$($t,)* $tt>
+    where <$tt as Data>::Head: PartialEq {
       fn eq(&self, other: &Self) -> bool {
-        $(unaligned_copy!(self.$f).eq(&unaligned_copy!(other.$f)) &&)*
-          unaligned_ref!(self.$ft).eq(unaligned_ref!(other.$ft))
+        $(if !{ self.$f }.eq(&{ other.$f }) { return false; })*
+        unaligned_ref!(self.$ft @a in unaligned_ref!(other.$ft @b in a.deref().eq(b.deref())))
       }
     }
+
+    impl<$($t: Copy + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt>
+    where <$tt as Data>::Head: Eq {}
   )+};
 }
 
@@ -792,6 +789,16 @@ pub const fn align_of<T: ?Sized>() -> usize {
 }
 
 #[inline]
+pub const fn align_of_val<T: ?Sized>(_: &T) -> usize {
+  align_of::<T>()
+}
+
+#[inline]
+pub const fn align_of_val_raw<T: ?Sized>(_: *const T) -> usize {
+  align_of::<T>()
+}
+
+#[inline]
 pub fn as_mut_slice<T: ?Sized + Many>(val: &mut T) -> &mut [T::Item] {
   let ptr: *mut T = val;
   let ptr = ptr.cast::<T::Item>();
@@ -817,6 +824,14 @@ pub const fn as_slice<T: ?Sized + Many>(val: &T) -> &[T::Item] {
   unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
+#[inline]
+pub const fn tail_of<T: ?Sized + Data>(val: &T) -> &[T::Tail] {
+  let ptr: *const T = val;
+  let ptr = unsafe { ptr.cast::<T::Head>().add(1).cast::<T::Tail>() };
+  assert!(is_aligned_to_raw(ptr, align_of::<T::Tail>()));
+  unsafe { core::slice::from_raw_parts(ptr, ptr::metadata(val)) }
+}
+
 /// Returns whatever a value of type `T` is aligned to `align`.
 #[inline]
 pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
@@ -835,12 +850,12 @@ pub const fn is_aligned_to_raw<T: ?Sized + Data>(val: *const T, align: usize) ->
 
 #[inline]
 pub const fn is_sized_val<T: ?Sized + Data>(_: &T) -> bool {
-  !is_sized::<T>()
+  !is_unsized::<T>()
 }
 
 #[inline]
 pub const fn is_sized_val_raw<T: ?Sized + Data>(_: *const T) -> bool {
-  !is_sized::<T>()
+  !is_unsized::<T>()
 }
 
 #[inline]
@@ -2384,58 +2399,6 @@ mod internal {
     }
   }
 
-  // impl Dropless ---------------------------------------------------------------------------------
-
-  impl<T: ?Sized> Dropless<T> {
-    const ASSERT_NOT_DROP: () = assert!(!mem::needs_drop::<T>());
-  }
-
-  impl<T> Dropless<T> {
-    #[inline]
-    pub const fn new(value: T) -> Self {
-      #[allow(clippy::let_unit_value)]
-      let _ = Self::ASSERT_NOT_DROP;
-      Self(ManuallyDrop::new(value))
-    }
-
-    #[inline]
-    pub const fn into_inner(self) -> T {
-      #[allow(clippy::let_unit_value)]
-      let _ = Self::ASSERT_NOT_DROP;
-      ManuallyDrop::into_inner(self.0)
-    }
-  }
-
-  impl<T: ?Sized> Deref for Dropless<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-      self.0.deref()
-    }
-  }
-
-  impl<T: ?Sized> DerefMut for Dropless<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-      self.0.deref_mut()
-    }
-  }
-
-  impl<T: Display + ?Sized> Display for Dropless<T> {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      Display::fmt(self.deref(), f)
-    }
-  }
-
-  impl<T: Debug + ?Sized> Debug for Dropless<T> {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      Debug::fmt(self.deref(), f)
-    }
-  }
-
   // impl Unalign ----------------------------------------------------------------------------------
 
   impl<T> Unalign<T> {
@@ -2459,7 +2422,7 @@ mod internal {
     }
   }
 
-  impl<T: Data + ?Sized> Deref for Unalign<T> {
+  impl<T: Data> Deref for Unalign<T> {
     type Target = T;
 
     #[inline]
@@ -2468,7 +2431,7 @@ mod internal {
     }
   }
 
-  impl<T: Data + ?Sized> DerefMut for Unalign<T> {
+  impl<T: Data> DerefMut for Unalign<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
       unaligned_mut!(self.0)

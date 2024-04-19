@@ -355,7 +355,7 @@ fn test_try_transmute() {
   assert_eq!(None, try_transmute::<_, TestEnum>(0x00000000));
   assert_eq!(None, try_transmute::<_, TestEnum>(0x04040404));
 
-  type DstPacked = Pack![TestEnum, u16lec<0xcafe>, [Pack![u8c<0x42>, Unalign<TestEnum>]]];
+  type DstPacked = Pack![TestEnum, u16lec<0xcafe>, [Pack![u8c<0x42>, TestEnum]]];
 
   let bytes = [
     0x01u8, 0x01, 0x01, 0x01, 0xfe, 0xca, 0x42, 0x02, 0x02, 0x02, 0x02, 0x42, 0x03, 0x03, 0x03,
@@ -365,10 +365,7 @@ fn test_try_transmute() {
   let packed = pack!(
     TestEnum::A,
     u16lec::<0xcafe>::new(),
-    [
-      pack!(u8c::<0x42>::new(), Unalign::new(TestEnum::B)),
-      pack!(u8c::<0x42>::new(), Unalign::new(TestEnum::C))
-    ]
+    [pack!(u8c::<0x42>::new(), TestEnum::B), pack!(u8c::<0x42>::new(), TestEnum::C)]
   );
 
   assert_eq!(Some(packed), try_transmute(bytes));
