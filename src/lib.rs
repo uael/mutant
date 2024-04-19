@@ -788,11 +788,15 @@ pub const fn align_of<T: ?Sized>() -> usize {
   offset_of!(AlignOf<T>, 1)
 }
 
+/// Returns the minimum alignment of a value in bytes. Also accept unsized types with
+/// relaxed `?`[`Sized`] bound.
 #[inline]
 pub const fn align_of_val<T: ?Sized>(_: &T) -> usize {
   align_of::<T>()
 }
 
+/// Returns the minimum alignment of a value address in bytes. Also accept unsized types with
+/// relaxed `?`[`Sized`] bound.
 #[inline]
 pub const fn align_of_val_raw<T: ?Sized>(_: *const T) -> usize {
   align_of::<T>()
@@ -801,35 +805,39 @@ pub const fn align_of_val_raw<T: ?Sized>(_: *const T) -> usize {
 #[inline]
 pub fn as_mut_slice<T: ?Sized + Many>(val: &mut T) -> &mut [T::Item] {
   let ptr: *mut T = val;
-  let ptr = ptr.cast::<T::Item>();
   let len = match T::LAYOUT {
     Layout::Slice | Layout::Array if mem::size_of::<T::Item>() == 0 => return &mut [],
     Layout::Slice => ptr::metadata(val),
     Layout::Array => min_size_of::<T>() / mem::size_of::<T::Item>(),
     _ => return &mut [],
   };
-  unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+  unsafe { &mut *ptr::from_raw_parts_mut(ptr.cast(), len) }
 }
 
 #[inline]
 pub const fn as_slice<T: ?Sized + Many>(val: &T) -> &[T::Item] {
   let ptr: *const T = val;
-  let ptr = ptr.cast::<T::Item>();
   let len = match T::LAYOUT {
     Layout::Slice | Layout::Array if mem::size_of::<T::Item>() == 0 => return &[],
     Layout::Slice => ptr::metadata(val),
     Layout::Array => min_size_of::<T>() / mem::size_of::<T::Item>(),
     _ => return &[],
   };
-  unsafe { core::slice::from_raw_parts(ptr, len) }
+  unsafe { &*ptr::from_raw_parts(ptr.cast(), len) }
 }
 
 #[inline]
 pub const fn tail_of<T: ?Sized + Data>(val: &T) -> &[T::Tail] {
   let ptr: *const T = val;
   let ptr = unsafe { ptr.cast::<T::Head>().add(1).cast::<T::Tail>() };
-  assert!(is_aligned_to_raw(ptr, align_of::<T::Tail>()));
-  unsafe { core::slice::from_raw_parts(ptr, ptr::metadata(val)) }
+  assert!(is_aligned_raw(ptr));
+  unsafe { &*ptr::from_raw_parts(ptr.cast(), ptr::metadata(val)) }
+}
+
+/// Returns whatever an address to `T` is correctly aligned.
+#[inline]
+pub const fn is_aligned_raw<T: ?Sized + Data>(val: *const T) -> bool {
+  is_aligned_to_raw(val, align_of_val_raw(val))
 }
 
 /// Returns whatever a value of type `T` is aligned to `align`.
@@ -838,7 +846,7 @@ pub const fn is_aligned_to<T: ?Sized + Data>(val: &T, align: usize) -> bool {
   is_aligned_to_raw(val, align)
 }
 
-/// Returns whatever a value of type `T` is aligned to `align`.
+/// Returns whatever an address to `T` is aligned to `align`.
 #[inline]
 pub const fn is_aligned_to_raw<T: ?Sized + Data>(val: *const T, align: usize) -> bool {
   assert!(align.is_power_of_two(), "alignment must be power of 2");
@@ -850,34 +858,29 @@ pub const fn is_aligned_to_raw<T: ?Sized + Data>(val: *const T, align: usize) ->
 
 #[inline]
 pub const fn is_sized_val<T: ?Sized + Data>(_: &T) -> bool {
-  !is_unsized::<T>()
+  is_sized::<T>()
 }
 
 #[inline]
 pub const fn is_sized_val_raw<T: ?Sized + Data>(_: *const T) -> bool {
-  !is_unsized::<T>()
+  is_sized::<T>()
 }
 
 #[inline]
 pub const fn is_sized<T: ?Sized + Data>() -> bool {
-  !is_unsized::<T>()
-}
-
-#[inline]
-pub const fn is_unsized<T: ?Sized + Data>() -> bool {
   #[inline]
-  const fn repr_is_unsized<R: Repr<T>, T: ?Sized + Data>() -> bool {
+  const fn repr_is_sized<R: Repr<T>, T: ?Sized + Data>() -> bool {
     match R::FIELDS {
       0 => false,
-      1 => is_unsized::<R::Type>(),
-      _ => repr_is_unsized::<R::Rest, T>(),
+      1 => is_sized::<R::Type>(),
+      _ => repr_is_sized::<R::Rest, T>(),
     }
   }
 
   match T::LAYOUT {
-    Layout::Slice => true,
-    Layout::Struct => repr_is_unsized::<T::Repr, T>(),
-    _ => false,
+    Layout::Slice => false,
+    Layout::Struct => repr_is_sized::<T::Repr, T>(),
+    _ => true,
   }
 }
 
@@ -892,6 +895,16 @@ pub const fn min_size_of<T: ?Sized + Data>() -> usize {
 }
 
 #[inline]
+pub const fn min_size_of_val<T: ?Sized + Data>(_: &T) -> usize {
+  min_size_of::<T>()
+}
+
+#[inline]
+pub const fn min_size_of_val_raw<T: ?Sized + Data>(_: *const T) -> usize {
+  min_size_of::<T>()
+}
+
+#[inline]
 pub const fn size_of_tail<T: ?Sized + Data>() -> usize {
   mem::size_of::<T::Tail>()
 }
@@ -902,8 +915,18 @@ pub const fn size_of_tail_val<T: ?Sized + Data>(val: &T) -> usize {
 }
 
 #[inline]
+pub const fn size_of_tail_val_raw<T: ?Sized + Data>(val: *const T) -> usize {
+  ptr::metadata(val) * size_of_tail::<T>()
+}
+
+#[inline]
 pub const fn size_of_val<T: ?Sized + Data>(val: &T) -> usize {
   min_size_of::<T>() + size_of_tail_val(val)
+}
+
+#[inline]
+pub const fn size_of_val_raw<T: ?Sized + Data>(val: *const T) -> usize {
+  min_size_of::<T>() + size_of_tail_val_raw(val)
 }
 
 #[inline]
@@ -940,37 +963,6 @@ pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
     internal::Transmutation::<T, U>::CHECK_NO_TRUNCATE,
-    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
-    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
-  );
-
-  union Transmute<T: Copy, U: Copy> {
-    val: T,
-    dst: U,
-  }
-  unsafe { Transmute { val }.dst }
-}
-
-/// Safe transmute & truncate from a value of type `T` to a value of type `U`. The safety of this
-/// transmutation is guaranteed by static analysis at compile time, hence a call to [`truncate`]
-/// that compile is safe & sound.
-///
-/// This function is `const` and can be used in a `const` context.
-///
-/// # Examples
-/// ```
-/// assert_eq!(123u8, mutant::truncate(123u32));
-///
-/// // With arrays:
-/// assert_eq!([0, 1], mutant::truncate::<_, [u8; 2]>([false, true, false]));
-/// assert_eq!(0, mutant::truncate::<_, u16>([false, false, false]));
-/// ```
-#[inline]
-pub const fn truncate<T: Data + Copy, U: Data + Copy>(val: T) -> U {
-  #[allow(clippy::let_unit_value)]
-  let _ = (
-    internal::Transmutation::<T, U>::CHECK,
-    internal::Transmutation::<T, U>::CHECK_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
   );
@@ -1072,6 +1064,58 @@ pub const fn transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
   unsafe { &*ptr }
 }
 
+/// Safe transmute & truncate from a value of type `T` to a value of type `U`. The safety of this
+/// transmutation is guaranteed by static analysis at compile time, hence a call to [`truncate`]
+/// that compile is safe & sound.
+///
+/// This function is `const` and can be used in a `const` context.
+///
+/// # Examples
+/// ```
+/// assert_eq!(123u8, mutant::truncate(123u32));
+///
+/// // With arrays:
+/// assert_eq!([0, 1], mutant::truncate::<_, [u8; 2]>([false, true, false]));
+/// assert_eq!(0, mutant::truncate::<_, u16>([false, false, false]));
+/// ```
+#[inline]
+pub const fn truncate<T: Data + Copy, U: Data + Copy>(val: T) -> U {
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_TRUNCATE,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+  );
+
+  union Transmute<T: Copy, U: Copy> {
+    val: T,
+    dst: U,
+  }
+  unsafe { Transmute { val }.dst }
+}
+
+#[inline]
+pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, &[T::Tail])> {
+  if mid < min_size_of::<T>() || mid > size_of_val(val) {
+    return None;
+  }
+  if mid == size_of_val(val) {
+    return Some((val, &[]));
+  }
+  let tail = mid - min_size_of::<T>();
+  if tail % mem::size_of::<T::Tail>() != 0 {
+    return None;
+  }
+  let ptr: *const u8 = (val as *const T).cast();
+  let val_ptr = ptr::from_raw_parts::<T>(ptr.cast(), tail / mem::size_of::<T::Tail>());
+  let rest_ptr = ptr::from_raw_parts::<[T::Tail]>(
+    unsafe { ptr.add(mid) }.cast(),
+    ptr::metadata(val) - ptr::metadata(val_ptr),
+  );
+  Some(unsafe { (&*val_ptr, &*rest_ptr) })
+}
+
 #[inline]
 pub fn try_transmute<T: Data + Copy, U: Data + Copy>(val: T) -> Option<U> {
   try_transmute_copy(&val)
@@ -1134,27 +1178,6 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> R
     true => Ok(unsafe { &*ptr }),
     _ => Err(Error::InvalidBitPattern),
   }
-}
-
-#[inline]
-pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, &[T::Tail])> {
-  if mid < min_size_of::<T>() || mid > size_of_val(val) {
-    return None;
-  }
-  if mid == size_of_val(val) {
-    return Some((val, &[]));
-  }
-  let tail = mid - min_size_of::<T>();
-  if tail % mem::size_of::<T::Tail>() != 0 {
-    return None;
-  }
-  let ptr: *const u8 = (val as *const T).cast();
-  let val_ptr = ptr::from_raw_parts::<T>(ptr.cast(), tail / mem::size_of::<T::Tail>());
-  let rest_ptr = ptr::from_raw_parts::<[T::Tail]>(
-    unsafe { ptr.add(mid) }.cast(),
-    ptr::metadata(val) - ptr::metadata(val_ptr),
-  );
-  Some(unsafe { (&*val_ptr, &*rest_ptr) })
 }
 
 pub mod num {
@@ -1482,7 +1505,7 @@ mod internal {
     #[inline]
     const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
       offset >= R::OFFSET
-        && (is_unsized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
+        && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
     }
 
     #[inline]
