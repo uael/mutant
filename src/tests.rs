@@ -12,9 +12,9 @@ enum TestEnum {
   C = 0x03030303,
 }
 
-unsafe impl Word for TestEnum {
-  type Raw = u32;
-  const WORD_LAYOUT: &'static WordLayout = layout!(0x01010101 | 0x02020202 | 0x03030303);
+unsafe impl Integer for TestEnum {
+  type Bits = u32;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(0x01010101, 0x02020202, 0x03030303);
 }
 
 #[repr(u8)]
@@ -24,9 +24,9 @@ enum UpTo1u8 {
   _1 = 1,
 }
 
-unsafe impl Word for UpTo1u8 {
-  type Raw = u8;
-  const WORD_LAYOUT: &'static WordLayout = layout!(0 | 1);
+unsafe impl Integer for UpTo1u8 {
+  type Bits = u8;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1);
 }
 
 #[repr(u16)]
@@ -36,9 +36,9 @@ enum UpTo1u16 {
   _1 = 1,
 }
 
-unsafe impl Word for UpTo1u16 {
-  type Raw = u16;
-  const WORD_LAYOUT: &'static WordLayout = layout!(0 | 1);
+unsafe impl Integer for UpTo1u16 {
+  type Bits = u16;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1);
 }
 
 #[repr(u8)]
@@ -49,9 +49,9 @@ enum UpTo2u8 {
   _2 = 2,
 }
 
-unsafe impl Word for UpTo2u8 {
-  type Raw = u8;
-  const WORD_LAYOUT: &'static WordLayout = layout!(0 | 1 | 2);
+unsafe impl Integer for UpTo2u8 {
+  type Bits = u8;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1, 2);
 }
 
 #[repr(u16)]
@@ -62,27 +62,28 @@ enum UpTo2u16 {
   _2 = 2,
 }
 
-unsafe impl Word for UpTo2u16 {
-  type Raw = u16;
-  const WORD_LAYOUT: &'static WordLayout = layout!(0 | 1 | 2);
+unsafe impl Integer for UpTo2u16 {
+  type Bits = u16;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1, 2);
 }
 
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 struct NonMaxU8(u8);
 
-unsafe impl Word for NonMaxU8 {
-  type Raw = u8;
-  const WORD_LAYOUT: &'static WordLayout = layout!(!u8::MAX);
+unsafe impl Integer for NonMaxU8 {
+  type Bits = u8;
+  const INT_LAYOUT: &'static IntegerLayout = layout!(!u8::MAX);
 }
 
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 struct Uninit(u8);
 
-unsafe impl Word for Uninit {
-  type Raw = Self;
-  const WORD_LAYOUT: &'static WordLayout = WordLayout::from_ref::<0, 0>(&(1, 0, []));
+unsafe impl Integer for Uninit {
+  type Bits = Self;
+  const INT_LAYOUT: &'static IntegerLayout =
+    IntegerLayout::from_ref::<0, 0>(&(1, bits::UNINIT, []));
 }
 
 #[test]
@@ -300,6 +301,30 @@ fn test_static_analyze() {
   test!(NonMaxU8 NonZeroU8 => fallible);
 
   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
+}
+
+#[test]
+#[allow(clippy::bool_assert_comparison)]
+fn test_default() {
+  assert_eq!(0, default::<u8>());
+  assert_eq!(0, default::<u16>());
+  assert_eq!(false, default::<bool>());
+  assert_eq!(None, default::<Option<NonZeroU8>>());
+  assert_eq!(NonZeroU8::new(1).unwrap(), default::<NonZeroU8>());
+  assert_eq!([false, false, false, false], default::<[bool; 4]>());
+  assert_eq!([0xca; 4], transmute::<_, [u8; 4]>(default::<[u8c<0xca>; 4]>()));
+  assert_eq!([0xcafe; 4], transmute::<_, [u16; 4]>(default::<[u16c<0xcafe>; 4]>()));
+  assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[u32c<0xcafebeef>; 4]>()));
+}
+
+#[test]
+#[allow(clippy::bool_assert_comparison)]
+fn test_zeroed() {
+  assert_eq!(0, zeroed::<u8>());
+  assert_eq!(0, zeroed::<u16>());
+  assert_eq!(false, zeroed::<bool>());
+  assert_eq!(None, zeroed::<Option<NonZeroU8>>());
+  assert_eq!([false, false, false, false], zeroed::<[bool; 4]>());
 }
 
 #[test]

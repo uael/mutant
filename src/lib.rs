@@ -1,33 +1,5 @@
 //! ***Efficient, safe, transmutation. Even for dynamically-sized types.***
 //!
-//! `mutant` is a Rust crate providing safe and efficient transmutation between types,
-//! including support for dynamically-sized types (`?Sized`). It empowers developers to
-//! perform zero-cost, type-safe memory reinterpretations, extending Rust's capabilities
-//! in systems programming, embedded systems, and other scenarios requiring fine-grained
-//! control over data representation.
-//!
-//! # Overview
-//!
-//! `mutant` primarily offers the [`Data`] trait, which, when derived, allows for safe and
-//! efficient transmutation between compatible types. The trait can be automatically
-//! implemented on structs using the [`Data`] derive macro, ensuring correctness and
-//! safety at compile-time. This crate stands out by supporting dynamically-sized types,
-//! a feature not commonly found in similar crates like `zerocopy` and `bytemuck`.
-//!
-//! Key features of `mutant` include:
-//! - Safe transmutation between types, including `?Sized` types.
-//! - Compile-time checks to ensure transmutation safety.
-//! - Utilities for handling unaligned data, critical in systems programming.
-//!
-//! # Use Cases
-//!
-//! `mutant` is particularly useful in scenarios where data representation must be changed without
-//! altering the underlying bytes, such as:
-//! - Systems programming where memory layout is critical.
-//! - Embedded programming involving direct manipulation of hardware registers.
-//! - Network programming for parsing and constructing packets with specific memory layouts.
-//! - Interfacing with C libraries requiring specific data representations.
-//!
 //! # Example
 //!
 //! Here's a simple example demonstrating how to use mutant:
@@ -92,73 +64,6 @@
 //! ```rust,compile_fail
 //! let _: &mut u8 = mutant::transmute_mut(&mut true);
 //! ```
-//!
-//! # Why mutant?
-//!
-//! `mutant` addresses a key gap in Rust's type system and memory model, specifically the ability to
-//! safely reinterpret complex and dynamically-sized types. This capability is vital in low-level
-//! programming, where it's often necessary to treat the same byte data as different types without
-//! copying or modifying it. While Rust's safety guarantees make it an excellent choice for systems
-//! programming, its strict type system can sometimes limit the flexibility needed in these domains.
-//! `mutant` offers a solution, enabling these manipulations while upholding Rust's safety
-//! principles.
-//!
-//! The crate is designed to be simple yet powerful, providing just the necessary tools
-//! without overcomplicating the user's codebase. It fits seamlessly into Rust's ecosystem,
-//! following Rust's conventions and idioms closely. This makes it an intuitive choice for Rust
-//! developers looking to leverage type-safe transmutation in their applications.
-//!
-//! # Cargo Features
-//!
-//! - **`alloc`** (not yet implemented)
-//!   Future plans include an `alloc` feature to integrate with Rust's allocation API, providing
-//!   more functionality related to dynamically-sized types.
-//!
-//! # Getting Started
-//!
-//! To use `mutant` in your project, add it as a dependency in your `Cargo.toml`:
-//! ```toml
-//! [dependencies]
-//! mutant = "0.1"
-//! ```
-//!
-//! Then, derive the `Data` trait on your structs to enable safe transmutation:
-//! ```rust
-//! use mutant::Data;
-//!
-//! #[derive(Data)]
-//! #[repr(C)]
-//! struct MyStruct {
-//!   // ...
-//! }
-//! ```
-//!
-//! Use `mutant`'s functions like [`transmute_ref`] or [`try_transmute_ref`] to reinterpret your
-//! data safely.
-//!
-//! # Safety and Soundness
-//!
-//! Safety is a top priority for `mutant`. The crate undergoes rigorous testing and review to
-//! adhere to Rust's safety guarantees. Any use of `unsafe` code is carefully evaluated and
-//! documented, ensuring soundness and preventing undefined behavior.
-//!
-//! # Documentation and Testing
-//!
-//! `mutant` is committed to providing thorough documentation and extensive tests to ensure
-//! reliability and ease of use. The documentation follows Rust's standard library conventions,
-//! offering clear explanations and examples. Meanwhile, tests cover a wide range of use cases
-//! to guarantee the correctness and safety of the crate's functionality.
-//!
-//! # Contribution
-//!
-//! Contributions to `mutant` are welcome! Whether it's improving documentation, adding more tests,
-//! or implementing new features, your input is valuable. Check out the repository on GitHub for
-//! contributing guidelines and to submit your pull requests or issues.
-//!
-//! # License
-//!
-//! `mutant` is open-source software licensed under the MIT license. Feel free to use, modify,
-//! and distribute it in accordance with the license terms.
 #![cfg_attr(not(test), no_std)]
 
 #[cfg(test)]
@@ -170,6 +75,7 @@ use core::mem;
 use core::mem::ManuallyDrop;
 use core::ops::Deref;
 
+use crate::internal::{byte_layout_at, BytePattern};
 pub use mutant_derive::Data;
 
 // Internal public API -----------------------------------------------------------------------------
@@ -194,23 +100,23 @@ pub enum ByteLayout<'a> {
 #[doc(hidden)]
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub enum Layout { Slice, Array, Struct, Word { layout: &'static WordLayout } }
+pub enum Layout { Slice, Array, Struct, Integer { layout: &'static IntegerLayout }, }
 
-/// Represents the layout of a [`Word`] type in memory.
+/// Represents the layout of a [`Integer`] type in memory.
 #[doc(hidden)]
 #[derive(Debug, PartialEq, Hash)]
-pub struct WordLayout {
-  width: u8,
-  flags: u8,
-  bytes: [u8],
+pub struct IntegerLayout {
+  width: u8,                 // Size of the integer in bytes.
+  bits_pattern: u8,          // Bits pattern type, see [`bits`] module.
+  bits_pattern_values: [u8], // Bits pattern value(s) encoded as bytes, i.e. `[u<width>]`.
 }
 
-/// Describes a byte layout at a specific offset within a larger data structure.
+/// Describes an initialized byte layout at a specific offset within a larger [`IntegerLayout`].
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone, PartialEq, Hash)]
 pub struct InitLayout<'a> {
   offset: usize,
-  layout: &'a WordLayout,
+  layout: &'a IntegerLayout,
 }
 
 /// This is used as a compile-time field list for struct layout.
@@ -234,20 +140,25 @@ pub const BIG_ALLOCATION: *const () = {
   ptr.cast()
 };
 
-/// Helper to create a [`WordLayout`] reference.
+/// Helper to create a [`IntegerLayout`] reference.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! layout {
-  (any) => (
-    $crate::WordLayout::from_ref::<0, 0>(&(::core::mem::size_of::<Self>() as u8, 0b1, []))
-  );
-  (!$discard:expr) => ($crate::layout!(__impl DISCARD $discard));
-  ($($allow:tt)|+) => ($crate::layout!(__impl ALLOW $($allow),+));
-  (__impl $flags:ident $($values:expr),+) => ($crate::WordLayout::from_ref(&(
+  (any) => ($crate::IntegerLayout::from_ref::<0, 0>(&(
     ::core::mem::size_of::<Self>() as u8,
-    $crate::bits::$flags,
-    [$($crate::raw::<Self>($values).to_ne_bytes()),+])
-  ));
+    $crate::bits::ANY,
+    []
+  )));
+  (!$disallowed_value:expr) => ($crate::IntegerLayout::from_ref(&(
+    ::core::mem::size_of::<Self>() as u8,
+    $crate::bits::DISALLOW,
+    [$crate::raw::<Self>($disallowed_value).to_ne_bytes()]
+  )));
+  ($($allowed_values:expr),+ $(,)?) => ($crate::IntegerLayout::from_ref(&(
+    ::core::mem::size_of::<Self>() as u8,
+    $crate::bits::ALLOW,
+    [$($crate::raw::<Self>($allowed_values).to_ne_bytes()),+]
+  )));
 }
 
 /// Expands to the offset in bytes of a field from the beginning of the given type.
@@ -288,6 +199,50 @@ macro_rules! offset_of {
   }};
 }
 
+macro_rules! decl_pack {
+  ($($name:ident ($($t:ident)*) ($($f:tt)*) ($tt:ident $ft:tt))+) => {$(
+    #[doc(hidden)]
+    #[repr(C, packed)]
+    #[derive(Data, Copy, Clone)]
+    #[data(crate)]
+    pub struct $name<$($t,)* $tt: Data + ?Sized>($(pub $t,)* pub ::core::mem::ManuallyDrop<$tt>);
+
+    impl<$($t: Copy + Debug,)* $tt: Data + Debug + ?Sized>
+      Debug for $name<$($t,)* $tt>
+    {
+      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_tuple("");
+        $(d.field(&{ self.$f });)*
+        unaligned_ref!(self.$ft @tail in d.field(&tail.deref()));
+        d.finish()
+      }
+    }
+
+    impl<$($t: Copy + PartialEq,)* $tt: Data + PartialEq + ?Sized>
+      PartialEq for $name<$($t,)* $tt>
+    {
+      fn eq(&self, other: &Self) -> bool {
+        $(if !{ self.$f }.eq(&{ other.$f }) { return false; })*
+        unaligned_ref!(self.$ft @a in unaligned_ref!(other.$ft @b in a.deref().eq(b.deref())))
+      }
+    }
+
+    impl<$($t: Copy + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt> {}
+  )+};
+}
+
+decl_pack! {
+  Pack1 () () (A 0)
+  Pack2 (A) (0) (B 1)
+  Pack3 (A B) (0 1) (C 2)
+  Pack4 (A B C) (0 1 2) (D 3)
+  Pack5 (A B C D) (0 1 2 3) (E 4)
+  Pack6 (A B C D E) (0 1 2 3 4) (F 5)
+  Pack7 (A B C D E F) (0 1 2 3 4 5) (G 6)
+  Pack8 (A B C D E F G) (0 1 2 3 4 5 6) (H 7)
+  Pack9 (A B C D E F G H) (0 1 2 3 4 5 6 7) (I 8)
+}
+
 /// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
 #[inline]
 #[doc(hidden)]
@@ -302,19 +257,18 @@ pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
 /// Identity function used by the [`layout`] macro.
 #[inline]
 #[doc(hidden)]
-pub const fn raw<T: Word>(raw: T::Raw) -> T::Raw {
-  assert!(mem::size_of::<T>() == mem::size_of::<T::Raw>());
-  assert!(<T::Raw as Word>::WORD_LAYOUT.is_any());
+pub const fn raw<T: Integer>(raw: T::Bits) -> T::Bits {
+  assert!(mem::size_of::<T>() == mem::size_of::<T::Bits>());
   raw
 }
 
-/// Constants used to declare bits pattern for [`WordLayout`] in the [`layout`] macro.
+/// Constants used to declare bits pattern for [`IntegerLayout`] in the [`layout`] macro.
 #[doc(hidden)]
 pub mod bits {
   pub const UNINIT: u8 = 0;
   pub const ANY: u8 = 0b1;
   pub const ALLOW: u8 = 0b10;
-  pub const DISCARD: u8 = 0b100;
+  pub const DISALLOW: u8 = 0b100;
 }
 
 #[doc(hidden)]
@@ -477,22 +431,22 @@ pub enum Error {
 #[repr(C, packed)]
 pub struct Unalign<T>(ManuallyDrop<T>);
 
-/// Marker trait for plain word types (e.g. integers or enum discriminants).
+/// Marker trait for plain integer types (e.g. integers or enum discriminants).
 ///
 /// # Safety
 /// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
-pub unsafe trait Word: Copy + 'static {
-  /// Raw type representation of `Self` that can accept any bit pattern.
-  /// The size of `Self::Raw` is equals to the size of `Self`.
-  type Raw: Word<Raw = Self::Raw>;
+pub unsafe trait Integer: Copy + 'static {
+  /// Bits type representation of `Self` that can accept any bit pattern.
+  /// The size of `Self::Bits` is equals to the size of `Self`.
+  type Bits: Integer<Bits = Self::Bits>;
 
   /// Valid bits pattern for this type.
   ///
   /// # Safety
-  /// - Word types are fully initialized types, i.e. contains no uninitialized bytes.
-  /// - Implementor is responsible for `WORD_LAYOUT` to represents only valid values for `Self`.
+  /// - Integer types are fully initialized types, i.e. contains no uninitialized bytes.
+  /// - Implementor is responsible for `INT_LAYOUT` to represents only valid values for `Self`.
   #[doc(hidden)]
-  const WORD_LAYOUT: &'static WordLayout;
+  const INT_LAYOUT: &'static IntegerLayout;
 }
 
 /// Marker trait for types of many `T`, like arrays or slices.
@@ -663,49 +617,6 @@ macro_rules! unaligned_mut {
   ($base:tt.$field:tt) => ($crate::unaligned_mut!($base, $field));
 }
 
-macro_rules! decl_pack {
-  ($($name:ident ($($t:ident)*) ($($f:tt)*) ($tt:ident $ft:tt))+) => {$(
-    /// Same as tuple but `#[repr(C, packed)]`.
-    #[repr(C, packed)]
-    #[derive(Data, Copy, Clone)]
-    #[data(crate)]
-    pub struct $name<$($t,)* $tt: Data + ?Sized>($(pub $t,)* pub ::core::mem::ManuallyDrop<$tt>);
-
-    impl<$($t: Copy + Debug,)* $tt: Data + Debug + ?Sized> Debug for $name<$($t,)* $tt>
-    where <$tt as Data>::Head: Debug {
-      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut d = f.debug_tuple("");
-        $(d.field(&{ self.$f });)*
-        unaligned_ref!(self.$ft @tail in d.field(&tail.deref()));
-        d.finish()
-      }
-    }
-
-    impl<$($t: Copy + PartialEq,)* $tt: Data + PartialEq + ?Sized> PartialEq for $name<$($t,)* $tt>
-    where <$tt as Data>::Head: PartialEq {
-      fn eq(&self, other: &Self) -> bool {
-        $(if !{ self.$f }.eq(&{ other.$f }) { return false; })*
-        unaligned_ref!(self.$ft @a in unaligned_ref!(other.$ft @b in a.deref().eq(b.deref())))
-      }
-    }
-
-    impl<$($t: Copy + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt>
-    where <$tt as Data>::Head: Eq {}
-  )+};
-}
-
-decl_pack! {
-  Pack1 () () (A 0)
-  Pack2 (A) (0) (B 1)
-  Pack3 (A B) (0 1) (C 2)
-  Pack4 (A B C) (0 1 2) (D 3)
-  Pack5 (A B C D) (0 1 2 3) (E 4)
-  Pack6 (A B C D E) (0 1 2 3 4) (F 5)
-  Pack7 (A B C D E F) (0 1 2 3 4 5) (G 6)
-  Pack8 (A B C D E F G) (0 1 2 3 4 5 6) (H 7)
-  Pack9 (A B C D E F G H) (0 1 2 3 4 5 6 7) (I 8)
-}
-
 /// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
 /// With the difference that it also accept unsized types with relaxed `?`[`Sized`] bound.
 ///
@@ -774,18 +685,67 @@ pub const fn as_slice<T: ?Sized + Many>(val: &T) -> &[T::Item] {
   unsafe { &*ptr::from_raw_parts(ptr.cast(), len) }
 }
 
-#[inline]
-pub const fn tail_of<T: ?Sized + Data>(val: &T) -> &[T::Tail] {
-  let ptr: *const T = val;
-  let ptr = unsafe { ptr.cast::<T::Head>().add(1).cast::<T::Tail>() };
-  assert!(is_aligned_raw(ptr));
-  unsafe { &*ptr::from_raw_parts(ptr.cast(), ptr::metadata(val)) }
-}
-
 /// Returns whatever an address to `T` is correctly aligned.
 #[inline]
 pub const fn is_aligned_raw<T: ?Sized + Data>(val: *const T) -> bool {
   is_aligned_to_raw(val, align_of_val_raw(val))
+}
+
+/// Returns the default value for `T` (only support types up to `1 << 20` bytes).
+#[inline]
+pub const fn default<T: Copy + Data>() -> T {
+  struct Comptime<T: Copy + Data>(PhantomData<T>);
+
+  impl<T: Copy + Data> Comptime<T> {
+    const DEFAULT: T = {
+      assert!(
+        min_size_of::<T>() <= 1 << 20,
+        "default value is only supported for types up to `1 << 20` bytes"
+      );
+
+      #[allow(invalid_value)]
+      let mut bytes = [0u8; 1 << 20];
+      let mut i = 0;
+      while i < min_size_of::<T>() {
+        if let Some(ByteLayout::Init(init)) = byte_layout_at::<T>(i) {
+          let byte = match init.branch(0) {
+            BytePattern::Any => 0x00,
+            BytePattern::Allow(byte) => byte,
+            BytePattern::Disallow(byte) => byte.wrapping_add(1),
+          };
+          // assign byte at offset `i` in `bytes`.
+          bytes[i] = byte;
+        }
+        i += 1;
+      }
+
+      union Transmute<T: Copy, U: Copy> {
+        val: T,
+        dst: U,
+      }
+      unsafe { Transmute { val: bytes }.dst }
+    };
+  }
+
+  Comptime::<T>::DEFAULT
+}
+
+/// Returns zeroed value for `T` (only support types up to `1 << 20` bytes).
+pub const fn zeroed<T: Copy + Data>() -> T {
+  struct Comptime<T: Copy + Data>(PhantomData<T>);
+
+  impl<T: Copy + Data> Comptime<T> {
+    const ZEROED: T = {
+      assert!(
+        min_size_of::<T>() <= 1 << 20,
+        "zeroed value is only supported for types up to `1 << 20` bytes"
+      );
+
+      truncate([num::u8c::<0>::new(); 1 << 20])
+    };
+  }
+
+  Comptime::<T>::ZEROED
 }
 
 /// Returns whatever a value of type `T` is aligned to `align`.
@@ -833,8 +793,8 @@ pub const fn is_sized<T: ?Sized + Data>() -> bool {
 }
 
 #[inline]
-pub const fn matches<T: Word>(raw: &T::Raw) -> bool {
-  T::WORD_LAYOUT.matches(raw)
+pub const fn matches<T: Integer>(raw: &T::Bits) -> bool {
+  T::INT_LAYOUT.matches(raw)
 }
 
 #[inline]
@@ -888,6 +848,14 @@ pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::Tail])
     Some(result) => result,
     _ => panic!("`try_split_at` failed"),
   }
+}
+
+#[inline]
+pub const fn tail_of<T: ?Sized + Data>(val: &T) -> &[T::Tail] {
+  let ptr: *const T = val;
+  let ptr = unsafe { ptr.cast::<T::Head>().add(1).cast::<T::Tail>() };
+  assert!(is_aligned_raw(ptr));
+  unsafe { &*ptr::from_raw_parts(ptr.cast(), ptr::metadata(val)) }
 }
 
 /// Safe transmute from a value of type `T` to a value of type `U`. The safety of this transmutation
@@ -1133,20 +1101,20 @@ pub mod num {
   use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
 
   macro_rules! impl_num {
-    (($T:ident $Raw:ident $N:literal $ordering:ident)) => {
+    (($T:ident $Bits:ident $N:literal $ordering:ident)) => {
       #[allow(non_camel_case_types)]
       #[derive(Eq, PartialEq, Copy, Clone, Hash)]
       #[repr(transparent)]
       pub struct $T(pub [u8; $N]);
 
-      unsafe impl Word for $T {
-        type Raw = $T;
-        const WORD_LAYOUT: &'static WordLayout = layout!(any);
+      unsafe impl Integer for $T {
+        type Bits = $T;
+        const INT_LAYOUT: &'static IntegerLayout = layout!(any);
       }
 
       impl $T {
-        pub const MIN: Self = Self::from_raw($Raw::MIN);
-        pub const MAX: Self = Self::from_raw($Raw::MAX);
+        pub const MIN: Self = Self::from_raw($Bits::MIN);
+        pub const MAX: Self = Self::from_raw($Bits::MAX);
 
         #[inline] pub const fn to_ne_bytes(self) -> [u8; $N] { swap!($ordering => ne, self).0 }
         #[inline] pub const fn to_le_bytes(self) -> [u8; $N] { swap!($ordering => le, self).0 }
@@ -1157,12 +1125,12 @@ pub mod num {
         #[inline] pub const fn from_be_bytes(b: [u8; $N]) -> Self { swap!(be => $ordering, Self(b)) }
 
         #[inline]
-        pub const fn new(raw: $Raw) -> Self {
+        pub const fn new(raw: $Bits) -> Self {
           Self::from_raw(raw)
         }
 
         #[inline]
-        pub const fn from_raw(raw: $Raw) -> Self {
+        pub const fn from_raw(raw: $Bits) -> Self {
           let (mut off, mut bytes) = (0, [0; $N]);
           while off < $N {
             bytes[off] = (raw >> (le_or_be!($ordering, off, $N - off - 1) * 8)) as u8;
@@ -1172,15 +1140,15 @@ pub mod num {
         }
 
         #[inline]
-        pub const fn into_inner(self) -> $Raw {
+        pub const fn into_inner(self) -> $Bits {
           self.into_raw()
         }
 
         #[inline]
-        pub const fn into_raw(self) -> $Raw {
+        pub const fn into_raw(self) -> $Bits {
           let (mut off, mut raw) = (0, 0);
           while off < $N {
-            raw |= (self.0[off] as $Raw) << (le_or_be!($ordering, off, $N - off - 1) * 8);
+            raw |= (self.0[off] as $Bits) << (le_or_be!($ordering, off, $N - off - 1) * 8);
             off += 1;
           }
           raw
@@ -1199,14 +1167,14 @@ pub mod num {
         }
       }
 
-      impl From<$Raw> for $T {
+      impl From<$Bits> for $T {
         #[inline]
-        fn from(raw: $Raw) -> Self {
+        fn from(raw: $Bits) -> Self {
           Self::from_raw(raw)
         }
       }
 
-      impl From<$T> for $Raw {
+      impl From<$T> for $Bits {
         #[inline]
         fn from(value: $T) -> Self {
           value.into_raw()
@@ -1216,42 +1184,42 @@ pub mod num {
       impl Debug for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as Debug>::fmt(&self.into_raw(), f)
+          <$Bits as Debug>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Display for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as Display>::fmt(&self.into_raw(), f)
+          <$Bits as Display>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Binary for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as Binary>::fmt(&self.into_raw(), f)
+          <$Bits as Binary>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Octal for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as Octal>::fmt(&self.into_raw(), f)
+          <$Bits as Octal>::fmt(&self.into_raw(), f)
         }
       }
 
       impl LowerHex for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as LowerHex>::fmt(&self.into_raw(), f)
+          <$Bits as LowerHex>::fmt(&self.into_raw(), f)
         }
       }
 
       impl UpperHex for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Raw as UpperHex>::fmt(&self.into_raw(), f)
+          <$Bits as UpperHex>::fmt(&self.into_raw(), f)
         }
       }
     };
@@ -1273,9 +1241,9 @@ pub mod num {
       #[repr(transparent)]
       pub struct $ConstT<const V: $VT>($T);
 
-      unsafe impl<const V: $VT> Word for $ConstT<V> {
-        type Raw = $T;
-        const WORD_LAYOUT: &'static WordLayout = layout!($v2raw);
+      unsafe impl<const V: $VT> Integer for $ConstT<V> {
+        type Bits = $T;
+        const INT_LAYOUT: &'static IntegerLayout = layout!($v2raw);
       }
 
       impl<const V: $VT> $ConstT<V> {
@@ -1482,8 +1450,8 @@ mod internal {
         byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>())
       }
       Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
-      Layout::Word { layout } if layout.is_uninit() => Some(Uninit),
-      Layout::Word { layout } => Some(Init(InitLayout { offset, layout })),
+      Layout::Integer { layout } if layout.is_uninit() => Some(Uninit),
+      Layout::Integer { layout } => Some(Init(InitLayout { offset, layout })),
     }
   }
 
@@ -1563,10 +1531,10 @@ mod internal {
         }
         true
       }
-      Layout::Word { layout } => {
+      Layout::Integer { layout } => {
         // SAFETY: `ptr` is valid for read since
         // - `ptr` came from a valid reference,
-        // - Read type `Dst::Word::Raw` is any bit pattern.
+        // - Read type `Dst::Integer::Bits` is any bit pattern.
         unsafe { layout.matches_ptr(ptr.cast()) }
       }
     }
@@ -1752,10 +1720,10 @@ mod internal {
   /// through the [`BytePattern::contains_any`] and [`BytePattern::contains_all`] methods to compute
   /// the [transmutability](Transmutability) from `A` to `B`, over each potential combination.
   #[derive(Copy, Clone, PartialEq, Hash)]
-  enum BytePattern {
-    Any,         // Is any possible byte pattern, indicating no specific constraints.
-    Allow(u8),   // Exactly match the given `value`.
-    Discard(u8), // Is any other byte pattern than `value`.
+  pub(crate) enum BytePattern {
+    Any,          // Is any possible byte pattern, indicating no specific constraints.
+    Allow(u8),    // Exactly match the given `value`.
+    Disallow(u8), // Is any other byte pattern than `value`.
   }
 
   impl BytePattern {
@@ -1763,12 +1731,12 @@ mod internal {
     pub const fn contains_any(self, other: Self) -> bool {
       use BytePattern::*;
       match (self, other) {
-        (Any, _) => true,                 // Any contains any pattern.
-        (_, Any) => true,                 // Not any contains at least one in any.
-        (Allow(a), Allow(b)) => a == b,   // `a` contains `b` only if `a == b`.
-        (Allow(a), Discard(b)) => a != b, // `a` contains any but `b` only if `a != b`.
-        (Discard(a), Allow(b)) => a != b, // Any but `a` contains `b` only if `a != b`.
-        (Discard(_), Discard(_)) => true, // Any but `a` contains any but `b`.
+        (Any, _) => true,                   // Any contains any pattern.
+        (_, Any) => true,                   // Not any contains at least one in any.
+        (Allow(a), Allow(b)) => a == b,     // `a` contains `b` only if `a == b`.
+        (Allow(a), Disallow(b)) => a != b,  // `a` contains any but `b` only if `a != b`.
+        (Disallow(a), Allow(b)) => a != b,  // Any but `a` contains `b` only if `a != b`.
+        (Disallow(_), Disallow(_)) => true, // Any but `a` contains any but `b`.
       }
     }
 
@@ -1776,12 +1744,12 @@ mod internal {
     pub const fn contains_all(self, other: Self) -> bool {
       use BytePattern::*;
       match (self, other) {
-        (Any, _) => true,                   // Any contains any pattern.
-        (_, Any) => false,                  // Not any cannot contain any.
-        (Allow(b), Allow(a)) => a == b,     // `a` contains `b` only if `a == b`.
-        (Allow(_), Discard(_)) => false,    // `a` cannot contain any but `b`.
-        (Discard(b), Allow(a)) => a != b,   // Any but `a` contains `b` only if `a != b`.
-        (Discard(b), Discard(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
+        (Any, _) => true,                     // Any contains any pattern.
+        (_, Any) => false,                    // Not any cannot contain any.
+        (Allow(b), Allow(a)) => a == b,       // `a` contains `b` only if `a == b`.
+        (Allow(_), Disallow(_)) => false,     // `a` cannot contain any but `b`.
+        (Disallow(b), Allow(a)) => a != b,    // Any but `a` contains `b` only if `a != b`.
+        (Disallow(b), Disallow(a)) => a == b, // Any but `a` contains any but `b` only if `a == b`.
       }
     }
   }
@@ -1880,7 +1848,7 @@ mod internal {
     pub(crate) width: usize,
     offset: usize,
     branches: Branches,
-    chunks: [&'a WordLayout; 16],
+    chunks: [&'a IntegerLayout; 16],
     transmutability: Transmutability,
   }
 
@@ -1892,7 +1860,7 @@ mod internal {
         width: 0,
         offset: 0,
         branches: Branches::empty(),
-        chunks: [WordLayout::VOID; 16],
+        chunks: [IntegerLayout::VOID; 16],
         transmutability: Transmutability::reachable_infallible_mutable(),
       }
     }
@@ -1902,7 +1870,7 @@ mod internal {
     pub const fn append(mut self, layout: ByteLayout<'a>) -> Self {
       assert!(self.len < self.chunks.len());
       let (layout, width) = match layout {
-        Uninit => (WordLayout::VOID, 1),
+        Uninit => (IntegerLayout::VOID, 1),
         Init(layout) if self.len != 0 => (layout.layout, layout.width()),
         Init(layout) => {
           assert!(self.offset == 0 && self.width == 0);
@@ -1942,7 +1910,7 @@ mod internal {
       }
       self.len -= 1;
       self.offset = 0;
-      self.chunks[i - 1] = WordLayout::VOID;
+      self.chunks[i - 1] = IntegerLayout::VOID;
       self.branches = Branches::new(self.chunks[0].branches());
       self
     }
@@ -1974,7 +1942,7 @@ mod internal {
     }
 
     #[inline]
-    pub const fn intersects(mut self, dst: &WordLayout) -> Result<Self, &'static str> {
+    pub const fn intersects(mut self, dst: &IntegerLayout) -> Result<Self, &'static str> {
       assert!(dst.width() <= self.width);
       let mut offset = 0; // Offset in bytes withing `layout`.
       let mut dst_branches = Branches::new(dst.branches());
@@ -2206,10 +2174,10 @@ mod internal {
     };
   }
 
-  // impl WordLayout -------------------------------------------------------------------------------
+  // impl IntegerLayout -------------------------------------------------------------------------------
 
-  impl WordLayout {
-    pub(crate) const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, 0, []));
+  impl IntegerLayout {
+    pub(crate) const VOID: &'static Self = Self::from_ref::<0, 0>(&(0, bits::UNINIT, []));
 
     #[inline]
     pub const fn from_bytes(bytes: &[u8]) -> &Self {
@@ -2227,7 +2195,7 @@ mod internal {
         bits::UNINIT => assert!(values == 0),
         bits::ANY => assert!(values == 0),
         bits::ALLOW => assert!(values != 0 && values < 64),
-        bits::DISCARD => assert!(values == 1),
+        bits::DISALLOW => assert!(values == 1),
         _ => panic!("invalid bits pattern type"),
       }
       // SAFETY: above checks ensure a valid layout.
@@ -2241,12 +2209,12 @@ mod internal {
 
     #[inline]
     pub const fn is_uninit(&self) -> bool {
-      self.flags == bits::UNINIT
+      self.bits_pattern == bits::UNINIT
     }
 
     #[inline]
     pub const fn is_any(&self) -> bool {
-      self.flags == bits::ANY
+      self.bits_pattern == bits::ANY
     }
 
     #[inline]
@@ -2259,14 +2227,14 @@ mod internal {
       if self.width() == 0 {
         return 0;
       }
-      match self.flags {
-        bits::ALLOW => self.bytes.len() / self.width as usize,
+      match self.bits_pattern {
+        bits::ALLOW => self.bits_pattern_values.len() / self.width as usize,
         _ => 1,
       }
     }
 
     #[inline]
-    pub const fn matches<T: Word>(&self, word: &T) -> bool {
+    pub const fn matches<T: Integer>(&self, word: &T) -> bool {
       if self.width as usize != mem::size_of::<T>() {
         return false;
       }
@@ -2282,11 +2250,11 @@ mod internal {
       macro_rules! inner {
         ($ptr:ident, $ty:ident) => {{
           let val = ::core::ptr::read_unaligned::<$ty>($ptr.cast());
-          let mut query = self.bytes.as_ptr().cast::<$ty>();
-          match self.flags & (bits::ALLOW | bits::DISCARD) {
-            bits::DISCARD => val != ::core::ptr::read_unaligned(query),
+          let mut query = self.bits_pattern_values.as_ptr().cast::<$ty>();
+          match self.bits_pattern {
+            bits::DISALLOW => val != ::core::ptr::read_unaligned(query),
             bits::ALLOW => {
-              let end_ptr = self.bytes.as_ptr().add(self.bytes.len());
+              let end_ptr = self.bits_pattern_values.as_ptr().add(self.bits_pattern_values.len());
               while ptr::addr_of(query) != ptr::addr_of(end_ptr) {
                 let allow = ::core::ptr::read_unaligned(query);
                 if val == allow {
@@ -2321,17 +2289,19 @@ mod internal {
     }
 
     #[inline]
-    const fn branches(&self) -> usize {
+    pub(crate) const fn branches(&self) -> usize {
       self.layout.branches()
     }
 
     #[inline]
-    const fn branch(&self, branch: usize) -> BytePattern {
+    pub(crate) const fn branch(&self, branch: usize) -> BytePattern {
       use BytePattern::*;
       assert!(branch < self.branches());
-      match self.layout.flags {
-        bits::DISCARD => Discard(self.layout.bytes[self.offset]),
-        bits::ALLOW => Allow(self.layout.bytes[(branch * self.layout.width()) + self.offset]),
+      match self.layout.bits_pattern {
+        bits::DISALLOW => Disallow(self.layout.bits_pattern_values[self.offset]),
+        bits::ALLOW => {
+          Allow(self.layout.bits_pattern_values[(branch * self.layout.width()) + self.offset])
+        }
         _ => Any,
       }
     }
@@ -2439,12 +2409,12 @@ mod internal {
 
   // impl Data -------------------------------------------------------------------------------------
 
-  unsafe impl<T: Word> Data for T {
+  unsafe impl<T: Integer> Data for T {
     type Item = ();
     type Head = Self;
     type Tail = ();
     type Repr = ();
-    const LAYOUT: Layout = Layout::Word { layout: T::WORD_LAYOUT };
+    const LAYOUT: Layout = Layout::Integer { layout: T::INT_LAYOUT };
   }
 
   unsafe impl<T: Copy + Data> Data for [T] {
@@ -2508,19 +2478,19 @@ mod internal {
     const LAYOUT: Layout = Layout::Struct;
   }
 
-  // impl Word -------------------------------------------------------------------------------------
+  // impl Integer -------------------------------------------------------------------------------------
 
-  unsafe impl<T: ?Sized + 'static> Word for PhantomData<T> {
-    type Raw = Self;
-    const WORD_LAYOUT: &'static WordLayout = layout!(any);
+  unsafe impl<T: ?Sized + 'static> Integer for PhantomData<T> {
+    type Bits = Self;
+    const INT_LAYOUT: &'static IntegerLayout = layout!(any);
   }
 
   macro_rules! impl_word {
     ($($ty:ty : $raw:ty : ($($layout:tt)+))+) => {
       $(
-        unsafe impl Word for $ty {
-          type Raw = $raw;
-          const WORD_LAYOUT: &'static WordLayout = layout!($($layout)+);
+        unsafe impl Integer for $ty {
+          type Bits = $raw;
+          const INT_LAYOUT: &'static IntegerLayout = layout!($($layout)+);
         }
       )+
     };
@@ -2532,7 +2502,7 @@ mod internal {
     i8:Self:(any) i16:Self:(any) i32:Self:(any) i64:Self:(any) i128:Self:(any) isize:Self:(any)
     Option<NonZeroU8>:Self:(any) Option<NonZeroU16>:Self:(any) Option<NonZeroU32>:Self:(any)
     Option<NonZeroU64>:Self:(any) Option<NonZeroU128>:Self:(any) Option<NonZeroUsize>:Self:(any)
-    bool:u8:(0 | 1)
+    bool:u8:(0, 1)
     NonZeroU8:u8:(!0) NonZeroU16:u16:(!0) NonZeroU32:u32:(!0) NonZeroU64:u64:(!0)
     NonZeroU128:u128:(!0) NonZeroUsize:usize:(!0)
   );

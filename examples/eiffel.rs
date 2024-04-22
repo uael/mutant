@@ -133,7 +133,7 @@ mod hci {
   }
 
   pub trait PacketData: Data {
-    type PacketType: Word<Raw = u8>;
+    type PacketType: Integer<Bits = u8>;
 
     fn into_packet(self) -> Packet<Self>
     where
@@ -212,7 +212,7 @@ mod hci {
   }
 
   pub trait EventData: Data {
-    type EventCode: Word<Raw = u8>;
+    type EventCode: Integer<Bits = u8>;
 
     fn into_event(self) -> Event<Self>
     where
@@ -317,7 +317,7 @@ mod hci {
   }
 
   pub trait CommandData: Data {
-    type OpCode: Word<Raw = u16le>;
+    type OpCode: Integer<Bits = u16le>;
     type ResultParameters: ?Sized + Data;
   }
 

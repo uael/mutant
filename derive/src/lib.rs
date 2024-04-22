@@ -1,8 +1,8 @@
-use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{format_ident, quote, ToTokens};
 use syn::{
-  parenthesized, parse2, parse_macro_input, token, Attribute, Data, DeriveInput, Error, Fields,
-  Index, Path,
+  parenthesized, parse2, parse_macro_input, token, Attribute, Data, DataEnum, DataStruct,
+  DeriveInput, Error, Fields, ImplGenerics, Index, Path, TypeGenerics, Visibility, WhereClause,
 };
 
 macro_rules! bail {
@@ -14,15 +14,43 @@ macro_rules! bail {
   };
 }
 
+#[rustfmt::skip]
 #[derive(Copy, Clone)]
-enum Repr {
-  Rust,
-  C,
-  Transparant,
+enum Scalar {
+  U8, U16, U32, U64, U128, Usize,
+  I8, I16, I32, I64, I128, Isize,
 }
 
-fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, bool, TokenStream) {
-  let mut repr = Repr::Rust;
+impl ToTokens for Scalar {
+  fn to_tokens(&self, tokens: &mut TokenStream) {
+    tokens.extend(match self {
+      Scalar::U8 => quote!(u8),
+      Scalar::U16 => quote!(u16),
+      Scalar::U32 => quote!(u32),
+      Scalar::U64 => quote!(u64),
+      Scalar::U128 => quote!(u128),
+      Scalar::Usize => quote!(usize),
+      Scalar::I8 => quote!(i8),
+      Scalar::I16 => quote!(i16),
+      Scalar::I32 => quote!(i32),
+      Scalar::I64 => quote!(i64),
+      Scalar::I128 => quote!(i128),
+      Scalar::Isize => quote!(isize),
+    });
+  }
+}
+
+#[repr(C, u8)]
+#[derive(Copy, Clone)]
+enum Repr {
+  Rust(#[allow(unused)] bool),
+  C(bool),
+  Transparant,
+  Scalar(Scalar),
+}
+
+fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
+  let mut repr = Repr::Rust(false);
   let mut packed = false;
   let mut root = quote!(::mutant);
   for attr in attrs {
@@ -31,7 +59,7 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, bool, TokenStream) {
         .parse_nested_meta(|meta| {
           // #[repr(C)]
           if meta.path.is_ident("C") {
-            repr = Repr::C;
+            repr = Repr::C(packed);
           }
           // #[repr(transparent)]
           if meta.path.is_ident("transparent") {
@@ -39,11 +67,38 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, bool, TokenStream) {
           }
           // #[repr(Rust)]
           if meta.path.is_ident("Rust") {
-            repr = Repr::Rust;
+            repr = Repr::Rust(packed);
           }
           // #[repr(packed)]
           if meta.path.is_ident("packed") {
             packed = true;
+            // `packed` modifier is only allowed for `C` and `Rust` repr.
+            repr = match repr {
+              Repr::C(_) => Repr::C(true),
+              _ => Repr::Rust(true),
+            };
+          }
+          // #[repr(u*)] or #[repr(i*)]
+          for scalar in
+            ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize"]
+          {
+            if meta.path.is_ident(scalar) {
+              repr = Repr::Scalar(match scalar {
+                "u8" => Scalar::U8,
+                "u16" => Scalar::U16,
+                "u32" => Scalar::U32,
+                "u64" => Scalar::U64,
+                "u128" => Scalar::U128,
+                "usize" => Scalar::Usize,
+                "i8" => Scalar::I8,
+                "i16" => Scalar::I16,
+                "i32" => Scalar::I32,
+                "i64" => Scalar::I64,
+                "i128" => Scalar::I128,
+                "isize" => Scalar::Isize,
+                _ => unreachable!(),
+              });
+            }
           }
           Ok(())
         })
@@ -70,43 +125,80 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, bool, TokenStream) {
         .unwrap();
     }
   }
-  (repr, packed, root)
+  (repr, root)
 }
 
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
-  let (repr, packed, root) = parse_derive_attr(&input.attrs);
+  let (repr, root) = parse_derive_attr(&input.attrs);
 
-  let data = match input.data {
-    Data::Struct(data) => data,
+  // Derive `Data` for input.
+  let args = (repr, root, input.vis, input.ident, input.generics.split_for_impl());
+  proc_macro::TokenStream::from(match input.data {
+    Data::Enum(data) => derive_for_enum(args, data),
+    Data::Struct(data) => derive_for_struct(args, data),
     _ => bail!("#[derive(Data)] is yet only implemented for struct"),
+  })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_for_enum(
+  args: (Repr, TokenStream, Visibility, Ident, (ImplGenerics, TypeGenerics, Option<&WhereClause>)),
+  data: DataEnum,
+) -> proc_macro2::TokenStream {
+  // Unpack arguments.
+  let (repr, root, _, ident, (impl_generics, ty_generics, where_clause)) = args;
+  // Compute repr scalar type.
+  let scalar = match repr {
+    Repr::Scalar(scalar) => scalar,
+    _ => bail!("#[derive(Data)] on enums requires #[repr(u*|i*)]"),
   };
+  // Tokens that prefix `Data` implementation.
+  let mut allowed_values = vec![];
+  for variant in &data.variants {
+    let variant_ident = &variant.ident;
+    match variant.fields {
+      Fields::Unit => {}
+      _ => bail!(format!("variant `{}` is not allowed to have fields", variant_ident)),
+    };
+    let discriminant = match variant.discriminant.as_ref() {
+      Some((_, expr)) => expr,
+      None => bail!(format!("variant `{}` must have be assigned to a discriminant", variant_ident)),
+    };
+    allowed_values.push(discriminant);
+  }
+  quote! {
+    unsafe impl #impl_generics #root::Integer for #ident #ty_generics #where_clause {
+      type Bits = #scalar;
+      const INT_LAYOUT: &'static #root::IntegerLayout = #root::layout!(#(#allowed_values),*);
+    }
+  }
+}
 
-  // Compute generics from input.
-  let vis = input.vis;
-  let generics = input.generics;
-  let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-  // Compute identifier from input.
-  let ident = input.ident;
-
+#[allow(clippy::too_many_arguments)]
+fn derive_for_struct(
+  args: (Repr, TokenStream, Visibility, Ident, (ImplGenerics, TypeGenerics, Option<&WhereClause>)),
+  data: DataStruct,
+) -> proc_macro2::TokenStream {
+  // Unpack arguments.
+  let (repr, root, vis, ident, (impl_generics, ty_generics, where_clause)) = args;
   // Compute fields from input.
   let input_fields = match &data.fields {
     Fields::Named(fields) if !fields.named.is_empty() => &fields.named,
     Fields::Unnamed(fields) if !fields.unnamed.is_empty() => &fields.unnamed,
     // Empty struct, impl as `Layout::Void`.
     _ => {
-      return proc_macro::TokenStream::from(quote! {
+      return quote! {
         unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
           type Item = ();
           type Head = ();
           type Tail = ();
           type Repr = ();
 
-          const LAYOUT: #root::Layout = #root::Layout::Word { layout: #root::layout!(any) };
+          const LAYOUT: #root::Layout = <() as #root::Data>::LAYOUT;
         }
-      })
+      }
     }
   };
 
@@ -119,13 +211,14 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
   // Compute `where` clause.
   let predicates = match repr {
-    Repr::Rust => input_fields
+    Repr::Scalar(_) => unreachable!(),
+    Repr::Rust(_) => input_fields
       .iter()
       .map(|field| &field.ty)
       .map(|ty| quote!(#ty: #root::Data + Copy))
       .chain([quote!(Self: Sized)])
       .collect::<Vec<_>>(),
-    Repr::C | Repr::Transparant => input_fields
+    Repr::C(_) | Repr::Transparant => input_fields
       .iter()
       .take(input_fields.len() - 1)
       .map(|field| &field.ty)
@@ -172,10 +265,11 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
   // Compute head type.
   let head = match repr {
-    Repr::Rust => quote!(Self),
+    Repr::Scalar(_) => unreachable!(),
+    Repr::Rust(_) => quote!(Self),
     Repr::Transparant => quote!(<#tail_ty as #root::Data>::Head),
-    Repr::C if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Head),
-    Repr::C => {
+    Repr::C(_) if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Head),
+    Repr::C(packed) => {
       let ident = format_ident!("__{}Head", ident.to_string());
       let map_tail_type = |new_type| {
         let mut field = tail.clone();
@@ -245,7 +339,7 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
   };
 
-  proc_macro::TokenStream::from(quote!(
+  quote!(
     const _: () = {
       #(#prefix)*
 
@@ -258,5 +352,5 @@ pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         const LAYOUT: #root::Layout = #root::Layout::Struct;
       }
     };
-  ))
+  )
 }
