@@ -735,14 +735,7 @@ pub const fn zeroed<T: Copy + Data>() -> T {
   struct Comptime<T: Copy + Data>(PhantomData<T>);
 
   impl<T: Copy + Data> Comptime<T> {
-    const ZEROED: T = {
-      assert!(
-        min_size_of::<T>() <= 1 << 20,
-        "zeroed value is only supported for types up to `1 << 20` bytes"
-      );
-
-      truncate([num::u8c::<0>::new(); 1 << 20])
-    };
+    const ZEROED: T = truncate([num::u8c::<0>::new(); 1 << 20]);
   }
 
   Comptime::<T>::ZEROED
