@@ -729,12 +729,18 @@ pub const fn default<T: Copy + Data>() -> T {
 
 /// Returns zeroed value for `T` (only support types up to `1 << 20` bytes).
 pub const fn zeroed<T: Copy + Data>() -> T {
-  struct Comptime<T: Copy + Data>(PhantomData<T>);
+  // Used to evaluate an expression at compile time.
+  // TODO: use `const_inline` when stabilized.
+  struct Comptime<T>(PhantomData<T>);
 
   impl<T: Copy + Data> Comptime<T> {
+    // A call to truncate on bytes that only accept 0 as bits pattern will
+    // only compile if `T` is actually zeroable.
     const ZEROED: T = truncate([num::u8c::<0>::new(); 1 << 20]);
   }
 
+  // As a big buffer is used, make sure to compute the value only
+  // at compile time.
   Comptime::<T>::ZEROED
 }
 
