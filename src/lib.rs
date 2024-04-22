@@ -528,58 +528,6 @@ pub unsafe trait Data: 'static {
   /// This is part of the internal implementation and is subject to change without notice.
   #[doc(hidden)]
   const LAYOUT: Layout;
-
-  #[inline]
-  fn cast<T: Data + Copy>(self) -> T
-  where
-    Self: Copy,
-  {
-    transmute(self)
-  }
-
-  #[inline]
-  fn cast_copy<T: Data + Copy>(&self) -> T
-  where
-    Self: Copy,
-  {
-    transmute_copy(self)
-  }
-
-  #[inline]
-  fn cast_ref<T: Data + ?Sized>(&self) -> &T {
-    transmute_ref(self)
-  }
-
-  #[inline]
-  fn cast_mut<T: Data + ?Sized>(&mut self) -> &mut T {
-    transmute_mut(self)
-  }
-
-  #[inline]
-  fn try_cast<T: Data + Copy>(self) -> Option<T>
-  where
-    Self: Copy,
-  {
-    try_transmute(self)
-  }
-
-  #[inline]
-  fn try_cast_copy<T: Data + Copy>(&self) -> Option<T>
-  where
-    Self: Copy,
-  {
-    try_transmute_copy(self)
-  }
-
-  #[inline]
-  fn try_cast_ref<T: Data + ?Sized>(&self) -> Result<&T, Error> {
-    try_transmute_ref(self)
-  }
-
-  #[inline]
-  fn try_cast_mut<T: Data + ?Sized>(&mut self) -> Result<&mut T, Error> {
-    try_transmute_mut(self)
-  }
 }
 
 /// Pack up to 9 types into a single packed type (i.e. without padding bytes).
@@ -1499,15 +1447,14 @@ mod internal {
   }
 
   #[inline]
+  const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
+    offset >= R::OFFSET && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
+  }
+
+  #[inline]
   pub(crate) const fn byte_layout_at<T: ?Sized + Data>(
     offset: usize,
   ) -> Option<ByteLayout<'static>> {
-    #[inline]
-    const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
-      offset >= R::OFFSET
-        && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
-    }
-
     #[inline]
     const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(
       offset: usize,
@@ -1738,11 +1685,11 @@ mod internal {
         });
       }
       src = match dst {
+        Uninit => src.shift_bytes(1),
         Init(init) => match src.intersects(init.layout) {
           Ok(src) => src,
           Err(e) => return Err(e),
         },
-        _ => src.shift_bytes(1),
       };
     }
     let t = src.finish();

@@ -9,10 +9,16 @@ fn main() {
   ])
   .into_event()
   .into_packet();
-  assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
+  assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
 
   let evt = DisconnectionComplete::new([1, 2, 3, 4, 5, 6], 0x1234).into_event().into_packet();
-  assert_eq!(Ok(&evt), evt.cast_ref::<[u8]>().try_cast_ref());
+  assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
+
+  let evt =
+    ConnectionComplete { address: [1, 2, 3, 4, 5, 6], handle: 0x1234.into(), link_type: 0x56 }
+      .into_event()
+      .into_packet();
+  assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
 }
 
 mod host {
@@ -44,7 +50,7 @@ mod host {
   impl<'rx, L: Socket> Host<'rx, L> {
     pub async fn recv<T: ?Sized + PacketData>(&self) -> &T {
       loop {
-        if let Ok(packet) = self.rx.get().await.try_cast_ref::<Packet<T>>() {
+        if let Ok(packet) = try_transmute_ref::<_, Packet<T>>(self.rx.get().await) {
           break unaligned_ref!(packet.data);
         }
       }
@@ -52,7 +58,7 @@ mod host {
 
     pub async fn recv_event<T: ?Sized + EventData>(&self) -> &T {
       loop {
-        if let Ok(packet) = self.rx.get().await.try_cast_ref::<Packet<Event<T>>>() {
+        if let Ok(packet) = try_transmute_ref::<_, Packet<Event<T>>>(self.rx.get().await) {
           break unaligned_ref!(packet.data.parameters);
         }
       }
@@ -83,15 +89,17 @@ mod host {
     host: &Host<'_, T>, f: impl FnOnce(u16le) -> F,
   ) -> Option<F::Output> {
     let connection_handle = host.recv_event::<ConnectionComplete>().await.handle;
+    let mut disconnect_complete = pin!(host.recv_event::<DisconnectionComplete>());
     let mut f = pin!(f(connection_handle));
     loop {
+      if let Some(disconnect_complete) = unsync::poll_once(disconnect_complete.as_mut()).await {
+        if disconnect_complete.handle == connection_handle {
+          break None;
+        }
+      }
       // Poll `f` once.
       if let Some(value) = unsync::poll_once(f.as_mut()).await {
         break Some(value);
-      }
-      let disconnection = host.recv_event::<DisconnectionComplete>().await;
-      if disconnection.handle == connection_handle {
-        break None;
       }
     }
   }
