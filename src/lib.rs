@@ -703,27 +703,24 @@ pub const fn default<T: Copy + Data>() -> T {
         "default value is only supported for types up to `1 << 20` bytes"
       );
 
-      #[allow(invalid_value)]
       let mut bytes = [0u8; 1 << 20];
       let mut i = 0;
       while i < min_size_of::<T>() {
         if let Some(ByteLayout::Init(init)) = byte_layout_at::<T>(i) {
-          let byte = match init.branch(0) {
+          bytes[i] = match init.branch(0) {
             BytePattern::Any => 0x00,
             BytePattern::Allow(byte) => byte,
             BytePattern::Disallow(byte) => byte.wrapping_add(1),
           };
-          // assign byte at offset `i` in `bytes`.
-          bytes[i] = byte;
         }
         i += 1;
       }
 
       union Transmute<T: Copy, U: Copy> {
-        val: T,
-        dst: U,
+        bytes: T,
+        into: U,
       }
-      unsafe { Transmute { val: bytes }.dst }
+      unsafe { Transmute { bytes }.into }
     };
   }
 
