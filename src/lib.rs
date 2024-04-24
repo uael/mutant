@@ -102,24 +102,17 @@ pub enum Layout<T: ?Sized + Data> {
   Integer { spec: IntegerSpec<'static, T::Bits>, },
 }
 
-/// Enumerates the most generic bit patterns for individual bytes.
-///
-/// # Internals
-/// This enum is used to describe potential byte patterns within a type `A`. During transmutation
-/// checks into another type `B`, as implemented in [`InitLayout::intersects`], this is utilized
-/// through the [`BitsPattern::contains_any`] and [`BitsPattern::contains_all`] methods to compute
-/// the [transmutability](internal::Transmutability) from `A` to `B`, over each potential
-/// combination.
 #[doc(hidden)]
-#[rustfmt::skip]
 #[derive(Debug, Copy, Clone)]
-pub enum BitsPattern<'a, T> { #[cfg(test)] Uninit, Any, Allow(&'a [T]), Disallow(&'a T), }
+pub enum SizeField {
+  TotalSize
+}
 
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
 pub struct IntegerSpec<'a, T> {
-  pub default: &'a T,
-  pub bits_pattern: BitsPattern<'a, T>,
+  default: &'a T,
+  bits_pattern: internal::BitsPattern<'a, T>,
 }
 
 /// Describes an initialized byte layout at a specific offset within a larger [`IntegerLayout`].
@@ -438,6 +431,11 @@ pub unsafe trait Integer: Copy + 'static {
   const SPEC: IntegerSpec<'static, Self::Bits>;
 }
 
+#[repr(transparent)]
+pub struct Size<T: Integer> {
+  inner: T,
+}
+
 /// Marker trait for "data" types. "data" types are types that can be safely transmuted between each
 /// other. They contain no references, pointers or drops types, but they can contain uninitialized
 /// bytes.
@@ -718,8 +716,8 @@ pub const unsafe fn equals_raw<T: Integer>(a: *const T, b: *const T) -> bool {
 
   match T::SPEC.bits_pattern {
     #[cfg(test)]
-    BitsPattern::Uninit => return false,
-    BitsPattern::Allow(values) if values.len() == 1 => return true,
+    internal::BitsPattern::Uninit => return false,
+    internal::BitsPattern::Allow(values) if values.len() == 1 => return true,
     _ => {}
   }
 
@@ -1140,10 +1138,7 @@ pub mod num {
 
       unsafe impl Integer for $T {
         type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec {
-          default: &Self::MIN,
-          bits_pattern: BitsPattern::Any,
-        };
+        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&Self::MIN);
       }
 
       impl $T {
@@ -1282,10 +1277,7 @@ pub mod num {
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
         type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec {
-          default: &$v2raw,
-          bits_pattern: BitsPattern::Allow(&[$v2raw]),
-        };
+        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[$v2raw]);
       }
 
       impl<const V: $VT> $ConstT<V> {
@@ -1810,6 +1802,51 @@ mod internal {
     ))
   }
 
+  /// Enumerates the most generic bit patterns for individual bytes.
+  ///
+  /// # Internals
+  /// This enum is used to describe potential byte patterns within a type `A`. During transmutation
+  /// checks into another type `B`, as implemented in [`InitLayout::intersects`], this is utilized
+  /// through the [`BitsPattern::contains_any`] and [`BitsPattern::contains_all`] methods to compute
+  /// the [transmutability](Transmutability) from `A` to `B`, over each potential
+  /// combination.
+  #[doc(hidden)]
+  #[rustfmt::skip]
+  #[derive(Debug, Copy, Clone)]
+  pub enum BitsPattern<'a, T> { #[cfg(test)] Uninit, Any, Allow(&'a [T]), Disallow(&'a T), }
+
+  impl<'a> BitsPattern<'a, u8> {
+    /// Returns whatever this pattern contains at least one of the possible values of `other`.
+    const fn contains_any(self, other: Self) -> bool {
+      use BitsPattern::*;
+      match (self, other) {
+        #[cfg(test)]
+        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
+        (Any, _) => true,                      // Any contains any pattern.
+        (_, Any) => true,                      // Not any contains at least one in any.
+        (Allow(a), Allow(b)) => a[0] == b[0],  // `a` contains `b` only if `a == b`.
+        (Allow(a), Disallow(b)) => a[0] != *b, // `a` contains any but `b` only if `a != b`.
+        (Disallow(a), Allow(b)) => *a != b[0], // Any but `a` contains `b` only if `a != b`.
+        (Disallow(_), Disallow(_)) => true,    // Any but `a` contains any but `b`.
+      }
+    }
+
+    /// Returns whatever this pattern contains all possible values of `other`.
+    const fn contains_all(self, other: Self) -> bool {
+      use BitsPattern::*;
+      match (self, other) {
+        #[cfg(test)]
+        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
+        (Any, _) => true,                       // Any contains any pattern.
+        (_, Any) => false,                      // Not any cannot contain any.
+        (Allow(a), Allow(b)) => a[0] == b[0],   // `a` contains `b` only if `a == b`.
+        (Allow(_), Disallow(_)) => false,       // `a` cannot contain any but `b`.
+        (Disallow(a), Allow(b)) => *a != b[0],  // Any but `a` contains `b` only if `a != b`.
+        (Disallow(a), Disallow(b)) => *a == *b, // Any but `a` contains any but `b` only if `a == b`.
+      }
+    }
+  }
+
   /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
   ///
   /// # Internals
@@ -2266,43 +2303,29 @@ mod internal {
     };
   }
 
-  // impl BitsPattern ------------------------------------------------------------------------------
-
-  impl<'a> BitsPattern<'a, u8> {
-    /// Returns whatever this pattern contains at least one of the possible values of `other`.
-    const fn contains_any(self, other: Self) -> bool {
-      use BitsPattern::*;
-      match (self, other) {
-        #[cfg(test)]
-        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
-        (Any, _) => true,                      // Any contains any pattern.
-        (_, Any) => true,                      // Not any contains at least one in any.
-        (Allow(a), Allow(b)) => a[0] == b[0],  // `a` contains `b` only if `a == b`.
-        (Allow(a), Disallow(b)) => a[0] != *b, // `a` contains any but `b` only if `a != b`.
-        (Disallow(a), Allow(b)) => *a != b[0], // Any but `a` contains `b` only if `a != b`.
-        (Disallow(_), Disallow(_)) => true,    // Any but `a` contains any but `b`.
-      }
-    }
-
-    /// Returns whatever this pattern contains all possible values of `other`.
-    const fn contains_all(self, other: Self) -> bool {
-      use BitsPattern::*;
-      match (self, other) {
-        #[cfg(test)]
-        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
-        (Any, _) => true,                       // Any contains any pattern.
-        (_, Any) => false,                      // Not any cannot contain any.
-        (Allow(a), Allow(b)) => a[0] == b[0],   // `a` contains `b` only if `a == b`.
-        (Allow(_), Disallow(_)) => false,       // `a` cannot contain any but `b`.
-        (Disallow(a), Allow(b)) => *a != b[0],  // Any but `a` contains `b` only if `a != b`.
-        (Disallow(a), Disallow(b)) => *a == *b, // Any but `a` contains any but `b` only if `a == b`.
-      }
-    }
-  }
-
   // impl IntegerSpec ------------------------------------------------------------------------------
 
   impl<'a, T: Integer<Bits = T>> IntegerSpec<'a, T> {
+    #[inline]
+    pub const fn any(default: &'a T) -> Self {
+      Self { default, bits_pattern: BitsPattern::Any }
+    }
+
+    #[inline]
+    pub const fn disallow_with_default(disallow: &'a T, default: &'a T) -> Self {
+      Self { default, bits_pattern: BitsPattern::Disallow(disallow) }
+    }
+
+    #[inline]
+    pub const fn allow(allow: &'a [T]) -> Self {
+      Self::allow_with_default(&allow[0], allow)
+    }
+
+    #[inline]
+    pub const fn allow_with_default(default: &'a T, allow: &'a [T]) -> Self {
+      Self { default, bits_pattern: BitsPattern::Allow(allow) }
+    }
+
     #[inline]
     #[cfg(test)]
     pub const fn is_uninit(&self) -> bool {
@@ -2601,37 +2624,34 @@ mod internal {
 
   unsafe impl<T: ?Sized + 'static> Integer for PhantomData<T> {
     type Bits = Self;
-    const SPEC: IntegerSpec<'static, Self::Bits> =
-      IntegerSpec { default: &PhantomData, bits_pattern: BitsPattern::Any };
+    const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&PhantomData);
   }
 
   macro_rules! impl_word {
-    ($($ty:ty = $raw:ty { $default:expr, $($bits_pattern:tt)+ })+) => {
+    ($(($ty:ty as $raw:ty where $($spec:tt)+))+) => {
       $(
         unsafe impl Integer for $ty {
           type Bits = $raw;
-          const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec {
-            default: &$default,
-            bits_pattern: BitsPattern::$($bits_pattern)+,
-          };
+          const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::$($spec)+;
         }
       )+
     };
   }
 
   impl_word!(
-    () = () { (), Any }
-    bool = u8 { 0, Allow(&[0, 1]) }
-    u8 = u8 { 0, Any } u16 = u16 { 0, Any } u32 = u32 { 0, Any } u64 = u64 { 0, Any }
-    i8 = i8 { 0, Any } i16 = i16 { 0, Any } i32 = i32 { 0, Any } i64 = i64 { 0, Any }
-    u128 = u128 { 0, Any } i128 = i128 { 0, Any }
-    Option<NonZeroU8> = u8 { 0, Any } Option<NonZeroU16> = u16 { 0, Any }
-    Option<NonZeroU32> = u32 { 0, Any } Option<NonZeroU64> = u64 { 0, Any }
-    Option<NonZeroU128> = u128 { 0, Any }
-    NonZeroU8 = u8 { 1, Disallow(&0) }
-    NonZeroU16 = u16 { 1, Disallow(&0) }
-    NonZeroU32 = u32 { 1, Disallow(&0) }
-    NonZeroU64 = u64 { 1, Disallow(&0) }
-    NonZeroU128 = u128 { 1, Disallow(&0) }
+    (() as () where any(&()))
+    (bool as u8 where allow(&[0, 1]))
+    (u8 as u8 where any(&0)) (u16 as u16 where any(&0)) (u32 as u32 where any(&0))
+    (u64 as u64 where any(&0)) (u128 as u128 where any(&0))
+    (i8 as i8 where any(&0)) (i16 as i16 where any(&0)) (i32 as i32 where any(&0))
+    (i64 as i64 where any(&0)) (i128 as i128 where any(&0))
+    (Option<NonZeroU8> as u8 where any(&0)) (Option<NonZeroU16> as u16 where any(&0))
+    (Option<NonZeroU32> as u32 where any(&0)) (Option<NonZeroU64> as u64 where any(&0))
+    (Option<NonZeroU128> as u128 where any(&0))
+    (NonZeroU8 as u8 where disallow_with_default(&0, &1))
+    (NonZeroU16 as u16 where disallow_with_default(&0, &1))
+    (NonZeroU32 as u32 where disallow_with_default(&0, &1))
+    (NonZeroU64 as u64 where disallow_with_default(&0, &1))
+    (NonZeroU128 as u128 where disallow_with_default(&0, &1))
   );
 }

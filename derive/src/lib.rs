@@ -168,15 +168,11 @@ fn derive_for_enum(
     };
     allowed_values.push(discriminant);
   }
-  let default = allowed_values.first().unwrap();
   quote! {
     unsafe impl #impl_generics #root::Integer for #ident #ty_generics #where_clause {
       type Bits = #scalar;
 
-      const SPEC: #root::IntegerSpec = #root::IntegerSpec {
-        default: &#default,
-        bits_pattern: #root::BitsPattern::Allow(&[#(#allowed_values),*]),
-      };
+      const SPEC: #root::IntegerSpec = #root::IntegerSpec::allow(&[#(#allowed_values),*]);
     }
   }
 }
@@ -203,7 +199,7 @@ fn derive_for_struct(
           type Bits = ();
 
           const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
-            spec: #root::IntegerSpec { default: &(), bits_pattern: #root::BitsPattern::Any, },
+            spec: #root::IntegerSpec::any(&()),
           };
         }
       }
