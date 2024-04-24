@@ -14,7 +14,8 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Bits = u32;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[0x01010101, 0x02020202, 0x03030303]);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec::allow(&[0x01010101, 0x02020202, 0x03030303]);
 }
 
 #[repr(u8)]
@@ -83,7 +84,7 @@ struct Uninit(u8);
 unsafe impl Integer for Uninit {
   type Bits = u8;
   const SPEC: IntegerSpec<'static, Self::Bits> =
-    IntegerSpec { default: &0, bits_pattern: BitsPattern::Uninit };
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Uninit, size_field: None };
 }
 
 #[test]

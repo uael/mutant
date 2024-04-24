@@ -77,6 +77,30 @@ use core::ops::Deref;
 
 pub use mutant_derive::Data;
 
+// Utility macros ----------------------------------------------------------------------------------
+
+/// Unwrap a `Result` and return the error if it is `Err`.
+#[rustfmt::skip]
+macro_rules! bail {
+  ($e:expr $(,)?) => (match $e { Ok(r) => r, Err(e) => return Err(e) });
+  ($e:expr, $x:ident => $map:expr $(,)?) => (match $e { Ok(r) => r, Err($x) => return Err($map) });
+}
+
+/// Check a condition and return an error if it is `false`.
+#[rustfmt::skip]
+macro_rules! check { ($c:expr, $e:expr $(,)?) => { if (!$c) { return Err($e); } } }
+
+/// Unwrap an `Option` and panic if it is `None`.
+#[rustfmt::skip]
+macro_rules! unwrap {
+  ($e:expr, $none:expr $(,)?) => (match $e { Some(r) => r, None => $none });
+  ($e:expr $(,)?) => (unwrap!($e, unreachable!()));
+}
+
+/// Unwrap a `Result` and panic with the error if it is `Err`.
+#[rustfmt::skip]
+macro_rules! unwrap_err { ($e:expr $(,)?) => (match $e { Ok(r) => r, Err(e) => panic!("{}", e) }) }
+
 // Internal public API -----------------------------------------------------------------------------
 // Even if part of the public API, the following items are not meant to be used directly by the
 // user. They are used internally by the derive macro and other parts of the library and are subject
@@ -105,7 +129,7 @@ pub enum Layout<T: ?Sized + Data> {
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
 pub enum SizeField {
-  TotalSize
+  TotalSize,
 }
 
 #[doc(hidden)]
@@ -113,6 +137,7 @@ pub enum SizeField {
 pub struct IntegerSpec<'a, T> {
   default: &'a T,
   bits_pattern: internal::BitsPattern<'a, T>,
+  size_field: Option<SizeField>,
 }
 
 /// Describes an initialized byte layout at a specific offset within a larger [`IntegerLayout`].
@@ -232,7 +257,18 @@ decl_pack! {
 #[inline]
 #[doc(hidden)]
 #[rustfmt::skip]
-pub const fn const_assert_unaligned<T: ?Sized + Data>(_: *const T) {
+pub const fn const_assert_unaligned<T: ?Sized + Data>() {
+  struct Assert<T: ?Sized>(*const T);
+  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
+  #[allow(clippy::let_unit_value)]
+    let _ = Assert::<T>::ASSERT_UNALIGNED;
+}
+
+/// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
+#[inline]
+#[doc(hidden)]
+#[rustfmt::skip]
+pub const fn const_assert_unaligned_raw<T: ?Sized + Data>(_: *const T) {
   struct Assert<T: ?Sized>(*const T);
   impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
   #[allow(clippy::let_unit_value)]
@@ -416,6 +452,12 @@ pub enum Error {
 #[repr(C, packed)]
 pub struct Unalign<T>(ManuallyDrop<T>);
 
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct Size<T: Integer> {
+  inner: T,
+}
+
 /// Marker trait for plain integer types (e.g. integers or enum discriminants).
 ///
 /// # Safety
@@ -429,11 +471,6 @@ pub unsafe trait Integer: Copy + 'static {
   /// Implementor is responsible for `SPEC` to represents only valid values for `Self`.
   #[doc(hidden)]
   const SPEC: IntegerSpec<'static, Self::Bits>;
-}
-
-#[repr(transparent)]
-pub struct Size<T: Integer> {
-  inner: T,
 }
 
 /// Marker trait for "data" types. "data" types are types that can be safely transmuted between each
@@ -539,7 +576,7 @@ macro_rules! unaligned_ref {
   ($base:expr, $($fields:tt).+) => {{
     let base: &_ = $base;
     let addr = core::ptr::addr_of!(base.$($fields).+);
-    $crate::const_assert_unaligned(addr);
+    $crate::const_assert_unaligned_raw(addr);
     // SAFETY:
     // - `addr` came from valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
@@ -586,7 +623,7 @@ macro_rules! unaligned_mut {
   ($base:expr, $($fields:tt).+) => {{
     let base: &mut _ = $base;
     let addr = core::ptr::addr_of_mut!(base.$($fields).+);
-    $crate::const_assert_unaligned(addr);
+    $crate::const_assert_unaligned_raw(addr);
     // SAFETY:
     // - `addr` came from valid reference hence not a dangling pointer.
     // - The call to `const_assert_unaligned` ensure field un-alignment.
@@ -1089,21 +1126,26 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> R
 }
 
 #[inline]
-pub const fn try_truncate_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> Result<&U, Error> {
-  #[allow(clippy::let_unit_value)]
-  let _ = internal::Transmutation::<T, U>::CHECK;
+pub const fn unpack<T: ?Sized + Data>(bytes: &[u8]) -> Result<(&T, &[u8]), Error> {
+  use internal::Transmutation;
 
-  if !is_aligned_to::<T>(val, align_of::<U>()) {
-    return Err(Error::AlignmentMismatch);
+  #[allow(clippy::let_unit_value)]
+  let _ = Transmutation::<[u8], T>::CHECK;
+  const_assert_unaligned::<T>();
+
+  // Check if the size of `bytes` is compatible with `T`.
+  if let Some(check) = unwrap_err!(Transmutation::<[u8], T>::STATIC_ANALYZE).maybe_size_mismatch {
+    bail!(check.validate_for_unpack(bytes.len()), e => Error::SizeMismatch(e));
   }
-  // TODO
-  let metadata = match internal::try_convert_metadata::<T, U>(ptr::metadata(val)) {
-    Ok(metadata) => metadata,
-    Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
+  // Compute the metadata of `T` from the length of `bytes`.
+  let metadata = match size_of_tail_item::<T>() {
+    0 => 0,
+    _ => (bytes.len() - min_size_of::<T>()) / size_of_tail_item::<T>(),
   };
-  let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
+  let ptr = ptr::from_raw_parts::<T>(ptr::from_ref(bytes).cast(), metadata);
+  let ptr = bail!(internal::resize(ptr, ptr));
   match internal::is_bits_valid(ptr) {
-    true => Ok(unsafe { &*ptr }),
+    true => Ok((unsafe { &*ptr }, bytes.split_at(size_of_val_raw(ptr)).1)),
     _ => Err(Error::InvalidBitPattern),
   }
 }
@@ -1436,28 +1478,22 @@ mod internal {
   use ByteLayout::*;
   use MetadataChecks::*;
 
-  /// Unwrap a `Result` and panic with the error if it is `Err`.
-  macro_rules! unwrap {
-    ($e:expr $(,)?) => {
-      match $e {
-        Ok(ok) => ok,
-        Err(err) => panic!("{}", err),
-      }
-    };
-  }
-
-  /// Check a condition and return an error if it is `false`.
-  macro_rules! check {
-    ($e:expr, $err:expr $(,)?) => {
-      if (!$e) {
-        return Err($err);
-      }
-    };
-  }
-
   #[inline]
   const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
     offset >= R::OFFSET && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
+  }
+
+  #[inline]
+  const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
+    assert!(R::FIELDS != 0);
+    ptr::from_raw_parts(
+      // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
+      unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
+      match is_sized::<R::Type>() {
+        true => 0,
+        _ => ptr::metadata(ptr),
+      },
+    )
   }
 
   #[inline]
@@ -1567,19 +1603,6 @@ mod internal {
   #[inline]
   pub(crate) const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
     #[inline]
-    const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
-      assert!(R::FIELDS != 0);
-      ptr::from_raw_parts(
-        // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
-        unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
-        match is_sized::<R::Type>() {
-          true => 0,
-          _ => ptr::metadata(ptr),
-        },
-      )
-    }
-
-    #[inline]
     const fn repr_is_bits_valid<R: Repr<Dst>, Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
       match R::FIELDS {
         0 => true,
@@ -1611,6 +1634,79 @@ mod internal {
         // - `ptr` came from a valid reference,
         // - Read type `Dst::Integer::Bits` is any bit pattern.
         unsafe { spec.matches_ptr(ptr.cast()) }
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn resize<C: ?Sized + Data, F: ?Sized + Data>(
+    container: *const C, ptr: *const F,
+  ) -> Result<*const C, Error> {
+    #[inline]
+    const fn repr_resize<R: Repr<C>, C: ?Sized + Data>(
+      container: *const C,
+    ) -> Result<*const C, Error> {
+      match R::FIELDS {
+        0 => Ok(container),
+        _ => repr_resize::<R::Rest, _>(bail!(resize(container, repr_field::<R, _>(container)))),
+      }
+    }
+
+    match F::LAYOUT {
+      Layout::Struct => {
+        let ptr = bail!(repr_resize::<F::Repr, F>(ptr));
+        if !is_sized::<F>() {
+          Ok(ptr::from_raw_parts::<C>(container.cast(), ptr::metadata(ptr)))
+        } else {
+          Ok(container)
+        }
+      }
+      Layout::Slice | Layout::Array => {
+        // Compute the length of `ptr`.
+        let len = match F::LAYOUT {
+          Layout::Array => min_size_of::<F>() / mem::size_of::<F::Item>(),
+          _ => ptr::metadata(ptr),
+        };
+        // Call `resize` on each item of `ptr`.
+        let mut i = 0;
+        while i < len {
+          // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
+          let item_ptr = unsafe { ptr.cast::<F::Item>().add(i) };
+          bail!(resize(item_ptr, item_ptr));
+          i += 1;
+        }
+        Ok(container)
+      }
+      Layout::Integer { spec } => {
+        // Retrieve `SizeField` if any.
+        let size_field = unwrap!(spec.size_field, return Ok(container));
+        // Compute the size from `ptr`.
+        let mut size: usize = 0;
+        let mut i = 0;
+        while i < min_size_of::<F>() {
+          size |= (unsafe { *ptr.cast::<u8>().add(i) } as usize) << (i * 8);
+          i += 1;
+        }
+        // Compute the new metadata.
+        let metadata = match size_field {
+          // In case `container` is sized:
+          SizeField::TotalSize if size_of_tail_item::<C>() == 0 => {
+            check!(size == min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
+            return Ok(container);
+          }
+          SizeField::TotalSize => {
+            // Check if `size` is at least the minimum size of `C`.
+            check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
+            // Compute the expected tail size and check for alignment.
+            let tail_size = size - min_size_of::<C>();
+            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            // Compute the new metadata.
+            tail_size / size_of_tail_item::<C>()
+          }
+        };
+        // Compute the new container from the new metadata.
+        check!(metadata <= ptr::metadata(container), Error::SizeMismatch(/* TODO */ 0));
+        Ok(ptr::from_raw_parts::<C>(container.cast(), metadata))
       }
     }
   }
@@ -1759,34 +1855,22 @@ mod internal {
       }
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
-    let mut src = Source::empty();
+    let mut src_chunks = Source::empty();
     let (mut src_offset, mut dst_offset) = (0, 0);
     while dst_offset < min_check_size {
-      let dst = match byte_layout_at::<Dst>(dst_offset) {
-        Some(layout) => {
-          dst_offset += layout.width();
-          layout
-        }
-        None => panic!("internal error"),
-      };
-      while src.width < dst.width() {
-        src = src.append(match byte_layout_at::<Src>(src_offset) {
-          Some(layout) => {
-            src_offset += layout.width();
-            layout
-          }
-          None => panic!("internal error"),
-        });
+      let dst = unwrap!(byte_layout_at::<Dst>(dst_offset));
+      dst_offset += dst.width();
+      while src_chunks.width < dst.width() {
+        let src = unwrap!(byte_layout_at::<Src>(src_offset));
+        src_offset += src.width();
+        src_chunks = src_chunks.append(src);
       }
-      src = match dst {
-        Uninit => src.shift_bytes(1),
-        Init(init) => match src.intersects(&init.downcast()) {
-          Ok(src) => src,
-          Err(e) => return Err(e),
-        },
+      src_chunks = match dst {
+        Uninit => src_chunks.shift_bytes(1),
+        Init(init) => bail!(src_chunks.intersects(&init.downcast())),
       };
     }
-    let t = src.finish();
+    let t = src_chunks.finish();
     if !t.reachable {
       return Err("none of the bit patterns in source are valid in target");
     }
@@ -1879,6 +1963,20 @@ mod internal {
         IsAtLeastThenMultipleOf(_, m) => Err(m as isize - (metadata % m) as isize),
         IsEmpty if metadata == 0 => Ok(()),
         IsEmpty => Err(-(metadata as isize)),
+      }
+    }
+
+    /// Same as [`MetadataChecks::validate`] but when unpacking, i.e. the `MultipleOf` checks aren't
+    /// checked anymore.
+    #[inline]
+    pub const fn validate_for_unpack(self, metadata: usize) -> Result<(), isize> {
+      match self {
+        Is(n) | IsAtLeast(n) if metadata >= n => Ok(()),
+        Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
+        IsMultipleOf(_) => Ok(()),
+        IsAtLeastThenMultipleOf(n, _) if metadata >= n => Ok(()),
+        IsAtLeastThenMultipleOf(n, _) => Err(n as isize - metadata as isize),
+        IsEmpty => Ok(()),
       }
     }
   }
@@ -2238,20 +2336,20 @@ mod internal {
       static_analyze::<Src, Dst>();
 
     pub const CHECK: () = {
-      unwrap!(Self::STATIC_ANALYZE);
+      unwrap_err!(Self::STATIC_ANALYZE);
     };
     pub const CHECK_TRUNCATE: () = {
-      if !unwrap!(Self::STATIC_ANALYZE).truncate {
+      if !unwrap_err!(Self::STATIC_ANALYZE).truncate {
         panic!("\n  does not need to be truncated.\n  use `transmute` instead.\n")
       }
     };
     pub const CHECK_NO_TRUNCATE: () = {
-      if unwrap!(Self::STATIC_ANALYZE).truncate {
+      if unwrap_err!(Self::STATIC_ANALYZE).truncate {
         panic!("\n  target is too small.\n  use `truncate()` instead.\n")
       }
     };
     pub const CHECK_NO_SIZE_MISMATCH: () = {
-      if let Some(checks) = unwrap!(Self::STATIC_ANALYZE).maybe_size_mismatch {
+      if let Some(checks) = unwrap_err!(Self::STATIC_ANALYZE).maybe_size_mismatch {
         use MetadataChecks::*;
         match checks {
           Is(_) => panic!(
@@ -2286,7 +2384,7 @@ mod internal {
       }
     };
     pub const CHECK_NO_INVALID_BIT_PATTERN: () = {
-      if unwrap!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
+      if unwrap_err!(Self::STATIC_ANALYZE).maybe_invalid_bit_pattern {
         panic!(
           "\n  target are not valid for all bit patterns.\n  and not all source bit patterns are \
            valid for target, which requires a runtime check.\n  use `try_transmute()` instead.\n",
@@ -2294,7 +2392,7 @@ mod internal {
       }
     };
     pub const CHECK_SOUND_TARGET_MUTATION: () = {
-      if !unwrap!(Self::STATIC_ANALYZE).sound_target_mutation {
+      if !unwrap_err!(Self::STATIC_ANALYZE).sound_target_mutation {
         panic!(
           "\n  mutating target could result in invalid bit patterns in source, hence mutation is \
            disabled.\n",
@@ -2308,12 +2406,12 @@ mod internal {
   impl<'a, T: Integer<Bits = T>> IntegerSpec<'a, T> {
     #[inline]
     pub const fn any(default: &'a T) -> Self {
-      Self { default, bits_pattern: BitsPattern::Any }
+      Self { default, bits_pattern: BitsPattern::Any, size_field: None }
     }
 
     #[inline]
     pub const fn disallow_with_default(disallow: &'a T, default: &'a T) -> Self {
-      Self { default, bits_pattern: BitsPattern::Disallow(disallow) }
+      Self { default, bits_pattern: BitsPattern::Disallow(disallow), size_field: None }
     }
 
     #[inline]
@@ -2323,7 +2421,12 @@ mod internal {
 
     #[inline]
     pub const fn allow_with_default(default: &'a T, allow: &'a [T]) -> Self {
-      Self { default, bits_pattern: BitsPattern::Allow(allow) }
+      Self { default, bits_pattern: BitsPattern::Allow(allow), size_field: None }
+    }
+
+    #[inline]
+    pub const fn with_size_field(self, size_field: SizeField) -> Self {
+      Self { size_field: Some(size_field), ..self }
     }
 
     #[inline]
@@ -2532,6 +2635,27 @@ mod internal {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       Debug::fmt(&self.into_inner(), f)
+    }
+  }
+
+  // impl Size -------------------------------------------------------------------------------------
+
+  unsafe impl<T: Integer> Integer for Size<T> {
+    type Bits = T::Bits;
+    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TotalSize);
+  }
+
+  impl<T: Integer> Size<T> {
+    #[inline]
+    pub const fn as_usize(&self) -> usize {
+      let bytes: &[u8] = transmute_ref(self);
+      let mut i = 0;
+      let mut size = 0;
+      while i < bytes.len() {
+        size |= (bytes[i] as usize) << (i * 8);
+        i += 1;
+      }
+      size
     }
   }
 

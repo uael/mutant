@@ -1,3 +1,4 @@
+use core::fmt::Debug;
 use core::mem::ManuallyDrop;
 use mutant::num::*;
 use mutant::*;
@@ -13,8 +14,6 @@ pub struct EthernetFrame<T: ?Sized + EthernetPacket> {
 
 pub trait EthernetPacket: Data {
   type Type: Integer<Bits = u16>;
-
-  fn validate(&self) -> Result<usize, Error>;
 }
 
 impl<T: EthernetPacket> EthernetFrame<T> {
@@ -23,22 +22,8 @@ impl<T: EthernetPacket> EthernetFrame<T> {
   }
 }
 
-impl<T: ?Sized + EthernetPacket> EthernetFrame<T> {
-  pub fn try_split(&self) -> Result<(&Self, &[u8]), Error> {
-    let mid = min_size_of::<EthernetFrame<[u8]>>() + unaligned_ref!(self.payload).validate()?;
-    match try_split_at(self, mid) {
-      Some((frame, rest)) => Ok((frame, transmute_ref(rest))),
-      None => Err(Error::InvalidBitPattern),
-    }
-  }
-}
-
 impl EthernetPacket for [u8] {
   type Type = u16;
-
-  fn validate(&self) -> Result<usize, Error> {
-    Ok(self.len())
-  }
 }
 
 pub mod ipv4 {
@@ -53,7 +38,7 @@ pub mod ipv4 {
   #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
   pub struct Ipv4Packet<T: ?Sized> {
     // Version (4 bits) + IHL (4 bits) + TOS (8 bits) + Total Length (16 bits).
-    version_ihl: u8, tos: u8, total_length: u16,
+    version_ihl: u8, tos: u8, total_length: Size<u16>,
     // Identification (16 bits) + Flags (3 bits) + Fragment Offset (13 bits).
     identification: u16, flags_fragment_offset: u16,
     // TTL (8 bits) + Protocol (8 bits) + Header Checksum (16 bits).
@@ -66,16 +51,6 @@ pub mod ipv4 {
 
   impl<T: ?Sized + Data> EthernetPacket for Ipv4Packet<T> {
     type Type = u16c<0x0800>;
-
-    fn validate(&self) -> Result<usize, Error> {
-      if self.ihl() < 20 || self.ihl() > 60 {
-        return Err(Error::InvalidBitPattern);
-      }
-      if self.total_length < self.ihl() as u16 {
-        return Err(Error::InvalidBitPattern);
-      }
-      Ok(self.total_length as usize)
-    }
   }
 
   impl<T: ?Sized + Data> Ipv4Packet<T> {
@@ -83,13 +58,12 @@ pub mod ipv4 {
       self.version_ihl >> 4
     }
 
-    pub const fn ihl(&self) -> u8 {
-      (self.version_ihl & 0x0F) * 4
+    pub const fn ihl(&self) -> usize {
+      ((self.version_ihl & 0x0F) * 4) as usize
     }
 
     pub const fn options_payload(&self) -> (&[u8], &[u8]) {
-      transmute_ref::<_, [u8]>(unaligned_ref!(self.options_payload))
-        .split_at(self.ihl() as usize - 20)
+      transmute_ref::<_, [u8]>(unaligned_ref!(self.options_payload)).split_at(self.ihl() - 20)
     }
 
     pub const fn options(&self) -> &[u8] {
@@ -103,31 +77,12 @@ pub mod ipv4 {
 
   #[rustfmt::skip]
   #[repr(C, packed)]
-  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
+  #[derive(Data, Copy, Clone, PartialEq, Eq)]
   pub struct Ipv4Option<T: ?Sized + OptionData> {
     // Option Type (8 bits) + Option Length (8 bits).
     option_type: T::Type, option_length: T::Length,
     // Option Data.
     option_data: ManuallyDrop<T>,
-  }
-
-  pub fn option_sized<T: OptionData<Length = ()>>(bytes: &[u8]) -> Option<(&T, &[u8])> {
-    match try_transmute_ref::<_, Ipv4Option<T>>(&bytes[..1]) {
-      Ok(option) => Some((unaligned_ref!(option.option_data), &bytes[1..])),
-      Err(_) => None,
-    }
-  }
-
-  pub fn option<T: ?Sized + OptionData<Length = u8>>(
-    bytes: &[u8],
-  ) -> Result<Option<(&T, &[u8])>, Error> {
-    match try_transmute_ref::<_, Ipv4Option<T>>(bytes) {
-      Ok(option) => {
-        let (option, bytes) = option.try_split()?;
-        Ok(Some((unaligned_ref!(option.option_data), bytes)))
-      }
-      Err(_) => Ok(None),
-    }
   }
 
   impl<T: OptionData<Length = ()>> Ipv4Option<T> {
@@ -140,28 +95,27 @@ pub mod ipv4 {
     }
   }
 
-  impl<T: OptionData<Length = u8>> Ipv4Option<T> {
+  impl<T: OptionData<Length = Size<u8>>> Ipv4Option<T> {
     pub const fn new(option_data: T) -> Self {
       Self {
         option_type: default(),
-        option_length: 2 + min_size_of::<T>() as u8,
+        option_length: transmute(2 + min_size_of::<T>() as u8),
         option_data: ManuallyDrop::new(option_data),
       }
     }
   }
 
-  impl<T: ?Sized + OptionData<Length = u8>> Ipv4Option<T> {
-    pub const fn try_split(&self) -> Result<(&Self, &[u8]), Error> {
-      if self.option_length < 2 {
-        return Err(Error::InvalidBitPattern);
-      }
-      if self.option_length as usize > size_of_val(self) {
-        return Err(Error::InvalidBitPattern);
-      }
-      match try_split_at(self, self.option_length as usize) {
-        Some((option, rest)) => Ok((option, transmute_ref(rest))),
-        None => Err(Error::InvalidBitPattern),
-      }
+  impl<T: ?Sized + OptionData + Debug> Debug for Ipv4Option<T>
+  where
+    T::Type: Debug,
+    T::Length: Debug,
+  {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+      f.debug_struct(core::any::type_name::<Self>())
+        .field("option_type", &unaligned_ref!(self.option_type))
+        .field("option_length", &unaligned_ref!(self.option_length))
+        .field("option_data", &unaligned_ref!(self.option_data))
+        .finish()
     }
   }
 
@@ -187,8 +141,8 @@ pub mod ipv4 {
   }
 
   #[repr(C, packed)]
-  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
-  pub struct RecordRouteOption<T: ?Sized + Data<Item = Ipv4>> {
+  #[derive(Data, Copy, Clone, PartialEq, Eq)]
+  pub struct RecordRouteOption<T: ?Sized + Data<Item = Ipv4> = [Ipv4]> {
     // Pointer (8 bits).
     pointer: u8,
     // IP Addresses.
@@ -197,35 +151,62 @@ pub mod ipv4 {
 
   impl<T: ?Sized + Data<Item = Ipv4>> OptionData for RecordRouteOption<T> {
     type Type = u8c<0b00000111>;
-    type Length = u8;
+    type Length = Size<u8>;
+  }
+
+  impl<T: ?Sized + Data<Item = Ipv4> + Debug> Debug for RecordRouteOption<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+      f.debug_struct(core::any::type_name::<Self>())
+        .field("pointer", &self.pointer)
+        .field("ip_addresses", &unaligned_ref!(self.ip_addresses))
+        .finish()
+    }
   }
 
   #[repr(C, packed)]
-  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
-  pub struct StrictSourceRouteOption<T: ?Sized + Data<Item = Ipv4>> {
+  #[derive(Data, Copy, Clone, PartialEq, Eq)]
+  pub struct StrictSourceRouteOption<T: ?Sized + Data<Item = Ipv4> = [Ipv4]> {
     // Pointer (8 bits).
     pointer: u8,
     // IP Addresses.
     ip_addresses: ManuallyDrop<T>,
+  }
+
+  impl<T: ?Sized + Data<Item = Ipv4> + Debug> Debug for StrictSourceRouteOption<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+      f.debug_struct(core::any::type_name::<Self>())
+        .field("pointer", &self.pointer)
+        .field("ip_addresses", &unaligned_ref!(self.ip_addresses))
+        .finish()
+    }
   }
 
   impl<T: ?Sized + Data<Item = Ipv4>> OptionData for StrictSourceRouteOption<T> {
     type Type = u8c<0b10001001>;
-    type Length = u8;
+    type Length = Size<u8>;
   }
 
   #[repr(C, packed)]
-  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
-  pub struct LooseSourceRouteOption<T: ?Sized + Data<Item = Ipv4>> {
+  #[derive(Data, Copy, Clone, PartialEq, Eq)]
+  pub struct LooseSourceRouteOption<T: ?Sized + Data<Item = Ipv4> = [Ipv4]> {
     // Pointer (8 bits).
     pointer: u8,
     // IP Addresses.
     ip_addresses: ManuallyDrop<T>,
   }
 
+  impl<T: ?Sized + Data<Item = Ipv4> + Debug> Debug for LooseSourceRouteOption<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+      f.debug_struct(core::any::type_name::<Self>())
+        .field("pointer", &self.pointer)
+        .field("ip_addresses", &unaligned_ref!(self.ip_addresses))
+        .finish()
+    }
+  }
+
   impl<T: ?Sized + Data<Item = Ipv4>> OptionData for LooseSourceRouteOption<T> {
     type Type = u8c<0b10000011>;
-    type Length = u8;
+    type Length = Size<u8>;
   }
 
   #[repr(C, packed)]
@@ -237,48 +218,84 @@ pub mod ipv4 {
 
   #[rustfmt::skip]
   #[repr(C, packed)]
-  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
-  pub struct TimestampOption<T: ?Sized + Data<Item = Timestamp>> {
+  #[derive(Data, Copy, Clone, PartialEq, Eq)]
+  pub struct TimestampOption<T: ?Sized + Data<Item = Timestamp> = [Timestamp]> {
     // Pointer (8 bits) + O-Flow (4 bits) + Flags (4 bits).
     pointer: u8, o_flow_flags: u8,
     // IP Addresses.
     timestamps: ManuallyDrop<T>,
   }
 
-  impl<T: ?Sized + Data<Item = Timestamp>> OptionData for TimestampOption<T> {
-    type Type = u8c<0b01000100>;
-    type Length = u8;
+  impl<T: ?Sized + Data<Item = Timestamp> + Debug> Debug for TimestampOption<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+      f.debug_struct(core::any::type_name::<Self>())
+        .field("pointer", &self.pointer)
+        .field("o_flow_flags", &self.o_flow_flags)
+        .field("timestamps", &unaligned_ref!(self.timestamps))
+        .finish()
+    }
   }
 
-  pub fn process(frame: &[u8]) -> Result<&[u8], Error> {
-    let frame: &EthernetFrame<Ipv4Packet<[u8]>> = try_transmute_ref(frame)?;
-    let (frame, rest) = frame.try_split()?;
+  impl<T: ?Sized + Data<Item = Timestamp>> OptionData for TimestampOption<T> {
+    type Type = u8c<0b01000100>;
+    type Length = Size<u8>;
+  }
+
+  pub fn process(bytes: &[u8]) -> Result<&[u8], Error> {
+    let (frame, bytes): (&EthernetFrame<Ipv4Packet<[u8]>>, _) = unpack(bytes)?;
     let ipv4 = unaligned_ref!(frame.payload);
     let mut options = ipv4.options();
     while !options.is_empty() {
-      options = if let Some((opt, rest)) = option_sized::<NoOperationOption>(options) {
-        println!("option: {:#?}", opt);
-        rest
-      } else if let Some((opt, rest)) = option_sized::<EndOfOptions>(options) {
-        println!("option: {:#?}", opt);
-        rest
-      } else if let Some((opt, rest)) = option::<RecordRouteOption<[Ipv4]>>(options)? {
-        println!("option: {:#?}", core::any::type_name_of_val(opt));
-        rest
-      } else if let Some((opt, rest)) = option::<StrictSourceRouteOption<[Ipv4]>>(options)? {
-        println!("option: {:#?}", core::any::type_name_of_val(opt));
-        rest
-      } else if let Some((opt, rest)) = option::<LooseSourceRouteOption<[Ipv4]>>(options)? {
-        println!("option: {:#?}", core::any::type_name_of_val(opt));
-        rest
-      } else if let Some((opt, rest)) = option::<TimestampOption<[Timestamp]>>(options)? {
-        println!("option: {:#?}", core::any::type_name_of_val(opt));
-        rest
+      options = if let Ok((option, options)) = unpack::<Ipv4Option<NoOperationOption>>(options) {
+        println!("option: {:#?}", option);
+        options
+      } else if let Ok((option, options)) = unpack::<Ipv4Option<EndOfOptions>>(options) {
+        println!("option: {:#?}", option);
+        options
+      } else if let Ok((option, options)) = unpack::<Ipv4Option<RecordRouteOption>>(options) {
+        println!("option: {:#?}", option);
+        options
+      } else if let Ok((option, options)) = unpack::<Ipv4Option<StrictSourceRouteOption>>(options) {
+        println!("option: {:#?}", option);
+        options
+      } else if let Ok((option, options)) = unpack::<Ipv4Option<LooseSourceRouteOption>>(options) {
+        println!("option: {:#?}", option);
+        options
+      } else if let Ok((option, options)) = unpack::<Ipv4Option<TimestampOption>>(options) {
+        println!("option: {:#?}", option);
+        options
       } else {
         return Err(Error::InvalidBitPattern);
       };
     }
-    Ok(rest)
+    Ok(bytes)
+  }
+
+  #[test]
+  fn option_test() {
+    let options = pack!(
+      Ipv4Option::new_sized(NoOperationOption),
+      Ipv4Option::new(RecordRouteOption {
+        pointer: 2,
+        ip_addresses: ManuallyDrop::new([Ipv4([192, 168, 1, 3]), Ipv4([192, 168, 1, 4])]),
+      }),
+      Ipv4Option::new(TimestampOption {
+        pointer: 1,
+        o_flow_flags: 0,
+        timestamps: ManuallyDrop::new([
+          Timestamp { ip_address: Ipv4([192, 168, 1, 3]), timestamp: 123234234 },
+          Timestamp { ip_address: Ipv4([192, 168, 1, 4]), timestamp: 125243563 }
+        ])
+      })
+    );
+    let bytes: &[u8] = transmute_ref(&options);
+    let (option, bytes) = unpack::<Ipv4Option<NoOperationOption>>(bytes).unwrap();
+    println!("option: {:#?}", option);
+    let (option, bytes) = unpack::<Ipv4Option<RecordRouteOption>>(bytes).unwrap();
+    println!("option: {:#?}", option);
+    let (option, bytes) = unpack::<Ipv4Option<TimestampOption>>(bytes).unwrap();
+    println!("option: {:#?}", option);
+    println!("bytes: {:#?}", bytes);
   }
 
   #[test]
@@ -289,7 +306,7 @@ pub mod ipv4 {
       Ipv4Packet {
         version_ihl: 5 + 8,
         tos: 0,
-        total_length: ((5 + 8) * 4) + 0,
+        total_length: transmute(((5u16 + 8) * 4) + 0),
         identification: 0,
         flags_fragment_offset: 0,
         ttl: 0x40,
