@@ -185,13 +185,13 @@ fn test_static_analyze() {
   test!((bool, bool, bool, bool) [bool] => infallible_mutable);
 
   test!(u32 u8 => infallible_mutable_truncate);
-  test!(u8 u32 => "source too small");
+  test!(u8 u32 => "source too small to fit target");
 
   // Test with UpTo2u8 type
   test!(UpTo2u8 UpTo2u8 => infallible_mutable);
   test!(UpTo2u8 u8 => infallible);
   test!(u8 UpTo2u8 => fallible_mutable);
-  test!(UpTo2u8 u16 => "source too small");
+  test!(UpTo2u8 u16 => "source too small to fit target");
   test!(u16 UpTo2u8 => fallible_mutable_truncate);
 
   // Test with TestEnum type
@@ -200,7 +200,7 @@ fn test_static_analyze() {
   test!(TestEnum u16 => infallible_truncate);
   test!(TestEnum u8 => infallible_truncate);
   test!(u32 TestEnum => fallible_mutable);
-  test!(TestEnum u64 => "source too small");
+  test!(TestEnum u64 => "source too small to fit target");
   test!(u64 TestEnum => fallible_mutable_truncate);
 
   #[derive(Data)]
@@ -250,7 +250,7 @@ fn test_static_analyze() {
   test!((T<38, 3>) (T<41, 3>) => infallible_mutable(IsAtLeast(1)));
 
   // Test cases for incompatible transmutations
-  test!((T<1>) (T<2>) => "source too small");
+  test!((T<1>) (T<2>) => "source too small to fit target");
   test!((T<35, 2>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
   test!((T<40, 3>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
   test!((T<42>) (T<38, 3>) => "remaining bytes to fit in the target is not a multiple of the target DST trailing slice item size");

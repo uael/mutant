@@ -1454,6 +1454,15 @@ mod internal {
     };
   }
 
+  /// Check a condition and return an error if it is `false`.
+  macro_rules! check {
+    ($e:expr, $err:expr $(,)?) => {
+      if (!$e) {
+        return Err($err);
+      }
+    };
+  }
+
   #[inline]
   const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
     offset >= R::OFFSET && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
@@ -1618,13 +1627,13 @@ mod internal {
   ///
   /// This function computes various checks to ensure that the transmutation adheres to the
   /// rules around alignment, size, and valid bit patterns. It takes into account the sizes
-  /// and layouts of the source (`Src`) and destination (`Dst`) types, especially considering
+  /// and layouts of the source (`Src`) and target (`Dst`) types, especially considering
   /// dynamically-sized types and their metadata.
   ///
   /// # Type Parameters
   ///
   /// - `Src`: The source type for the transmutation.
-  /// - `Dst`: The destination type for the transmutation.
+  /// - `Dst`: The target type for the transmutation.
   ///
   /// # Returns
   ///
@@ -1636,75 +1645,126 @@ mod internal {
     Src: ?Sized + Data,
     Dst: ?Sized + Data,
   {
-    // Calculate header (fixed-size part) and tail (variable-size part) sizes for both
-    // source and destination types.
-    let (sh, st) = (min_size_of::<Src>(), size_of_tail_item::<Src>());
-    let (dh, dt) = (min_size_of::<Dst>(), size_of_tail_item::<Dst>());
-    // Initial calculations to determine the minimum adjustments needed to align
-    // source and destination sizes.
-    let mut min_at_count = 0;
-    if sh < dh {
-      if st == 0 {
-        return Err("source too small");
-      }
-      let missing = dh - sh;
-      if dt == 0 && missing % st != 0 {
-        return Err(
+    // Calculate sized (fixed-size part) and tail item (variable-size part) sizes for both
+    // source and target types.
+    let (src_sized_size, src_tail_item_size) = (min_size_of::<Src>(), size_of_tail_item::<Src>());
+    let (dst_sized_size, dst_tail_item_size) = (min_size_of::<Dst>(), size_of_tail_item::<Dst>());
+    // Compute if source and target are DST, i.e. had a trailing slice with a non-zero item size.
+    let (src_is_dst, dst_is_dst) = (src_tail_item_size != 0, dst_tail_item_size != 0);
+    // Compute the minimum source tail items needed to align source and target.
+    // 1. Source is smaller than target:
+    //  - Check for source to be a DST.
+    //  - Compute the missing bytes to fit the target.
+    //  - In case the target isn't a DST, check if the missing bytes are a multiple of
+    //    the source DST trailing slice item size.
+    //  - The minimum source tail items is the missing bytes ceil divided by the source DST trailing
+    //    slice item size.
+    let mut min_src_tail_items_count = if src_sized_size < dst_sized_size {
+      // Check for source to be a DST.
+      check!(src_is_dst, "source too small to fit target");
+      // Compute the missing bytes to fit the target.
+      let missing = dst_sized_size - src_sized_size;
+      // In case the target isn't a DST:
+      if !dst_is_dst {
+        // Check if the missing bytes are a multiple of the source DST trailing slice item size.
+        check!(
+          missing % src_tail_item_size == 0,
           "missing bytes to fit the target is not a multiple of the source DST trailing slice \
-           item size",
+           item size"
         );
       }
-      min_at_count = (missing + st - 1) / st; // Ceiling division.
-    } else if sh > dh && dt != 0 {
-      let remaining = sh - dh;
-      if st == 0 && remaining % dt != 0 {
-        return Err(
-          "remaining bytes to fit in the target is not a multiple of the target DST trailing \
-           slice item size",
-        );
-      }
+      // The minimum source tail items is the missing bytes ceil divided by the source DST trailing
+      // slice item size.
+      (missing + src_tail_item_size - 1) / src_tail_item_size
     }
-    let maybe_size_mismatch = match (st, dt) {
-      (0, _) => None,
-      (st, 0) if sh < dh => Some(Is((dh - sh) / st)),
-      (_, 0) => Some(IsEmpty),
-      (st, dt) => {
-        // Greatest common divisor and least common multiple calculations to
-        // determine the alignment and size compatibility.
-        #[inline]
-        const fn gcd(a: usize, b: usize) -> usize {
-          match b {
-            0 => a,
-            _ => gcd(b, a % b),
-          }
+    // 2. Source is larger or equal to target:
+    //  - The minimum source tail items is 0.
+    else {
+      // In case the target is a DST:
+      // - Compute the remaining bytes to fit in the target.
+      // - In case the source isn't a DST, check if the remaining bytes is a multiple
+      //   of the target DST trailing slice item size.
+      if dst_is_dst {
+        // Compute the remaining bytes to fit in the target.
+        let remaining = src_sized_size - dst_sized_size;
+        // In case the source isn't a DST:
+        if !src_is_dst {
+          // Check if the remaining bytes is a multiple of the target DST trailing slice item size.
+          check!(
+            remaining % dst_tail_item_size == 0,
+            "remaining bytes to fit in the target is not a multiple of the target DST trailing \
+             slice item size",
+          );
         }
-
-        let gcd = gcd(st, dt);
-        let lcm = (st * dt) / gcd;
-        while (sh + min_at_count * st - dh) % dt != 0 {
-          if min_at_count * st > lcm {
-            return Err("DST source cannot catchup on DST target");
-          }
-          min_at_count += 1;
+      }
+      // The minimum source tail items is 0.
+      0
+    };
+    // Compute the possible size mismatch between source and target.
+    // 1. Source isn't a DST:
+    let maybe_size_mismatch = if !src_is_dst {
+      // No size mismatch.
+      None
+    }
+    // 2. Source is a DST and target isn't a DST:
+    else if !dst_is_dst {
+      // In case the source is smaller than the target, the source metadata must be the minimum
+      // source tail items count.
+      // Otherwise, the source metadata must be empty.
+      Some(if src_sized_size < dst_sized_size { Is(min_src_tail_items_count) } else { IsEmpty })
+    }
+    // 3. Source and target are DSTs:
+    else {
+      /// Greatest common divisor and least common multiple calculations to determine the alignment
+      /// and size compatibility.
+      const fn gcd(a: usize, b: usize) -> usize {
+        match b {
+          0 => a,
+          _ => gcd(b, a % b),
         }
-        match (min_at_count, dt / gcd) {
-          (0, 1) => None,
-          (0, m) => Some(IsMultipleOf(m)),
-          (n, 1) => Some(IsAtLeast(n)),
-          (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+      }
+      // Compute the GCD and LCM of the source and target DST trailing slice item sizes.
+      let gcd = gcd(src_tail_item_size, dst_tail_item_size);
+      let lcm = (src_tail_item_size * dst_tail_item_size) / gcd;
+      // Update the minimum source tail items count to be a multiple of the GCD.
+      loop {
+        // Compute both source and target tail sizes in bytes with a minimum of
+        // `min_src_tail_items_count` in source DST trailing slice.
+        let src_tail_size = min_src_tail_items_count * src_tail_item_size;
+        let dst_tail_size = src_sized_size + src_tail_size - dst_sized_size;
+        // In case the target tail size is a multiple of target DST trailing slice item size,
+        // we are done; break the loop.
+        if dst_tail_size % dst_tail_item_size == 0 {
+          break;
         }
+        // Make sure the source tail size is less than the LCM.
+        check!(src_tail_size < lcm, "DST source cannot catchup on DST target");
+        min_src_tail_items_count += 1;
+      }
+      // Compute the metadata checks for the source DST trailing slice.
+      match (min_src_tail_items_count, dst_tail_item_size / gcd) {
+        // No size mismatch.
+        (0, 1) => None,
+        // Source metadata must be a multiple of the GCD.
+        (0, m) => Some(IsMultipleOf(m)),
+        // Source metadata must be at least `n` and a multiple of `m`.
+        (n, 1) => Some(IsAtLeast(n)),
+        // Source metadata must be at least `n` and a multiple of `m`.
+        (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
       }
     };
     // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
     // compatibility (transmutability).
     let min_check_size = match maybe_size_mismatch {
-      None if st != 0 => sh + st,
-      None => dh,
-      Some(IsEmpty) => sh,
-      Some(IsMultipleOf(m)) => sh + (m * st),
-      Some(Is(n)) => sh + (n * st),
-      Some(IsAtLeast(n)) => sh + (n * st) + st,
-      Some(IsAtLeastThenMultipleOf(n, m)) => sh + (n * st) + (m * st),
+      None if src_tail_item_size != 0 => src_sized_size + src_tail_item_size,
+      None => dst_sized_size,
+      Some(IsEmpty) => src_sized_size,
+      Some(IsMultipleOf(m)) => src_sized_size + (m * src_tail_item_size),
+      Some(Is(n)) => src_sized_size + (n * src_tail_item_size),
+      Some(IsAtLeast(n)) => src_sized_size + (n * src_tail_item_size) + src_tail_item_size,
+      Some(IsAtLeastThenMultipleOf(n, m)) => {
+        src_sized_size + (n * src_tail_item_size) + (m * src_tail_item_size)
+      }
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
     let mut src = Source::empty();
@@ -1715,7 +1775,7 @@ mod internal {
           dst_offset += layout.width();
           layout
         }
-        _ => panic!("internal error"),
+        None => panic!("internal error"),
       };
       while src.width < dst.width() {
         src = src.append(match byte_layout_at::<Src>(src_offset) {
@@ -1723,7 +1783,7 @@ mod internal {
             src_offset += layout.width();
             layout
           }
-          _ => panic!("internal error"),
+          None => panic!("internal error"),
         });
       }
       src = match dst {
@@ -1741,7 +1801,7 @@ mod internal {
     // Static analyze result.
     let maybe_invalid_bit_pattern = !t.infallible;
     let sound_target_mutation = t.mutable;
-    let truncate = sh > dh && dt == 0;
+    let truncate = src_sized_size > dst_sized_size && dst_tail_item_size == 0;
     Ok(StaticAnalyze::new(
       maybe_size_mismatch,
       maybe_invalid_bit_pattern,
