@@ -1076,7 +1076,7 @@ pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Opti
   );
 
   let ptr = ptr::from_ref(val).cast::<U>();
-  match internal::is_bits_valid(ptr) {
+  match internal::validate::<_, _, false>(ptr, ptr).is_ok() {
     true => Some(unsafe { *ptr }),
     _ => None,
   }
@@ -1099,10 +1099,8 @@ pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Res
     Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
   };
   let ptr = ptr::from_raw_parts_mut::<U>(ptr::from_mut(val).cast(), metadata);
-  match internal::is_bits_valid(ptr) {
-    true => Ok(unsafe { &mut *ptr }),
-    _ => Err(Error::InvalidBitPattern),
-  }
+  bail!(internal::validate::<_, _, false>(ptr, ptr));
+  Ok(unsafe { &mut *ptr })
 }
 
 #[inline]
@@ -1119,10 +1117,8 @@ pub const fn try_transmute_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> R
     Err(size_mismatch) => return Err(Error::SizeMismatch(size_mismatch)),
   };
   let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
-  match internal::is_bits_valid(ptr) {
-    true => Ok(unsafe { &*ptr }),
-    _ => Err(Error::InvalidBitPattern),
-  }
+  bail!(internal::validate::<_, _, false>(ptr, ptr));
+  Ok(unsafe { &*ptr })
 }
 
 #[inline]
@@ -1143,11 +1139,8 @@ pub const fn unpack<T: ?Sized + Data>(bytes: &[u8]) -> Result<(&T, &[u8]), Error
     _ => (bytes.len() - min_size_of::<T>()) / size_of_tail_item::<T>(),
   };
   let ptr = ptr::from_raw_parts::<T>(ptr::from_ref(bytes).cast(), metadata);
-  let ptr = bail!(internal::resize(ptr, ptr));
-  match internal::is_bits_valid(ptr) {
-    true => Ok((unsafe { &*ptr }, bytes.split_at(size_of_val_raw(ptr)).1)),
-    _ => Err(Error::InvalidBitPattern),
-  }
+  let ptr = bail!(internal::validate::<_, _, true>(ptr, ptr));
+  Ok((unsafe { &*ptr }, bytes.split_at(size_of_val_raw(ptr)).1))
 }
 
 /// Returns zeroed value for `T` (only support types up to `1 << 20` bytes).
@@ -1601,61 +1594,26 @@ mod internal {
   }
 
   #[inline]
-  pub(crate) const fn is_bits_valid<Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
-    #[inline]
-    const fn repr_is_bits_valid<R: Repr<Dst>, Dst: ?Sized + Data>(ptr: *const Dst) -> bool {
-      match R::FIELDS {
-        0 => true,
-        _ => is_bits_valid(repr_field::<R, _>(ptr)) && repr_is_bits_valid::<R::Rest, _>(ptr),
-      }
-    }
-
-    match Dst::LAYOUT {
-      Layout::Struct => repr_is_bits_valid::<Dst::Repr, Dst>(ptr),
-      Layout::Slice | Layout::Array => {
-        // Compute the length of `ptr`.
-        let len = match Dst::LAYOUT {
-          Layout::Array => min_size_of::<Dst>() / mem::size_of::<Dst::Item>(),
-          _ => ptr::metadata(ptr),
-        };
-        // Call `is_bits_valid` on each item of `ptr`.
-        let mut i = 0;
-        while i < len {
-          // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
-          if !is_bits_valid(unsafe { ptr.cast::<Dst::Item>().add(i) }) {
-            return false;
-          }
-          i += 1;
-        }
-        true
-      }
-      Layout::Integer { spec } => {
-        // SAFETY: `ptr` is valid for read since
-        // - `ptr` came from a valid reference,
-        // - Read type `Dst::Integer::Bits` is any bit pattern.
-        unsafe { spec.matches_ptr(ptr.cast()) }
-      }
-    }
-  }
-
-  #[inline]
-  pub(crate) const fn resize<C: ?Sized + Data, F: ?Sized + Data>(
-    container: *const C, ptr: *const F,
+  pub(crate) const fn validate<C: ?Sized + Data, T: ?Sized + Data, const RESIZE: bool>(
+    container: *const C, ptr: *const T,
   ) -> Result<*const C, Error> {
     #[inline]
-    const fn repr_resize<R: Repr<C>, C: ?Sized + Data>(
-      container: *const C,
-    ) -> Result<*const C, Error> {
+    const fn repr_validate<R: Repr<T>, T: ?Sized + Data, const RESIZE: bool>(
+      ptr: *const T,
+    ) -> Result<*const T, Error> {
       match R::FIELDS {
-        0 => Ok(container),
-        _ => repr_resize::<R::Rest, _>(bail!(resize(container, repr_field::<R, _>(container)))),
+        0 => Ok(ptr),
+        _ => repr_validate::<R::Rest, _, RESIZE>(bail!(validate::<_, _, RESIZE>(
+          ptr,
+          repr_field::<R, _>(ptr)
+        ))),
       }
     }
 
-    match F::LAYOUT {
+    match T::LAYOUT {
       Layout::Struct => {
-        let ptr = bail!(repr_resize::<F::Repr, F>(ptr));
-        if !is_sized::<F>() {
+        let ptr = bail!(repr_validate::<T::Repr, T, RESIZE>(ptr));
+        if RESIZE && !is_sized::<T>() {
           Ok(ptr::from_raw_parts::<C>(container.cast(), ptr::metadata(ptr)))
         } else {
           Ok(container)
@@ -1663,32 +1621,39 @@ mod internal {
       }
       Layout::Slice | Layout::Array => {
         // Compute the length of `ptr`.
-        let len = match F::LAYOUT {
-          Layout::Array => min_size_of::<F>() / mem::size_of::<F::Item>(),
+        let len = match T::LAYOUT {
+          Layout::Array => min_size_of::<T>() / mem::size_of::<T::Item>(),
           _ => ptr::metadata(ptr),
         };
         // Call `resize` on each item of `ptr`.
         let mut i = 0;
         while i < len {
           // SAFETY: `ptr` came from a valid reference and `i` is in type bounds.
-          let item_ptr = unsafe { ptr.cast::<F::Item>().add(i) };
-          bail!(resize(item_ptr, item_ptr));
+          let item_ptr = unsafe { ptr.cast::<T::Item>().add(i) };
+          bail!(validate::<_, _, RESIZE>(item_ptr, item_ptr));
           i += 1;
         }
         Ok(container)
       }
       Layout::Integer { spec } => {
+        // SAFETY: `ptr` is valid for read since
+        // - `ptr` is a valid memory location to `F`.
+        check!(unsafe { spec.matches_ptr(ptr.cast()) }, Error::InvalidBitPattern);
         // Retrieve `SizeField` if any.
         let size_field = unwrap!(spec.size_field, return Ok(container));
         // Compute the size from `ptr`.
         let mut size: usize = 0;
         let mut i = 0;
-        while i < min_size_of::<F>() {
+        while i < min_size_of::<T>() {
           size |= (unsafe { *ptr.cast::<u8>().add(i) } as usize) << (i * 8);
           i += 1;
         }
         // Compute the new metadata.
         let metadata = match size_field {
+          SizeField::TotalSize if !RESIZE => {
+            check!(size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
+            return Ok(container);
+          }
           // In case `container` is sized:
           SizeField::TotalSize if size_of_tail_item::<C>() == 0 => {
             check!(size == min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
