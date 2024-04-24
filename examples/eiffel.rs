@@ -235,7 +235,7 @@ mod hci {
     type EventCode = u8c<22>;
   }
 
-  impl<T: ?Sized + Many<Item = CompletedPackets>> EventData for NumberOfCompletedPackets<T> {
+  impl<T: ?Sized + Data<Item = CompletedPackets>> EventData for NumberOfCompletedPackets<T> {
     type EventCode = u8c<23>;
   }
 
@@ -293,13 +293,13 @@ mod hci {
   #[derive(Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct NumberOfCompletedPackets<
-    T: ?Sized + Many<Item = CompletedPackets> = [CompletedPackets],
+    T: ?Sized + Data<Item = CompletedPackets> = [CompletedPackets],
   > {
     pub num_handles: u8,
     pub completed_packets: ManuallyDrop<T>,
   }
 
-  impl<T: Many<Item = CompletedPackets>> NumberOfCompletedPackets<T> {
+  impl<T: Data<Item = CompletedPackets>> NumberOfCompletedPackets<T> {
     pub fn new(completed_packets: T) -> Self {
       Self {
         num_handles: as_slice(&completed_packets).len() as u8,
@@ -342,7 +342,7 @@ mod hci {
     }
   }
 
-  impl<T: ?Sized + Many<Item = CompletedPackets> + Debug> Debug for NumberOfCompletedPackets<T> {
+  impl<T: ?Sized + Data<Item = CompletedPackets> + Debug> Debug for NumberOfCompletedPackets<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
       f.debug_struct("NumberOfCompletedPackets")
         .field("num_handles", &self.num_handles)

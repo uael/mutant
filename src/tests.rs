@@ -1,7 +1,7 @@
 use crate::internal::*;
 use crate::num::*;
 use crate::*;
-use core::num::{NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize};
+use core::num::{NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8};
 
 #[repr(u32)]
 #[allow(unused)]
@@ -14,7 +14,10 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Bits = u32;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(0x01010101, 0x02020202, 0x03030303);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec {
+    default: &0x01010101,
+    bits_pattern: BitsPattern::Allow(&[0x01010101, 0x02020202, 0x03030303]),
+  };
 }
 
 #[repr(u8)]
@@ -26,7 +29,8 @@ enum UpTo1u8 {
 
 unsafe impl Integer for UpTo1u8 {
   type Bits = u8;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Allow(&[0, 1]) };
 }
 
 #[repr(u16)]
@@ -38,7 +42,8 @@ enum UpTo1u16 {
 
 unsafe impl Integer for UpTo1u16 {
   type Bits = u16;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Allow(&[0, 1]) };
 }
 
 #[repr(u8)]
@@ -51,7 +56,8 @@ enum UpTo2u8 {
 
 unsafe impl Integer for UpTo2u8 {
   type Bits = u8;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1, 2);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Allow(&[0, 1, 2]) };
 }
 
 #[repr(u16)]
@@ -64,7 +70,8 @@ enum UpTo2u16 {
 
 unsafe impl Integer for UpTo2u16 {
   type Bits = u16;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(0, 1, 2);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Allow(&[0, 1, 2]) };
 }
 
 #[repr(transparent)]
@@ -73,7 +80,8 @@ struct NonMaxU8(u8);
 
 unsafe impl Integer for NonMaxU8 {
   type Bits = u8;
-  const INT_LAYOUT: &'static IntegerLayout = layout!(!u8::MAX);
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Disallow(&u8::MAX) };
 }
 
 #[repr(transparent)]
@@ -81,9 +89,9 @@ unsafe impl Integer for NonMaxU8 {
 struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
-  type Bits = Self;
-  const INT_LAYOUT: &'static IntegerLayout =
-    IntegerLayout::from_ref::<0, 0>(&(1, bits::UNINIT, []));
+  type Bits = u8;
+  const SPEC: IntegerSpec<'static, Self::Bits> =
+    IntegerSpec { default: &0, bits_pattern: BitsPattern::Uninit };
 }
 
 #[test]
@@ -286,8 +294,6 @@ fn test_static_analyze() {
   test!((u32c<0>) NonZeroU32 => "none of the bit patterns in source are valid in target");
   test!((u64c<0>) u64 => infallible);
   test!((u64c<0>) NonZeroU64 => "none of the bit patterns in source are valid in target");
-  test!((usizec<0>) usize => infallible);
-  test!((usizec<0>) NonZeroUsize => "none of the bit patterns in source are valid in target");
   test!((u128c<0>) u128 => infallible);
   test!((u128c<0>) NonZeroU128 => "none of the bit patterns in source are valid in target");
   test!((u128c<0>) (Option<NonZeroU128>) => infallible);
@@ -311,6 +317,8 @@ fn test_default() {
   assert_eq!(false, default::<bool>());
   assert_eq!(None, default::<Option<NonZeroU8>>());
   assert_eq!(NonZeroU8::new(1).unwrap(), default::<NonZeroU8>());
+  assert_eq!(NonZeroU16::new(1).unwrap(), default::<NonZeroU16>());
+  assert_eq!(NonZeroU32::new(1).unwrap(), default::<NonZeroU32>());
   assert_eq!([false, false, false, false], default::<[bool; 4]>());
   assert_eq!([0xca; 4], transmute::<_, [u8; 4]>(default::<[u8c<0xca>; 4]>()));
   assert_eq!([0xcafe; 4], transmute::<_, [u16; 4]>(default::<[u16c<0xcafe>; 4]>()));

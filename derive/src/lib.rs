@@ -168,10 +168,15 @@ fn derive_for_enum(
     };
     allowed_values.push(discriminant);
   }
+  let default = allowed_values.first().unwrap();
   quote! {
     unsafe impl #impl_generics #root::Integer for #ident #ty_generics #where_clause {
       type Bits = #scalar;
-      const INT_LAYOUT: &'static #root::IntegerLayout = #root::layout!(#(#allowed_values),*);
+
+      const SPEC: #root::IntegerSpec = #root::IntegerSpec {
+        default: &#default,
+        bits_pattern: #root::BitsPattern::Allow(&[#(#allowed_values),*]),
+      };
     }
   }
 }
@@ -192,11 +197,14 @@ fn derive_for_struct(
       return quote! {
         unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
           type Item = ();
-          type Head = ();
-          type Tail = ();
+          type TailItem = ();
+          type Sized = Self;
           type Repr = ();
+          type Bits = ();
 
-          const LAYOUT: #root::Layout = <() as #root::Data>::LAYOUT;
+          const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
+            spec: #root::IntegerSpec { default: &(), bits_pattern: #root::BitsPattern::Any, },
+          };
         }
       }
     }
@@ -237,8 +245,8 @@ fn derive_for_struct(
   // Tokens that prefix `Data` implementation.
   let mut prefix = vec![];
 
-  // Compute `Repr` fields.
-  let fields = input_fields.iter().enumerate().rfold(quote!(()), |tail, (i, head)| {
+  // Compute `Repr` type.
+  let repr_ty = input_fields.iter().enumerate().rfold(quote!(()), |tail_ty, (i, head)| {
     let ty = &head.ty;
     let field_ident = match &head.ident {
       Some(ident) => quote!(#ident),
@@ -248,30 +256,30 @@ fn derive_for_struct(
       }
     };
     let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
-    let fields = input_fields.len() - i;
+    let fields_count = input_fields.len() - i;
     prefix.push(quote! {
       #[allow(non_camel_case_types)]
       #vis struct #struct_ident;
 
       unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
         type Type = #ty;
-        type Rest = #tail;
+        type Rest = #tail_ty;
         const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-        const FIELDS: usize = #fields;
+        const FIELDS: usize = #fields_count;
       }
     });
     quote!(#struct_ident)
   });
 
-  // Compute head type.
-  let head = match repr {
+  // Compute `Sized` type.
+  let sized_ty = match repr {
     Repr::Scalar(_) => unreachable!(),
     Repr::Rust(_) => quote!(Self),
-    Repr::Transparant => quote!(<#tail_ty as #root::Data>::Head),
-    Repr::C(_) if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Head),
+    Repr::Transparant => quote!(<#tail_ty as #root::Data>::Sized),
+    Repr::C(_) if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Sized),
     Repr::C(packed) => {
-      let ident = format_ident!("__{}Head", ident.to_string());
-      let map_tail_type = |new_type| {
+      let ident = format_ident!("__{}Sized", ident.to_string());
+      let map_tail_ty = |new_type| {
         let mut field = tail.clone();
         field.ty = parse2(new_type).unwrap();
         field
@@ -281,31 +289,32 @@ fn derive_for_struct(
         .take(input_fields.len() - 1)
         .cloned()
         .chain([
-          map_tail_type(quote!(<#tail_ty as #root::Data>::Head)),
-          map_tail_type(quote!([<#tail_ty as #root::Data>::Tail; 0])),
+          map_tail_ty(quote!(<#tail_ty as #root::Data>::Sized)),
+          map_tail_ty(quote!([<#tail_ty as #root::Data>::TailItem; 0])),
         ])
         .map(|mut field| {
           field.ident = None;
           field
         })
         .collect::<Vec<_>>();
-      let repr = fields.iter().enumerate().rfold(quote!(()), |tail, (i, head)| {
+      let repr_ty = fields.iter().enumerate().rfold(quote!(()), |tail_ty, (i, head)| {
         let ty = &head.ty;
         let field_ident = {
           let ident = Index { index: i as u32, span: Span::call_site() };
           quote!(#ident)
         };
         let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
-        let fields = fields.len() - i;
+        let fields_count = fields.len() - i;
         prefix.push(quote! {
           #[allow(non_camel_case_types)]
           #vis struct #struct_ident;
 
           unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
             type Type = #ty;
-            type Rest = #tail;
+            type Rest = #tail_ty;
+
             const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-            const FIELDS: usize = #fields;
+            const FIELDS: usize = #fields_count;
           }
         });
         quote!(#struct_ident)
@@ -328,11 +337,12 @@ fn derive_for_struct(
 
         unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
           type Item = ();
-          type Head = Self;
-          type Tail = ();
-          type Repr = #repr;
+          type TailItem = ();
+          type Sized = Self;
+          type Repr = #repr_ty;
+          type Bits = ();
 
-          const LAYOUT: #root::Layout = #root::Layout::Struct;
+          const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
         }
       });
       quote!(#ident #ty_generics)
@@ -345,11 +355,12 @@ fn derive_for_struct(
 
       unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
         type Item = ();
-        type Head = #head;
-        type Tail = <#tail_ty as #root::Data>::Tail;
-        type Repr = #fields;
+        type TailItem = <#tail_ty as #root::Data>::TailItem;
+        type Sized = #sized_ty;
+        type Repr = #repr_ty;
+        type Bits = ();
 
-        const LAYOUT: #root::Layout = #root::Layout::Struct;
+        const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
       }
     };
   )
