@@ -73,9 +73,11 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem;
 use core::mem::ManuallyDrop;
-use core::ops::Deref;
 
+// re-export `mutant_derive` derive macros.
 pub use mutant_derive::Data;
+pub use mutant_derive::DebugPacked;
+pub use mutant_derive::PartialEqPacked;
 
 // Utility macros ----------------------------------------------------------------------------------
 
@@ -210,47 +212,27 @@ macro_rules! offset_of {
 }
 
 macro_rules! decl_pack {
-  ($($name:ident ($($t:ident)*) ($($f:tt)*) ($tt:ident $ft:tt))+) => {$(
+  ($($name:ident ($($t:ident)* =$tt:ident))+) => {$(
     #[doc(hidden)]
     #[repr(C, packed)]
-    #[derive(Data, Copy, Clone)]
+    #[derive(Data, DebugPacked, PartialEqPacked, Copy, Clone)]
     #[data(crate)]
-    pub struct $name<$($t,)* $tt: Data + ?Sized>($(pub $t,)* pub ::core::mem::ManuallyDrop<$tt>);
-
-    impl<$($t: Copy + Debug,)* $tt: Data + Debug + ?Sized>
-      Debug for $name<$($t,)* $tt>
-    {
-      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut d = f.debug_tuple("");
-        $(d.field(&{ self.$f });)*
-        unaligned_ref!(self.$ft @tail in d.field(&tail.deref()));
-        d.finish()
-      }
-    }
-
-    impl<$($t: Copy + PartialEq,)* $tt: Data + PartialEq + ?Sized>
-      PartialEq for $name<$($t,)* $tt>
-    {
-      fn eq(&self, other: &Self) -> bool {
-        $(if !{ self.$f }.eq(&{ other.$f }) { return false; })*
-        unaligned_ref!(self.$ft @a in unaligned_ref!(other.$ft @b in a.deref().eq(b.deref())))
-      }
-    }
+    pub struct $name<$($t,)* $tt: Data + ?Sized>($(pub $t,)* pub ManuallyDrop<$tt>);
 
     impl<$($t: Copy + Eq,)* $tt: Data + Eq + ?Sized> Eq for $name<$($t,)* $tt> {}
   )+};
 }
 
 decl_pack! {
-  Pack1 () () (A 0)
-  Pack2 (A) (0) (B 1)
-  Pack3 (A B) (0 1) (C 2)
-  Pack4 (A B C) (0 1 2) (D 3)
-  Pack5 (A B C D) (0 1 2 3) (E 4)
-  Pack6 (A B C D E) (0 1 2 3 4) (F 5)
-  Pack7 (A B C D E F) (0 1 2 3 4 5) (G 6)
-  Pack8 (A B C D E F G) (0 1 2 3 4 5 6) (H 7)
-  Pack9 (A B C D E F G H) (0 1 2 3 4 5 6 7) (I 8)
+  Pack1 (=A)
+  Pack2 (A =B)
+  Pack3 (A B =C)
+  Pack4 (A B C =D)
+  Pack5 (A B C D =E)
+  Pack6 (A B C D E =F)
+  Pack7 (A B C D E F =G)
+  Pack8 (A B C D E F G =H)
+  Pack9 (A B C D E F G H =I)
 }
 
 /// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
@@ -269,10 +251,7 @@ pub const fn const_assert_unaligned<T: ?Sized + Data>() {
 #[doc(hidden)]
 #[rustfmt::skip]
 pub const fn const_assert_unaligned_raw<T: ?Sized + Data>(_: *const T) {
-  struct Assert<T: ?Sized>(*const T);
-  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
-  #[allow(clippy::let_unit_value)]
-  let _ = Assert::<T>::ASSERT_UNALIGNED;
+  const_assert_unaligned::<T>();
 }
 
 /// Identity function used by the [`layout`] macro.
@@ -283,7 +262,7 @@ pub const fn raw<T: Integer>(raw: T::Bits) -> T::Bits {
   raw
 }
 
-/// Constants used to declare bits pattern for [`IntegerLayout`] in the [`layout`] macro.
+/// Constants used to declare bits pattern for [`InitLayout`].
 #[doc(hidden)]
 pub mod bits {
   pub const UNINIT: u8 = 0;
@@ -447,7 +426,7 @@ pub enum Error {
 /// assert_eq!(123, uint.into_inner()); // `u32` is `Copy`
 /// assert_eq!(123, *uint); // this does not compile as it may result in an unaligned read.
 /// ```
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data, DebugPacked)]
 #[data(crate)]
 #[repr(C, packed)]
 pub struct Unalign<T>(ManuallyDrop<T>);
@@ -568,8 +547,10 @@ macro_rules! pack {
 /// // `unaligned.a` alignment is 1, hence safe to reference:
 /// assert_eq!(&1, unaligned_ref!(unaligned.a));
 /// // But `unaligned.b` alignment is 2, hence not safe to reference directly:
-/// // let b = unaligned_ref!(&unaligned, b); // this does not compile.
-/// unaligned_ref!(unaligned.b @b in assert_eq!(&2, b));
+/// // let b = unaligned_ref!(unaligned.b); // this does not compile.
+/// // Instead, use `unaligned_ref!` with `in` syntax to safely reference `b`:
+/// let b;
+/// assert_eq!(&2, unaligned_ref!(unaligned.b in b));
 /// ```
 #[macro_export]
 macro_rules! unaligned_ref {
@@ -582,7 +563,7 @@ macro_rules! unaligned_ref {
     // - The call to `const_assert_unaligned` ensure field un-alignment.
     unsafe { &*addr }
   }};
-  ($base:expr, $($fields:tt).+ @$var:ident in $ex:expr) => {{
+  ($base:expr, $($fields:tt).+ in $sized:ident) => {{
     let base: &_ = $base;
     let mut addr = core::ptr::addr_of!(base.$($fields).+);
     if $crate::is_sized_val_raw(addr) && $crate::align_of_val_raw(addr) > 1 {
@@ -592,28 +573,24 @@ macro_rules! unaligned_ref {
       // `T` is `Sized` hence `T::Sized` is equals to `T`:
       // 1. Load `T::Sized` to stack.
       // SAFETY: `addr` came from valid reference hence not a dangling pointer.
-      let sized = unsafe { ::core::ptr::read_unaligned(downcast(addr)) };
+      $sized = unsafe { ::core::ptr::read_unaligned(downcast(addr)) };
       // 2. Make `addr` point to `sized` instead.
-      addr = $crate::ptr::from_raw_parts($crate::ptr::from_ref(&sized).cast(), 0);
-      // SAFETY: `addr` came from valid reference hence not a dangling pointer.
-      let $var = unsafe { &*addr };
-      $ex
+      addr = $crate::ptr::from_raw_parts($crate::ptr::from_ref(&$sized).cast(), 0);
     } else {
       // `T` is `!Sized`: assert that `T` has no alignment requirement.
       assert!($crate::align_of_val_raw(addr) == 1);
-      // SAFETY:
-      // - `addr` came from valid reference hence not a dangling pointer.
-      // - The call to `assert_unaligned` ensure field un-alignment.
-      let $var = unsafe { &*addr };
-      $ex
     }
+    // SAFETY:
+    // - `addr` came from valid reference hence not a dangling pointer.
+    // - The call to `assert_unaligned` ensure field un-alignment.
+    unsafe { &*addr }
   }};
-  ($base:tt.$field:tt.$($fields:tt).+ $(@$var:ident in $ex:expr)?) => {{
+  ($base:tt.$field:tt.$($fields:tt).+ $(in $sized:ident)?) => {{
     let base = $crate::unaligned_ref!($base.$field);
-    $crate::unaligned_ref!(base.$($fields).+ $(@$var in $ex)?)
+    $crate::unaligned_ref!(base.$($fields).+ $(in $sized)?)
   }};
-  ($base:tt.$field:tt $(@$var:ident in $ex:expr)?) => (
-    $crate::unaligned_ref!($base, $field $(@$var in $ex)?)
+  ($base:tt.$field:tt $(in $sized:ident)?) => (
+    $crate::unaligned_ref!($base, $field $(in $sized)?)
   );
 }
 
@@ -634,6 +611,22 @@ macro_rules! unaligned_mut {
     $crate::unaligned_mut!(base.$($fields).+)
   }};
   ($base:tt.$field:tt) => ($crate::unaligned_mut!($base, $field));
+}
+
+#[macro_export]
+macro_rules! unpack {
+  ($bytes:ident { $(| $($ty:ty)|+ => |$var:tt| $ex:stmt,)+ _ => $els:stmt $(,)? }) => {{
+    let mut __bytes = $bytes;
+    let e = $(
+      $(
+        if let Ok(($var, _bytes)) = $crate::unpack::<$ty>(__bytes) {
+          __bytes = _bytes;
+          $ex
+        } else
+      )+
+    )+ { $els };
+    (e, __bytes)
+  }};
 }
 
 /// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
@@ -725,7 +718,7 @@ pub const fn default<T: Copy + Data>() -> T {
       let mut bytes = [0u8; 1 << 20];
       let mut i = 0;
       while i < min_size_of::<T>() {
-        if let Some(byte) = internal::default_at::<T>(i) {
+        if let Some(byte) = internal::default_at::<T, T>(i) {
           bytes[i] = byte;
         }
         i += 1;
@@ -1038,6 +1031,21 @@ pub const fn truncate<T: Data + Copy, U: Data + Copy>(val: T) -> U {
   );
 
   unsafe { transmute_unchecked(val) }
+}
+
+#[inline]
+pub const fn truncate_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
+  #[allow(clippy::let_unit_value)]
+  let _ = (
+    internal::Transmutation::<T, U>::CHECK,
+    internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_ALIGNMENT_MISMATCH,
+    internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
+  );
+
+  let metadata = internal::convert_metadata::<T, U>(ptr::metadata(val));
+  let ptr = ptr::from_raw_parts::<U>(ptr::from_ref(val).cast(), metadata);
+  unsafe { &*ptr }
 }
 
 #[inline]
@@ -1401,6 +1409,23 @@ pub mod num {
     };
   }
 
+  #[allow(non_camel_case_types)]
+  #[derive(Eq, PartialEq, Copy, Clone, Hash)]
+  #[repr(transparent)]
+  pub struct SetDefault<T: Integer, const DEFAULT: u128>(T);
+
+  unsafe impl<T: Integer, const DEFAULT: u128> Integer for SetDefault<T, DEFAULT> {
+    type Bits = T::Bits;
+    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_default(truncate_ref(&DEFAULT));
+  }
+
+  impl<T: Integer + Debug, const DEFAULT: u128> Debug for SetDefault<T, DEFAULT> {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+      Debug::fmt(&self.0, f)
+    }
+  }
+
   #[rustfmt::skip]
   macro_rules! le_or_be {
     (ne, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
@@ -1527,14 +1552,14 @@ mod internal {
   }
 
   #[inline]
-  pub(crate) const fn default_at<T: ?Sized + Data>(offset: usize) -> Option<u8> {
+  pub(crate) const fn default_at<C: ?Sized + Data, T: ?Sized + Data>(offset: usize) -> Option<u8> {
     #[inline]
     const fn repr_default_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> Option<u8> {
       match R::FIELDS {
         // Reached the end of the struct.
         0 => None,
         // `offset` does offset in field, defer to its inner layout.
-        _ if repr_contains::<R, T>(offset) => default_at::<R::Type>(offset - R::OFFSET),
+        _ if repr_contains::<R, T>(offset) => default_at::<T, R::Type>(offset - R::OFFSET),
         // `offset` does not offset in field, continue with next field.
         _ => repr_default_at::<R::Rest, T>(offset),
       }
@@ -1549,13 +1574,21 @@ mod internal {
       return None;
     }
     match T::LAYOUT {
-      Layout::Slice | Layout::Array => default_at::<T::Item>(offset % mem::size_of::<T::Item>()),
+      Layout::Slice | Layout::Array => {
+        default_at::<T::Item, T::Item>(offset % mem::size_of::<T::Item>())
+      }
       Layout::Struct => repr_default_at::<T::Repr, T>(offset),
       #[cfg(test)]
       Layout::Integer { spec } if spec.is_uninit() => None,
-      Layout::Integer { spec } => {
-        Some(unsafe { *ptr::from_ref(spec.default).cast::<u8>().add(offset) })
-      }
+      Layout::Integer { spec } => match spec.size_field {
+        Some(size_field) => match size_field {
+          SizeField::TotalSize => {
+            let size = min_size_of::<C>();
+            Some((size >> (offset * 8)) as u8)
+          }
+        },
+        None => Some(unsafe { *ptr::from_ref(spec.default).cast::<u8>().add(offset) }),
+      },
     }
   }
 
@@ -1650,13 +1683,9 @@ mod internal {
         }
         // Compute the new metadata.
         let metadata = match size_field {
-          SizeField::TotalSize if !RESIZE => {
+          SizeField::TotalSize if min_size_of::<T>() == 0 => return Ok(container),
+          SizeField::TotalSize if !RESIZE || size_of_tail_item::<C>() == 0 => {
             check!(size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
-            return Ok(container);
-          }
-          // In case `container` is sized:
-          SizeField::TotalSize if size_of_tail_item::<C>() == 0 => {
-            check!(size == min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             return Ok(container);
           }
           SizeField::TotalSize => {
@@ -2395,6 +2424,12 @@ mod internal {
     }
 
     #[inline]
+    pub const fn with_default(self, default: &'a T) -> Self {
+      assert!(self.matches(default));
+      Self { default, ..self }
+    }
+
+    #[inline]
     #[cfg(test)]
     pub const fn is_uninit(&self) -> bool {
       matches!(self.bits_pattern, BitsPattern::Uninit)
@@ -2596,12 +2631,12 @@ mod internal {
     }
   }
 
-  impl<T: Debug + Copy> Debug for Unalign<T> {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      Debug::fmt(&self.into_inner(), f)
-    }
-  }
+  // impl<T: Debug + Copy> Debug for Unalign<T> {
+  //   #[inline]
+  //   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+  //     Debug::fmt(&self.into_inner(), f)
+  //   }
+  // }
 
   // impl Size -------------------------------------------------------------------------------------
 
@@ -2611,6 +2646,10 @@ mod internal {
   }
 
   impl<T: Integer> Size<T> {
+    pub const fn new<S: Data>() -> Self {
+      Self { inner: truncate(min_size_of::<S>() as u64) }
+    }
+
     #[inline]
     pub const fn as_usize(&self) -> usize {
       let bytes: &[u8] = transmute_ref(self);

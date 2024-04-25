@@ -107,8 +107,6 @@ mod host {
 
 mod hci {
   use super::*;
-  use core::fmt;
-  use core::fmt::{Debug, Formatter};
   use core::mem::{self, ManuallyDrop};
 
   pub trait Socket {
@@ -116,7 +114,7 @@ mod hci {
     async fn socket_send<T: ?Sized + PacketData>(&self, tx: &Packet<T>);
   }
 
-  #[derive(Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct Packet<T: ?Sized + PacketData> {
     pub r#type: T::PacketType,
@@ -160,19 +158,7 @@ mod hci {
     type PacketType = u8c<3>;
   }
 
-  impl<T: ?Sized + Debug + PacketData> Debug for Packet<T>
-  where
-    T::PacketType: Debug,
-  {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      f.debug_struct("Packet")
-        .field("type", &unaligned_ref!(self.r#type))
-        .field("data", &unaligned_ref!(self.data))
-        .finish()
-    }
-  }
-
-  #[derive(Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct Acl<T: ?Sized> {
     pub handle_and_flags: u16le,
@@ -180,17 +166,7 @@ mod hci {
     pub parameters: ManuallyDrop<T>,
   }
 
-  impl<T: ?Sized + Debug + Data> Debug for Acl<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      f.debug_struct("Acl")
-        .field("handle_and_flags", &self.handle_and_flags)
-        .field("data_total_len", &self.data_total_len)
-        .field("completed_packets", &unaligned_ref!(self.parameters))
-        .finish()
-    }
-  }
-
-  #[derive(Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct Event<T: ?Sized + EventData> {
     pub event_code: T::EventCode,
@@ -254,7 +230,7 @@ mod hci {
     pub status: u8,
   }
 
-  #[derive(Debug, Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct CommandComplete<T: ?Sized + CommandData> {
     pub op_code: T::OpCode,
@@ -290,7 +266,7 @@ mod hci {
     pub number_of_completed_packets: u16le,
   }
 
-  #[derive(Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct NumberOfCompletedPackets<
     T: ?Sized + Data<Item = CompletedPackets> = [CompletedPackets],
@@ -308,7 +284,7 @@ mod hci {
     }
   }
 
-  #[derive(Copy, Clone, PartialEq, Data)]
+  #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct Command<T: ?Sized + CommandData> {
     pub op_code: T::OpCode,
@@ -327,28 +303,6 @@ mod hci {
   impl CommandData for Reset {
     type OpCode = u16lec<0x2345>;
     type ResultParameters = ();
-  }
-
-  impl<T: ?Sized + Debug + EventData> Debug for Event<T>
-  where
-    T::EventCode: Debug,
-  {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      f.debug_struct("Event")
-        .field("event_code", &unaligned_ref!(self.event_code))
-        .field("parameters_len", &self.parameters_len)
-        .field("parameters", &unaligned_ref!(self.parameters))
-        .finish()
-    }
-  }
-
-  impl<T: ?Sized + Data<Item = CompletedPackets> + Debug> Debug for NumberOfCompletedPackets<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-      f.debug_struct("NumberOfCompletedPackets")
-        .field("num_handles", &self.num_handles)
-        .field("completed_packets", &unaligned_ref!(self.completed_packets))
-        .finish()
-    }
   }
 }
 
