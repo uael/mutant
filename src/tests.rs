@@ -84,7 +84,7 @@ struct Uninit(u8);
 unsafe impl Integer for Uninit {
   type Bits = u8;
   const SPEC: IntegerSpec<'static, Self::Bits> =
-    IntegerSpec { default: &0, bits_pattern: BitsPattern::Uninit, size_field: None };
+    IntegerSpec { bits_pattern: BitsPattern::Uninit, ..IntegerSpec::any(&0) };
 }
 
 #[test]
@@ -122,6 +122,60 @@ fn test_num() {
   test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
   test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
   test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
+
+  let big: u128 = 0x112233445566778899aabbccddeeff;
+  assert_eq!(0xff, cast::<_, u8>(big));
+  assert_eq!(0xeeff, cast::<_, u16>(big));
+  assert_eq!(0xeeff, cast::<_, u16le>(big).into_raw());
+  assert_eq!(0xeeff, cast::<_, u16be>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24le>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24be>(big).into_raw());
+  assert_eq!(0xccddeeff, cast::<_, u32>(big));
+  assert_eq!(0xccddeeff, cast::<_, u32le>(big).into_raw());
+  assert_eq!(0xccddeeff, cast::<_, u32be>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40le>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40be>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48le>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48be>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56le>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56be>(big).into_raw());
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64>(big));
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64le>(big).into_raw());
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64be>(big).into_raw());
+
+  assert_eq!(0xff, cast::<u8, u128>(0xff));
+  assert_eq!(0xff, cast::<u8, u128le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u128be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u64>(0xff));
+  assert_eq!(0xff, cast::<u8, u64le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u64be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u32>(0xff));
+  assert_eq!(0xff, cast::<u8, u32le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u32be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u16>(0xff));
+  assert_eq!(0xff, cast::<u8, u16le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u16be>(0xff).into_raw());
+
+  assert_eq!(0xeeff, cast::<u16, u128>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u128le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u128be>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u64>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u64le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u64be>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u32>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u32le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u32be>(0xeeff).into_raw());
+  assert_eq!(0xff, cast::<u16, u8>(0xeeff));
+
+  assert_eq!(0, cast::<(), u8>(()));
+  assert_eq!(0, cast::<(), u16>(()));
+  assert_eq!(0, cast::<(), u32>(()));
+  assert_eq!(0, cast::<(), u64>(()));
+  assert_eq!(0, cast::<(), u128>(()));
 }
 
 #[test]

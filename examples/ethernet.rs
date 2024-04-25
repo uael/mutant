@@ -170,7 +170,7 @@ pub mod ipv4 {
       },
       Ipv4Option {
         option_data: ManuallyDrop::new(TimestampOption {
-          pointer: 1,
+          pointer: 2,
           o_flow_flags: 0,
           timestamps: ManuallyDrop::new([
             Timestamp { ip_address: Ipv4([192, 168, 1, 3]), timestamp: 123234234 },

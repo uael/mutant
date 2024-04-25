@@ -1,23 +1,47 @@
+use core::mem::ManuallyDrop;
 use hci::*;
 use mutant::num::*;
 use mutant::*;
 
 fn main() {
-  let evt = NumberOfCompletedPackets::new([
-    CompletedPackets { handle: 1.into(), number_of_completed_packets: 2.into() },
-    CompletedPackets { handle: 3.into(), number_of_completed_packets: 4.into() },
-  ])
-  .into_event()
-  .into_packet();
+  let evt = Packet {
+    data: ManuallyDrop::new(Event {
+      parameters: ManuallyDrop::new(NumberOfCompletedPackets {
+        completed_packets: ManuallyDrop::new([
+          CompletedPackets { handle: 1.into(), number_of_completed_packets: 2.into() },
+          CompletedPackets { handle: 3.into(), number_of_completed_packets: 4.into() },
+        ]),
+        ..default()
+      }),
+      ..default()
+    }),
+    ..default()
+  };
   assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
 
-  let evt = DisconnectionComplete::new([1, 2, 3, 4, 5, 6], 0x1234).into_event().into_packet();
+  let evt = Packet {
+    data: ManuallyDrop::new(Event {
+      parameters: ManuallyDrop::new(DisconnectionComplete {
+        address: [1, 2, 3, 4, 5, 6],
+        handle: 0x1234.into(),
+      }),
+      ..default()
+    }),
+    ..default()
+  };
   assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
 
-  let evt =
-    ConnectionComplete { address: [1, 2, 3, 4, 5, 6], handle: 0x1234.into(), link_type: 0x56 }
-      .into_event()
-      .into_packet();
+  let evt = Packet {
+    data: ManuallyDrop::new(Event {
+      parameters: ManuallyDrop::new(ConnectionComplete {
+        address: [1, 2, 3, 4, 5, 6],
+        handle: 0x1234.into(),
+        link_type: 0x56,
+      }),
+      ..default()
+    }),
+    ..default()
+  };
   assert_eq!(Ok(&evt), try_transmute_ref(transmute_ref::<_, [u8]>(&evt)));
 }
 
@@ -64,8 +88,10 @@ mod host {
       }
     }
 
-    pub async fn send_command<T: CommandData>(&self, command: Command<T>) -> &T::ResultParameters {
-      self.socket_send(&Packet::with_data(command)).await;
+    pub async fn send_command<T: CommandData + Copy>(
+      &self, command: Command<T>,
+    ) -> &T::ResultParameters {
+      self.socket_send(&Packet { data: ManuallyDrop::new(command), ..default() }).await;
       futures::select_biased! {
         e = self.recv_event::<CommandComplete<T>>().fuse() => unaligned_ref!(e.result_parameters),
         _ = self.recv_event::<CommandStatus>().fuse() => transmute_ref(&())
@@ -107,7 +133,7 @@ mod host {
 
 mod hci {
   use super::*;
-  use core::mem::{self, ManuallyDrop};
+  use core::mem::ManuallyDrop;
 
   pub trait Socket {
     async fn socket_recv(&self) -> &Packet<[u8]>;
@@ -121,37 +147,12 @@ mod hci {
     pub data: ManuallyDrop<T>,
   }
 
-  impl<T: PacketData> Packet<T> {
-    pub fn with_data(data: T) -> Self
-    where
-      T::PacketType: Default,
-    {
-      Self { r#type: T::PacketType::default(), data: ManuallyDrop::new(data) }
-    }
-  }
-
   pub trait PacketData: Data {
     type PacketType: Integer<Bits = u8>;
-
-    fn into_packet(self) -> Packet<Self>
-    where
-      Self: Sized,
-      Self::PacketType: Default,
-    {
-      Packet::with_data(self)
-    }
   }
 
   impl PacketData for [u8] {
     type PacketType = u8;
-  }
-
-  impl<T: ?Sized + EventData> PacketData for Event<T> {
-    type PacketType = u8c<1>;
-  }
-
-  impl<T: ?Sized + Data> PacketData for Acl<T> {
-    type PacketType = u8c<2>;
   }
 
   impl<T: ?Sized + CommandData> PacketData for Command<T> {
@@ -166,6 +167,10 @@ mod hci {
     pub parameters: ManuallyDrop<T>,
   }
 
+  impl<T: ?Sized + Data> PacketData for Acl<T> {
+    type PacketType = u8c<2>;
+  }
+
   #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]
   #[repr(C, packed)]
   pub struct Event<T: ?Sized + EventData> {
@@ -174,29 +179,12 @@ mod hci {
     pub parameters: ManuallyDrop<T>,
   }
 
-  impl<T: EventData> Event<T> {
-    pub fn with_data(data: T) -> Self
-    where
-      T::EventCode: Default,
-    {
-      Self {
-        event_code: T::EventCode::default(),
-        parameters_len: mem::size_of::<T>() as u8,
-        parameters: ManuallyDrop::new(data),
-      }
-    }
+  impl<T: ?Sized + EventData> PacketData for Event<T> {
+    type PacketType = u8c<1>;
   }
 
   pub trait EventData: Data {
     type EventCode: Integer<Bits = u8>;
-
-    fn into_event(self) -> Event<Self>
-    where
-      Self: Sized,
-      Self::EventCode: Default,
-    {
-      Event::with_data(self)
-    }
   }
 
   impl EventData for [u8] {
@@ -253,12 +241,6 @@ mod hci {
     pub handle: u16le,
   }
 
-  impl DisconnectionComplete {
-    pub fn new(address: [u8; 6], handle: u16) -> Self {
-      Self { address, handle: handle.into() }
-    }
-  }
-
   #[derive(Debug, Copy, Clone, PartialEq, Data)]
   #[repr(C, packed)]
   pub struct CompletedPackets {
@@ -273,15 +255,6 @@ mod hci {
   > {
     pub num_handles: u8,
     pub completed_packets: ManuallyDrop<T>,
-  }
-
-  impl<T: Data<Item = CompletedPackets>> NumberOfCompletedPackets<T> {
-    pub fn new(completed_packets: T) -> Self {
-      Self {
-        num_handles: as_slice(&completed_packets).len() as u8,
-        completed_packets: ManuallyDrop::new(completed_packets),
-      }
-    }
   }
 
   #[derive(Copy, Clone, PartialEq, Data, DebugPacked)]

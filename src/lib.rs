@@ -132,12 +132,15 @@ pub enum Layout<T: ?Sized + Data> {
 #[derive(Debug, Copy, Clone)]
 pub enum SizeField {
   TotalSize,
+  TailSize,
+  TailLen,
 }
 
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
 pub struct IntegerSpec<'a, T> {
   default: &'a T,
+  endianness: internal::Endianness,
   bits_pattern: internal::BitsPattern<'a, T>,
   size_field: Option<SizeField>,
 }
@@ -437,6 +440,18 @@ pub struct Size<T: Integer> {
   inner: T,
 }
 
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct TailSize<T: Integer> {
+  inner: T,
+}
+
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct TailLen<T: Integer> {
+  inner: T,
+}
+
 /// Marker trait for plain integer types (e.g. integers or enum discriminants).
 ///
 /// # Safety
@@ -577,6 +592,7 @@ macro_rules! unaligned_ref {
       // 2. Make `addr` point to `sized` instead.
       addr = $crate::ptr::from_raw_parts($crate::ptr::from_ref(&$sized).cast(), 0);
     } else {
+      // TODO: make this a compile-time check.
       // `T` is `!Sized`: assert that `T` has no alignment requirement.
       assert!($crate::align_of_val_raw(addr) == 1);
     }
@@ -613,6 +629,7 @@ macro_rules! unaligned_mut {
   ($base:tt.$field:tt) => ($crate::unaligned_mut!($base, $field));
 }
 
+// TODO: refactor to a proc-macro
 #[macro_export]
 macro_rules! unpack {
   ($bytes:ident { $(| $($ty:ty)|+ => |$var:tt| $ex:stmt,)+ _ => $els:stmt $(,)? }) => {{
@@ -1025,7 +1042,6 @@ pub const fn truncate<T: Data + Copy, U: Data + Copy>(val: T) -> U {
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
-    internal::Transmutation::<T, U>::CHECK_TRUNCATE,
     internal::Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH,
     internal::Transmutation::<T, U>::CHECK_NO_INVALID_BIT_PATTERN,
   );
@@ -1172,8 +1188,61 @@ pub mod num {
   use super::*;
   use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
 
+  #[inline]
+  pub const fn swap_bytes<T: Integer>(int: T) -> T::Bits {
+    let mut bytes: [u8; 16] = unsafe { transmute_unchecked(int) };
+    let mut i = 0;
+    while i < min_size_of::<T>() / 2 {
+      let tmp = bytes[i];
+      bytes[i] = bytes[min_size_of::<T>() - i - 1];
+      bytes[min_size_of::<T>() - i - 1] = tmp;
+      i += 1;
+    }
+    truncate(bytes)
+  }
+
+  #[inline]
+  pub const fn into_ne<T: Integer>(int: T) -> T::Bits {
+    if T::SPEC.endianness as u8 == internal::Endianness::NE as u8 {
+      return transmute(int);
+    }
+    swap_bytes(int)
+  }
+
+  #[inline]
+  pub const fn into_be<T: Integer>(int: T) -> T::Bits {
+    if T::SPEC.endianness as u8 == internal::Endianness::BE as u8 {
+      return transmute(int);
+    }
+    swap_bytes(int)
+  }
+
+  #[inline]
+  pub const fn into_le<T: Integer>(int: T) -> T::Bits {
+    if T::SPEC.endianness as u8 == internal::Endianness::LE as u8 {
+      return transmute(int);
+    }
+    swap_bytes(int)
+  }
+
+  #[inline]
+  pub const fn cast<T: Integer, U: Integer<Bits = U>>(int: T) -> U {
+    union Cast<T: Copy, U: Copy> {
+      int: T,
+      dst: U,
+    }
+
+    let mut cast = Cast { dst: default() };
+    cast.int = into_le(int);
+    let dst_le = unsafe { cast.dst };
+    if U::SPEC.endianness as u8 == internal::Endianness::LE as u8 {
+      return dst_le;
+    }
+    swap_bytes(dst_le)
+  }
+
   macro_rules! impl_num {
-    (($T:ident $Bits:ident $N:literal $ordering:ident)) => {
+    (($T:ident $Raw:ident $N:literal $endianness:ident)) => {
       #[allow(non_camel_case_types)]
       #[derive(Eq, PartialEq, Copy, Clone, Hash)]
       #[repr(transparent)]
@@ -1181,46 +1250,47 @@ pub mod num {
 
       unsafe impl Integer for $T {
         type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&Self::MIN);
+        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&Self::MIN)
+          .with_endianness(internal::Endianness::$endianness);
       }
 
       impl $T {
-        pub const MIN: Self = Self::from_raw($Bits::MIN);
-        pub const MAX: Self = Self::from_raw($Bits::MAX);
+        pub const MIN: Self = Self::from_raw($Raw::MIN);
+        pub const MAX: Self = Self::from_raw($Raw::MAX);
 
-        #[inline] pub const fn to_ne_bytes(self) -> [u8; $N] { swap!($ordering => ne, self).0 }
-        #[inline] pub const fn to_le_bytes(self) -> [u8; $N] { swap!($ordering => le, self).0 }
-        #[inline] pub const fn to_be_bytes(self) -> [u8; $N] { swap!($ordering => be, self).0 }
+        #[inline] pub const fn to_ne_bytes(self) -> [u8; $N] { swap!($endianness => NE, self).0 }
+        #[inline] pub const fn to_le_bytes(self) -> [u8; $N] { swap!($endianness => LE, self).0 }
+        #[inline] pub const fn to_be_bytes(self) -> [u8; $N] { swap!($endianness => BE, self).0 }
 
-        #[inline] pub const fn from_ne_bytes(b: [u8; $N]) -> Self { swap!(ne => $ordering, Self(b)) }
-        #[inline] pub const fn from_le_bytes(b: [u8; $N]) -> Self { swap!(le => $ordering, Self(b)) }
-        #[inline] pub const fn from_be_bytes(b: [u8; $N]) -> Self { swap!(be => $ordering, Self(b)) }
+        #[inline] pub const fn from_ne_bytes(b: [u8; $N]) -> Self { swap!(NE => $endianness, Self(b)) }
+        #[inline] pub const fn from_le_bytes(b: [u8; $N]) -> Self { swap!(LE => $endianness, Self(b)) }
+        #[inline] pub const fn from_be_bytes(b: [u8; $N]) -> Self { swap!(BE => $endianness, Self(b)) }
 
         #[inline]
-        pub const fn new(raw: $Bits) -> Self {
+        pub const fn new(raw: $Raw) -> Self {
           Self::from_raw(raw)
         }
 
         #[inline]
-        pub const fn from_raw(raw: $Bits) -> Self {
+        pub const fn from_raw(raw: $Raw) -> Self {
           let (mut off, mut bytes) = (0, [0; $N]);
           while off < $N {
-            bytes[off] = (raw >> (le_or_be!($ordering, off, $N - off - 1) * 8)) as u8;
+            bytes[off] = (raw >> (le_or_be!($endianness, off, $N - off - 1) * 8)) as u8;
             off += 1;
           }
           Self(bytes)
         }
 
         #[inline]
-        pub const fn into_inner(self) -> $Bits {
+        pub const fn into_inner(self) -> $Raw {
           self.into_raw()
         }
 
         #[inline]
-        pub const fn into_raw(self) -> $Bits {
+        pub const fn into_raw(self) -> $Raw {
           let (mut off, mut raw) = (0, 0);
           while off < $N {
-            raw |= (self.0[off] as $Bits) << (le_or_be!($ordering, off, $N - off - 1) * 8);
+            raw |= (self.0[off] as $Raw) << (le_or_be!($endianness, off, $N - off - 1) * 8);
             off += 1;
           }
           raw
@@ -1244,14 +1314,14 @@ pub mod num {
         }
       }
 
-      impl From<$Bits> for $T {
+      impl From<$Raw> for $T {
         #[inline]
-        fn from(raw: $Bits) -> Self {
+        fn from(raw: $Raw) -> Self {
           Self::from_raw(raw)
         }
       }
 
-      impl From<$T> for $Bits {
+      impl From<$T> for $Raw {
         #[inline]
         fn from(value: $T) -> Self {
           value.into_raw()
@@ -1261,42 +1331,42 @@ pub mod num {
       impl Debug for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as Debug>::fmt(&self.into_raw(), f)
+          <$Raw as Debug>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Display for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as Display>::fmt(&self.into_raw(), f)
+          <$Raw as Display>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Binary for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as Binary>::fmt(&self.into_raw(), f)
+          <$Raw as Binary>::fmt(&self.into_raw(), f)
         }
       }
 
       impl Octal for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as Octal>::fmt(&self.into_raw(), f)
+          <$Raw as Octal>::fmt(&self.into_raw(), f)
         }
       }
 
       impl LowerHex for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as LowerHex>::fmt(&self.into_raw(), f)
+          <$Raw as LowerHex>::fmt(&self.into_raw(), f)
         }
       }
 
       impl UpperHex for $T {
         #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-          <$Bits as UpperHex>::fmt(&self.into_raw(), f)
+          <$Raw as UpperHex>::fmt(&self.into_raw(), f)
         }
       }
     };
@@ -1428,40 +1498,40 @@ pub mod num {
 
   #[rustfmt::skip]
   macro_rules! le_or_be {
-    (ne, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
-    (le, $le:expr, $be:expr $(,)?) => { $le };
-    (be, $le:expr, $be:expr $(,)?) => { $be };
+    (NE, $le:expr, $be:expr $(,)?) => { if cfg!(target_endian = "little") { $le } else { $be } };
+    (LE, $le:expr, $be:expr $(,)?) => { $le };
+    (BE, $le:expr, $be:expr $(,)?) => { $be };
   }
 
   #[rustfmt::skip]
   macro_rules! swap {
-    (ne => ne, $e:expr) => { $e };
-    (le => le, $e:expr) => { $e };
-    (be => be, $e:expr) => { $e };
-    (le => be, $e:expr) => { $e.swap_bytes() };
-    (be => le, $e:expr) => { $e.swap_bytes() };
-    (ne => le, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (ne => be, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
-    (le => ne, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
-    (be => ne, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+    (NE => NE, $e:expr) => { $e };
+    (LE => LE, $e:expr) => { $e };
+    (BE => BE, $e:expr) => { $e };
+    (LE => BE, $e:expr) => { $e.swap_bytes() };
+    (BE => LE, $e:expr) => { $e.swap_bytes() };
+    (NE => LE, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (NE => BE, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
+    (LE => NE, $e:expr) => { if cfg!(target_endian = "little") { $e } else { $e.swap_bytes() } };
+    (BE => NE, $e:expr) => { if cfg!(target_endian = "little") { $e.swap_bytes() } else { $e } };
   }
 
   impl_num! {
-    (u16le u16 2 le) (u16be u16 2 be)
-    (u24le u32 3 le) (u24be u32 3 be) (u24 u32 3 ne)
-    (u32le u32 4 le) (u32be u32 4 be)
-    (u40le u64 5 le) (u40be u64 5 be) (u40 u64 5 ne)
-    (u48le u64 6 le) (u48be u64 6 be) (u48 u64 6 ne)
-    (u56le u64 7 le) (u56be u64 7 be) (u56 u64 7 ne)
-    (u64le u64 8 le) (u64be u64 8 be)
-    (u72le u128 9 le) (u72be u128 9 be) (u72 u128 9 ne)
-    (u80le u128 10 le) (u80be u128 10 be) (u80 u128 10 ne)
-    (u88le u128 11 le) (u88be u128 11 be) (u88 u128 11 ne)
-    (u96le u128 12 le) (u96be u128 12 be) (u96 u128 12 ne)
-    (u104le u128 13 le) (u104be u128 13 be) (u104 u128 13 ne)
-    (u112le u128 14 le) (u112be u128 14 be) (u112 u128 14 ne)
-    (u120le u128 15 le) (u120be u128 15 be) (u120 u128 15 ne)
-    (u128le u128 16 le) (u128be u128 16 be)
+    (u16le u16 2 LE) (u16be u16 2 BE)
+    (u24le u32 3 LE) (u24be u32 3 BE) (u24 u32 3 NE)
+    (u32le u32 4 LE) (u32be u32 4 BE)
+    (u40le u64 5 LE) (u40be u64 5 BE) (u40 u64 5 NE)
+    (u48le u64 6 LE) (u48be u64 6 BE) (u48 u64 6 NE)
+    (u56le u64 7 LE) (u56be u64 7 BE) (u56 u64 7 NE)
+    (u64le u64 8 LE) (u64be u64 8 BE)
+    (u72le u128 9 LE) (u72be u128 9 BE) (u72 u128 9 NE)
+    (u80le u128 10 LE) (u80be u128 10 BE) (u80 u128 10 NE)
+    (u88le u128 11 LE) (u88be u128 11 BE) (u88 u128 11 NE)
+    (u96le u128 12 LE) (u96be u128 12 BE) (u96 u128 12 NE)
+    (u104le u128 13 LE) (u104be u128 13 BE) (u104 u128 13 NE)
+    (u112le u128 14 LE) (u112be u128 14 BE) (u112 u128 14 NE)
+    (u120le u128 15 LE) (u120be u128 15 BE) (u120 u128 15 NE)
+    (u128le u128 16 LE) (u128be u128 16 BE)
   }
 
   impl_const_num! {
@@ -1586,6 +1656,19 @@ mod internal {
             let size = min_size_of::<C>();
             Some((size >> (offset * 8)) as u8)
           }
+          SizeField::TailSize => {
+            // TODO: implement `SizeField::TailSize`.
+            // let size = min_size_of::<C>() - tail_offset::<C>();
+            // Some((size >> (offset * 8)) as u8)
+            todo!()
+          }
+          SizeField::TailLen => {
+            // TODO: implement `SizeField::TailLen`.
+            // let size = min_size_of::<C>() - tail_offset::<C>();
+            // let size = size / tail_item_size::<C>();
+            // Some((size >> (offset * 8)) as u8)
+            todo!()
+          }
         },
         None => Some(unsafe { *ptr::from_ref(spec.default).cast::<u8>().add(offset) }),
       },
@@ -1623,6 +1706,38 @@ mod internal {
       Err(n) => Err(n * size_of_tail_item::<T>() as isize),
       _ if size_of_tail_item::<U>() == 0 => Ok(0),
       _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail_item::<U>()),
+    }
+  }
+
+  #[inline]
+  pub const fn tail_offset<T: ?Sized + Data>() -> usize {
+    #[inline]
+    const fn repr_tail_offset<R: Repr<T>, T: ?Sized + Data>() -> usize {
+      match R::FIELDS {
+        1 => R::OFFSET,
+        _ => repr_tail_offset::<R::Rest, T>(),
+      }
+    }
+
+    match T::LAYOUT {
+      Layout::Struct => repr_tail_offset::<T::Repr, T>(),
+      _ => 0,
+    }
+  }
+
+  #[inline]
+  pub const fn tail_item_size<T: ?Sized + Data>() -> usize {
+    #[inline]
+    const fn repr_tail_item_size<R: Repr<T>, T: ?Sized + Data>() -> usize {
+      match R::FIELDS {
+        1 => mem::size_of::<<R::Type as Data>::Item>(),
+        _ => repr_tail_item_size::<R::Rest, T>(),
+      }
+    }
+
+    match T::LAYOUT {
+      Layout::Struct => repr_tail_item_size::<T::Repr, T>(),
+      _ => 0,
     }
   }
 
@@ -1675,20 +1790,46 @@ mod internal {
         // Retrieve `SizeField` if any.
         let size_field = unwrap!(spec.size_field, return Ok(container));
         // Compute the size from `ptr`.
-        let mut size: usize = 0;
-        let mut i = 0;
-        while i < min_size_of::<T>() {
-          size |= (unsafe { *ptr.cast::<u8>().add(i) } as usize) << (i * 8);
-          i += 1;
-        }
+        let int = unsafe { core::ptr::read_unaligned(ptr.cast()) };
+        let size: usize = num::cast::<T::Bits, u64>(int) as usize;
         // Compute the new metadata.
         let metadata = match size_field {
-          SizeField::TotalSize if min_size_of::<T>() == 0 => return Ok(container),
+          _ if min_size_of::<T>() == 0 => return Ok(container),
           SizeField::TotalSize if !RESIZE || size_of_tail_item::<C>() == 0 => {
             check!(size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
             return Ok(container);
           }
+          SizeField::TailSize if !RESIZE || size_of_tail_item::<C>() == 0 => {
+            check!(tail_offset::<C>() + size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
+            return Ok(container);
+          }
+          SizeField::TailLen if !RESIZE || size_of_tail_item::<C>() == 0 => {
+            check!(tail_offset::<C>() + size * tail_item_size::<C>() == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
+            return Ok(container);
+          }
           SizeField::TotalSize => {
+            // Check if `size` is at least the minimum size of `C`.
+            check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
+            // Compute the expected tail size and check for alignment.
+            let tail_size = size - min_size_of::<C>();
+            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            // Compute the new metadata.
+            tail_size / size_of_tail_item::<C>()
+          }
+          SizeField::TailSize => {
+            let tail_size = size;
+            let size = tail_offset::<C>() + tail_size;
+            // Check if `size` is at least the minimum size of `C`.
+            check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
+            // Compute the expected tail size and check for alignment.
+            let tail_size = size - min_size_of::<C>();
+            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            // Compute the new metadata.
+            tail_size / size_of_tail_item::<C>()
+          }
+          SizeField::TailLen => {
+            let tail_size = size * tail_item_size::<C>();
+            let size = tail_offset::<C>() + tail_size;
             // Check if `size` is at least the minimum size of `C`.
             check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             // Compute the expected tail size and check for alignment.
@@ -1880,6 +2021,20 @@ mod internal {
     ))
   }
 
+  #[repr(u8)]
+  #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+  pub enum Endianness {
+    LE,
+    BE,
+  }
+
+  impl Endianness {
+    #[cfg(target_endian = "little")]
+    pub const NE: Self = Endianness::LE;
+    #[cfg(target_endian = "big")]
+    pub const NE: Self = Endianness::BE;
+  }
+
   /// Enumerates the most generic bit patterns for individual bytes.
   ///
   /// # Internals
@@ -1888,7 +2043,6 @@ mod internal {
   /// through the [`BitsPattern::contains_any`] and [`BitsPattern::contains_all`] methods to compute
   /// the [transmutability](Transmutability) from `A` to `B`, over each potential
   /// combination.
-  #[doc(hidden)]
   #[rustfmt::skip]
   #[derive(Debug, Copy, Clone)]
   pub enum BitsPattern<'a, T> { #[cfg(test)] Uninit, Any, Allow(&'a [T]), Disallow(&'a T), }
@@ -2332,11 +2486,6 @@ mod internal {
     pub const CHECK: () = {
       unwrap_err!(Self::STATIC_ANALYZE);
     };
-    pub const CHECK_TRUNCATE: () = {
-      if !unwrap_err!(Self::STATIC_ANALYZE).truncate {
-        panic!("\n  does not need to be truncated.\n  use `transmute` instead.\n")
-      }
-    };
     pub const CHECK_NO_TRUNCATE: () = {
       if unwrap_err!(Self::STATIC_ANALYZE).truncate {
         panic!("\n  target is too small.\n  use `truncate()` instead.\n")
@@ -2400,12 +2549,17 @@ mod internal {
   impl<'a, T: Integer<Bits = T>> IntegerSpec<'a, T> {
     #[inline]
     pub const fn any(default: &'a T) -> Self {
-      Self { default, bits_pattern: BitsPattern::Any, size_field: None }
+      Self { default, bits_pattern: BitsPattern::Any, size_field: None, endianness: Endianness::NE }
     }
 
     #[inline]
     pub const fn disallow_with_default(disallow: &'a T, default: &'a T) -> Self {
-      Self { default, bits_pattern: BitsPattern::Disallow(disallow), size_field: None }
+      Self { bits_pattern: BitsPattern::Disallow(disallow), ..Self::any(default) }
+    }
+
+    #[inline]
+    pub const fn allow_with_default(default: &'a T, allow: &'a [T]) -> Self {
+      Self { bits_pattern: BitsPattern::Allow(allow), ..Self::any(default) }
     }
 
     #[inline]
@@ -2414,13 +2568,13 @@ mod internal {
     }
 
     #[inline]
-    pub const fn allow_with_default(default: &'a T, allow: &'a [T]) -> Self {
-      Self { default, bits_pattern: BitsPattern::Allow(allow), size_field: None }
+    pub const fn with_size_field(self, size_field: SizeField) -> Self {
+      Self { size_field: Some(size_field), ..self }
     }
 
     #[inline]
-    pub const fn with_size_field(self, size_field: SizeField) -> Self {
-      Self { size_field: Some(size_field), ..self }
+    pub const fn with_endianness(self, endianness: Endianness) -> Self {
+      Self { endianness, ..self }
     }
 
     #[inline]
@@ -2631,13 +2785,6 @@ mod internal {
     }
   }
 
-  // impl<T: Debug + Copy> Debug for Unalign<T> {
-  //   #[inline]
-  //   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-  //     Debug::fmt(&self.into_inner(), f)
-  //   }
-  // }
-
   // impl Size -------------------------------------------------------------------------------------
 
   unsafe impl<T: Integer> Integer for Size<T> {
@@ -2646,20 +2793,37 @@ mod internal {
   }
 
   impl<T: Integer> Size<T> {
-    pub const fn new<S: Data>() -> Self {
-      Self { inner: truncate(min_size_of::<S>() as u64) }
-    }
-
     #[inline]
-    pub const fn as_usize(&self) -> usize {
-      let bytes: &[u8] = transmute_ref(self);
-      let mut i = 0;
-      let mut size = 0;
-      while i < bytes.len() {
-        size |= (bytes[i] as usize) << (i * 8);
-        i += 1;
-      }
-      size
+    pub const fn into_usize(self) -> usize {
+      num::cast::<_, u64>(self.inner) as usize
+    }
+  }
+
+  // impl TailSize ---------------------------------------------------------------------------------
+
+  unsafe impl<T: Integer> Integer for TailSize<T> {
+    type Bits = T::Bits;
+    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TailSize);
+  }
+
+  impl<T: Integer> TailSize<T> {
+    #[inline]
+    pub const fn into_usize(self) -> usize {
+      num::cast::<_, u64>(self.inner) as usize
+    }
+  }
+
+  // impl TailLen ----------------------------------------------------------------------------------
+
+  unsafe impl<T: Integer> Integer for TailLen<T> {
+    type Bits = T::Bits;
+    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TailLen);
+  }
+
+  impl<T: Integer> TailLen<T> {
+    #[inline]
+    pub const fn into_usize(self) -> usize {
+      num::cast::<_, u64>(self.inner) as usize
     }
   }
 
