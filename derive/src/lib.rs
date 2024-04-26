@@ -150,9 +150,9 @@ fn derive_data_for_struct(
         return quote! {
           unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
             type Item = ();
-            type TailItem = ();
+            type TailSliceItem = ();
             type Sized = Self;
-            type Repr = ();
+            type TailField = ();
             type Bits = ();
 
             const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
@@ -173,25 +173,25 @@ fn derive_data_for_struct(
   // Tokens that prefix `Data` implementation.
   let mut prefix = vec![];
 
-  // Compute `Repr` type.
-  let repr_ty = input_fields.iter().enumerate().rfold(quote!(()), |tail_ty, (i, head)| {
-    let ty = &head.ty;
-    let field_ident = quote_field_ident(head, i);
-    let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
-    let fields_count = input_fields.len() - i;
-    prefix.push(quote! {
+  // Compute `TailField` type.
+  let tail_field_ty =
+    input_fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
+      let ty = &field.ty;
+      let field_ident = quote_field_ident(field, i);
+      let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
+      prefix.push(quote! {
       #[allow(non_camel_case_types)]
       #vis struct #struct_ident;
 
-      unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
+      unsafe impl #impl_generics #root::Field<#ident #ty_generics> for #struct_ident #where_clause {
         type Type = #ty;
-        type Rest = #tail_ty;
+        type PrevField = #prev_field_ty;
         const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-        const FIELDS: usize = #fields_count;
+        const INDEX: usize = #i;
       }
     });
-    quote!(#struct_ident)
-  });
+      quote!(#struct_ident)
+    });
 
   // Compute `Sized` type.
   let sized_ty = match repr {
@@ -212,31 +212,30 @@ fn derive_data_for_struct(
         .cloned()
         .chain([
           map_tail_ty(quote!(<#tail_ty as #root::Data>::Sized)),
-          map_tail_ty(quote!([<#tail_ty as #root::Data>::TailItem; 0])),
+          map_tail_ty(quote!([<#tail_ty as #root::Data>::TailSliceItem; 0])),
         ])
         .map(|mut field| {
           field.ident = None;
           field
         })
         .collect::<Vec<_>>();
-      let repr_ty = fields.iter().enumerate().rfold(quote!(()), |tail_ty, (i, head)| {
-        let ty = &head.ty;
+      let tail_field_ty = fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
+        let ty = &field.ty;
         let field_ident = {
           let ident = Index { index: i as u32, span: Span::call_site() };
           quote!(#ident)
         };
-        let struct_ident = format_ident!("__{}{}", ident.to_string(), i);
-        let fields_count = fields.len() - i;
+        let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
         prefix.push(quote! {
           #[allow(non_camel_case_types)]
           #vis struct #struct_ident;
 
-          unsafe impl #impl_generics #root::Repr<#ident #ty_generics> for #struct_ident #where_clause {
+          unsafe impl #impl_generics #root::Field<#ident #ty_generics> for #struct_ident #where_clause {
             type Type = #ty;
-            type Rest = #tail_ty;
+            type PrevField = #prev_field_ty;
 
             const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-            const FIELDS: usize = #fields_count;
+            const INDEX: usize = #i;
           }
         });
         quote!(#struct_ident)
@@ -259,9 +258,9 @@ fn derive_data_for_struct(
 
         unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
           type Item = ();
-          type TailItem = ();
+          type TailSliceItem = ();
           type Sized = Self;
-          type Repr = #repr_ty;
+          type TailField = #tail_field_ty;
           type Bits = ();
 
           const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
@@ -277,9 +276,9 @@ fn derive_data_for_struct(
 
       unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
         type Item = ();
-        type TailItem = <#tail_ty as #root::Data>::TailItem;
+        type TailSliceItem = <#tail_ty as #root::Data>::TailSliceItem;
         type Sized = #sized_ty;
-        type Repr = #repr_ty;
+        type TailField = #tail_field_ty;
         type Bits = ();
 
         const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;

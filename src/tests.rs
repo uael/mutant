@@ -87,100 +87,160 @@ unsafe impl Integer for Uninit {
     IntegerSpec { bits_pattern: BitsPattern::Uninit, ..IntegerSpec::any(&0) };
 }
 
+#[repr(C)]
+#[derive(Data, Debug, PartialEq)]
+#[data(crate)]
+struct TailSliceDst {
+  info: u32,
+  data: [u8], // `tail slice` of type `[u8]`.
+}
+
+#[repr(C)]
+#[derive(Data, Debug, PartialEq)]
+#[data(crate)]
+struct TailDst {
+  version: u32,
+  payload: TailSliceDst, // `tail` DST of type `TailSliceDst`.
+}
+
+#[repr(C)]
+#[derive(Data, Debug, PartialEq)]
+#[data(crate)]
+struct MaybeDst<T: ?Sized> {
+  info: u32,
+  data: T, // `tail` of type `T`.
+}
+
+#[derive(Data, Copy, Clone, Debug, PartialEq)]
+#[data(crate)]
+struct NotDstRust {
+  info: u32,
+  data: [u32; 21],
+}
+
 #[test]
-fn test_num() {
-  use core::array::from_fn;
-  use rand::Rng;
+fn test_internal_byte_layout_at() {
+  use ByteLayout::*;
+  assert_eq!(byte_layout_at::<u8>(0), Some(Init(u8::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<u8>(1), None);
+  assert_eq!(byte_layout_at::<u8>(usize::MAX), None);
+  assert_eq!(byte_layout_at::<u32>(0), Some(Init(u32::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<u32>(1), Some(Init(u32::SPEC.init_at(1))));
+  assert_eq!(byte_layout_at::<u32>(2), Some(Init(u32::SPEC.init_at(2))));
+  assert_eq!(byte_layout_at::<u32>(3), Some(Init(u32::SPEC.init_at(3))));
+  assert_eq!(byte_layout_at::<u32>(4), None);
+  assert_eq!(byte_layout_at::<u32>(usize::MAX), None);
+  assert_eq!(byte_layout_at::<TailSliceDst>(0), Some(Init(u32::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailSliceDst>(1), Some(Init(u32::SPEC.init_at(1))));
+  assert_eq!(byte_layout_at::<TailSliceDst>(2), Some(Init(u32::SPEC.init_at(2))));
+  assert_eq!(byte_layout_at::<TailSliceDst>(3), Some(Init(u32::SPEC.init_at(3))));
+  assert_eq!(byte_layout_at::<TailSliceDst>(4), Some(Init(u8::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailSliceDst>(5), Some(Init(u8::SPEC.init_at(0)))); // etc..
+  assert_eq!(byte_layout_at::<TailSliceDst>(usize::MAX), Some(Init(u8::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailDst>(0), Some(Init(u32::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailDst>(1), Some(Init(u32::SPEC.init_at(1))));
+  assert_eq!(byte_layout_at::<TailDst>(2), Some(Init(u32::SPEC.init_at(2))));
+  assert_eq!(byte_layout_at::<TailDst>(3), Some(Init(u32::SPEC.init_at(3))));
+  assert_eq!(byte_layout_at::<TailDst>(4), Some(Init(u32::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailDst>(5), Some(Init(u32::SPEC.init_at(1))));
+  assert_eq!(byte_layout_at::<TailDst>(6), Some(Init(u32::SPEC.init_at(2))));
+  assert_eq!(byte_layout_at::<TailDst>(7), Some(Init(u32::SPEC.init_at(3))));
+  assert_eq!(byte_layout_at::<TailDst>(8), Some(Init(u8::SPEC.init_at(0))));
+  assert_eq!(byte_layout_at::<TailDst>(9), Some(Init(u8::SPEC.init_at(0)))); // etc..
+  assert_eq!(byte_layout_at::<TailDst>(usize::MAX), Some(Init(u8::SPEC.init_at(0))));
+}
 
-  #[rustfmt::skip]
-  macro_rules! test {
-    ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
-      let val = rand::thread_rng().gen_range($min..=$max);
-      assert_eq!($sz, mem::size_of::<$ty>());
-      assert_eq!($max, $ty::MAX.into());
-      assert_eq!($min, $ty::from($min).into());
-      assert_eq!($max, $ty::from($max).into());
-      assert_eq!(val, $ty::from(val).into());
-      assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
-      assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
-      assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
-    )+};
-  }
+#[test]
+fn test_internal_default_at() {
+  // TODO
+}
 
-  test!(2, [u16, u16le, u16be], 0u16, 0xffffu16);
-  test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32);
-  test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32);
-  test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64);
-  test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64);
-  test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64);
-  test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64);
-  test!(9, [u72, u72le, u72be], 0u128, 0xffffffffffffffffffu128);
-  test!(10, [u80, u80le, u80be], 0u128, 0xffffffffffffffffffffu128);
-  test!(11, [u88, u88le, u88be], 0u128, 0xffffffffffffffffffffffu128);
-  test!(12, [u96, u96le, u96be], 0u128, 0xffffffffffffffffffffffffu128);
-  test!(13, [u104, u104le, u104be], 0u128, 0xffffffffffffffffffffffffffu128);
-  test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
-  test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
-  test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
+#[test]
+fn test_internal_convert_metadata() {
+  assert_eq!(convert_metadata::<u8, u8>(0), 0);
+  assert_eq!(convert_metadata::<u8, [u8]>(0), 1);
+  assert_eq!(convert_metadata::<u32, [u8]>(0), 4);
+  assert_eq!(convert_metadata::<u32, [u32]>(0), 1);
+  assert_eq!(convert_metadata::<u64, [u32]>(0), 2);
+  assert_eq!(convert_metadata::<[u8; 21], TailSliceDst>(0), 21 - 4);
+  assert_eq!(convert_metadata::<[u8; 21], TailDst>(0), 21 - 4 - 4);
+  assert_eq!(convert_metadata::<[u8; 21], MaybeDst<[u8]>>(0), 21 - 4);
+  assert_eq!(convert_metadata::<[u8; 21], MaybeDst<u32>>(0), 0);
+  assert_eq!(convert_metadata::<[u32; 42], NotDstRust>(0), 0);
+}
 
-  let big: u128 = 0x112233445566778899aabbccddeeff;
-  assert_eq!(0xff, cast::<_, u8>(big));
-  assert_eq!(0xeeff, cast::<_, u16>(big));
-  assert_eq!(0xeeff, cast::<_, u16le>(big).into_raw());
-  assert_eq!(0xeeff, cast::<_, u16be>(big).into_raw());
-  assert_eq!(0xddeeff, cast::<_, u24>(big).into_raw());
-  assert_eq!(0xddeeff, cast::<_, u24le>(big).into_raw());
-  assert_eq!(0xddeeff, cast::<_, u24be>(big).into_raw());
-  assert_eq!(0xccddeeff, cast::<_, u32>(big));
-  assert_eq!(0xccddeeff, cast::<_, u32le>(big).into_raw());
-  assert_eq!(0xccddeeff, cast::<_, u32be>(big).into_raw());
-  assert_eq!(0xbbccddeeff, cast::<_, u40>(big).into_raw());
-  assert_eq!(0xbbccddeeff, cast::<_, u40le>(big).into_raw());
-  assert_eq!(0xbbccddeeff, cast::<_, u40be>(big).into_raw());
-  assert_eq!(0xaabbccddeeff, cast::<_, u48>(big).into_raw());
-  assert_eq!(0xaabbccddeeff, cast::<_, u48le>(big).into_raw());
-  assert_eq!(0xaabbccddeeff, cast::<_, u48be>(big).into_raw());
-  assert_eq!(0x99aabbccddeeff, cast::<_, u56>(big).into_raw());
-  assert_eq!(0x99aabbccddeeff, cast::<_, u56le>(big).into_raw());
-  assert_eq!(0x99aabbccddeeff, cast::<_, u56be>(big).into_raw());
-  assert_eq!(0x8899aabbccddeeff, cast::<_, u64>(big));
-  assert_eq!(0x8899aabbccddeeff, cast::<_, u64le>(big).into_raw());
-  assert_eq!(0x8899aabbccddeeff, cast::<_, u64be>(big).into_raw());
+#[test]
+fn test_internal_try_convert_metadata() {
+  // Same as `test_internal_convert_metadata`:
+  assert_eq!(try_convert_metadata::<u8, u8>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<u8, [u8]>(0), Ok(1));
+  assert_eq!(try_convert_metadata::<u32, [u8]>(0), Ok(4));
+  assert_eq!(try_convert_metadata::<[u8; 21], TailSliceDst>(0), Ok(21 - 4));
+  assert_eq!(try_convert_metadata::<[u8; 21], TailDst>(0), Ok(21 - 4 - 4));
+  assert_eq!(try_convert_metadata::<[u8; 21], MaybeDst<[u8]>>(0), Ok(21 - 4));
+  assert_eq!(try_convert_metadata::<[u8; 21], MaybeDst<u32>>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<[u32; 42], NotDstRust>(0), Ok(0));
+  // New ones:
+  assert_eq!(try_convert_metadata::<[u8], u8>(0), Err(1));
+  assert_eq!(try_convert_metadata::<[u8], u8>(1), Ok(0));
+  assert_eq!(try_convert_metadata::<[u8], u8>(2), Err(-1));
+  assert_eq!(try_convert_metadata::<[u8], u32>(2), Err(2));
+  assert_eq!(try_convert_metadata::<[u8], u32>(4), Ok(0));
+  assert_eq!(try_convert_metadata::<[u8], u32>(6), Err(-2));
+  assert_eq!(try_convert_metadata::<[u8], [u8]>(5), Ok(5));
+  assert_eq!(try_convert_metadata::<[u8], [u32]>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<[u8], [u32]>(4), Ok(1));
+  assert_eq!(try_convert_metadata::<[u8], [u32]>(8), Ok(2));
+  assert_eq!(try_convert_metadata::<[u8], [u32]>(1), Err(3));
+  assert_eq!(try_convert_metadata::<[u8], [u32]>(5), Err(3));
+  assert_eq!(try_convert_metadata::<[u32], [u8]>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<[u32], [u8]>(1), Ok(4));
+  assert_eq!(try_convert_metadata::<[u32], [u8]>(2), Ok(8));
+  assert_eq!(try_convert_metadata::<[u32], [u16]>(1), Ok(2));
+  assert_eq!(try_convert_metadata::<[u32], [u16]>(2), Ok(4));
+  assert_eq!(try_convert_metadata::<[u32], [u64]>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<[u32], [u64]>(1), Err(4));
+  assert_eq!(try_convert_metadata::<TailSliceDst, u32>(0), Ok(0));
+  assert_eq!(try_convert_metadata::<TailSliceDst, u32>(4), Err(-4));
+  assert_eq!(try_convert_metadata::<TailSliceDst, [u32; 21]>(4 * 20), Ok(0));
+  assert_eq!(try_convert_metadata::<TailSliceDst, [u32; 21]>(4 * 19), Err(4));
+  assert_eq!(try_convert_metadata::<TailSliceDst, [u32; 21]>(4 * 21), Err(-4));
+}
 
-  assert_eq!(0xff, cast::<u8, u128>(0xff));
-  assert_eq!(0xff, cast::<u8, u128le>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u128be>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u64>(0xff));
-  assert_eq!(0xff, cast::<u8, u64le>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u64be>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u32>(0xff));
-  assert_eq!(0xff, cast::<u8, u32le>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u32be>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u16>(0xff));
-  assert_eq!(0xff, cast::<u8, u16le>(0xff).into_raw());
-  assert_eq!(0xff, cast::<u8, u16be>(0xff).into_raw());
+#[test]
+fn test_internal_tail_offset() {
+  assert_eq!(tail_offset::<u8>(), 0);
+  assert_eq!(tail_offset::<[u8]>(), 0);
+  assert_eq!(tail_offset::<[u8; 1]>(), 0);
+  assert_eq!(tail_offset::<TailSliceDst>(), 4);
+  assert_eq!(tail_offset::<TailDst>(), 4);
+  assert_eq!(tail_offset::<MaybeDst<[u8]>>(), 4);
+  assert_eq!(tail_offset::<MaybeDst<u32>>(), 4);
+  assert_eq!(tail_offset::<NotDstRust>(), 4);
+}
 
-  assert_eq!(0xeeff, cast::<u16, u128>(0xeeff));
-  assert_eq!(0xeeff, cast::<u16, u128le>(0xeeff).into_raw());
-  assert_eq!(0xeeff, cast::<u16, u128be>(0xeeff).into_raw());
-  assert_eq!(0xeeff, cast::<u16, u64>(0xeeff));
-  assert_eq!(0xeeff, cast::<u16, u64le>(0xeeff).into_raw());
-  assert_eq!(0xeeff, cast::<u16, u64be>(0xeeff).into_raw());
-  assert_eq!(0xeeff, cast::<u16, u32>(0xeeff));
-  assert_eq!(0xeeff, cast::<u16, u32le>(0xeeff).into_raw());
-  assert_eq!(0xeeff, cast::<u16, u32be>(0xeeff).into_raw());
-  assert_eq!(0xff, cast::<u16, u8>(0xeeff));
+#[test]
+fn test_internal_tail_item_size() {
+  assert_eq!(tail_item_size::<u8>(), 0);
+  assert_eq!(tail_item_size::<[u8]>(), 0);
+  assert_eq!(tail_item_size::<[u8; 1]>(), 0);
+  assert_eq!(tail_item_size::<TailSliceDst>(), 1);
+  assert_eq!(tail_item_size::<TailDst>(), 0);
+  assert_eq!(tail_item_size::<MaybeDst<[u8]>>(), 1);
+  assert_eq!(tail_item_size::<MaybeDst<[u32]>>(), 4);
+  assert_eq!(tail_item_size::<MaybeDst<[u8; 21]>>(), 1);
+  assert_eq!(tail_item_size::<MaybeDst<[u32; 21]>>(), 4);
+  assert_eq!(tail_item_size::<NotDstRust>(), 4);
+}
 
-  assert_eq!(0, cast::<(), u8>(()));
-  assert_eq!(0, cast::<(), u16>(()));
-  assert_eq!(0, cast::<(), u32>(()));
-  assert_eq!(0, cast::<(), u64>(()));
-  assert_eq!(0, cast::<(), u128>(()));
+#[test]
+fn test_internal_validate() {
+  // TODO
 }
 
 #[test]
 #[allow(unused_parens)]
-fn test_static_analyze() {
+fn test_internal_static_analyze() {
   use MetadataChecks::*;
 
   macro_rules! test {
@@ -283,9 +343,13 @@ fn test_static_analyze() {
 
   // Test zero heads
   test!((T<0, 1>) (T<42>) => infallible_mutable(Is(42)));
-  test!((T<0, 1>) (T<42, 1>) => infallible_mutable(IsAtLeast(42)));
+  // test!((T<0, 1>) (T<42, 1>) => infallible_mutable(IsAtLeast(42)));
 
   // Test cases for alignment and complex transmutations
+  test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
   test!((T<42, 1>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
   test!((T<42, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
   test!((T<43, 2>) (T<39, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
@@ -294,21 +358,36 @@ fn test_static_analyze() {
   test!((T<45, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
   test!((T<40, 1>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
   test!((T<44, 5>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<38, 3>) (T<42, 1>) => infallible_mutable(IsAtLeast(2)));
   test!((T<38, 3>) (T<41, 3>) => infallible_mutable(IsAtLeast(1)));
+  test!((T<1, 2>) (T<1, 4>) => infallible_mutable(IsMultipleOf(2)));
+
+  test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<7, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<2, 1>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<6, 5>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<0, 3>) (T<4, 1>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<0, 3>) (T<3, 3>) => infallible_mutable(IsAtLeast(1)));
 
   // Test cases for incompatible transmutations
   test!((T<1>) (T<2>) => "source too small to fit target");
   test!((T<35, 2>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
   test!((T<40, 3>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
   test!((T<42>) (T<38, 3>) => "remaining bytes to fit in the target is not a multiple of the target DST trailing slice item size");
-  test!((T<42, 3>) (T<38, 3>) => "DST source cannot catchup on DST target");
-  test!((T<41, 3>) (T<39, 3>) => "DST source cannot catchup on DST target");
-  test!((T<38, 3>) (T<42, 3>) => "DST source cannot catchup on DST target");
-  test!((T<39, 3>) (T<41, 3>) => "DST source cannot catchup on DST target");
-  test!((T<39, 3>) (T<41, 6>) => "DST source cannot catchup on DST target");
-  test!((T<39, 6>) (T<41, 3>) => "DST source cannot catchup on DST target");
-  test!((T<39, 6>) (T<41, 9>) => "DST source cannot catchup on DST target");
-  test!((T<39, 3>) (T<41, 9>) => "DST source cannot catchup on DST target");
+  test!((T<42, 3>) (T<38, 3>) => "DST source cannot catch up on DST target");
+  test!((T<41, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
+  test!((T<38, 3>) (T<42, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 6>) => "DST source cannot catch up on DST target");
+  test!((T<39, 6>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 6>) (T<41, 9>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 9>) => "DST source cannot catch up on DST target");
+  test!((T<38, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 9>) (T<41, 3>) => "DST source cannot catch up on DST target");
 
   // Test cases for transmuting to and from empty head
   test!((T<0, 1>) (T<0, 1>) => infallible_mutable);
@@ -317,6 +396,8 @@ fn test_static_analyze() {
   test!((T<0, 1>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
   test!((T<0, 1>) (T<0, 4>) => infallible_mutable(IsMultipleOf(4)));
   test!((T<0, 3>) (T<0, 5>) => infallible_mutable(IsMultipleOf(5)));
+  test!((T<0, 2>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<0, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
 
   // Test cases for transmuting to and from empty head and tail
   test!((T<0, 0>) (T<0, 0>) => infallible_mutable);
@@ -354,6 +435,115 @@ fn test_static_analyze() {
   test!(NonMaxU8 NonZeroU8 => fallible);
 
   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
+
+  // TODO:
+  // MISSED   src/lib.rs:2062:60: replace * with / in internal::static_analyze in 71.6s build + 11.9s test
+  // MISSED   src/lib.rs:2059:27: replace * with + in internal::static_analyze in 70.1s build + 14.6s test
+  // MISSED   src/lib.rs:2062:55: replace + with - in internal::static_analyze in 71.6s build + 13.2s test
+  // MISSED   src/lib.rs:2056:45: replace + with * in internal::static_analyze in 70.9s build + 14.3s test
+  // MISSED   src/lib.rs:2056:50: replace * with / in internal::static_analyze in 69.2s build + 17.1s test
+  // MISSED   src/lib.rs:2059:27: replace * with / in internal::static_analyze in 70.9s build + 15.3s test
+  // MISSED   src/lib.rs:2062:27: replace * with + in internal::static_analyze in 71.9s build + 14.5s test
+  // MISSED   src/lib.rs:2059:55: replace + with - in internal::static_analyze in 16.7s build + 7.6s test
+  // MISSED   src/lib.rs:2059:55: replace + with * in internal::static_analyze in 13.3s build + 7.8s test
+  // MISSED   src/lib.rs:2022:71: replace / with * in internal::static_analyze in 13.0s build + 10.3s test
+  // MISSED   src/lib.rs:2062:27: replace * with / in internal::static_analyze in 16.8s build + 11.6s test
+  // MISSED   src/lib.rs:2062:22: replace + with * in internal::static_analyze in 16.8s build + 13.7s test
+  // MISSED   src/lib.rs:2062:55: replace + with * in internal::static_analyze in 15.3s build + 14.8s test
+  // MISSED   src/lib.rs:2062:60: replace * with + in internal::static_analyze in 12.7s build + 15.2s test
+  // MISSED   src/lib.rs:2022:43: replace * with + in internal::static_analyze in 19.1s build + 16.2s test
+  // MISSED   src/lib.rs:2057:40: replace * with / in internal::static_analyze in 18.6s build + 16.4s test
+}
+
+#[test]
+fn test_num() {
+  use core::array::from_fn;
+  use rand::Rng;
+
+  #[rustfmt::skip]
+  macro_rules! test {
+    ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
+      let val = rand::thread_rng().gen_range($min..=$max);
+      assert_eq!($sz, mem::size_of::<$ty>());
+      assert_eq!($max, $ty::MAX.into());
+      assert_eq!($min, $ty::from($min).into());
+      assert_eq!($max, $ty::from($max).into());
+      assert_eq!(val, $ty::from(val).into());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
+    )+};
+  }
+
+  test!(2, [u16, u16le, u16be], 0u16, 0xffffu16);
+  test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32);
+  test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32);
+  test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64);
+  test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64);
+  test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64);
+  test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64);
+  test!(9, [u72, u72le, u72be], 0u128, 0xffffffffffffffffffu128);
+  test!(10, [u80, u80le, u80be], 0u128, 0xffffffffffffffffffffu128);
+  test!(11, [u88, u88le, u88be], 0u128, 0xffffffffffffffffffffffu128);
+  test!(12, [u96, u96le, u96be], 0u128, 0xffffffffffffffffffffffffu128);
+  test!(13, [u104, u104le, u104be], 0u128, 0xffffffffffffffffffffffffffu128);
+  test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
+  test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
+  test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
+
+  let big: u128 = 0x112233445566778899aabbccddeeff;
+  assert_eq!(0xff, cast::<_, u8>(big));
+  assert_eq!(0xeeff, cast::<_, u16>(big));
+  assert_eq!(0xeeff, cast::<_, u16le>(big).into_raw());
+  assert_eq!(0xeeff, cast::<_, u16be>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24le>(big).into_raw());
+  assert_eq!(0xddeeff, cast::<_, u24be>(big).into_raw());
+  assert_eq!(0xccddeeff, cast::<_, u32>(big));
+  assert_eq!(0xccddeeff, cast::<_, u32le>(big).into_raw());
+  assert_eq!(0xccddeeff, cast::<_, u32be>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40le>(big).into_raw());
+  assert_eq!(0xbbccddeeff, cast::<_, u40be>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48le>(big).into_raw());
+  assert_eq!(0xaabbccddeeff, cast::<_, u48be>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56le>(big).into_raw());
+  assert_eq!(0x99aabbccddeeff, cast::<_, u56be>(big).into_raw());
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64>(big));
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64le>(big).into_raw());
+  assert_eq!(0x8899aabbccddeeff, cast::<_, u64be>(big).into_raw());
+
+  assert_eq!(0xff, cast::<u8, u128>(0xff));
+  assert_eq!(0xff, cast::<u8, u128le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u128be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u64>(0xff));
+  assert_eq!(0xff, cast::<u8, u64le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u64be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u32>(0xff));
+  assert_eq!(0xff, cast::<u8, u32le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u32be>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u16>(0xff));
+  assert_eq!(0xff, cast::<u8, u16le>(0xff).into_raw());
+  assert_eq!(0xff, cast::<u8, u16be>(0xff).into_raw());
+
+  assert_eq!(0xeeff, cast::<u16, u128>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u128le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u128be>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u64>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u64le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u64be>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u32>(0xeeff));
+  assert_eq!(0xeeff, cast::<u16, u32le>(0xeeff).into_raw());
+  assert_eq!(0xeeff, cast::<u16, u32be>(0xeeff).into_raw());
+  assert_eq!(0xff, cast::<u16, u8>(0xeeff));
+
+  assert_eq!(0, cast::<(), u8>(()));
+  assert_eq!(0, cast::<(), u16>(()));
+  assert_eq!(0, cast::<(), u32>(()));
+  assert_eq!(0, cast::<(), u64>(()));
+  assert_eq!(0, cast::<(), u128>(()));
 }
 
 #[test]

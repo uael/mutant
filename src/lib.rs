@@ -64,6 +64,74 @@
 //! ```rust,compile_fail
 //! let _: &mut u8 = mutant::transmute_mut(&mut true);
 //! ```
+//!
+//! # Technical terms
+//!
+//! ### DST
+//! According to the [Rust reference]:
+//! > *Most types have a fixed size that is known at compile time and implement the trait [`Sized`].
+//! > A type with a size that is known only at run-time is called a dynamically sized type (DST)
+//! > or, informally, an unsized type. [Slices] and [trait objects] are two examples of DSTs.*
+//!
+//! Where `mutant` only support [Slices], structs with a [tail slice](#tail-slice), and
+//! [maybe DST](#maybe-dst) struct types, but not [trait objects]. Enums can't be DST are they
+//! aren't allowed to contain any DST, i.e. enums are always [`Sized`] where struct may not.
+//!
+//! [Rust reference]: https://doc.rust-lang.org/reference/dynamically-sized-types.html
+//! [Slices]: https://doc.rust-lang.org/reference/types/slice.html
+//! [trait objects]: https://doc.rust-lang.org/reference/types/trait-object.html
+//!
+//! #### Tail slice
+//! The following `TailSliceDst` struct is a DST because the size of `data` is only known at
+//! runtime, hence not [`Sized`]:
+//! ```rust
+//! struct TailSliceDst {
+//!   info: u32,
+//!   data: [u8], // `tail slice` of type `[u8]`.
+//! }
+//! ```
+//!
+//! **But** according to the [Rust reference]:
+//! > *Structs can actually store a single DST directly as their last field, but this makes them a
+//! > DST as well.*
+//!
+//! The following `TailDst` struct is also a DST, **but** with a [tail](#tail) DST instead:
+//! ```rust
+//! struct TailSliceDst {
+//!   info: u32,
+//!   data: [u8], // `tail slice` of type `[u8]`.
+//! }
+//!
+//! struct TailDst {
+//!   version: u32,
+//!   payload: TailSliceDst, // `tail` DST of type `TailSliceDst`.
+//! }
+//! ```
+//!
+//! In `mutant`, the [tail slice](#tail-slice) term **always** refer to the **last slice** of a
+//! [DST](#dst):
+//! - The [tail slice](#tail-slice) type of `TailSliceDst` is `[u8]`.
+//! - The [tail slice](#tail-slice) type of `TailDst` is **also** `[u8]`.
+//!
+//! #### Maybe DST
+//! The relaxed [`?Sized`](Sized) bound allow for types that are maybe [DST](#dst):
+//! ```rust
+//! struct MaybeDst<T: ?Sized> {
+//!   info: u32,
+//!   data: T, // `tail` of type `T`.
+//! }
+//!
+//! type Dst = MaybeDst<[u8]>; // Is a `DST`.
+//! type NotDst = MaybeDst<u32>; // Not a `DST`.
+//! ```
+//!
+//! ### Tail
+//! In `mutant`, the [tail](#tail) term **always** refer to **last field** of a struct, **either for
+//! [DST](#dst) and [`Sized`]**.
+//! As per the examples above in the [tail slice](#tail-slice) section:
+//! - The [tail](#tail) of `TailSliceDst` is slice of type `[u8]`.
+//! - The [tail](#tail) of `TailDst` is a [DST](#dst) of type `TailSliceDst`.
+//!
 #![cfg_attr(not(test), no_std)]
 
 #[cfg(test)]
@@ -157,11 +225,11 @@ pub struct InitLayout<'a, Offset = ()> {
 
 /// This is used as a compile-time field list for struct layout.
 #[doc(hidden)]
-pub unsafe trait Repr<T: ?Sized + Data> {
+pub unsafe trait Field<T: ?Sized + Data> {
   type Type: ?Sized + Data;
-  type Rest: Repr<T>;
+  type PrevField: Field<T>;
   const OFFSET: usize;
-  const FIELDS: usize;
+  const INDEX: usize;
 }
 
 /// A pointer to an aligned allocation of size 2^20.
@@ -203,7 +271,7 @@ macro_rules! offset_of {
     //   address space. This is guaranteed because the same is guaranteed of
     //   allocated objects. [1]
     //
-    // [1] TODO(#429), TODO(https://github.com/rust-lang/rust/pull/116675):
+    // [1] TODO(https://github.com/rust-lang/rust/pull/116675):
     //     Once these are guaranteed in the Reference, cite it.
     #[allow(unused_unsafe)]
     let offset = unsafe { field.cast::<u8>().offset_from(ptr.cast::<u8>()) };
@@ -474,11 +542,16 @@ pub unsafe trait Integer: Copy + 'static {
 /// # Safety
 /// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
 pub unsafe trait Data: 'static {
-  /// Type of slice or array item.
+  /// Item type of `Self`, as of:
+  /// - `Self` is a slice `[T]`; set to `T`.
+  /// - `Self` is an array `[T; N]`; set to `T`.
+  /// - Otherwise (`Self` is an integer or a struct); set to [`()`] instead.
   type Item: Copy + Data;
 
-  /// Type of the trailing slice item.
-  type TailItem: Copy + Data;
+  /// Item type of the [tail slice](#tail-slice) of `Self`, as of:
+  /// - `Self` is a [DST](#dst); set to the item type of the [tail slice](#tail-slice) of `Self`
+  /// - otherwise (`Self` is [`Sized`]); set to [`()`] instead.
+  type TailSliceItem: Copy + Data;
 
   /// [`Sized`] representation of `Self`, equals to `Self` for [`Sized`] types.
   #[doc(hidden)]
@@ -486,7 +559,7 @@ pub unsafe trait Data: 'static {
 
   /// Fields of `Self`, only in case of [`Layout::Struct`] layout.
   #[doc(hidden)]
-  type Repr: Repr<Self>;
+  type TailField: Field<Self>;
 
   /// [`Integer`] representation of `Self`, only in case of [`Layout::Integer`] layout.
   #[doc(hidden)]
@@ -647,7 +720,7 @@ macro_rules! unpack {
 }
 
 /// Same as [`align_of`](mem::align_of), returns the minimum alignment of a type in bytes.
-/// With the difference that it also accept unsized types with relaxed `?`[`Sized`] bound.
+/// With the difference that it also accept unsized types with relaxed [`?Sized`](Sized) bound.
 ///
 /// # Examples
 /// ```
@@ -677,14 +750,14 @@ pub const fn align_of<T: ?Sized>() -> usize {
 }
 
 /// Returns the minimum alignment of a value in bytes. Also accept unsized types with
-/// relaxed `?`[`Sized`] bound.
+/// relaxed [`?Sized`](Sized) bound.
 #[inline]
 pub const fn align_of_val<T: ?Sized>(_: &T) -> usize {
   align_of::<T>()
 }
 
 /// Returns the minimum alignment of a value address in bytes. Also accept unsized types with
-/// relaxed `?`[`Sized`] bound.
+/// relaxed [`?Sized`](Sized) bound.
 #[inline]
 pub const fn align_of_val_raw<T: ?Sized>(_: *const T) -> usize {
   align_of::<T>()
@@ -812,18 +885,9 @@ pub const fn is_sized_val_raw<T: ?Sized + Data>(_: *const T) -> bool {
 
 #[inline]
 pub const fn is_sized<T: ?Sized + Data>() -> bool {
-  #[inline]
-  const fn repr_is_sized<R: Repr<T>, T: ?Sized + Data>() -> bool {
-    match R::FIELDS {
-      0 => false,
-      1 => is_sized::<R::Type>(),
-      _ => repr_is_sized::<R::Rest, T>(),
-    }
-  }
-
   match T::LAYOUT {
     Layout::Slice => false,
-    Layout::Struct => repr_is_sized::<T::Repr, T>(),
+    Layout::Struct => is_sized::<<T::TailField as Field<T>>::Type>(),
     _ => true,
   }
 }
@@ -839,8 +903,23 @@ pub const fn min_size_of<T: ?Sized + Data>() -> usize {
 }
 
 #[inline]
-pub const fn min_size_of_val<T: ?Sized + Data>(_: &T) -> usize {
-  min_size_of::<T>()
+pub const fn min_size_of_tail<T: ?Sized + Data>() -> usize {
+  min_size_of::<<<T as Data>::TailField as Field<T>>::Type>()
+}
+
+#[inline]
+pub const fn min_size_of_tail_val<T: ?Sized + Data>(val: &T) -> usize {
+  min_size_of_tail_val_raw(val)
+}
+
+#[inline]
+pub const fn min_size_of_tail_val_raw<T: ?Sized + Data>(_: *const T) -> usize {
+  min_size_of_tail::<T>()
+}
+
+#[inline]
+pub const fn min_size_of_val<T: ?Sized + Data>(val: &T) -> usize {
+  min_size_of_val_raw(val)
 }
 
 #[inline]
@@ -850,36 +929,46 @@ pub const fn min_size_of_val_raw<T: ?Sized + Data>(_: *const T) -> usize {
 
 #[inline]
 pub const fn size_of_tail<T: ?Sized + Data>(val: &T) -> usize {
-  ptr::metadata(val) * size_of_tail_item::<T>()
+  size_of_tail_raw(val)
 }
 
 #[inline]
-pub const fn size_of_tail_item<T: ?Sized + Data>() -> usize {
-  mem::size_of::<T::TailItem>()
+pub const fn size_of_tail_raw<T: ?Sized + Data>(ptr: *const T) -> usize {
+  size_of_val_raw(ptr) - internal::tail_offset::<T>()
 }
 
 #[inline]
-pub const fn size_of_tail_raw<T: ?Sized + Data>(val: *const T) -> usize {
-  ptr::metadata(val) * size_of_tail_item::<T>()
+pub const fn size_of_tail_slice<T: ?Sized + Data>(val: &T) -> usize {
+  size_of_tail_slice_raw(val)
+}
+
+#[inline]
+pub const fn size_of_tail_slice_item<T: ?Sized + Data>() -> usize {
+  mem::size_of::<T::TailSliceItem>()
+}
+
+#[inline]
+pub const fn size_of_tail_slice_raw<T: ?Sized + Data>(val: *const T) -> usize {
+  ptr::metadata(val) * size_of_tail_slice_item::<T>()
 }
 
 #[inline]
 pub const fn size_of_val<T: ?Sized + Data>(val: &T) -> usize {
-  min_size_of::<T>() + size_of_tail(val)
+  size_of_val_raw(val)
 }
 
 #[inline]
 pub const fn size_of_val_raw<T: ?Sized + Data>(val: *const T) -> usize {
-  min_size_of::<T>() + size_of_tail_raw(val)
+  min_size_of::<T>() + size_of_tail_slice_raw(val)
 }
 
 #[inline]
 pub const fn size_of_with<T: ?Sized + Data>(metadata: usize) -> usize {
-  min_size_of::<T>() + metadata * size_of_tail_item::<T>()
+  min_size_of::<T>() + metadata * size_of_tail_slice_item::<T>()
 }
 
 #[inline]
-pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::TailItem]) {
+pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::TailSliceItem]) {
   match try_split_at(val, mid) {
     Some(result) => result,
     _ => panic!("`try_split_at` failed"),
@@ -887,9 +976,9 @@ pub const fn split_at<T: ?Sized + Data>(val: &T, mid: usize) -> (&T, &[T::TailIt
 }
 
 #[inline]
-pub const fn tail_of<T: ?Sized + Data>(val: &T) -> &[T::TailItem] {
+pub const fn tail_slice_of<T: ?Sized + Data>(val: &T) -> &[T::TailSliceItem] {
   let ptr: *const T = val;
-  let ptr = unsafe { ptr.cast::<T::Sized>().add(1).cast::<T::TailItem>() };
+  let ptr = unsafe { ptr.cast::<T::Sized>().add(1).cast::<T::TailSliceItem>() };
   assert!(is_aligned_raw(ptr));
   unsafe { &*ptr::from_raw_parts(ptr.cast(), ptr::metadata(val)) }
 }
@@ -1065,7 +1154,9 @@ pub const fn truncate_ref<T: ?Sized + Data, U: ?Sized + Data>(val: &T) -> &U {
 }
 
 #[inline]
-pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, &[T::TailItem])> {
+pub const fn try_split_at<T: ?Sized + Data>(
+  val: &T, mid: usize,
+) -> Option<(&T, &[T::TailSliceItem])> {
   if mid < min_size_of::<T>() || mid > size_of_val(val) {
     return None;
   }
@@ -1073,12 +1164,12 @@ pub const fn try_split_at<T: ?Sized + Data>(val: &T, mid: usize) -> Option<(&T, 
     return Some((val, &[]));
   }
   let tail = mid - min_size_of::<T>();
-  if tail % mem::size_of::<T::TailItem>() != 0 {
+  if tail % mem::size_of::<T::TailSliceItem>() != 0 {
     return None;
   }
   let ptr: *const u8 = (val as *const T).cast();
-  let val_ptr = ptr::from_raw_parts::<T>(ptr.cast(), tail / mem::size_of::<T::TailItem>());
-  let rest_ptr = ptr::from_raw_parts::<[T::TailItem]>(
+  let val_ptr = ptr::from_raw_parts::<T>(ptr.cast(), tail / mem::size_of::<T::TailSliceItem>());
+  let rest_ptr = ptr::from_raw_parts::<[T::TailSliceItem]>(
     unsafe { ptr.add(mid) }.cast(),
     ptr::metadata(val) - ptr::metadata(val_ptr),
   );
@@ -1158,9 +1249,9 @@ pub const fn unpack<T: ?Sized + Data>(bytes: &[u8]) -> Result<(&T, &[u8]), Error
     bail!(check.validate_for_unpack(bytes.len()), e => Error::SizeMismatch(e));
   }
   // Compute the metadata of `T` from the length of `bytes`.
-  let metadata = match size_of_tail_item::<T>() {
+  let metadata = match size_of_tail_slice_item::<T>() {
     0 => 0,
-    _ => (bytes.len() - min_size_of::<T>()) / size_of_tail_item::<T>(),
+    _ => (bytes.len() - min_size_of::<T>()) / size_of_tail_slice_item::<T>(),
   };
   let ptr = ptr::from_raw_parts::<T>(ptr::from_ref(bytes).cast(), metadata);
   let ptr = bail!(internal::validate::<_, _, true>(ptr, ptr));
@@ -1190,7 +1281,14 @@ pub mod num {
 
   #[inline]
   pub const fn swap_bytes<T: Integer>(int: T) -> T::Bits {
-    let mut bytes: [u8; 16] = unsafe { transmute_unchecked(int) };
+    union IntoBytes<T: Copy> {
+      int: T,
+      bytes: [u8; 16],
+    }
+
+    let mut bytes = IntoBytes { bytes: [0; 16] };
+    bytes.int = int;
+    let mut bytes = unsafe { bytes.bytes };
     let mut i = 0;
     while i < min_size_of::<T>() / 2 {
       let tmp = bytes[i];
@@ -1567,13 +1665,12 @@ mod internal {
   use MetadataChecks::*;
 
   #[inline]
-  const fn repr_contains<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> bool {
+  const fn repr_contains<R: Field<T>, T: ?Sized + Data>(offset: usize) -> bool {
     offset >= R::OFFSET && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
   }
 
   #[inline]
-  const fn repr_field<R: Repr<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
-    assert!(R::FIELDS != 0);
+  const fn repr_field<R: Field<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
     ptr::from_raw_parts(
       // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
       unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
@@ -1589,16 +1686,15 @@ mod internal {
     offset: usize,
   ) -> Option<ByteLayout<'static>> {
     #[inline]
-    const fn repr_byte_layout_at<R: Repr<T>, T: ?Sized + Data>(
+    const fn repr_byte_layout_at<R: Field<T>, T: ?Sized + Data>(
       offset: usize,
     ) -> Option<ByteLayout<'static>> {
-      match R::FIELDS {
-        // Reached the end of the struct, returns an uninitialized layout.
+      if repr_contains::<R, T>(offset) {
+        return byte_layout_at::<R::Type>(offset - R::OFFSET);
+      }
+      match R::INDEX {
         0 => Some(Uninit),
-        // `offset` does offset in field, defer to its inner layout.
-        _ if repr_contains::<R, T>(offset) => byte_layout_at::<R::Type>(offset - R::OFFSET),
-        // `offset` does not offset in field, continue with next field.
-        _ => repr_byte_layout_at::<R::Rest, T>(offset),
+        _ => repr_byte_layout_at::<R::PrevField, T>(offset),
       }
     }
 
@@ -1614,7 +1710,7 @@ mod internal {
       Layout::Slice | Layout::Array => {
         byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>())
       }
-      Layout::Struct => repr_byte_layout_at::<T::Repr, T>(offset),
+      Layout::Struct => repr_byte_layout_at::<T::TailField, T>(offset),
       #[cfg(test)]
       Layout::Integer { spec } if spec.is_uninit() => Some(Uninit),
       Layout::Integer { spec } => Some(Init(spec.init_at(offset))),
@@ -1624,14 +1720,13 @@ mod internal {
   #[inline]
   pub(crate) const fn default_at<C: ?Sized + Data, T: ?Sized + Data>(offset: usize) -> Option<u8> {
     #[inline]
-    const fn repr_default_at<R: Repr<T>, T: ?Sized + Data>(offset: usize) -> Option<u8> {
-      match R::FIELDS {
-        // Reached the end of the struct.
+    const fn repr_default_at<R: Field<T>, T: ?Sized + Data>(offset: usize) -> Option<u8> {
+      if repr_contains::<R, T>(offset) {
+        return default_at::<T, R::Type>(offset - R::OFFSET);
+      }
+      match R::INDEX {
         0 => None,
-        // `offset` does offset in field, defer to its inner layout.
-        _ if repr_contains::<R, T>(offset) => default_at::<T, R::Type>(offset - R::OFFSET),
-        // `offset` does not offset in field, continue with next field.
-        _ => repr_default_at::<R::Rest, T>(offset),
+        _ => repr_default_at::<R::PrevField, T>(offset),
       }
     }
 
@@ -1647,7 +1742,7 @@ mod internal {
       Layout::Slice | Layout::Array => {
         default_at::<T::Item, T::Item>(offset % mem::size_of::<T::Item>())
       }
-      Layout::Struct => repr_default_at::<T::Repr, T>(offset),
+      Layout::Struct => repr_default_at::<T::TailField, T>(offset),
       #[cfg(test)]
       Layout::Integer { spec } if spec.is_uninit() => None,
       Layout::Integer { spec } => match spec.size_field {
@@ -1682,7 +1777,7 @@ mod internal {
     #[allow(clippy::let_unit_value)]
     let _ = (Transmutation::<T, U>::CHECK, Transmutation::<T, U>::CHECK_NO_SIZE_MISMATCH);
 
-    match size_of_tail_item::<U>() {
+    match size_of_tail_slice_item::<U>() {
       0 => 0,
       n => (size_of_with::<T>(metadata) - min_size_of::<U>()) / n,
     }
@@ -1703,40 +1798,26 @@ mod internal {
       },
     };
     match check {
-      Err(n) => Err(n * size_of_tail_item::<T>() as isize),
-      _ if size_of_tail_item::<U>() == 0 => Ok(0),
-      _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail_item::<U>()),
+      Err(n) => Err(n * size_of_tail_slice_item::<T>() as isize),
+      _ if size_of_tail_slice_item::<U>() == 0 => Ok(0),
+      _ => Ok((size_of_with::<T>(metadata) - min_size_of::<U>()) / size_of_tail_slice_item::<U>()),
     }
   }
 
   #[inline]
   pub const fn tail_offset<T: ?Sized + Data>() -> usize {
-    #[inline]
-    const fn repr_tail_offset<R: Repr<T>, T: ?Sized + Data>() -> usize {
-      match R::FIELDS {
-        1 => R::OFFSET,
-        _ => repr_tail_offset::<R::Rest, T>(),
-      }
-    }
-
     match T::LAYOUT {
-      Layout::Struct => repr_tail_offset::<T::Repr, T>(),
+      Layout::Struct => T::TailField::OFFSET,
       _ => 0,
     }
   }
 
   #[inline]
   pub const fn tail_item_size<T: ?Sized + Data>() -> usize {
-    #[inline]
-    const fn repr_tail_item_size<R: Repr<T>, T: ?Sized + Data>() -> usize {
-      match R::FIELDS {
-        1 => mem::size_of::<<R::Type as Data>::Item>(),
-        _ => repr_tail_item_size::<R::Rest, T>(),
-      }
-    }
-
     match T::LAYOUT {
-      Layout::Struct => repr_tail_item_size::<T::Repr, T>(),
+      Layout::Struct => {
+        mem::size_of::<<<<T as Data>::TailField as Field<T>>::Type as Data>::Item>()
+      }
       _ => 0,
     }
   }
@@ -1746,21 +1827,19 @@ mod internal {
     container: *const C, ptr: *const T,
   ) -> Result<*const C, Error> {
     #[inline]
-    const fn repr_validate<R: Repr<T>, T: ?Sized + Data, const RESIZE: bool>(
-      ptr: *const T,
+    const fn repr_validate<R: Field<T>, T: ?Sized + Data, const RESIZE: bool>(
+      mut ptr: *const T,
     ) -> Result<*const T, Error> {
-      match R::FIELDS {
+      ptr = bail!(validate::<_, _, RESIZE>(ptr, repr_field::<R, _>(ptr)));
+      match R::INDEX {
         0 => Ok(ptr),
-        _ => repr_validate::<R::Rest, _, RESIZE>(bail!(validate::<_, _, RESIZE>(
-          ptr,
-          repr_field::<R, _>(ptr)
-        ))),
+        _ => repr_validate::<R::PrevField, _, RESIZE>(ptr),
       }
     }
 
     match T::LAYOUT {
       Layout::Struct => {
-        let ptr = bail!(repr_validate::<T::Repr, T, RESIZE>(ptr));
+        let ptr = bail!(repr_validate::<T::TailField, T, RESIZE>(ptr));
         if RESIZE && !is_sized::<T>() {
           Ok(ptr::from_raw_parts::<C>(container.cast(), ptr::metadata(ptr)))
         } else {
@@ -1795,16 +1874,22 @@ mod internal {
         // Compute the new metadata.
         let metadata = match size_field {
           _ if min_size_of::<T>() == 0 => return Ok(container),
-          SizeField::TotalSize if !RESIZE || size_of_tail_item::<C>() == 0 => {
+          SizeField::TotalSize if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
             check!(size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
             return Ok(container);
           }
-          SizeField::TailSize if !RESIZE || size_of_tail_item::<C>() == 0 => {
-            check!(tail_offset::<C>() + size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
+          SizeField::TailSize if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
+            check!(
+              tail_offset::<C>() + size == size_of_val_raw(container),
+              Error::SizeMismatch(/* TODO */ 0)
+            );
             return Ok(container);
           }
-          SizeField::TailLen if !RESIZE || size_of_tail_item::<C>() == 0 => {
-            check!(tail_offset::<C>() + size * tail_item_size::<C>() == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
+          SizeField::TailLen if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
+            check!(
+              tail_offset::<C>() + size * tail_item_size::<C>() == size_of_val_raw(container),
+              Error::SizeMismatch(/* TODO */ 0)
+            );
             return Ok(container);
           }
           SizeField::TotalSize => {
@@ -1812,9 +1897,9 @@ mod internal {
             check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             // Compute the expected tail size and check for alignment.
             let tail_size = size - min_size_of::<C>();
-            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            check!(tail_size % size_of_tail_slice_item::<C>() == 0, Error::AlignmentMismatch);
             // Compute the new metadata.
-            tail_size / size_of_tail_item::<C>()
+            tail_size / size_of_tail_slice_item::<C>()
           }
           SizeField::TailSize => {
             let tail_size = size;
@@ -1823,9 +1908,9 @@ mod internal {
             check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             // Compute the expected tail size and check for alignment.
             let tail_size = size - min_size_of::<C>();
-            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            check!(tail_size % size_of_tail_slice_item::<C>() == 0, Error::AlignmentMismatch);
             // Compute the new metadata.
-            tail_size / size_of_tail_item::<C>()
+            tail_size / size_of_tail_slice_item::<C>()
           }
           SizeField::TailLen => {
             let tail_size = size * tail_item_size::<C>();
@@ -1834,9 +1919,9 @@ mod internal {
             check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             // Compute the expected tail size and check for alignment.
             let tail_size = size - min_size_of::<C>();
-            check!(tail_size % size_of_tail_item::<C>() == 0, Error::AlignmentMismatch);
+            check!(tail_size % size_of_tail_slice_item::<C>() == 0, Error::AlignmentMismatch);
             // Compute the new metadata.
-            tail_size / size_of_tail_item::<C>()
+            tail_size / size_of_tail_slice_item::<C>()
           }
         };
         // Compute the new container from the new metadata.
@@ -1847,80 +1932,65 @@ mod internal {
   }
 
   /// Performs static analysis to check if the transmutation from `Src` to `Dst` is safe.
-  ///
-  /// This function computes various checks to ensure that the transmutation adheres to the
-  /// rules around alignment, size, and valid bit patterns. It takes into account the sizes
-  /// and layouts of the source (`Src`) and target (`Dst`) types, especially considering
-  /// dynamically-sized types and their metadata.
-  ///
-  /// # Type Parameters
-  ///
-  /// - `Src`: The source type for the transmutation.
-  /// - `Dst`: The target type for the transmutation.
-  ///
-  /// # Returns
-  ///
-  /// `Result<StaticAnalyze, &str>`: A `Result` which is `Ok` if the transmutation is
-  /// considered safe, containing a `StaticAnalyze` struct with details of the analysis. Returns
-  /// `Err` with a string literal describing the reason if the transmutation is potentially unsafe.
   pub(crate) const fn static_analyze<Src, Dst>() -> Result<StaticAnalyze, &'static str>
   where
     Src: ?Sized + Data,
     Dst: ?Sized + Data,
   {
-    // Calculate sized (fixed-size part) and tail item (variable-size part) sizes for both
-    // source and target types.
-    let (src_sized_size, src_tail_item_size) = (min_size_of::<Src>(), size_of_tail_item::<Src>());
-    let (dst_sized_size, dst_tail_item_size) = (min_size_of::<Dst>(), size_of_tail_item::<Dst>());
-    // Compute if source and target are DST, i.e. had a trailing slice with a non-zero item size.
-    let (src_is_dst, dst_is_dst) = (src_tail_item_size != 0, dst_tail_item_size != 0);
-    // Compute the minimum source tail items needed to align source and target.
+    // Calculate minimum and tail slice item sizes for both source and target types.
+    let (src_min_size, src_tail_slice_item_size) =
+      (min_size_of::<Src>(), size_of_tail_slice_item::<Src>());
+    let (dst_min_size, dst_tail_slice_item_size) =
+      (min_size_of::<Dst>(), size_of_tail_slice_item::<Dst>());
+    // Compute if source and target are DSTs, i.e. had a tail slice with a non-zero item size.
+    let (src_is_dst, dst_is_dst) = (src_tail_slice_item_size != 0, dst_tail_slice_item_size != 0);
+    // Compute the minimum source tail slice items needed to align source and target.
     // 1. Source is smaller than target:
     //  - Check for source to be a DST.
     //  - Compute the missing bytes to fit the target.
     //  - In case the target isn't a DST, check if the missing bytes are a multiple of
-    //    the source DST trailing slice item size.
-    //  - The minimum source tail items is the missing bytes ceil divided by the source DST trailing
-    //    slice item size.
-    let mut min_src_tail_items_count = if src_sized_size < dst_sized_size {
+    //    the source DST tail slice item size.
+    //  - The minimum source tail slice items is the missing bytes ceil divided by the source DST
+    //    tail slice item size.
+    let mut min_src_tail_slice_items_count = if src_min_size < dst_min_size {
       // Check for source to be a DST.
       check!(src_is_dst, "source too small to fit target");
       // Compute the missing bytes to fit the target.
-      let missing = dst_sized_size - src_sized_size;
+      let missing = dst_min_size - src_min_size;
       // In case the target isn't a DST:
       if !dst_is_dst {
-        // Check if the missing bytes are a multiple of the source DST trailing slice item size.
+        // Check if the missing bytes are a multiple of the source DST tail slice item size.
         check!(
-          missing % src_tail_item_size == 0,
+          missing % src_tail_slice_item_size == 0,
           "missing bytes to fit the target is not a multiple of the source DST trailing slice \
            item size"
         );
       }
-      // The minimum source tail items is the missing bytes ceil divided by the source DST trailing
-      // slice item size.
-      (missing + src_tail_item_size - 1) / src_tail_item_size
+      // The minimum source tail slice items is the missing bytes ceil divided by the source DST
+      // tail slice item size.
+      (missing + src_tail_slice_item_size - 1) / src_tail_slice_item_size
     }
     // 2. Source is larger or equal to target:
-    //  - The minimum source tail items is 0.
+    //  - The minimum source tail slice items is 0.
     else {
       // In case the target is a DST:
       // - Compute the remaining bytes to fit in the target.
       // - In case the source isn't a DST, check if the remaining bytes is a multiple
-      //   of the target DST trailing slice item size.
+      //   of the target DST tail slice item size.
       if dst_is_dst {
         // Compute the remaining bytes to fit in the target.
-        let remaining = src_sized_size - dst_sized_size;
+        let remaining = src_min_size - dst_min_size;
         // In case the source isn't a DST:
         if !src_is_dst {
-          // Check if the remaining bytes is a multiple of the target DST trailing slice item size.
+          // Check if the remaining bytes is a multiple of the target DST tail slice item size.
           check!(
-            remaining % dst_tail_item_size == 0,
+            remaining % dst_tail_slice_item_size == 0,
             "remaining bytes to fit in the target is not a multiple of the target DST trailing \
              slice item size",
           );
         }
       }
-      // The minimum source tail items is 0.
+      // The minimum source tail slice items is 0.
       0
     };
     // Compute the possible size mismatch between source and target.
@@ -1932,9 +2002,9 @@ mod internal {
     // 2. Source is a DST and target isn't a DST:
     else if !dst_is_dst {
       // In case the source is smaller than the target, the source metadata must be the minimum
-      // source tail items count.
+      // source tail slice items count.
       // Otherwise, the source metadata must be empty.
-      Some(if src_sized_size < dst_sized_size { Is(min_src_tail_items_count) } else { IsEmpty })
+      Some(if src_min_size < dst_min_size { Is(min_src_tail_slice_items_count) } else { IsEmpty })
     }
     // 3. Source and target are DSTs:
     else {
@@ -1946,26 +2016,35 @@ mod internal {
           _ => gcd(b, a % b),
         }
       }
-      // Compute the GCD and LCM of the source and target DST trailing slice item sizes.
-      let gcd = gcd(src_tail_item_size, dst_tail_item_size);
-      let lcm = (src_tail_item_size * dst_tail_item_size) / gcd;
-      // Update the minimum source tail items count to be a multiple of the GCD.
+      // Compute the GCD of the source and target DST tail slice item sizes.
+      let gcd = gcd(src_tail_slice_item_size, dst_tail_slice_item_size);
+      // Compute the absolute difference between the source and target DST minimum sizes.
+      let delta = match src_min_size < dst_min_size {
+        true => dst_min_size - src_min_size,
+        _ => src_min_size - dst_min_size,
+      };
+      // Make sure the source can catch up on the target.
+      check!(delta % gcd == 0, "DST source cannot catch up on DST target");
+      // Compute the minimum number of source tail slice items needed to align source and target.
+      // For a transmutation from `a` to `b` noted as `xa[ya] => xb[yb]`, where `x` is the minimum
+      // size and `y` is the tail slice item size, we need to find `m` in a way that
+      // `xa + m*ya - yb` is a multiple of `yb`. Although this could be resolved using complex
+      // equations, for the sake of readability, we can simplify it by using the following loop:
       loop {
         // Compute both source and target tail sizes in bytes with a minimum of
-        // `min_src_tail_items_count` in source DST trailing slice.
-        let src_tail_size = min_src_tail_items_count * src_tail_item_size;
-        let dst_tail_size = src_sized_size + src_tail_size - dst_sized_size;
-        // In case the target tail size is a multiple of target DST trailing slice item size,
+        // `min_src_tail_items_count` in source DST tail slice.
+        let src_tail_size = min_src_tail_slice_items_count * src_tail_slice_item_size;
+        let dst_tail_size = src_min_size + src_tail_size - dst_min_size;
+        // In case the target tail size is a multiple of target DST tail slice item size,
         // we are done; break the loop.
-        if dst_tail_size % dst_tail_item_size == 0 {
+        let miss = dst_tail_size % dst_tail_slice_item_size;
+        if miss == 0 {
           break;
         }
-        // Make sure the source tail size is less than the LCM.
-        check!(src_tail_size < lcm, "DST source cannot catchup on DST target");
-        min_src_tail_items_count += 1;
+        min_src_tail_slice_items_count += 1;
       }
-      // Compute the metadata checks for the source DST trailing slice.
-      match (min_src_tail_items_count, dst_tail_item_size / gcd) {
+      // Compute the metadata checks for the source DST tail slice.
+      match (min_src_tail_slice_items_count, dst_tail_slice_item_size / gcd) {
         // No size mismatch.
         (0, 1) => None,
         // Source metadata must be a multiple of the GCD.
@@ -1979,14 +2058,16 @@ mod internal {
     // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
     // compatibility (transmutability).
     let min_check_size = match maybe_size_mismatch {
-      None if src_tail_item_size != 0 => src_sized_size + src_tail_item_size,
-      None => dst_sized_size,
-      Some(IsEmpty) => src_sized_size,
-      Some(IsMultipleOf(m)) => src_sized_size + (m * src_tail_item_size),
-      Some(Is(n)) => src_sized_size + (n * src_tail_item_size),
-      Some(IsAtLeast(n)) => src_sized_size + (n * src_tail_item_size) + src_tail_item_size,
+      None if src_tail_slice_item_size != 0 => src_min_size + src_tail_slice_item_size,
+      None => dst_min_size,
+      Some(IsEmpty) => src_min_size,
+      Some(IsMultipleOf(m)) => src_min_size + (m * src_tail_slice_item_size),
+      Some(Is(n)) => src_min_size + (n * src_tail_slice_item_size),
+      Some(IsAtLeast(n)) => {
+        src_min_size + (n * src_tail_slice_item_size) + src_tail_slice_item_size
+      }
       Some(IsAtLeastThenMultipleOf(n, m)) => {
-        src_sized_size + (n * src_tail_item_size) + (m * src_tail_item_size)
+        src_min_size + (n * src_tail_slice_item_size) + (m * src_tail_slice_item_size)
       }
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
@@ -2012,7 +2093,7 @@ mod internal {
     // Static analyze result.
     let maybe_invalid_bit_pattern = !t.infallible;
     let sound_target_mutation = t.mutable;
-    let truncate = src_sized_size > dst_sized_size && dst_tail_item_size == 0;
+    let truncate = src_min_size > dst_min_size && dst_tail_slice_item_size == 0;
     Ok(StaticAnalyze::new(
       maybe_size_mismatch,
       maybe_invalid_bit_pattern,
@@ -2082,9 +2163,9 @@ mod internal {
   /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
   ///
   /// # Internals
-  /// DSTs metadata represents the length of it's trailing slice, such as `.1` in `(u16, [u16])`.
-  /// These checks [validate](MetadataChecks::validate) such metadata to ensure safe and correct
-  /// transmutations.
+  /// DSTs metadata represents the length of it's [tail slice](#tail-slice), such as `.1` in
+  /// `(u16, [u16])`. These checks [validate](MetadataChecks::validate) such metadata to ensure safe
+  /// and sound transmutations.
   #[derive(Debug, Copy, Clone, Eq, PartialEq)]
   pub(crate) enum MetadataChecks {
     Is(usize),                             // Is equals to `n`
@@ -2827,58 +2908,58 @@ mod internal {
     }
   }
 
-  // impl Repr -------------------------------------------------------------------------------------
+  // impl Field -------------------------------------------------------------------------------------
 
-  unsafe impl<T: ?Sized + Data> Repr<T> for () {
+  unsafe impl<T: ?Sized + Data> Field<T> for () {
     type Type = ();
-    type Rest = ();
+    type PrevField = ();
     const OFFSET: usize = 0;
-    const FIELDS: usize = 0;
+    const INDEX: usize = 0;
   }
 
   // impl Data -------------------------------------------------------------------------------------
 
   unsafe impl<T: Integer> Data for T {
     type Item = ();
-    type TailItem = ();
+    type TailSliceItem = ();
     type Sized = Self;
-    type Repr = ();
+    type TailField = ();
     type Bits = T::Bits;
     const LAYOUT: Layout<Self> = Layout::Integer { spec: T::SPEC };
   }
 
   unsafe impl<T: Copy + Data> Data for [T] {
     type Item = T;
-    type TailItem = T;
+    type TailSliceItem = T;
     type Sized = ();
-    type Repr = ();
+    type TailField = ();
     type Bits = ();
     const LAYOUT: Layout<Self> = Layout::Slice;
   }
 
   unsafe impl<T: Copy + Data, const N: usize> Data for [T; N] {
     type Item = T;
-    type TailItem = ();
+    type TailSliceItem = ();
     type Sized = Self;
-    type Repr = ();
+    type TailField = ();
     type Bits = ();
     const LAYOUT: Layout<Self> = Layout::Array;
   }
 
   pub struct ManuallyDropRepr;
 
-  unsafe impl<T: ?Sized + Data> Repr<ManuallyDrop<T>> for ManuallyDropRepr {
+  unsafe impl<T: ?Sized + Data> Field<ManuallyDrop<T>> for ManuallyDropRepr {
     type Type = T;
-    type Rest = ();
+    type PrevField = ();
     const OFFSET: usize = 0;
-    const FIELDS: usize = 1;
+    const INDEX: usize = 0;
   }
 
   unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
     type Item = ();
-    type TailItem = T::TailItem;
+    type TailSliceItem = T::TailSliceItem;
     type Sized = T::Sized;
-    type Repr = ManuallyDropRepr;
+    type TailField = ManuallyDropRepr;
     type Bits = ();
     const LAYOUT: Layout<Self> = {
       assert!(!mem::needs_drop::<T>());
@@ -2889,25 +2970,25 @@ mod internal {
   pub struct Tuple0;
   pub struct Tuple1;
 
-  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Repr<(A, B)> for Tuple0 {
+  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Field<(A, B)> for Tuple0 {
     type Type = A;
-    type Rest = Tuple1;
+    type PrevField = ();
     const OFFSET: usize = offset_of!((A, B), 0);
-    const FIELDS: usize = 2;
+    const INDEX: usize = 0;
   }
 
-  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Repr<(A, B)> for Tuple1 {
+  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Field<(A, B)> for Tuple1 {
     type Type = B;
-    type Rest = ();
+    type PrevField = Tuple0;
     const OFFSET: usize = offset_of!((A, B), 1);
-    const FIELDS: usize = 1;
+    const INDEX: usize = 1;
   }
 
   unsafe impl<A: Copy + Data, B: Copy + Data> Data for (A, B) {
     type Item = ();
-    type TailItem = B::TailItem;
+    type TailSliceItem = B::TailSliceItem;
     type Sized = Self;
-    type Repr = Tuple0;
+    type TailField = Tuple1;
     type Bits = ();
     const LAYOUT: Layout<Self> = Layout::Struct;
   }
