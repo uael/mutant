@@ -152,7 +152,29 @@ fn test_internal_byte_layout_at() {
 
 #[test]
 fn test_internal_default_at() {
-  // TODO
+  assert_eq!(default_at::<u8, u8>(0), Some(0));
+  assert_eq!(default_at::<u8, u8>(1), None);
+  assert_eq!(default_at::<u8, u8>(usize::MAX), None);
+  assert_eq!(default_at::<u32, u32>(0), Some(0));
+  assert_eq!(default_at::<u32, u32>(1), Some(0));
+  assert_eq!(default_at::<u32, u32>(2), Some(0));
+  assert_eq!(default_at::<u32, u32>(3), Some(0));
+  assert_eq!(default_at::<u32, u32>(4), None);
+  assert_eq!(default_at::<u32, u32>(usize::MAX), None);
+  assert_eq!(default_at::<TailSliceDst, u32>(0), Some(0));
+  assert_eq!(default_at::<TailSliceDst, u32>(1), Some(0));
+  assert_eq!(default_at::<TailSliceDst, u32>(2), Some(0));
+  assert_eq!(default_at::<TailSliceDst, u32>(3), Some(0));
+  assert_eq!(default_at::<TailSliceDst, u8>(4), None);
+  assert_eq!(default_at::<TailDst, u32>(0), Some(0));
+  assert_eq!(default_at::<TailDst, u32>(1), Some(0));
+  assert_eq!(default_at::<TailDst, u32>(2), Some(0));
+  assert_eq!(default_at::<TailDst, u32>(3), Some(0));
+  assert_eq!(default_at::<TailDst, TailSliceDst>(4), Some(0));
+  assert_eq!(default_at::<TailDst, TailSliceDst>(5), Some(0));
+  assert_eq!(default_at::<TailDst, TailSliceDst>(6), Some(0));
+  assert_eq!(default_at::<TailDst, TailSliceDst>(7), Some(0));
+  assert_eq!(default_at::<TailDst, u8>(8), None);
 }
 
 #[test]
@@ -368,6 +390,7 @@ fn test_internal_static_analyze() {
   test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
   test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
   test!((T<7, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<8, 2>) (T<1, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
   test!((T<2, 1>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
   test!((T<6, 5>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
   test!((T<0, 3>) (T<4, 1>) => infallible_mutable(IsAtLeast(2)));
@@ -379,15 +402,25 @@ fn test_internal_static_analyze() {
   test!((T<40, 3>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
   test!((T<42>) (T<38, 3>) => "remaining bytes to fit in the target is not a multiple of the target DST trailing slice item size");
   test!((T<42, 3>) (T<38, 3>) => "DST source cannot catch up on DST target");
+  test!((T<43, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
+  test!((T<4, 3>) (T<0, 6>) => "DST source cannot catch up on DST target");
+  test!((T<5, 3>) (T<1, 6>) => "DST source cannot catch up on DST target");
+  test!((T<43, 3>) (T<39, 6>) => "DST source cannot catch up on DST target");
   test!((T<41, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
   test!((T<38, 3>) (T<42, 3>) => "DST source cannot catch up on DST target");
   test!((T<39, 3>) (T<41, 3>) => "DST source cannot catch up on DST target");
   test!((T<39, 3>) (T<41, 6>) => "DST source cannot catch up on DST target");
+  test!((T<0, 6>) (T<2, 3>) => "DST source cannot catch up on DST target");
+  test!((T<1, 6>) (T<3, 3>) => "DST source cannot catch up on DST target");
   test!((T<39, 6>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<40, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
   test!((T<39, 6>) (T<41, 9>) => "DST source cannot catch up on DST target");
   test!((T<39, 3>) (T<41, 9>) => "DST source cannot catch up on DST target");
   test!((T<38, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
   test!((T<39, 9>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<2, 2>) (T<5, 2>) => "DST source cannot catch up on DST target");
+  test!((T<3, 2>) (T<6, 2>) => "DST source cannot catch up on DST target");
+  test!((T<4, 2>) (T<7, 2>) => "DST source cannot catch up on DST target");
 
   // Test cases for transmuting to and from empty head
   test!((T<0, 1>) (T<0, 1>) => infallible_mutable);
@@ -435,24 +468,6 @@ fn test_internal_static_analyze() {
   test!(NonMaxU8 NonZeroU8 => fallible);
 
   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
-
-  // TODO:
-  // MISSED   src/lib.rs:2062:60: replace * with / in internal::static_analyze in 71.6s build + 11.9s test
-  // MISSED   src/lib.rs:2059:27: replace * with + in internal::static_analyze in 70.1s build + 14.6s test
-  // MISSED   src/lib.rs:2062:55: replace + with - in internal::static_analyze in 71.6s build + 13.2s test
-  // MISSED   src/lib.rs:2056:45: replace + with * in internal::static_analyze in 70.9s build + 14.3s test
-  // MISSED   src/lib.rs:2056:50: replace * with / in internal::static_analyze in 69.2s build + 17.1s test
-  // MISSED   src/lib.rs:2059:27: replace * with / in internal::static_analyze in 70.9s build + 15.3s test
-  // MISSED   src/lib.rs:2062:27: replace * with + in internal::static_analyze in 71.9s build + 14.5s test
-  // MISSED   src/lib.rs:2059:55: replace + with - in internal::static_analyze in 16.7s build + 7.6s test
-  // MISSED   src/lib.rs:2059:55: replace + with * in internal::static_analyze in 13.3s build + 7.8s test
-  // MISSED   src/lib.rs:2022:71: replace / with * in internal::static_analyze in 13.0s build + 10.3s test
-  // MISSED   src/lib.rs:2062:27: replace * with / in internal::static_analyze in 16.8s build + 11.6s test
-  // MISSED   src/lib.rs:2062:22: replace + with * in internal::static_analyze in 16.8s build + 13.7s test
-  // MISSED   src/lib.rs:2062:55: replace + with * in internal::static_analyze in 15.3s build + 14.8s test
-  // MISSED   src/lib.rs:2062:60: replace * with + in internal::static_analyze in 12.7s build + 15.2s test
-  // MISSED   src/lib.rs:2022:43: replace * with + in internal::static_analyze in 19.1s build + 16.2s test
-  // MISSED   src/lib.rs:2057:40: replace * with / in internal::static_analyze in 18.6s build + 16.4s test
 }
 
 #[test]

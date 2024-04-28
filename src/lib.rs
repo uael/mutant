@@ -73,8 +73,8 @@
 //! > A type with a size that is known only at run-time is called a dynamically sized type (DST)
 //! > or, informally, an unsized type. [Slices] and [trait objects] are two examples of DSTs.*
 //!
-//! Where `mutant` only support [Slices], structs with a [tail slice](#tail-slice), and
-//! [maybe DST](#maybe-dst) struct types, but not [trait objects]. Enums can't be DST are they
+//! Where `mutant` support [Slices], structs with a [tail slice](#tail-slice), and
+//! [maybe DST](#maybe-dst) struct types, but not [trait objects]. Enums can't be DST as they
 //! aren't allowed to contain any DST, i.e. enums are always [`Sized`] where struct may not.
 //!
 //! [Rust reference]: https://doc.rust-lang.org/reference/dynamically-sized-types.html
@@ -1937,13 +1937,17 @@ mod internal {
     Src: ?Sized + Data,
     Dst: ?Sized + Data,
   {
+    // Try to resolve `xa[ya] => xb[yb]`, where:
+    // - `a` and `b` are `Src` and `Dst` respectively,
+    // - `xa` and `xb` are the minimum sizes of `a` and `b` respectively,
+    // - `ya` and `yb` are the tail slice item sizes of `a` and `b` respectively.
+    // - `n` is the minimum number of the source tail slice items needed to align `a` and `b`.
+    // - `m` is the source tail slice items multiplier.
     // Calculate minimum and tail slice item sizes for both source and target types.
-    let (src_min_size, src_tail_slice_item_size) =
-      (min_size_of::<Src>(), size_of_tail_slice_item::<Src>());
-    let (dst_min_size, dst_tail_slice_item_size) =
-      (min_size_of::<Dst>(), size_of_tail_slice_item::<Dst>());
+    let (xa, ya) = (min_size_of::<Src>(), size_of_tail_slice_item::<Src>());
+    let (xb, yb) = (min_size_of::<Dst>(), size_of_tail_slice_item::<Dst>());
     // Compute if source and target are DSTs, i.e. had a tail slice with a non-zero item size.
-    let (src_is_dst, dst_is_dst) = (src_tail_slice_item_size != 0, dst_tail_slice_item_size != 0);
+    let (src_is_dst, dst_is_dst) = (ya != 0, yb != 0);
     // Compute the minimum source tail slice items needed to align source and target.
     // 1. Source is smaller than target:
     //  - Check for source to be a DST.
@@ -1952,23 +1956,23 @@ mod internal {
     //    the source DST tail slice item size.
     //  - The minimum source tail slice items is the missing bytes ceil divided by the source DST
     //    tail slice item size.
-    let mut min_src_tail_slice_items_count = if src_min_size < dst_min_size {
+    let mut n = if xa < xb {
       // Check for source to be a DST.
       check!(src_is_dst, "source too small to fit target");
       // Compute the missing bytes to fit the target.
-      let missing = dst_min_size - src_min_size;
+      let missing = xb - xa;
       // In case the target isn't a DST:
       if !dst_is_dst {
         // Check if the missing bytes are a multiple of the source DST tail slice item size.
         check!(
-          missing % src_tail_slice_item_size == 0,
+          missing % ya == 0,
           "missing bytes to fit the target is not a multiple of the source DST trailing slice \
            item size"
         );
       }
       // The minimum source tail slice items is the missing bytes ceil divided by the source DST
       // tail slice item size.
-      (missing + src_tail_slice_item_size - 1) / src_tail_slice_item_size
+      (missing + ya - 1) / ya
     }
     // 2. Source is larger or equal to target:
     //  - The minimum source tail slice items is 0.
@@ -1979,12 +1983,12 @@ mod internal {
       //   of the target DST tail slice item size.
       if dst_is_dst {
         // Compute the remaining bytes to fit in the target.
-        let remaining = src_min_size - dst_min_size;
+        let remaining = xa - xb;
         // In case the source isn't a DST:
         if !src_is_dst {
           // Check if the remaining bytes is a multiple of the target DST tail slice item size.
           check!(
-            remaining % dst_tail_slice_item_size == 0,
+            remaining % yb == 0,
             "remaining bytes to fit in the target is not a multiple of the target DST trailing \
              slice item size",
           );
@@ -2004,7 +2008,7 @@ mod internal {
       // In case the source is smaller than the target, the source metadata must be the minimum
       // source tail slice items count.
       // Otherwise, the source metadata must be empty.
-      Some(if src_min_size < dst_min_size { Is(min_src_tail_slice_items_count) } else { IsEmpty })
+      Some(if xa < xb { Is(n) } else { IsEmpty })
     }
     // 3. Source and target are DSTs:
     else {
@@ -2016,35 +2020,26 @@ mod internal {
           _ => gcd(b, a % b),
         }
       }
-      // Compute the GCD of the source and target DST tail slice item sizes.
-      let gcd = gcd(src_tail_slice_item_size, dst_tail_slice_item_size);
+      // Compute the GCD of the source and target DST trailing slice item sizes.
+      let gcd = gcd(ya, yb);
       // Compute the absolute difference between the source and target DST minimum sizes.
-      let delta = match src_min_size < dst_min_size {
-        true => dst_min_size - src_min_size,
-        _ => src_min_size - dst_min_size,
-      };
+      let absolute_miss = if xa < xb { xb - xa } else { xa - xb };
       // Make sure the source can catch up on the target.
-      check!(delta % gcd == 0, "DST source cannot catch up on DST target");
+      check!(absolute_miss % gcd == 0, "DST source cannot catch up on DST target");
       // Compute the minimum number of source tail slice items needed to align source and target.
-      // For a transmutation from `a` to `b` noted as `xa[ya] => xb[yb]`, where `x` is the minimum
-      // size and `y` is the tail slice item size, we need to find `m` in a way that
-      // `xa + m*ya - yb` is a multiple of `yb`. Although this could be resolved using complex
-      // equations, for the sake of readability, we can simplify it by using the following loop:
-      loop {
-        // Compute both source and target tail sizes in bytes with a minimum of
-        // `min_src_tail_items_count` in source DST tail slice.
-        let src_tail_size = min_src_tail_slice_items_count * src_tail_slice_item_size;
-        let dst_tail_size = src_min_size + src_tail_size - dst_min_size;
-        // In case the target tail size is a multiple of target DST tail slice item size,
-        // we are done; break the loop.
-        let miss = dst_tail_size % dst_tail_slice_item_size;
-        if miss == 0 {
-          break;
-        }
-        min_src_tail_slice_items_count += 1;
+      // We need to find `n` in a way that `xa + n*ya - yb` is a multiple of `yb`. Although this
+      // could be resolved using complex equations, for the sake of readability, we can simplify it
+      // by using the following loop:
+      // - `n * ya` is the total size in bytes of the source tail slice for `n` source items.
+      // - `xa + n * ya` is the total size in bytes of the source for `n` source items.
+      // - `(xa + n * ya - xb)` is the total size of the target tail slice for `n` source items.
+      // If the latter is a multiple of `yb`, then we found the minimum number of source tail slice
+      // items needed to align source and target.
+      while (xa + n * ya - xb) % yb != 0 {
+        n += 1; // Increment the minimum number of source tail slice items by 1.
       }
       // Compute the metadata checks for the source DST tail slice.
-      match (min_src_tail_slice_items_count, dst_tail_slice_item_size / gcd) {
+      match (n, yb / gcd) {
         // No size mismatch.
         (0, 1) => None,
         // Source metadata must be a multiple of the GCD.
@@ -2058,17 +2053,13 @@ mod internal {
     // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
     // compatibility (transmutability).
     let min_check_size = match maybe_size_mismatch {
-      None if src_tail_slice_item_size != 0 => src_min_size + src_tail_slice_item_size,
-      None => dst_min_size,
-      Some(IsEmpty) => src_min_size,
-      Some(IsMultipleOf(m)) => src_min_size + (m * src_tail_slice_item_size),
-      Some(Is(n)) => src_min_size + (n * src_tail_slice_item_size),
-      Some(IsAtLeast(n)) => {
-        src_min_size + (n * src_tail_slice_item_size) + src_tail_slice_item_size
-      }
-      Some(IsAtLeastThenMultipleOf(n, m)) => {
-        src_min_size + (n * src_tail_slice_item_size) + (m * src_tail_slice_item_size)
-      }
+      None if ya != 0 => xa + ya,
+      None => xb,
+      Some(IsEmpty) => xa,
+      Some(IsMultipleOf(m)) => xa + (m * ya),
+      Some(Is(n)) => xa + (n * ya),
+      Some(IsAtLeast(n)) => xa + (n * ya) + ya,
+      Some(IsAtLeastThenMultipleOf(n, m)) => xa + (n * ya) + (m * ya),
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
     let mut src_chunks = Source::empty();
@@ -2093,7 +2084,7 @@ mod internal {
     // Static analyze result.
     let maybe_invalid_bit_pattern = !t.infallible;
     let sound_target_mutation = t.mutable;
-    let truncate = src_min_size > dst_min_size && dst_tail_slice_item_size == 0;
+    let truncate = xa > xb && yb == 0;
     Ok(StaticAnalyze::new(
       maybe_size_mismatch,
       maybe_invalid_bit_pattern,
