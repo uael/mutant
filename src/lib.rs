@@ -171,17 +171,25 @@ macro_rules! unwrap {
 #[rustfmt::skip]
 macro_rules! unwrap_err { ($e:expr $(,)?) => (match $e { Ok(r) => r, Err(e) => panic!("{}", e) }) }
 
+/// Same as iter.fold() but for const fns.
+#[rustfmt::skip]
+macro_rules! fold {
+  ($iter:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (fold!($iter, $init, |__i, $acc, $it| $x));
+  ($iter:expr, $init:expr, |$i:tt, $acc:tt, $it:tt| $x:expr) => {{
+    let (mut $i, mut $acc) = (0, $init);
+    loop {
+      if $i >= $iter.len() { break $acc; }
+      let $it = &$iter[$i];
+      ($acc, $i) = ($x, $i + 1);
+    }
+  }};
+}
+
 // Internal public API -----------------------------------------------------------------------------
 // Even if part of the public API, the following items are not meant to be used directly by the
 // user. They are used internally by the derive macro and other parts of the library and are subject
 // to change without notice.
 // -------------------------------------------------------------------------------------------------
-
-/// Represents either an initialized or uninitialized byte layout.
-#[doc(hidden)]
-#[rustfmt::skip]
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub enum ByteLayout<'a> { Uninit, Init(InitLayout<'a, usize>), }
 
 /// Represents the layout of a type in memory.
 ///
@@ -197,11 +205,21 @@ pub enum Layout<T: ?Sized + Data> {
 }
 
 #[doc(hidden)]
+#[rustfmt::skip]
 #[derive(Debug, Copy, Clone)]
-pub enum SizeField {
-  TotalSize,
-  TailSize,
-  TailLen,
+pub enum SizeField { TotalSize, TailSize, TailLen }
+
+#[doc(hidden)]
+#[rustfmt::skip]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum BytePattern { IsAny, IsEq(u8, u8), IsGt(u8, u8) }
+
+#[doc(hidden)]
+#[rustfmt::skip]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum BytesPattern {
+  Uninit, All(&'static [BytesPattern]),
+  Any(&'static [BytesPattern]), Cat(&'static [BytePattern])
 }
 
 #[doc(hidden)]
@@ -209,18 +227,8 @@ pub enum SizeField {
 pub struct IntegerSpec<'a, T> {
   default: &'a T,
   endianness: internal::Endianness,
-  bits_pattern: internal::BitsPattern<'a, T>,
+  bytes_pattern: BytesPattern,
   size_field: Option<SizeField>,
-}
-
-/// Describes an initialized byte layout at a specific offset within a larger [`IntegerLayout`].
-#[doc(hidden)]
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
-pub struct InitLayout<'a, Offset = ()> {
-  offset: Offset,
-  width: u8,                     // Size of the integer in bytes.
-  bits_pattern: u8,              // Bits pattern type, see [`bits`] module.
-  bits_pattern_values: &'a [u8], // Bits pattern value(s) encoded as bytes, i.e. `[u<width>]`.
 }
 
 /// This is used as a compile-time field list for struct layout.
@@ -508,12 +516,14 @@ pub struct Size<T: Integer> {
   inner: T,
 }
 
+// TODO: rename to `LastFieldSize`
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct TailSize<T: Integer> {
   inner: T,
 }
 
+// TODO: rename to `LastFieldLength`
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct TailLen<T: Integer> {
@@ -833,13 +843,6 @@ pub const fn equals_ref<T: Integer>(a: &T, b: &T) -> bool {
 pub const unsafe fn equals_raw<T: Integer>(a: *const T, b: *const T) -> bool {
   use core::ptr::read_unaligned;
   use num::*;
-
-  match T::SPEC.bits_pattern {
-    #[cfg(test)]
-    internal::BitsPattern::Uninit => return false,
-    internal::BitsPattern::Allow(values) if values.len() == 1 => return true,
-    _ => {}
-  }
 
   macro_rules! inner {
     ($($n:literal $ty:ty [$($op:tt)+])+) => (
@@ -1475,12 +1478,12 @@ pub mod num {
 
   macro_rules! impl_const_num {
     (($ConstT:ident $T:ident)) => {
-      impl_const_num!(($ConstT $T $T V));
+      impl_const_num!(($ConstT $T $T V, V.to_ne_bytes()));
     };
     (($ConstT:ident $T:ident $VT:ident)) => {
-      impl_const_num!(($ConstT $T $VT $T::from_raw(V)));
+      impl_const_num!(($ConstT $T $VT $T::from_raw(V), $T::from_raw(V).0));
     };
-    (($ConstT:ident $T:ident $VT:ident $v2raw:expr)) => {
+    (($ConstT:ident $T:ident $VT:ident $v2raw:expr, $v2bytes:expr)) => {
       #[allow(non_camel_case_types)]
       #[derive(Eq, PartialEq, Copy, Clone, Hash)]
       #[repr(transparent)]
@@ -1488,7 +1491,8 @@ pub mod num {
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
         type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[$v2raw]);
+        const SPEC: IntegerSpec<'static, Self::Bits> =
+          IntegerSpec::new(&$v2raw, BytesPattern::Cat(&BytePattern::from_bytes($v2bytes)));
       }
 
       impl<const V: $VT> $ConstT<V> {
@@ -1661,7 +1665,8 @@ mod internal {
 
   use crate::*;
 
-  use ByteLayout::*;
+  use BytePattern::*;
+  use BytesPattern::*;
   use MetadataChecks::*;
 
   #[inline]
@@ -1681,39 +1686,36 @@ mod internal {
     )
   }
 
-  #[inline]
-  pub(crate) const fn byte_layout_at<T: ?Sized + Data>(
-    offset: usize,
-  ) -> Option<ByteLayout<'static>> {
+  pub(crate) const fn bytes_pattern_at<T: ?Sized + Data>(offset: usize) -> BytesPattern {
     #[inline]
-    const fn repr_byte_layout_at<R: Field<T>, T: ?Sized + Data>(
-      offset: usize,
-    ) -> Option<ByteLayout<'static>> {
+    const fn repr_bytes_pattern_at<R: Field<T>, T: ?Sized + Data>(offset: usize) -> BytesPattern {
       if repr_contains::<R, T>(offset) {
-        return byte_layout_at::<R::Type>(offset - R::OFFSET);
+        return bytes_pattern_at::<R::Type>(offset - R::OFFSET);
       }
       match R::INDEX {
-        0 => Some(Uninit),
-        _ => repr_byte_layout_at::<R::PrevField, T>(offset),
+        0 => Uninit,
+        _ => repr_bytes_pattern_at::<R::PrevField, T>(offset),
       }
     }
 
     // Check for `offset` to be in bounds.
     if is_sized::<T>() && offset >= min_size_of::<T>() {
-      return None;
+      return Uninit;
     }
     // Check for `ZST` slices.
     if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
-      return None;
+      return Uninit;
     }
     match T::LAYOUT {
       Layout::Slice | Layout::Array => {
-        byte_layout_at::<T::Item>(offset % mem::size_of::<T::Item>())
+        bytes_pattern_at::<T::Item>(offset % mem::size_of::<T::Item>())
       }
-      Layout::Struct => repr_byte_layout_at::<T::TailField, T>(offset),
-      #[cfg(test)]
-      Layout::Integer { spec } if spec.is_uninit() => Some(Uninit),
-      Layout::Integer { spec } => Some(Init(spec.init_at(offset))),
+      Layout::Struct => repr_bytes_pattern_at::<T::TailField, T>(offset),
+      Layout::Integer { spec } if spec.is_uninit() => Uninit,
+      Layout::Integer { spec } => {
+        assert!(offset == 0);
+        spec.bytes_pattern
+      }
     }
   }
 
@@ -1743,7 +1745,6 @@ mod internal {
         default_at::<T::Item, T::Item>(offset % mem::size_of::<T::Item>())
       }
       Layout::Struct => repr_default_at::<T::TailField, T>(offset),
-      #[cfg(test)]
       Layout::Integer { spec } if spec.is_uninit() => None,
       Layout::Integer { spec } => match spec.size_field {
         Some(size_field) => match size_field {
@@ -2062,22 +2063,8 @@ mod internal {
       Some(IsAtLeastThenMultipleOf(n, m)) => xa + (n * ya) + (m * ya),
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
-    let mut src_chunks = Source::empty();
-    let (mut src_offset, mut dst_offset) = (0, 0);
-    while dst_offset < min_check_size {
-      let dst = unwrap!(byte_layout_at::<Dst>(dst_offset));
-      dst_offset += dst.width();
-      while src_chunks.width < dst.width() {
-        let src = unwrap!(byte_layout_at::<Src>(src_offset));
-        src_offset += src.width();
-        src_chunks = src_chunks.append(src);
-      }
-      src_chunks = match dst {
-        Uninit => src_chunks.shift_bytes(1),
-        Init(init) => bail!(src_chunks.intersects(&init.downcast())),
-      };
-    }
-    let t = src_chunks.finish();
+    let (src, dst) = (bytes_pattern_at::<Src>(0), bytes_pattern_at::<Dst>(0));
+    let t = bail!(src.union::<Src, Dst>(dst, 0, min_check_size));
     if !t.reachable {
       return Err("none of the bit patterns in source are valid in target");
     }
@@ -2105,50 +2092,6 @@ mod internal {
     pub const NE: Self = Endianness::LE;
     #[cfg(target_endian = "big")]
     pub const NE: Self = Endianness::BE;
-  }
-
-  /// Enumerates the most generic bit patterns for individual bytes.
-  ///
-  /// # Internals
-  /// This enum is used to describe potential byte patterns within a type `A`. During transmutation
-  /// checks into another type `B`, as implemented in [`InitLayout::intersects`], this is utilized
-  /// through the [`BitsPattern::contains_any`] and [`BitsPattern::contains_all`] methods to compute
-  /// the [transmutability](Transmutability) from `A` to `B`, over each potential
-  /// combination.
-  #[rustfmt::skip]
-  #[derive(Debug, Copy, Clone)]
-  pub enum BitsPattern<'a, T> { #[cfg(test)] Uninit, Any, Allow(&'a [T]), Disallow(&'a T), }
-
-  impl<'a> BitsPattern<'a, u8> {
-    /// Returns whatever this pattern contains at least one of the possible values of `other`.
-    const fn contains_any(self, other: Self) -> bool {
-      use BitsPattern::*;
-      match (self, other) {
-        #[cfg(test)]
-        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
-        (Any, _) => true,                      // Any contains any pattern.
-        (_, Any) => true,                      // Not any contains at least one in any.
-        (Allow(a), Allow(b)) => a[0] == b[0],  // `a` contains `b` only if `a == b`.
-        (Allow(a), Disallow(b)) => a[0] != *b, // `a` contains any but `b` only if `a != b`.
-        (Disallow(a), Allow(b)) => *a != b[0], // Any but `a` contains `b` only if `a != b`.
-        (Disallow(_), Disallow(_)) => true,    // Any but `a` contains any but `b`.
-      }
-    }
-
-    /// Returns whatever this pattern contains all possible values of `other`.
-    const fn contains_all(self, other: Self) -> bool {
-      use BitsPattern::*;
-      match (self, other) {
-        #[cfg(test)]
-        (Uninit, _) | (_, Uninit) => panic!("uninitialized layout"),
-        (Any, _) => true,                       // Any contains any pattern.
-        (_, Any) => false,                      // Not any cannot contain any.
-        (Allow(a), Allow(b)) => a[0] == b[0],   // `a` contains `b` only if `a == b`.
-        (Allow(_), Disallow(_)) => false,       // `a` cannot contain any but `b`.
-        (Disallow(a), Allow(b)) => *a != b[0],  // Any but `a` contains `b` only if `a != b`.
-        (Disallow(a), Disallow(b)) => *a == *b, // Any but `a` contains any but `b` only if `a == b`.
-      }
-    }
   }
 
   /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
@@ -2201,43 +2144,6 @@ mod internal {
     }
   }
 
-  #[derive(Copy, Clone, PartialEq, Hash)]
-  struct Branches(u64);
-
-  impl Branches {
-    #[inline]
-    pub const fn empty() -> Self {
-      Self(0)
-    }
-
-    #[inline]
-    pub const fn new(branches: usize) -> Self {
-      if branches == 0 {
-        return Self(0);
-      }
-      Self(u64::MAX >> (64 - branches))
-    }
-
-    #[inline]
-    pub const fn branches(self) -> usize {
-      self.0.count_ones() as usize
-    }
-
-    #[inline]
-    pub const fn next(self) -> (Option<usize>, Self) {
-      if self.0 == 0 {
-        return (None, self);
-      }
-      let index = self.0.trailing_zeros() as usize;
-      (Some(index), self.invalidate(index))
-    }
-
-    #[inline]
-    pub const fn invalidate(self, index: usize) -> Self {
-      Self(self.0 & !(1 << index))
-    }
-  }
-
   /// `check_bit_patterns` transmutability context.
   #[derive(Copy, Clone, PartialEq)]
   pub(crate) struct Transmutability {
@@ -2286,175 +2192,6 @@ mod internal {
         (true, false, true) => f.write_str("reachable_mutable"),
         (true, false, false) => f.write_str("reachable"),
       }
-    }
-  }
-
-  #[derive(Copy, Clone)]
-  pub(crate) struct Source<'a> {
-    len: usize,
-    pub(crate) width: usize,
-    offset: usize,
-    branches: Branches,
-    chunks: [InitLayout<'a>; 16],
-    transmutability: Transmutability,
-  }
-
-  impl<'a> Source<'a> {
-    #[inline]
-    pub const fn empty() -> Self {
-      Self {
-        len: 0,
-        width: 0,
-        offset: 0,
-        branches: Branches::empty(),
-        chunks: [InitLayout::VOID; 16],
-        transmutability: Transmutability::reachable_infallible_mutable(),
-      }
-    }
-
-    /// Append a layout to the aggregate.
-    #[inline]
-    pub const fn append(mut self, layout: ByteLayout<'a>) -> Self {
-      assert!(self.len < self.chunks.len());
-      let (layout, width) = match layout {
-        Uninit => (InitLayout::VOID, 1),
-        Init(layout) if self.len != 0 => (layout.downcast(), layout.width()),
-        Init(layout) => {
-          assert!(self.offset == 0 && self.width == 0);
-          self.offset = layout.offset;
-          self.branches = Branches::new(layout.branches());
-          (layout.downcast(), layout.width())
-        }
-      };
-      self.chunks[self.len] = layout;
-      self.width += width;
-      self.len += 1;
-      self
-    }
-
-    /// Shift right the aggregate by `n` bytes.
-    #[inline]
-    pub const fn shift_bytes(self, n: usize) -> Self {
-      let mut shifted = Self::empty();
-      shifted.transmutability = self.transmutability;
-      while shifted.width + n < self.width {
-        shifted = shifted.append(self.offset(shifted.width + n));
-      }
-      shifted
-    }
-
-    /// Shift out the head layout.
-    #[inline]
-    pub const fn shift(mut self) -> Self {
-      if self.width == 0 {
-        return self;
-      }
-      self.width -= self.chunks[0].width() - self.offset;
-      let mut i = 1;
-      while i < self.len {
-        self.chunks[i - 1] = self.chunks[i];
-        i += 1;
-      }
-      self.len -= 1;
-      self.offset = 0;
-      self.chunks[i - 1] = InitLayout::VOID;
-      self.branches = Branches::new(self.chunks[0].branches());
-      self
-    }
-
-    #[inline]
-    pub const fn offset(self, mut offset: usize) -> ByteLayout<'a> {
-      assert!(offset < self.width);
-      let mut i = 0;
-      while i < self.len {
-        let mut width = self.chunks[i].width();
-        if i == 0 {
-          width -= self.offset;
-        }
-        if offset < width {
-          return Init(self.chunks[i].upcast(offset));
-        }
-        i += 1;
-        offset -= width;
-      }
-      unreachable!()
-    }
-
-    #[inline]
-    pub const fn finish(self) -> Transmutability {
-      if !self.transmutability.reachable {
-        return Transmutability::unreachable();
-      }
-      self.transmutability
-    }
-
-    #[inline]
-    pub const fn intersects(mut self, dst: &InitLayout) -> Result<Self, &'static str> {
-      assert!(dst.width() <= self.width);
-      let mut offset = 0; // Offset in bytes withing `layout`.
-      let mut dst_branches = Branches::new(dst.branches());
-      // Keep track of the full transmutability against target.
-      let mut full_t = Transmutability::reachable_infallible_mutable();
-      // Iterate over all source layouts until target is fully covered.
-      while offset != dst.width() {
-        if self.chunks[0].is_uninit() {
-          return Err("uninit bytes");
-        }
-        let src = self.chunks[0].upcast(self.offset);
-        let dst = dst.upcast(offset);
-        // Keep track of the target covered branches for this source.
-        let mut dst_coverage = 0u64;
-        // Keep track of this source chunk transmutability against target.
-        let mut chunk_t = Transmutability::unreachable();
-        // Try each source branches, invalidate unreachable ones.
-        let mut src_branches = self.branches.next();
-        while let Some(src_branch) = src_branches.0 {
-          // Keep track of this branch transmutability against target.
-          let mut branch_t = Transmutability::unreachable();
-          // Try each target branches.
-          let mut dst_branch_iter = dst_branches.next();
-          while let Some(dst_branch) = dst_branch_iter.0 {
-            let t = src.intersects(dst, (src_branch, dst_branch));
-            // Or this branches combination into this source branch transmutability.
-            branch_t = branch_t.or(t);
-            // If this branch combination is reachable, mark this target branch as covered.
-            if t.reachable {
-              dst_coverage |= 1 << dst_branch;
-            }
-            // Move to next target branch.
-            dst_branch_iter = dst_branch_iter.1.next();
-          }
-          // Or this source branch into chunk transmutability.
-          chunk_t = chunk_t.or(branch_t);
-          // If this source branch is unreachable, mark it as invalid.
-          if !branch_t.reachable {
-            self.branches = self.branches.invalidate(src_branch);
-          }
-          // Move to next source branch.
-          src_branches = src_branches.1.next();
-        }
-        // And chunks into full transmutability.
-        full_t = full_t.and(chunk_t);
-        // Only continue with target covered branches.
-        dst_branches = Branches(dst_coverage);
-        // Are all chunk branches covered ?
-        full_t.infallible &= self.branches.branches() == src.branches();
-        // Move to next chunk if necessary.
-        if src.width() > dst.width() {
-          // Source chunk is bigger than target, offset by the consumed bytes.
-          self.width -= dst.width();
-          self.offset += dst.width();
-          break;
-        }
-        // Source is smaller or equals than target, consume whole chunk.
-        self = self.shift();
-        offset += src.width();
-      }
-      // Are all target branches covered ?
-      full_t.mutable &= dst_branches.branches() == dst.branches();
-      // And this transmutability to global state.
-      self.transmutability = self.transmutability.and(full_t);
-      Ok(self)
     }
   }
 
@@ -2616,27 +2353,159 @@ mod internal {
     };
   }
 
+  // impl BytePattern ------------------------------------------------------------------------------
+
+  impl BytePattern {
+    pub const fn from_bytes<const N: usize>(bytes: [u8; N]) -> [Self; N] {
+      let (mut i, mut patterns) = (0, [IsAny; N]);
+      while i < N {
+        patterns[i] = IsEq(bytes[i], 0xff);
+        i += 1;
+      }
+      patterns
+    }
+
+    /// Returns whatever this pattern matches the given byte.
+    const fn matches(self, byte: u8) -> bool {
+      match self {
+        IsAny => true,
+        IsEq(value, mask) => byte & mask == value,
+        IsGt(value, mask) => byte & mask > value,
+      }
+    }
+
+    /// Returns whatever this pattern contains at least one of the possible values of `other`.
+    const fn contains_any(self, other: BytePattern) -> bool {
+      match (self, other) {
+        (IsAny, _) => true,                 // IsAny ∪ b => b
+        (_, IsAny) => true,                 // a ∪ IsAny => a
+        (IsEq(a, _), IsEq(b, _)) => a == b, // [a] ∪ [b] => [a]
+        (IsEq(a, _), IsGt(b, _)) => a > b,  // [a] ∪ [b, 0xff[ => [b, 0xff[
+        (IsGt(a, _), IsEq(b, _)) => a < b,  // [a, 0xff[ ∪ [b] => [b]
+        (IsGt(a, _), IsGt(b, _)) => a < b,  // [a, 0xff[ ∪ [b, 0xff[ => [max(a, b), 0xff[
+      }
+    }
+
+    /// Returns whatever this pattern contains all possible values of `other`.
+    const fn contains_all(self, other: Self) -> bool {
+      match (self, other) {
+        (IsAny, _) => true,                                 // IsAny ∪ b => IsAny
+        (_, IsAny) => false,                                // a ∪ IsAny => a
+        (IsEq(a, _), IsEq(b, _)) => a == b,                 // [a] ∪ [b] => [a]
+        (IsEq(a, _), IsGt(b, _)) => b == 0xfe && a == 0xff, // [a] ∪ [b, 0xff[ => [a]
+        (IsGt(a, _), IsEq(b, _)) => a < b,                  // [a, 0xff[ ∪ [b] => [a, 0xff[
+        (IsGt(a, _), IsGt(b, _)) => a == b,                 // [a, 0xff[ ∪ [b, 0xff[ => [a, 0xff[
+      }
+    }
+  }
+
+  // impl BytesPattern -----------------------------------------------------------------------------
+
+  impl BytesPattern {
+    pub const fn any<T>() -> Self {
+      pub const ANY: [BytePattern; 16] = [IsAny; 16];
+      Cat(&ANY.split_at(mem::size_of::<T>()).0)
+    }
+
+    const fn size(&self) -> usize {
+      match self {
+        Uninit => 1,
+        All(&[]) | Any(&[]) | Cat(&[]) => 0,
+        Cat(p) => p.len(),
+        All(p) | Any(p) => {
+          let (mut i, size) = (1, p[0].size());
+          while i < p.len() {
+            assert!(size == p[i].size());
+            i += 1;
+          }
+          size
+        }
+      }
+    }
+
+    #[inline(always)]
+    const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
+      match self {
+        Uninit => false,
+        All(patterns) => fold!(patterns, true, |r, x| r && x.matches_ptr(ptr)),
+        Any(patterns) => fold!(patterns, false, |r, x| r || x.matches_ptr(ptr)),
+        Cat(patterns) => fold!(patterns, true, |i, r, x| r && x.matches(*ptr.add(i))),
+      }
+    }
+
+    const fn union<Src: ?Sized + Data, Dst: ?Sized + Data>(
+      &self, dst: Self, off: usize, end: usize,
+    ) -> Result<Transmutability, &'static str> {
+      let (reachable, unreachable) =
+        (Transmutability::reachable_infallible_mutable(), Transmutability::unreachable());
+      if off >= end {
+        return Ok(reachable);
+      }
+      match (self, dst) {
+        (Uninit | Cat(&[_]), Uninit) => bytes_pattern_at::<Src>(off + 1).union::<Src, Dst>(
+          bytes_pattern_at::<Dst>(off + 1),
+          off + 1,
+          end,
+        ),
+        (Uninit, _) => return Err("uninitialized byte in source"),
+        (Cat(patterns), Uninit) => Cat(patterns.split_at(1).1).union::<Src, Dst>(
+          bytes_pattern_at::<Dst>(off + 1),
+          off + 1,
+          end,
+        ),
+        (All(patterns), _) => {
+          Ok(fold!(patterns, reachable, |s, x| s.and(bail!(x.union::<Src, Dst>(dst, off, end)))))
+        }
+        (_, All(patterns)) => {
+          Ok(fold!(patterns, reachable, |s, x| s.and(bail!(self.union::<Src, Dst>(*x, off, end)))))
+        }
+        (Any(patterns), _) => {
+          Ok(fold!(patterns, unreachable, |s, x| s.or(bail!(x.union::<Src, Dst>(dst, off, end)))))
+        }
+        (_, Any(patterns)) => {
+          Ok(fold!(patterns, unreachable, |s, x| s.or(bail!(self.union::<Src, Dst>(*x, off, end)))))
+        }
+        (Cat(src), Cat(dst)) => {
+          let (mut i, mut state) = (0, reachable);
+          while i < src.len() && i < dst.len() {
+            state.reachable &= src[i].contains_any(dst[i]);
+            state.mutable &= src[i].contains_all(dst[i]);
+            state.infallible &= dst[i].contains_all(src[i]);
+            if !state.reachable {
+              return Ok(state);
+            }
+            i += 1;
+          }
+          let (src, dst) = if i < src.len() {
+            (Cat(src.split_at(i).1), bytes_pattern_at::<Dst>(off + i))
+          } else if i < dst.len() {
+            (bytes_pattern_at::<Src>(off + i), Cat(dst.split_at(i).1))
+          } else {
+            (bytes_pattern_at::<Src>(off + i), bytes_pattern_at::<Dst>(off + i))
+          };
+          Ok(state.and(bail!(src.union::<Src, Dst>(dst, off + i, end))))
+        }
+      }
+    }
+  }
+
   // impl IntegerSpec ------------------------------------------------------------------------------
 
   impl<'a, T: Integer<Bits = T>> IntegerSpec<'a, T> {
     #[inline]
     pub const fn any(default: &'a T) -> Self {
-      Self { default, bits_pattern: BitsPattern::Any, size_field: None, endianness: Endianness::NE }
+      Self {
+        default,
+        size_field: None,
+        endianness: Endianness::NE,
+        bytes_pattern: BytesPattern::any::<T>(),
+      }
     }
 
     #[inline]
-    pub const fn disallow_with_default(disallow: &'a T, default: &'a T) -> Self {
-      Self { bits_pattern: BitsPattern::Disallow(disallow), ..Self::any(default) }
-    }
-
-    #[inline]
-    pub const fn allow_with_default(default: &'a T, allow: &'a [T]) -> Self {
-      Self { bits_pattern: BitsPattern::Allow(allow), ..Self::any(default) }
-    }
-
-    #[inline]
-    pub const fn allow(allow: &'a [T]) -> Self {
-      Self::allow_with_default(&allow[0], allow)
+    pub const fn new(default: &'a T, bytes_pattern: BytesPattern) -> Self {
+      assert!(bytes_pattern.size() == mem::size_of::<T>());
+      Self { bytes_pattern, ..Self::any(default) }
     }
 
     #[inline]
@@ -2656,27 +2525,8 @@ mod internal {
     }
 
     #[inline]
-    #[cfg(test)]
     pub const fn is_uninit(&self) -> bool {
-      matches!(self.bits_pattern, BitsPattern::Uninit)
-    }
-
-    #[inline]
-    pub const fn is_any(&self) -> bool {
-      matches!(self.bits_pattern, BitsPattern::Any)
-    }
-
-    #[inline]
-    pub const fn init_at<U>(self, offset: U) -> InitLayout<'a, U> {
-      let (bits_pattern, bits_pattern_values) = match self.bits_pattern {
-        BitsPattern::Allow(values) => (bits::ALLOW, transmute_ref(values)),
-        BitsPattern::Disallow(value) => (bits::DISALLOW, transmute_ref(value)),
-        #[cfg(test)]
-        BitsPattern::Uninit => (bits::UNINIT, [].as_slice()),
-        BitsPattern::Any => (bits::ANY, [].as_slice()),
-      };
-
-      InitLayout { offset, width: mem::size_of::<T>() as u8, bits_pattern, bits_pattern_values }
+      matches!(self.bytes_pattern, Uninit)
     }
 
     #[inline]
@@ -2689,125 +2539,7 @@ mod internal {
     /// `value` must be a valid reference to `T`, but not necessarily aligned on `T`.
     #[inline]
     pub const unsafe fn matches_ptr(&self, value: *const T) -> bool {
-      match self.bits_pattern {
-        #[cfg(test)]
-        BitsPattern::Uninit => false,
-        BitsPattern::Allow(values) => {
-          let mut i = 0;
-          while i < values.len() {
-            if equals_raw(&values[i], value) {
-              return true;
-            }
-            i += 1;
-          }
-          false
-        }
-        BitsPattern::Disallow(disallow) => !equals_raw(disallow, value),
-        _ => true,
-      }
-    }
-  }
-
-  // impl InitLayout -------------------------------------------------------------------------------
-
-  impl<'a, Offset> InitLayout<'a, Offset> {
-    #[inline]
-    pub const fn is_uninit(&self) -> bool {
-      self.bits_pattern == bits::UNINIT
-    }
-
-    #[inline]
-    pub const fn is_any(&self) -> bool {
-      self.bits_pattern == bits::ANY
-    }
-
-    #[inline]
-    const fn branches(&self) -> usize {
-      if self.width == 0 {
-        return 0;
-      }
-      match self.bits_pattern {
-        bits::ALLOW => self.bits_pattern_values.len() / self.width as usize,
-        _ => 1,
-      }
-    }
-  }
-
-  impl<'a> InitLayout<'a> {
-    pub(crate) const VOID: Self = Self::new(0, bits::UNINIT, &[]);
-
-    #[inline]
-    pub const fn new(width: u8, bits_pattern: u8, bits_pattern_values: &'a [u8]) -> Self {
-      Self { offset: (), width, bits_pattern, bits_pattern_values }
-    }
-
-    #[inline]
-    pub const fn width(&self) -> usize {
-      self.width as usize
-    }
-
-    #[inline]
-    pub const fn upcast(self, offset: usize) -> InitLayout<'a, usize> {
-      let InitLayout { width, bits_pattern, bits_pattern_values, .. } = self;
-      InitLayout { offset, width, bits_pattern, bits_pattern_values }
-    }
-  }
-
-  impl<'a> InitLayout<'a, usize> {
-    #[inline]
-    pub const fn width(&self) -> usize {
-      self.width as usize - self.offset
-    }
-
-    #[inline]
-    pub const fn downcast(self) -> InitLayout<'a> {
-      let InitLayout { width, bits_pattern, bits_pattern_values, .. } = self;
-      InitLayout { offset: (), width, bits_pattern, bits_pattern_values }
-    }
-
-    #[inline]
-    pub(crate) const fn branch(&self, branch: usize) -> BitsPattern<'a, u8> {
-      use BitsPattern::*;
-      assert!(branch < self.branches());
-      match self.bits_pattern {
-        bits::DISALLOW => Disallow(&self.bits_pattern_values[self.offset]),
-        bits::ALLOW => Allow(transmute_ref(
-          &self.bits_pattern_values[(branch * self.width as usize) + self.offset],
-        )),
-        _ => Any,
-      }
-    }
-
-    #[inline]
-    const fn intersects(
-      mut self, mut dst: InitLayout<'_, usize>, branches: (usize, usize),
-    ) -> Transmutability {
-      let mut result = Transmutability::reachable_infallible_mutable();
-      // Iterate over all bytes of this branch.
-      while dst.width() > 0 && self.width() > 0 {
-        // Compute both source and target branch patterns.
-        let pattern = (self.branch(branches.0), dst.branch(branches.1));
-        // Aggregate results.
-        result.reachable &= pattern.0.contains_any(pattern.1);
-        result.mutable &= pattern.0.contains_all(pattern.1);
-        result.infallible &= pattern.1.contains_all(pattern.0);
-        // Move to next offset.
-        self.offset += 1;
-        dst.offset += 1;
-      }
-      result
-    }
-  }
-
-  // impl ByteLayout -------------------------------------------------------------------------------
-
-  impl<'a> ByteLayout<'a> {
-    #[inline]
-    pub const fn width(&self) -> usize {
-      match self {
-        Uninit => 1,
-        Init(layout) => layout.width(),
-      }
+      self.bytes_pattern.matches_ptr(value.cast())
     }
   }
 
@@ -3002,9 +2734,31 @@ mod internal {
     };
   }
 
+  macro_rules! non0 {
+    ($n:literal) => {{
+      const BYTE_PATTERNS: [[BytePattern; $n]; $n] = {
+        let (mut i, mut patterns) = (0, [[IsAny; $n]; $n]);
+        while i < $n {
+          patterns[i][i] = IsGt(0, 0xff);
+          i += 1;
+        }
+        patterns
+      };
+      const PATTERNS: [BytesPattern; $n] = {
+        let (mut i, mut patterns) = (0, [Uninit; $n]);
+        while i < $n {
+          patterns[i] = Cat(&BYTE_PATTERNS[i]);
+          i += 1;
+        }
+        patterns
+      };
+      Any(&PATTERNS)
+    }};
+  }
+
   impl_word!(
     (() as () where any(&()))
-    (bool as u8 where allow(&[0, 1]))
+    (bool as u8 where new(&0, Any(&[Cat(&[IsEq(0, 0xff)]), Cat(&[IsEq(1, 0xff)])])))
     (u8 as u8 where any(&0)) (u16 as u16 where any(&0)) (u32 as u32 where any(&0))
     (u64 as u64 where any(&0)) (u128 as u128 where any(&0))
     (i8 as i8 where any(&0)) (i16 as i16 where any(&0)) (i32 as i32 where any(&0))
@@ -3012,10 +2766,10 @@ mod internal {
     (Option<NonZeroU8> as u8 where any(&0)) (Option<NonZeroU16> as u16 where any(&0))
     (Option<NonZeroU32> as u32 where any(&0)) (Option<NonZeroU64> as u64 where any(&0))
     (Option<NonZeroU128> as u128 where any(&0))
-    (NonZeroU8 as u8 where disallow_with_default(&0, &1))
-    (NonZeroU16 as u16 where disallow_with_default(&0, &1))
-    (NonZeroU32 as u32 where disallow_with_default(&0, &1))
-    (NonZeroU64 as u64 where disallow_with_default(&0, &1))
-    (NonZeroU128 as u128 where disallow_with_default(&0, &1))
+    (NonZeroU8 as u8 where new(&1, non0!(1)))
+    (NonZeroU16 as u16 where new(&1, non0!(2)))
+    (NonZeroU32 as u32 where new(&1, non0!(4)))
+    (NonZeroU64 as u64 where new(&1, non0!(8)))
+    (NonZeroU128 as u128 where new(&1, non0!(16)))
   );
 }

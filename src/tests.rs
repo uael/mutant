@@ -14,8 +14,14 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Bits = u32;
-  const SPEC: IntegerSpec<'static, Self::Bits> =
-    IntegerSpec::allow(&[0x01010101, 0x02020202, 0x03030303]);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+    &0x01010101u32,
+    BytesPattern::Any(&[
+      BytesPattern::Cat(&BytePattern::from_bytes(0x01010101u32.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(0x02020202u32.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(0x03030303u32.to_ne_bytes())),
+    ]),
+  );
 }
 
 #[repr(u8)]
@@ -27,7 +33,13 @@ enum UpTo1u8 {
 
 unsafe impl Integer for UpTo1u8 {
   type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[0, 1]);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+    &0,
+    BytesPattern::Any(&[
+      BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
+    ]),
+  );
 }
 
 #[repr(u16)]
@@ -39,7 +51,13 @@ enum UpTo1u16 {
 
 unsafe impl Integer for UpTo1u16 {
   type Bits = u16;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[0, 1]);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+    &0,
+    BytesPattern::Any(&[
+      BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
+    ]),
+  );
 }
 
 #[repr(u8)]
@@ -52,7 +70,14 @@ enum UpTo2u8 {
 
 unsafe impl Integer for UpTo2u8 {
   type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[0, 1, 2]);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+    &0,
+    BytesPattern::Any(&[
+      BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(2u8.to_ne_bytes())),
+    ]),
+  );
 }
 
 #[repr(u16)]
@@ -65,16 +90,14 @@ enum UpTo2u16 {
 
 unsafe impl Integer for UpTo2u16 {
   type Bits = u16;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::allow(&[0, 1, 2]);
-}
-
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-struct NonMaxU8(u8);
-
-unsafe impl Integer for NonMaxU8 {
-  type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::disallow_with_default(&u8::MAX, &0);
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+    &0,
+    BytesPattern::Any(&[
+      BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
+      BytesPattern::Cat(&BytePattern::from_bytes(2u16.to_ne_bytes())),
+    ]),
+  );
 }
 
 #[repr(transparent)]
@@ -83,8 +106,7 @@ struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
   type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> =
-    IntegerSpec { bits_pattern: BitsPattern::Uninit, ..IntegerSpec::any(&0) };
+  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(&0, BytesPattern::Uninit);
 }
 
 #[repr(C)]
@@ -116,38 +138,6 @@ struct MaybeDst<T: ?Sized> {
 struct NotDstRust {
   info: u32,
   data: [u32; 21],
-}
-
-#[test]
-fn test_internal_byte_layout_at() {
-  use ByteLayout::*;
-  assert_eq!(byte_layout_at::<u8>(0), Some(Init(u8::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<u8>(1), None);
-  assert_eq!(byte_layout_at::<u8>(usize::MAX), None);
-  assert_eq!(byte_layout_at::<u32>(0), Some(Init(u32::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<u32>(1), Some(Init(u32::SPEC.init_at(1))));
-  assert_eq!(byte_layout_at::<u32>(2), Some(Init(u32::SPEC.init_at(2))));
-  assert_eq!(byte_layout_at::<u32>(3), Some(Init(u32::SPEC.init_at(3))));
-  assert_eq!(byte_layout_at::<u32>(4), None);
-  assert_eq!(byte_layout_at::<u32>(usize::MAX), None);
-  assert_eq!(byte_layout_at::<TailSliceDst>(0), Some(Init(u32::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailSliceDst>(1), Some(Init(u32::SPEC.init_at(1))));
-  assert_eq!(byte_layout_at::<TailSliceDst>(2), Some(Init(u32::SPEC.init_at(2))));
-  assert_eq!(byte_layout_at::<TailSliceDst>(3), Some(Init(u32::SPEC.init_at(3))));
-  assert_eq!(byte_layout_at::<TailSliceDst>(4), Some(Init(u8::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailSliceDst>(5), Some(Init(u8::SPEC.init_at(0)))); // etc..
-  assert_eq!(byte_layout_at::<TailSliceDst>(usize::MAX), Some(Init(u8::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailDst>(0), Some(Init(u32::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailDst>(1), Some(Init(u32::SPEC.init_at(1))));
-  assert_eq!(byte_layout_at::<TailDst>(2), Some(Init(u32::SPEC.init_at(2))));
-  assert_eq!(byte_layout_at::<TailDst>(3), Some(Init(u32::SPEC.init_at(3))));
-  assert_eq!(byte_layout_at::<TailDst>(4), Some(Init(u32::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailDst>(5), Some(Init(u32::SPEC.init_at(1))));
-  assert_eq!(byte_layout_at::<TailDst>(6), Some(Init(u32::SPEC.init_at(2))));
-  assert_eq!(byte_layout_at::<TailDst>(7), Some(Init(u32::SPEC.init_at(3))));
-  assert_eq!(byte_layout_at::<TailDst>(8), Some(Init(u8::SPEC.init_at(0))));
-  assert_eq!(byte_layout_at::<TailDst>(9), Some(Init(u8::SPEC.init_at(0)))); // etc..
-  assert_eq!(byte_layout_at::<TailDst>(usize::MAX), Some(Init(u8::SPEC.init_at(0))));
 }
 
 #[test]
@@ -332,6 +322,12 @@ fn test_internal_static_analyze() {
   test!(TestEnum u64 => "source too small to fit target");
   test!(u64 TestEnum => fallible_mutable_truncate);
 
+  test!((u8c<1>) NonZeroU8 => infallible);
+  test!((u16c<1>) NonZeroU16 => infallible);
+  test!((u32c<1>) NonZeroU32 => infallible);
+  test!((u64c<1>) NonZeroU64 => infallible);
+  test!((u128c<1>) NonZeroU128 => infallible);
+
   #[derive(Data)]
   #[repr(C, packed)]
   #[data(crate)]
@@ -436,13 +432,13 @@ fn test_internal_static_analyze() {
   test!((T<0, 0>) (T<0, 0>) => infallible_mutable);
 
   // Test cases for transmuting to and from empty padded types
-  test!(_ u8 => "uninit bytes");
-  test!((_, _, u16) u32 => "uninit bytes");
-  test!(((u8, _), u16) u32 => "uninit bytes");
+  test!(_ u8 => "uninitialized byte in source");
+  test!((_, _, u16) u32 => "uninitialized byte in source");
+  test!(((u8, _), u16) u32 => "uninitialized byte in source");
   test!(((u8, _), (u8, _)) ((bool, _), (bool, _)) => fallible_mutable);
-  test!((u32, [(u8, _)]) (u32, [u16]) => "uninit bytes");
+  test!((u32, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
   test!((u32, [(u8, _)]) (u32, [(bool, _)]) => fallible_mutable);
-  test!((u16, [(u8, _)]) (u32, [u16]) => "uninit bytes");
+  test!((u16, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
   test!(((u8, u8), u16) ((u8, bool), u16) => fallible_mutable);
 
   // Test for unreachable transmutations
@@ -462,10 +458,6 @@ fn test_internal_static_analyze() {
   test!(NonZeroU32 TestEnum => fallible_mutable);
   test!(TestEnum (u32c<0>) => "none of the bit patterns in source are valid in target");
   test!((u32c<0>) TestEnum => "none of the bit patterns in source are valid in target");
-
-  // Test for NonMaxU8 type
-  test!(NonMaxU8 NonMaxU8 => infallible_mutable);
-  test!(NonMaxU8 NonZeroU8 => fallible);
 
   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
 }

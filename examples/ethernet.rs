@@ -81,6 +81,9 @@ pub mod ipv4 {
 
   impl OptionData for NoOperationOption {
     type Type = u8c<0b00000001>;
+    // TODO: type Type = FixedWith<u8, 0b00000001>;
+    // TODO: type Type = DefaultWith<u8, 0b00000001>;
+    // TODO: type Type = Literal<u8, 0b00000001>;
     type Length = ();
   }
 
