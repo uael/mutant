@@ -201,7 +201,7 @@ macro_rules! fold {
 #[derive(Debug, Copy, Clone)]
 pub enum Layout<T: ?Sized + Data> {
   Slice, Array, Struct,
-  Integer { spec: IntegerSpec<'static, T::Bits>, },
+  Integer { spec: IntegerSpec<'static, T::Repr>, },
 }
 
 #[doc(hidden)]
@@ -336,8 +336,8 @@ pub const fn const_assert_unaligned_raw<T: ?Sized + Data>(_: *const T) {
 /// Identity function used by the [`layout`] macro.
 #[inline]
 #[doc(hidden)]
-pub const fn raw<T: Integer>(raw: T::Bits) -> T::Bits {
-  assert!(mem::size_of::<T>() == mem::size_of::<T::Bits>());
+pub const fn raw<T: Integer>(raw: T::Repr) -> T::Repr {
+  assert!(mem::size_of::<T>() == mem::size_of::<T::Repr>());
   raw
 }
 
@@ -535,14 +535,14 @@ pub struct TailLen<T: Integer> {
 /// # Safety
 /// This marker trait isn't meant to be implemented by the user. If you do so, you're on your own.
 pub unsafe trait Integer: Copy + 'static {
-  /// Bits type representation of `Self` that can accept any bit pattern.
-  /// The size of `Self::Bits` is equals to the size of `Self`.
-  type Bits: Integer<Bits = Self::Bits>;
+  /// Representation of `Self` that can accept any bit pattern.
+  /// The size of `Self::Repr` is equals to the size of `Self`.
+  type Repr: Integer<Repr = Self::Repr>;
 
   /// # Safety
   /// Implementor is responsible for `SPEC` to represents only valid values for `Self`.
   #[doc(hidden)]
-  const SPEC: IntegerSpec<'static, Self::Bits>;
+  const SPEC: IntegerSpec<'static, Self::Repr>;
 }
 
 /// Marker trait for "data" types. "data" types are types that can be safely transmuted between each
@@ -573,7 +573,7 @@ pub unsafe trait Data: 'static {
 
   /// [`Integer`] representation of `Self`, only in case of [`Layout::Integer`] layout.
   #[doc(hidden)]
-  type Bits: Integer<Bits = Self::Bits>;
+  type Repr: Integer<Repr = Self::Repr>;
 
   /// Layout of `Self`.
   #[doc(hidden)]
@@ -896,7 +896,7 @@ pub const fn is_sized<T: ?Sized + Data>() -> bool {
 }
 
 #[inline]
-pub const fn matches<T: Integer>(raw: &T::Bits) -> bool {
+pub const fn matches<T: Integer>(raw: &T::Repr) -> bool {
   T::SPEC.matches(raw)
 }
 
@@ -1283,7 +1283,7 @@ pub mod num {
   use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
 
   #[inline]
-  pub const fn swap_bytes<T: Integer>(int: T) -> T::Bits {
+  pub const fn swap_bytes<T: Integer>(int: T) -> T::Repr {
     union IntoBytes<T: Copy> {
       int: T,
       bytes: [u8; 16],
@@ -1303,7 +1303,7 @@ pub mod num {
   }
 
   #[inline]
-  pub const fn into_ne<T: Integer>(int: T) -> T::Bits {
+  pub const fn into_ne<T: Integer>(int: T) -> T::Repr {
     if T::SPEC.endianness as u8 == internal::Endianness::NE as u8 {
       return transmute(int);
     }
@@ -1311,7 +1311,7 @@ pub mod num {
   }
 
   #[inline]
-  pub const fn into_be<T: Integer>(int: T) -> T::Bits {
+  pub const fn into_be<T: Integer>(int: T) -> T::Repr {
     if T::SPEC.endianness as u8 == internal::Endianness::BE as u8 {
       return transmute(int);
     }
@@ -1319,7 +1319,7 @@ pub mod num {
   }
 
   #[inline]
-  pub const fn into_le<T: Integer>(int: T) -> T::Bits {
+  pub const fn into_le<T: Integer>(int: T) -> T::Repr {
     if T::SPEC.endianness as u8 == internal::Endianness::LE as u8 {
       return transmute(int);
     }
@@ -1327,7 +1327,7 @@ pub mod num {
   }
 
   #[inline]
-  pub const fn cast<T: Integer, U: Integer<Bits = U>>(int: T) -> U {
+  pub const fn cast<T: Integer, U: Integer<Repr = U>>(int: T) -> U {
     union Cast<T: Copy, U: Copy> {
       int: T,
       dst: U,
@@ -1350,8 +1350,8 @@ pub mod num {
       pub struct $T(pub [u8; $N]);
 
       unsafe impl Integer for $T {
-        type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&Self::MIN)
+        type Repr = $T;
+        const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::any(&Self::MIN)
           .with_endianness(internal::Endianness::$endianness);
       }
 
@@ -1490,8 +1490,8 @@ pub mod num {
       pub struct $ConstT<const V: $VT>($T);
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
-        type Bits = $T;
-        const SPEC: IntegerSpec<'static, Self::Bits> =
+        type Repr = $T;
+        const SPEC: IntegerSpec<'static, Self::Repr> =
           IntegerSpec::new(&$v2raw, BytesPattern::Cat(&BytePattern::from_bytes($v2bytes)));
       }
 
@@ -1587,8 +1587,8 @@ pub mod num {
   pub struct SetDefault<T: Integer, const DEFAULT: u128>(T);
 
   unsafe impl<T: Integer, const DEFAULT: u128> Integer for SetDefault<T, DEFAULT> {
-    type Bits = T::Bits;
-    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_default(truncate_ref(&DEFAULT));
+    type Repr = T::Repr;
+    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_default(truncate_ref(&DEFAULT));
   }
 
   impl<T: Integer + Debug, const DEFAULT: u128> Debug for SetDefault<T, DEFAULT> {
@@ -1871,7 +1871,7 @@ mod internal {
         let size_field = unwrap!(spec.size_field, return Ok(container));
         // Compute the size from `ptr`.
         let int = unsafe { core::ptr::read_unaligned(ptr.cast()) };
-        let size: usize = num::cast::<T::Bits, u64>(int) as usize;
+        let size: usize = num::cast::<T::Repr, u64>(int) as usize;
         // Compute the new metadata.
         let metadata = match size_field {
           _ if min_size_of::<T>() == 0 => return Ok(container),
@@ -2491,7 +2491,7 @@ mod internal {
 
   // impl IntegerSpec ------------------------------------------------------------------------------
 
-  impl<'a, T: Integer<Bits = T>> IntegerSpec<'a, T> {
+  impl<'a, T: Integer<Repr = T>> IntegerSpec<'a, T> {
     #[inline]
     pub const fn any(default: &'a T) -> Self {
       Self {
@@ -2592,8 +2592,8 @@ mod internal {
   // impl Size -------------------------------------------------------------------------------------
 
   unsafe impl<T: Integer> Integer for Size<T> {
-    type Bits = T::Bits;
-    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TotalSize);
+    type Repr = T::Repr;
+    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TotalSize);
   }
 
   impl<T: Integer> Size<T> {
@@ -2606,8 +2606,8 @@ mod internal {
   // impl TailSize ---------------------------------------------------------------------------------
 
   unsafe impl<T: Integer> Integer for TailSize<T> {
-    type Bits = T::Bits;
-    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TailSize);
+    type Repr = T::Repr;
+    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TailSize);
   }
 
   impl<T: Integer> TailSize<T> {
@@ -2620,8 +2620,8 @@ mod internal {
   // impl TailLen ----------------------------------------------------------------------------------
 
   unsafe impl<T: Integer> Integer for TailLen<T> {
-    type Bits = T::Bits;
-    const SPEC: IntegerSpec<'static, Self::Bits> = T::SPEC.with_size_field(SizeField::TailLen);
+    type Repr = T::Repr;
+    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TailLen);
   }
 
   impl<T: Integer> TailLen<T> {
@@ -2647,7 +2647,7 @@ mod internal {
     type TailSliceItem = ();
     type Sized = Self;
     type TailField = ();
-    type Bits = T::Bits;
+    type Repr = T::Repr;
     const LAYOUT: Layout<Self> = Layout::Integer { spec: T::SPEC };
   }
 
@@ -2656,7 +2656,7 @@ mod internal {
     type TailSliceItem = T;
     type Sized = ();
     type TailField = ();
-    type Bits = ();
+    type Repr = ();
     const LAYOUT: Layout<Self> = Layout::Slice;
   }
 
@@ -2665,7 +2665,7 @@ mod internal {
     type TailSliceItem = ();
     type Sized = Self;
     type TailField = ();
-    type Bits = ();
+    type Repr = ();
     const LAYOUT: Layout<Self> = Layout::Array;
   }
 
@@ -2683,7 +2683,7 @@ mod internal {
     type TailSliceItem = T::TailSliceItem;
     type Sized = T::Sized;
     type TailField = ManuallyDropRepr;
-    type Bits = ();
+    type Repr = ();
     const LAYOUT: Layout<Self> = {
       assert!(!mem::needs_drop::<T>());
       Layout::Struct
@@ -2712,23 +2712,23 @@ mod internal {
     type TailSliceItem = B::TailSliceItem;
     type Sized = Self;
     type TailField = Tuple1;
-    type Bits = ();
+    type Repr = ();
     const LAYOUT: Layout<Self> = Layout::Struct;
   }
 
   // impl Integer ----------------------------------------------------------------------------------
 
   unsafe impl<T: ?Sized + 'static> Integer for PhantomData<T> {
-    type Bits = Self;
-    const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::any(&PhantomData);
+    type Repr = Self;
+    const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::any(&PhantomData);
   }
 
   macro_rules! impl_word {
     ($(($ty:ty as $raw:ty where $($spec:tt)+))+) => {
       $(
         unsafe impl Integer for $ty {
-          type Bits = $raw;
-          const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::$($spec)+;
+          type Repr = $raw;
+          const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::$($spec)+;
         }
       )+
     };

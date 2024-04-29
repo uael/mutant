@@ -13,7 +13,7 @@ pub struct EthernetFrame<T: ?Sized + EthernetPacket> {
 }
 
 pub trait EthernetPacket: Data {
-  type Type: Integer<Bits = u16>;
+  type Type: Integer<Repr = u16>;
 }
 
 impl EthernetPacket for [u8] {
@@ -72,7 +72,7 @@ pub mod ipv4 {
   }
 
   pub trait OptionData: Data {
-    type Type: Integer<Bits = u8>;
+    type Type: Integer<Repr = u8>;
     type Length: Integer;
   }
 

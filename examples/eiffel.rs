@@ -148,7 +148,7 @@ mod hci {
   }
 
   pub trait PacketData: Data {
-    type PacketType: Integer<Bits = u8>;
+    type PacketType: Integer<Repr = u8>;
   }
 
   impl PacketData for [u8] {
@@ -184,7 +184,7 @@ mod hci {
   }
 
   pub trait EventData: Data {
-    type EventCode: Integer<Bits = u8>;
+    type EventCode: Integer<Repr = u8>;
   }
 
   impl EventData for [u8] {
@@ -266,7 +266,7 @@ mod hci {
   }
 
   pub trait CommandData: Data {
-    type OpCode: Integer<Bits = u16le>;
+    type OpCode: Integer<Repr = u16le>;
     type ResultParameters: ?Sized + Data;
   }
 

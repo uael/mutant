@@ -13,8 +13,8 @@ enum TestEnum {
 }
 
 unsafe impl Integer for TestEnum {
-  type Bits = u32;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+  type Repr = u32;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
     &0x01010101u32,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0x01010101u32.to_ne_bytes())),
@@ -32,8 +32,8 @@ enum UpTo1u8 {
 }
 
 unsafe impl Integer for UpTo1u8 {
-  type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+  type Repr = u8;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
     &0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
@@ -50,8 +50,8 @@ enum UpTo1u16 {
 }
 
 unsafe impl Integer for UpTo1u16 {
-  type Bits = u16;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+  type Repr = u16;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
     &0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
@@ -69,8 +69,8 @@ enum UpTo2u8 {
 }
 
 unsafe impl Integer for UpTo2u8 {
-  type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+  type Repr = u8;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
     &0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
@@ -89,8 +89,8 @@ enum UpTo2u16 {
 }
 
 unsafe impl Integer for UpTo2u16 {
-  type Bits = u16;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(
+  type Repr = u16;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
     &0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
@@ -105,8 +105,8 @@ unsafe impl Integer for UpTo2u16 {
 struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
-  type Bits = u8;
-  const SPEC: IntegerSpec<'static, Self::Bits> = IntegerSpec::new(&0, BytesPattern::Uninit);
+  type Repr = u8;
+  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(&0, BytesPattern::Uninit);
 }
 
 #[repr(C)]

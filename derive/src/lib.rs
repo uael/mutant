@@ -128,7 +128,7 @@ fn derive_data_for_enum(
   }
   quote! {
     unsafe impl #impl_generics #root::Integer for #ident #ty_generics #where_clause {
-      type Bits = #scalar;
+      type Repr = #scalar;
 
       const SPEC: #root::IntegerSpec = #root::IntegerSpec::allow(&[#(#allowed_values),*]);
     }
@@ -153,7 +153,7 @@ fn derive_data_for_struct(
             type TailSliceItem = ();
             type Sized = Self;
             type TailField = ();
-            type Bits = ();
+            type Repr = ();
 
             const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
               spec: #root::IntegerSpec::any(&()),
@@ -261,7 +261,7 @@ fn derive_data_for_struct(
           type TailSliceItem = ();
           type Sized = Self;
           type TailField = #tail_field_ty;
-          type Bits = ();
+          type Repr = ();
 
           const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
         }
@@ -279,7 +279,7 @@ fn derive_data_for_struct(
         type TailSliceItem = <#tail_ty as #root::Data>::TailSliceItem;
         type Sized = #sized_ty;
         type TailField = #tail_field_ty;
-        type Bits = ();
+        type Repr = ();
 
         const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
       }
