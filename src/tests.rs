@@ -14,8 +14,8 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Repr = u32;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
-    &0x01010101u32,
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0x01010101u32,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0x01010101u32.to_ne_bytes())),
       BytesPattern::Cat(&BytePattern::from_bytes(0x02020202u32.to_ne_bytes())),
@@ -33,8 +33,8 @@ enum UpTo1u8 {
 
 unsafe impl Integer for UpTo1u8 {
   type Repr = u8;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
-    &0,
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
       BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
@@ -51,8 +51,8 @@ enum UpTo1u16 {
 
 unsafe impl Integer for UpTo1u16 {
   type Repr = u16;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
-    &0,
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
       BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
@@ -70,8 +70,8 @@ enum UpTo2u8 {
 
 unsafe impl Integer for UpTo2u8 {
   type Repr = u8;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
-    &0,
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
       BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
@@ -90,8 +90,8 @@ enum UpTo2u16 {
 
 unsafe impl Integer for UpTo2u16 {
   type Repr = u16;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(
-    &0,
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
     BytesPattern::Any(&[
       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
       BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
@@ -106,7 +106,7 @@ struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
   type Repr = u8;
-  const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::new(&0, BytesPattern::Uninit);
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(0, BytesPattern::Uninit);
 }
 
 #[repr(C)]
@@ -142,29 +142,31 @@ struct NotDstRust {
 
 #[test]
 fn test_internal_default_at() {
-  assert_eq!(default_at::<u8, u8>(0), Some(0));
-  assert_eq!(default_at::<u8, u8>(1), None);
-  assert_eq!(default_at::<u8, u8>(usize::MAX), None);
-  assert_eq!(default_at::<u32, u32>(0), Some(0));
-  assert_eq!(default_at::<u32, u32>(1), Some(0));
-  assert_eq!(default_at::<u32, u32>(2), Some(0));
-  assert_eq!(default_at::<u32, u32>(3), Some(0));
-  assert_eq!(default_at::<u32, u32>(4), None);
-  assert_eq!(default_at::<u32, u32>(usize::MAX), None);
-  assert_eq!(default_at::<TailSliceDst, u32>(0), Some(0));
-  assert_eq!(default_at::<TailSliceDst, u32>(1), Some(0));
-  assert_eq!(default_at::<TailSliceDst, u32>(2), Some(0));
-  assert_eq!(default_at::<TailSliceDst, u32>(3), Some(0));
-  assert_eq!(default_at::<TailSliceDst, u8>(4), None);
-  assert_eq!(default_at::<TailDst, u32>(0), Some(0));
-  assert_eq!(default_at::<TailDst, u32>(1), Some(0));
-  assert_eq!(default_at::<TailDst, u32>(2), Some(0));
-  assert_eq!(default_at::<TailDst, u32>(3), Some(0));
-  assert_eq!(default_at::<TailDst, TailSliceDst>(4), Some(0));
-  assert_eq!(default_at::<TailDst, TailSliceDst>(5), Some(0));
-  assert_eq!(default_at::<TailDst, TailSliceDst>(6), Some(0));
-  assert_eq!(default_at::<TailDst, TailSliceDst>(7), Some(0));
-  assert_eq!(default_at::<TailDst, u8>(8), None);
+  assert_eq!(default_at::<u8>(0), Some(0));
+  assert_eq!(default_at::<u8>(1), None);
+  assert_eq!(default_at::<u8>(usize::MAX), None);
+  assert_eq!(default_at::<u32>(0), Some(0));
+  assert_eq!(default_at::<u32>(1), Some(0));
+  assert_eq!(default_at::<u32>(2), Some(0));
+  assert_eq!(default_at::<u32>(3), Some(0));
+  assert_eq!(default_at::<u32>(4), None);
+  assert_eq!(default_at::<u32>(usize::MAX), None);
+  assert_eq!(default_at::<TailSliceDst>(0), Some(0));
+  assert_eq!(default_at::<TailSliceDst>(1), Some(0));
+  assert_eq!(default_at::<TailSliceDst>(2), Some(0));
+  assert_eq!(default_at::<TailSliceDst>(3), Some(0));
+  assert_eq!(default_at::<TailSliceDst>(4), Some(0));
+  assert_eq!(default_at::<TailSliceDst>(5), Some(0)); // etc..
+  assert_eq!(default_at::<TailDst>(0), Some(0));
+  assert_eq!(default_at::<TailDst>(1), Some(0));
+  assert_eq!(default_at::<TailDst>(2), Some(0));
+  assert_eq!(default_at::<TailDst>(3), Some(0));
+  assert_eq!(default_at::<TailDst>(4), Some(0));
+  assert_eq!(default_at::<TailDst>(5), Some(0));
+  assert_eq!(default_at::<TailDst>(6), Some(0));
+  assert_eq!(default_at::<TailDst>(7), Some(0));
+  assert_eq!(default_at::<TailDst>(8), Some(0));
+  assert_eq!(default_at::<TailDst>(9), Some(0)); // etc..
 }
 
 #[test]
@@ -463,6 +465,64 @@ fn test_internal_static_analyze() {
 }
 
 #[test]
+fn test_size_field() {
+  type T0 = Pack!(Size<u32>, ());
+  type T1 = Pack!(u64, Size<u32>, ());
+  type T2 = Pack!([u8; 0xcafebeef], Size<u32>, ());
+  type T3 = Pack!([u8; 0xcafebeef], Size<u32be>, ());
+  type T4 = Pack!([u8; 0xcafebeef], Size<u32>, [u8]);
+  type T5 = Pack!([u8; 0xcafebeef], Size<u32be>, [u8]);
+
+  type SizeType<T> = <<<T as Data>::TailField as Field>::PrevField as Field>::Type;
+
+  pub const fn pat_of<T: ?Sized + Data>() -> BytesPattern<'static> {
+    match <SizeType<T> as Data>::LAYOUT {
+      Layout::Integer { spec } => spec.bytes_pattern,
+      _ => unreachable!(),
+    }
+  }
+
+  pub const fn default_of<T: ?Sized + Data>() -> u32 {
+    match <SizeType<T> as Data>::LAYOUT {
+      Layout::Integer { spec } => cast(spec.default()),
+      _ => unreachable!(),
+    }
+  }
+
+  assert_eq!(default_of::<T0>(), 4);
+  assert!(!pat_of::<T0>().matches(3u32));
+  assert!(pat_of::<T0>().matches(4u32));
+  assert!(!pat_of::<T0>().matches(5u32));
+
+  assert_eq!(default_of::<T1>(), 12);
+  assert!(!pat_of::<T1>().matches(11u32));
+  assert!(pat_of::<T1>().matches(12u32));
+  assert!(!pat_of::<T1>().matches(13u32));
+
+  assert_eq!(default_of::<T2>(), 0xcafebeefu32 + 4);
+  assert!(!pat_of::<T2>().matches(0xcafebeefu32 + 4 - 1));
+  assert!(pat_of::<T2>().matches(0xcafebeefu32 + 4));
+  assert!(!pat_of::<T2>().matches(0xcafebeefu32 + 4 + 1));
+
+  assert_eq!(default_of::<T3>(), 0xcafebeefu32 + 4);
+  assert!(!pat_of::<T3>().matches(u32be::from_raw(0xcafebeefu32 + 4 - 1)));
+  assert!(pat_of::<T3>().matches(u32be::from_raw(0xcafebeefu32 + 4)));
+  assert!(!pat_of::<T3>().matches(u32be::from_raw(0xcafebeefu32 + 4 + 1)));
+
+  assert_eq!(default_of::<T4>(), 0xcafebeefu32 + 4);
+  assert!(!pat_of::<T4>().matches(0xcafebeefu32 + 4 - 1));
+  assert!(pat_of::<T4>().matches(0xcafebeefu32 + 4));
+  assert!(pat_of::<T4>().matches(0xcafebeefu32 + 4 + 1));
+  assert!(pat_of::<T4>().matches(u32::MAX));
+
+  assert_eq!(default_of::<T5>(), 0xcafebeefu32 + 4);
+  assert!(!pat_of::<T5>().matches(u32be::from_raw(0xcafebeefu32 + 4 - 1)));
+  assert!(pat_of::<T5>().matches(u32be::from_raw(0xcafebeefu32 + 4)));
+  assert!(pat_of::<T5>().matches(u32be::from_raw(0xcafebeefu32 + 4 + 1)));
+  assert!(pat_of::<T4>().matches(u32be::MAX));
+}
+
+#[test]
 fn test_num() {
   use core::array::from_fn;
   use rand::Rng;
@@ -566,6 +626,7 @@ fn test_default() {
   assert_eq!([false, false, false, false], default::<[bool; 4]>());
   assert_eq!([0xca; 4], transmute::<_, [u8; 4]>(default::<[u8c<0xca>; 4]>()));
   assert_eq!([0xcafe; 4], transmute::<_, [u16; 4]>(default::<[u16c<0xcafe>; 4]>()));
+  assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[u32c<0xcafebeef>; 4]>()));
   assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[u32c<0xcafebeef>; 4]>()));
 }
 

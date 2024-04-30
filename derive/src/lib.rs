@@ -153,10 +153,11 @@ fn derive_data_for_struct(
             type TailSliceItem = ();
             type Sized = Self;
             type TailField = ();
-            type Repr = ();
+            type Integer = ();
+            type Container = ();
 
             const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
-              spec: #root::IntegerSpec::any(&()),
+              spec: #root::IntegerSpec::any(()),
             };
           }
         }
@@ -180,17 +181,20 @@ fn derive_data_for_struct(
       let field_ident = quote_field_ident(field, i);
       let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
       prefix.push(quote! {
-      #[allow(non_camel_case_types)]
-      #vis struct #struct_ident;
+        #[allow(non_camel_case_types)]
+        #vis struct #struct_ident #impl_generics(::core::marker::PhantomData<#ident #ty_generics>)
+          #where_clause;
 
-      unsafe impl #impl_generics #root::Field<#ident #ty_generics> for #struct_ident #where_clause {
-        type Type = #ty;
-        type PrevField = #prev_field_ty;
-        const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-        const INDEX: usize = #i;
-      }
-    });
-      quote!(#struct_ident)
+        unsafe impl #impl_generics #root::Field for #struct_ident #ty_generics
+          #where_clause
+        {
+          type Type = #root::DataField<#ident #ty_generics, #ty>;
+          type PrevField = #prev_field_ty;
+          const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
+          const INDEX: usize = #i;
+        }
+      });
+      quote!(#struct_ident #ty_generics)
     });
 
   // Compute `Sized` type.
@@ -219,27 +223,31 @@ fn derive_data_for_struct(
           field
         })
         .collect::<Vec<_>>();
-      let tail_field_ty = fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
-        let ty = &field.ty;
-        let field_ident = {
-          let ident = Index { index: i as u32, span: Span::call_site() };
-          quote!(#ident)
-        };
-        let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
-        prefix.push(quote! {
+      let tail_field_ty =
+        fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
+          let ty = &field.ty;
+          let field_ident = {
+            let ident = Index { index: i as u32, span: Span::call_site() };
+            quote!(#ident)
+          };
+          let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
+          prefix.push(quote! {
           #[allow(non_camel_case_types)]
-          #vis struct #struct_ident;
+          #vis struct #struct_ident #impl_generics(::core::marker::PhantomData<#ident #ty_generics>)
+            #where_clause;
 
-          unsafe impl #impl_generics #root::Field<#ident #ty_generics> for #struct_ident #where_clause {
-            type Type = #ty;
+          unsafe impl #impl_generics #root::Field for #struct_ident #ty_generics
+            #where_clause
+          {
+            type Type = #root::DataField<#ident #ty_generics, #ty>;
             type PrevField = #prev_field_ty;
 
             const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
             const INDEX: usize = #i;
           }
         });
-        quote!(#struct_ident)
-      });
+          quote!(#struct_ident #ty_generics)
+        });
       let field_types = fields.iter().map(|field| &field.ty);
       let repr_attr = if packed { quote!(#[repr(packed)]) } else { quote!(#[repr(C, packed)]) };
       prefix.push(quote! {
@@ -261,7 +269,8 @@ fn derive_data_for_struct(
           type TailSliceItem = ();
           type Sized = Self;
           type TailField = #tail_field_ty;
-          type Repr = ();
+          type Integer = ();
+          type Container = ();
 
           const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
         }
@@ -279,7 +288,8 @@ fn derive_data_for_struct(
         type TailSliceItem = <#tail_ty as #root::Data>::TailSliceItem;
         type Sized = #sized_ty;
         type TailField = #tail_field_ty;
-        type Repr = ();
+        type Integer = ();
+        type Container = ();
 
         const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
       }

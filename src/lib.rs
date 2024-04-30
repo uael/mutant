@@ -198,47 +198,51 @@ macro_rules! fold {
 /// providing the necessary context for transmutation operations.
 #[doc(hidden)]
 #[rustfmt::skip]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub enum Layout<T: ?Sized + Data> {
-  Slice, Array, Struct,
-  Integer { spec: IntegerSpec<'static, T::Repr>, },
+  Slice, Array, Struct, Integer { spec: IntegerSpec<<T::Integer as Integer>::Repr>, },
 }
 
 #[doc(hidden)]
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone)]
-pub enum SizeField { TotalSize, TailSize, TailLen }
+pub enum SizeField { Size }
 
 #[doc(hidden)]
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum BytePattern { IsAny, IsEq(u8, u8), IsGt(u8, u8) }
+pub enum BytePattern { IsAny, IsEq(u8, u8), IsGt(u8, u8), IsGte(u8, u8) }
 
 #[doc(hidden)]
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum BytesPattern {
-  Uninit, All(&'static [BytesPattern]),
-  Any(&'static [BytesPattern]), Cat(&'static [BytePattern])
+pub enum BytesPattern<'a> {
+  Uninit, All(&'a [BytesPattern<'a>]),
+  Any(&'a [BytesPattern<'a>]), Cat(&'a [BytePattern])
 }
 
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
-pub struct IntegerSpec<'a, T> {
-  default: &'a T,
+pub struct IntegerSpec<T> {
+  default: [u8; 16],
   endianness: internal::Endianness,
-  bytes_pattern: BytesPattern,
+  bytes_pattern: BytesPattern<'static>,
   size_field: Option<SizeField>,
+  _type: PhantomData<T>,
 }
 
 /// This is used as a compile-time field list for struct layout.
 #[doc(hidden)]
-pub unsafe trait Field<T: ?Sized + Data> {
+pub unsafe trait Field {
   type Type: ?Sized + Data;
-  type PrevField: Field<T>;
+  type PrevField: Field;
   const OFFSET: usize;
   const INDEX: usize;
 }
+
+#[doc(hidden)]
+#[repr(transparent)]
+pub struct DataField<C: ?Sized + Data, T: ?Sized + Data>(PhantomData<C>, T);
 
 /// A pointer to an aligned allocation of size 2^20.
 /// Used to compute the offset of a field within a type using [`offset_of`].
@@ -516,20 +520,6 @@ pub struct Size<T: Integer> {
   inner: T,
 }
 
-// TODO: rename to `LastFieldSize`
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[repr(transparent)]
-pub struct TailSize<T: Integer> {
-  inner: T,
-}
-
-// TODO: rename to `LastFieldLength`
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[repr(transparent)]
-pub struct TailLen<T: Integer> {
-  inner: T,
-}
-
 /// Marker trait for plain integer types (e.g. integers or enum discriminants).
 ///
 /// # Safety
@@ -542,7 +532,7 @@ pub unsafe trait Integer: Copy + 'static {
   /// # Safety
   /// Implementor is responsible for `SPEC` to represents only valid values for `Self`.
   #[doc(hidden)]
-  const SPEC: IntegerSpec<'static, Self::Repr>;
+  const SPEC: IntegerSpec<Self::Repr>;
 }
 
 /// Marker trait for "data" types. "data" types are types that can be safely transmuted between each
@@ -569,11 +559,13 @@ pub unsafe trait Data: 'static {
 
   /// Fields of `Self`, only in case of [`Layout::Struct`] layout.
   #[doc(hidden)]
-  type TailField: Field<Self>;
+  type TailField: Field;
 
   /// [`Integer`] representation of `Self`, only in case of [`Layout::Integer`] layout.
   #[doc(hidden)]
-  type Repr: Integer<Repr = Self::Repr>;
+  type Integer: Integer;
+
+  type Container: ?Sized + Data;
 
   /// Layout of `Self`.
   #[doc(hidden)]
@@ -818,7 +810,7 @@ pub const fn default<T: Copy + Data>() -> T {
       let mut bytes = [0u8; 1 << 20];
       let mut i = 0;
       while i < min_size_of::<T>() {
-        if let Some(byte) = internal::default_at::<T, T>(i) {
+        if let Some(byte) = internal::default_at::<T>(i) {
           bytes[i] = byte;
         }
         i += 1;
@@ -829,35 +821,6 @@ pub const fn default<T: Copy + Data>() -> T {
   }
 
   Comptime::<T>::DEFAULT
-}
-
-#[inline]
-pub const fn equals_ref<T: Integer>(a: &T, b: &T) -> bool {
-  // SAFETY: `a` and `b` are valid references.
-  unsafe { equals_raw(a, b) }
-}
-
-/// # Safety
-/// Both `a` and `b` must point to valid `T` memory locations, but not necessarily aligned on `T`.
-#[inline]
-pub const unsafe fn equals_raw<T: Integer>(a: *const T, b: *const T) -> bool {
-  use core::ptr::read_unaligned;
-  use num::*;
-
-  macro_rules! inner {
-    ($($n:literal $ty:ty [$($op:tt)+])+) => (
-      match mem::size_of::<T>() {
-        $($n => (read_unaligned(a.cast::<$ty>())) $($op)+ (read_unaligned(b.cast::<$ty>())),)+
-        _ => unreachable!(),
-      }
-    );
-  }
-
-  inner!(
-    1 u8 [==] 2 u16 [==] 3 u24 [.equals] 4 u32 [==] 5 u40 [.equals] 6 u48 [.equals] 7 u56 [.equals]
-    8 u64 [==] 9 u72 [.equals] 10 u80 [.equals] 11 u88 [.equals] 12 u96 [.equals] 13 u104 [.equals]
-    14 u112 [.equals] 15 u120 [.equals] 16 u128 [==]
-  )
 }
 
 /// Returns whatever a value of type `T` is aligned to `align`.
@@ -890,14 +853,14 @@ pub const fn is_sized_val_raw<T: ?Sized + Data>(_: *const T) -> bool {
 pub const fn is_sized<T: ?Sized + Data>() -> bool {
   match T::LAYOUT {
     Layout::Slice => false,
-    Layout::Struct => is_sized::<<T::TailField as Field<T>>::Type>(),
+    Layout::Struct => is_sized::<<T::TailField as Field>::Type>(),
     _ => true,
   }
 }
 
 #[inline]
 pub const fn matches<T: Integer>(raw: &T::Repr) -> bool {
-  T::SPEC.matches(raw)
+  T::SPEC.matches_ref(raw)
 }
 
 #[inline]
@@ -907,7 +870,7 @@ pub const fn min_size_of<T: ?Sized + Data>() -> usize {
 
 #[inline]
 pub const fn min_size_of_tail<T: ?Sized + Data>() -> usize {
-  min_size_of::<<<T as Data>::TailField as Field<T>>::Type>()
+  min_size_of::<<<T as Data>::TailField as Field>::Type>()
 }
 
 #[inline]
@@ -1283,7 +1246,7 @@ pub mod num {
   use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
 
   #[inline]
-  pub const fn swap_bytes<T: Integer>(int: T) -> T::Repr {
+  pub const fn to_bytes<T: Integer>(int: T) -> [u8; 16] {
     union IntoBytes<T: Copy> {
       int: T,
       bytes: [u8; 16],
@@ -1291,7 +1254,17 @@ pub mod num {
 
     let mut bytes = IntoBytes { bytes: [0; 16] };
     bytes.int = int;
-    let mut bytes = unsafe { bytes.bytes };
+    unsafe { bytes.bytes }
+  }
+
+  #[inline]
+  pub const fn from_bytes<T: Integer<Repr = T>>(bytes: [u8; 16]) -> T {
+    truncate(bytes)
+  }
+
+  #[inline]
+  pub const fn swap_bytes<T: Integer>(int: T) -> T::Repr {
+    let mut bytes = to_bytes(int);
     let mut i = 0;
     while i < min_size_of::<T>() / 2 {
       let tmp = bytes[i];
@@ -1342,6 +1315,26 @@ pub mod num {
     swap_bytes(dst_le)
   }
 
+  #[inline]
+  pub const fn try_cast<T: Integer, U: Integer>(int: T) -> Option<U> {
+    union Cast<T: Copy, U: Copy> {
+      int: T,
+      dst: U,
+    }
+
+    let mut cast = Cast { dst: default() };
+    cast.int = into_le(int);
+    let mut dst_le = unsafe { cast.dst };
+    if U::SPEC.endianness as u8 != internal::Endianness::LE as u8 {
+      dst_le = swap_bytes(dst_le);
+    }
+    if U::SPEC.matches(dst_le) {
+      Some(transmute(dst_le))
+    } else {
+      None
+    }
+  }
+
   macro_rules! impl_num {
     (($T:ident $Raw:ident $N:literal $endianness:ident)) => {
       #[allow(non_camel_case_types)]
@@ -1351,7 +1344,7 @@ pub mod num {
 
       unsafe impl Integer for $T {
         type Repr = $T;
-        const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::any(&Self::MIN)
+        const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::any(Self::MIN)
           .with_endianness(internal::Endianness::$endianness);
       }
 
@@ -1491,8 +1484,8 @@ pub mod num {
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
         type Repr = $T;
-        const SPEC: IntegerSpec<'static, Self::Repr> =
-          IntegerSpec::new(&$v2raw, BytesPattern::Cat(&BytePattern::from_bytes($v2bytes)));
+        const SPEC: IntegerSpec<Self::Repr> =
+          IntegerSpec::new($v2raw, BytesPattern::Cat(&BytePattern::from_bytes($v2bytes)));
       }
 
       impl<const V: $VT> $ConstT<V> {
@@ -1588,7 +1581,7 @@ pub mod num {
 
   unsafe impl<T: Integer, const DEFAULT: u128> Integer for SetDefault<T, DEFAULT> {
     type Repr = T::Repr;
-    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_default(truncate_ref(&DEFAULT));
+    const SPEC: IntegerSpec<Self::Repr> = T::SPEC.with_default(truncate(DEFAULT));
   }
 
   impl<T: Integer + Debug, const DEFAULT: u128> Debug for SetDefault<T, DEFAULT> {
@@ -1670,12 +1663,12 @@ mod internal {
   use MetadataChecks::*;
 
   #[inline]
-  const fn repr_contains<R: Field<T>, T: ?Sized + Data>(offset: usize) -> bool {
+  const fn repr_contains<R: Field, T: ?Sized + Data>(offset: usize) -> bool {
     offset >= R::OFFSET && (!is_sized::<R::Type>() || offset < R::OFFSET + min_size_of::<R::Type>())
   }
 
   #[inline]
-  const fn repr_field<R: Field<T>, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
+  const fn repr_field<R: Field, T: ?Sized + Data>(ptr: *const T) -> *const R::Type {
     ptr::from_raw_parts(
       // SAFETY: `ptr` came from a valid reference and `R::OFFSET` is in type bounds.
       unsafe { ptr.cast::<u8>().add(R::OFFSET) }.cast(),
@@ -1686,9 +1679,11 @@ mod internal {
     )
   }
 
-  pub(crate) const fn bytes_pattern_at<T: ?Sized + Data>(offset: usize) -> BytesPattern {
+  pub(crate) const fn bytes_pattern_at<T: ?Sized + Data>(offset: usize) -> BytesPattern<'static> {
     #[inline]
-    const fn repr_bytes_pattern_at<R: Field<T>, T: ?Sized + Data>(offset: usize) -> BytesPattern {
+    const fn repr_bytes_pattern_at<R: Field, T: ?Sized + Data>(
+      offset: usize,
+    ) -> BytesPattern<'static> {
       if repr_contains::<R, T>(offset) {
         return bytes_pattern_at::<R::Type>(offset - R::OFFSET);
       }
@@ -1720,11 +1715,11 @@ mod internal {
   }
 
   #[inline]
-  pub(crate) const fn default_at<C: ?Sized + Data, T: ?Sized + Data>(offset: usize) -> Option<u8> {
+  pub(crate) const fn default_at<T: ?Sized + Data>(offset: usize) -> Option<u8> {
     #[inline]
-    const fn repr_default_at<R: Field<T>, T: ?Sized + Data>(offset: usize) -> Option<u8> {
+    const fn repr_default_at<R: Field, T: ?Sized + Data>(offset: usize) -> Option<u8> {
       if repr_contains::<R, T>(offset) {
-        return default_at::<T, R::Type>(offset - R::OFFSET);
+        return default_at::<R::Type>(offset - R::OFFSET);
       }
       match R::INDEX {
         0 => None,
@@ -1741,33 +1736,10 @@ mod internal {
       return None;
     }
     match T::LAYOUT {
-      Layout::Slice | Layout::Array => {
-        default_at::<T::Item, T::Item>(offset % mem::size_of::<T::Item>())
-      }
+      Layout::Slice | Layout::Array => default_at::<T::Item>(offset % mem::size_of::<T::Item>()),
       Layout::Struct => repr_default_at::<T::TailField, T>(offset),
       Layout::Integer { spec } if spec.is_uninit() => None,
-      Layout::Integer { spec } => match spec.size_field {
-        Some(size_field) => match size_field {
-          SizeField::TotalSize => {
-            let size = min_size_of::<C>();
-            Some((size >> (offset * 8)) as u8)
-          }
-          SizeField::TailSize => {
-            // TODO: implement `SizeField::TailSize`.
-            // let size = min_size_of::<C>() - tail_offset::<C>();
-            // Some((size >> (offset * 8)) as u8)
-            todo!()
-          }
-          SizeField::TailLen => {
-            // TODO: implement `SizeField::TailLen`.
-            // let size = min_size_of::<C>() - tail_offset::<C>();
-            // let size = size / tail_item_size::<C>();
-            // Some((size >> (offset * 8)) as u8)
-            todo!()
-          }
-        },
-        None => Some(unsafe { *ptr::from_ref(spec.default).cast::<u8>().add(offset) }),
-      },
+      Layout::Integer { spec } => Some(spec.default[offset]),
     }
   }
 
@@ -1813,12 +1785,11 @@ mod internal {
     }
   }
 
+  #[cfg(test)]
   #[inline]
   pub const fn tail_item_size<T: ?Sized + Data>() -> usize {
     match T::LAYOUT {
-      Layout::Struct => {
-        mem::size_of::<<<<T as Data>::TailField as Field<T>>::Type as Data>::Item>()
-      }
+      Layout::Struct => mem::size_of::<<<<T as Data>::TailField as Field>::Type as Data>::Item>(),
       _ => 0,
     }
   }
@@ -1828,7 +1799,7 @@ mod internal {
     container: *const C, ptr: *const T,
   ) -> Result<*const C, Error> {
     #[inline]
-    const fn repr_validate<R: Field<T>, T: ?Sized + Data, const RESIZE: bool>(
+    const fn repr_validate<R: Field, T: ?Sized + Data, const RESIZE: bool>(
       mut ptr: *const T,
     ) -> Result<*const T, Error> {
       ptr = bail!(validate::<_, _, RESIZE>(ptr, repr_field::<R, _>(ptr)));
@@ -1871,51 +1842,15 @@ mod internal {
         let size_field = unwrap!(spec.size_field, return Ok(container));
         // Compute the size from `ptr`.
         let int = unsafe { core::ptr::read_unaligned(ptr.cast()) };
-        let size: usize = num::cast::<T::Repr, u64>(int) as usize;
+        let size: usize = num::cast::<T::Integer, u64>(int) as usize;
         // Compute the new metadata.
         let metadata = match size_field {
           _ if min_size_of::<T>() == 0 => return Ok(container),
-          SizeField::TotalSize if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
+          SizeField::Size if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
             check!(size == size_of_val_raw(container), Error::SizeMismatch(/* TODO */ 0));
             return Ok(container);
           }
-          SizeField::TailSize if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
-            check!(
-              tail_offset::<C>() + size == size_of_val_raw(container),
-              Error::SizeMismatch(/* TODO */ 0)
-            );
-            return Ok(container);
-          }
-          SizeField::TailLen if !RESIZE || size_of_tail_slice_item::<C>() == 0 => {
-            check!(
-              tail_offset::<C>() + size * tail_item_size::<C>() == size_of_val_raw(container),
-              Error::SizeMismatch(/* TODO */ 0)
-            );
-            return Ok(container);
-          }
-          SizeField::TotalSize => {
-            // Check if `size` is at least the minimum size of `C`.
-            check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
-            // Compute the expected tail size and check for alignment.
-            let tail_size = size - min_size_of::<C>();
-            check!(tail_size % size_of_tail_slice_item::<C>() == 0, Error::AlignmentMismatch);
-            // Compute the new metadata.
-            tail_size / size_of_tail_slice_item::<C>()
-          }
-          SizeField::TailSize => {
-            let tail_size = size;
-            let size = tail_offset::<C>() + tail_size;
-            // Check if `size` is at least the minimum size of `C`.
-            check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
-            // Compute the expected tail size and check for alignment.
-            let tail_size = size - min_size_of::<C>();
-            check!(tail_size % size_of_tail_slice_item::<C>() == 0, Error::AlignmentMismatch);
-            // Compute the new metadata.
-            tail_size / size_of_tail_slice_item::<C>()
-          }
-          SizeField::TailLen => {
-            let tail_size = size * tail_item_size::<C>();
-            let size = tail_offset::<C>() + tail_size;
+          SizeField::Size => {
             // Check if `size` is at least the minimum size of `C`.
             check!(size >= min_size_of::<C>(), Error::SizeMismatch(/* TODO */ 0));
             // Compute the expected tail size and check for alignment.
@@ -2064,7 +1999,7 @@ mod internal {
     };
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
     let (src, dst) = (bytes_pattern_at::<Src>(0), bytes_pattern_at::<Dst>(0));
-    let t = bail!(src.union::<Src, Dst>(dst, 0, min_check_size));
+    let t = bail!(src.intersects::<Src, Dst>(dst, 0, min_check_size));
     if !t.reachable {
       return Err("none of the bit patterns in source are valid in target");
     }
@@ -2371,37 +2306,48 @@ mod internal {
         IsAny => true,
         IsEq(value, mask) => byte & mask == value,
         IsGt(value, mask) => byte & mask > value,
+        IsGte(value, mask) => byte & mask >= value,
       }
     }
 
     /// Returns whatever this pattern contains at least one of the possible values of `other`.
     const fn contains_any(self, other: BytePattern) -> bool {
       match (self, other) {
-        (IsAny, _) => true,                 // IsAny ∪ b => b
-        (_, IsAny) => true,                 // a ∪ IsAny => a
-        (IsEq(a, _), IsEq(b, _)) => a == b, // [a] ∪ [b] => [a]
-        (IsEq(a, _), IsGt(b, _)) => a > b,  // [a] ∪ [b, 0xff[ => [b, 0xff[
-        (IsGt(a, _), IsEq(b, _)) => a < b,  // [a, 0xff[ ∪ [b] => [b]
-        (IsGt(a, _), IsGt(b, _)) => a < b,  // [a, 0xff[ ∪ [b, 0xff[ => [max(a, b), 0xff[
+        (IsAny, _) => true,
+        (_, IsAny) => true,
+        (IsEq(a, _), IsEq(b, _)) => a == b,
+        (IsEq(a, _), IsGt(b, _)) => a > b,
+        (IsEq(a, _), IsGte(b, _)) => a >= b,
+        (IsGt(a, _), IsEq(b, _)) => a < b,
+        (IsGt(a, _), IsGt(b, _)) => a <= b,
+        (IsGt(a, _), IsGte(b, _)) => a < b,
+        (IsGte(a, _), IsEq(b, _)) => a <= b,
+        (IsGte(a, _), IsGt(b, _)) => a < b,
+        (IsGte(a, _), IsGte(b, _)) => a <= b,
       }
     }
 
     /// Returns whatever this pattern contains all possible values of `other`.
     const fn contains_all(self, other: Self) -> bool {
       match (self, other) {
-        (IsAny, _) => true,                                 // IsAny ∪ b => IsAny
-        (_, IsAny) => false,                                // a ∪ IsAny => a
-        (IsEq(a, _), IsEq(b, _)) => a == b,                 // [a] ∪ [b] => [a]
-        (IsEq(a, _), IsGt(b, _)) => b == 0xfe && a == 0xff, // [a] ∪ [b, 0xff[ => [a]
-        (IsGt(a, _), IsEq(b, _)) => a < b,                  // [a, 0xff[ ∪ [b] => [a, 0xff[
-        (IsGt(a, _), IsGt(b, _)) => a == b,                 // [a, 0xff[ ∪ [b, 0xff[ => [a, 0xff[
+        (IsAny, _) => true,
+        (_, IsAny) => false,
+        (IsEq(a, _), IsEq(b, _)) => a == b,
+        (IsEq(a, _), IsGt(b, _)) => b == 0xfe && a == 0xff,
+        (IsEq(a, _), IsGte(b, _)) => b == 0xff && a == 0xff,
+        (IsGt(a, _), IsEq(b, _)) => a < b,
+        (IsGt(a, _), IsGt(b, _)) => a <= b,
+        (IsGt(a, _), IsGte(b, _)) => a < b,
+        (IsGte(a, _), IsEq(b, _)) => a <= b,
+        (IsGte(a, _), IsGt(b, _)) => a < b,
+        (IsGte(a, _), IsGte(b, _)) => a <= b,
       }
     }
   }
 
   // impl BytesPattern -----------------------------------------------------------------------------
 
-  impl BytesPattern {
+  impl<'a> BytesPattern<'a> {
     pub const fn any<T>() -> Self {
       pub const ANY: [BytePattern; 16] = [IsAny; 16];
       Cat(&ANY.split_at(mem::size_of::<T>()).0)
@@ -2411,11 +2357,11 @@ mod internal {
       match self {
         Uninit => 1,
         All(&[]) | Any(&[]) | Cat(&[]) => 0,
-        Cat(p) => p.len(),
-        All(p) | Any(p) => {
-          let (mut i, size) = (1, p[0].size());
-          while i < p.len() {
-            assert!(size == p[i].size());
+        Cat(patterns) => patterns.len(),
+        All(patterns) | Any(patterns) => {
+          let (mut i, size) = (1, patterns[0].size());
+          while i < patterns.len() {
+            assert!(size == patterns[i].size());
             i += 1;
           }
           size
@@ -2423,17 +2369,24 @@ mod internal {
       }
     }
 
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) const fn matches<T: Integer>(&self, int: T) -> bool {
+      let bytes = num::to_bytes(int);
+      unsafe { self.matches_ptr(bytes.as_ptr()) }
+    }
+
     #[inline(always)]
     const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
       match self {
-        Uninit => false,
+        Uninit => true,
         All(patterns) => fold!(patterns, true, |r, x| r && x.matches_ptr(ptr)),
         Any(patterns) => fold!(patterns, false, |r, x| r || x.matches_ptr(ptr)),
         Cat(patterns) => fold!(patterns, true, |i, r, x| r && x.matches(*ptr.add(i))),
       }
     }
 
-    const fn union<Src: ?Sized + Data, Dst: ?Sized + Data>(
+    const fn intersects<Src: ?Sized + Data, Dst: ?Sized + Data>(
       &self, dst: Self, off: usize, end: usize,
     ) -> Result<Transmutability, &'static str> {
       let (reachable, unreachable) =
@@ -2442,28 +2395,28 @@ mod internal {
         return Ok(reachable);
       }
       match (self, dst) {
-        (Uninit | Cat(&[_]), Uninit) => bytes_pattern_at::<Src>(off + 1).union::<Src, Dst>(
+        (Uninit | Cat(&[_]), Uninit) => bytes_pattern_at::<Src>(off + 1).intersects::<Src, Dst>(
           bytes_pattern_at::<Dst>(off + 1),
           off + 1,
           end,
         ),
         (Uninit, _) => return Err("uninitialized byte in source"),
-        (Cat(patterns), Uninit) => Cat(patterns.split_at(1).1).union::<Src, Dst>(
+        (Cat(patterns), Uninit) => Cat(patterns.split_at(1).1).intersects::<Src, Dst>(
           bytes_pattern_at::<Dst>(off + 1),
           off + 1,
           end,
         ),
-        (All(patterns), _) => {
-          Ok(fold!(patterns, reachable, |s, x| s.and(bail!(x.union::<Src, Dst>(dst, off, end)))))
+        (All(all), _) => {
+          Ok(fold!(all, reachable, |s, x| s.and(bail!(x.intersects::<Src, Dst>(dst, off, end)))))
         }
-        (_, All(patterns)) => {
-          Ok(fold!(patterns, reachable, |s, x| s.and(bail!(self.union::<Src, Dst>(*x, off, end)))))
+        (_, All(all)) => {
+          Ok(fold!(all, reachable, |s, x| s.and(bail!(self.intersects::<Src, Dst>(*x, off, end)))))
         }
-        (Any(patterns), _) => {
-          Ok(fold!(patterns, unreachable, |s, x| s.or(bail!(x.union::<Src, Dst>(dst, off, end)))))
+        (Any(any), _) => {
+          Ok(fold!(any, unreachable, |s, x| s.or(bail!(x.intersects::<Src, Dst>(dst, off, end)))))
         }
-        (_, Any(patterns)) => {
-          Ok(fold!(patterns, unreachable, |s, x| s.or(bail!(self.union::<Src, Dst>(*x, off, end)))))
+        (_, Any(any)) => {
+          Ok(fold!(any, unreachable, |s, x| s.or(bail!(self.intersects::<Src, Dst>(*x, off, end)))))
         }
         (Cat(src), Cat(dst)) => {
           let (mut i, mut state) = (0, reachable);
@@ -2483,7 +2436,7 @@ mod internal {
           } else {
             (bytes_pattern_at::<Src>(off + i), bytes_pattern_at::<Dst>(off + i))
           };
-          Ok(state.and(bail!(src.union::<Src, Dst>(dst, off + i, end))))
+          Ok(state.and(bail!(src.intersects::<Src, Dst>(dst, off + i, end))))
         }
       }
     }
@@ -2491,26 +2444,34 @@ mod internal {
 
   // impl IntegerSpec ------------------------------------------------------------------------------
 
-  impl<'a, T: Integer<Repr = T>> IntegerSpec<'a, T> {
+  impl<T: Integer<Repr = T>> IntegerSpec<T> {
     #[inline]
-    pub const fn any(default: &'a T) -> Self {
+    pub const fn any(default: T) -> Self {
       Self {
-        default,
+        default: num::to_bytes(default),
         size_field: None,
         endianness: Endianness::NE,
         bytes_pattern: BytesPattern::any::<T>(),
+        _type: PhantomData,
       }
     }
 
     #[inline]
-    pub const fn new(default: &'a T, bytes_pattern: BytesPattern) -> Self {
-      assert!(bytes_pattern.size() == mem::size_of::<T>());
-      Self { bytes_pattern, ..Self::any(default) }
+    pub const fn new(default: T, bytes_pattern: BytesPattern<'static>) -> Self {
+      Self::any(default).with_bytes_pattern(bytes_pattern)
     }
 
     #[inline]
-    pub const fn with_size_field(self, size_field: SizeField) -> Self {
-      Self { size_field: Some(size_field), ..self }
+    pub const fn with_default(self, default: T) -> Self {
+      assert!(self.matches(default));
+      Self { default: num::to_bytes(default), ..self }
+    }
+
+    #[inline]
+    pub const fn with_bytes_pattern(self, bytes_pattern: BytesPattern<'static>) -> Self {
+      assert!(bytes_pattern.size() == mem::size_of::<T>());
+      assert!(unsafe { bytes_pattern.matches_ptr(self.default.as_ptr()) });
+      Self { bytes_pattern, ..self }
     }
 
     #[inline]
@@ -2519,9 +2480,8 @@ mod internal {
     }
 
     #[inline]
-    pub const fn with_default(self, default: &'a T) -> Self {
-      assert!(self.matches(default));
-      Self { default, ..self }
+    pub const fn with_size_field(self, size_field: SizeField) -> Self {
+      Self { size_field: Some(size_field), ..self }
     }
 
     #[inline]
@@ -2530,7 +2490,23 @@ mod internal {
     }
 
     #[inline]
-    pub const fn matches(&self, value: &T) -> bool {
+    pub const fn default(&self) -> T {
+      num::from_bytes(self.default)
+    }
+
+    #[inline]
+    pub const fn matches(&self, value: T) -> bool {
+      self.matches_bytes(num::to_bytes(value))
+    }
+
+    #[inline]
+    pub const fn matches_bytes(&self, bytes: [u8; 16]) -> bool {
+      // SAFETY: `bytes` is a valid location to with enough bytes for `T`.
+      unsafe { self.bytes_pattern.matches_ptr(bytes.as_ptr()) }
+    }
+
+    #[inline]
+    pub const fn matches_ref(&self, value: &T) -> bool {
       // SAFETY: `value` is a valid reference to `T`.
       unsafe { self.matches_ptr(value) }
     }
@@ -2593,7 +2569,7 @@ mod internal {
 
   unsafe impl<T: Integer> Integer for Size<T> {
     type Repr = T::Repr;
-    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TotalSize);
+    const SPEC: IntegerSpec<Self::Repr> = T::SPEC.with_size_field(SizeField::Size);
   }
 
   impl<T: Integer> Size<T> {
@@ -2603,41 +2579,70 @@ mod internal {
     }
   }
 
-  // impl TailSize ---------------------------------------------------------------------------------
-
-  unsafe impl<T: Integer> Integer for TailSize<T> {
-    type Repr = T::Repr;
-    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TailSize);
-  }
-
-  impl<T: Integer> TailSize<T> {
-    #[inline]
-    pub const fn into_usize(self) -> usize {
-      num::cast::<_, u64>(self.inner) as usize
-    }
-  }
-
-  // impl TailLen ----------------------------------------------------------------------------------
-
-  unsafe impl<T: Integer> Integer for TailLen<T> {
-    type Repr = T::Repr;
-    const SPEC: IntegerSpec<'static, Self::Repr> = T::SPEC.with_size_field(SizeField::TailLen);
-  }
-
-  impl<T: Integer> TailLen<T> {
-    #[inline]
-    pub const fn into_usize(self) -> usize {
-      num::cast::<_, u64>(self.inner) as usize
-    }
-  }
-
   // impl Field -------------------------------------------------------------------------------------
 
-  unsafe impl<T: ?Sized + Data> Field<T> for () {
+  unsafe impl Field for () {
     type Type = ();
     type PrevField = ();
     const OFFSET: usize = 0;
     const INDEX: usize = 0;
+  }
+
+  // impl DataField --------------------------------------------------------------------------------
+
+  impl<C: ?Sized + Data, T: Copy + Data> Copy for DataField<C, T> {}
+
+  impl<C: ?Sized + Data, T: Copy + Data> Clone for DataField<C, T> {
+    fn clone(&self) -> Self {
+      *self
+    }
+  }
+
+  impl<C: ?Sized + Data, T: ?Sized + Data> DataField<C, T> {
+    const MIN_SIZE: <T::Integer as Integer>::Repr = num::cast(min_size_of::<C>() as u64);
+    const DEFAULT: <T::Integer as Integer>::Repr = num::cast(Self::MIN_SIZE);
+    const EQ_MIN_SIZE_PATTERNS: [BytePattern; 16] = {
+      let size_bytes = num::to_bytes(Self::MIN_SIZE);
+      let (mut i, mut patterns) = (0, [IsAny; 16]);
+      while i < size_bytes.len() {
+        patterns[i] = IsEq(size_bytes[i], 0xff);
+        i += 1;
+      }
+      patterns
+    };
+    const GTE_MIN_SIZE_PATTERNS: [[BytePattern; 16]; 16] = {
+      let size_bytes = num::to_bytes(Self::MIN_SIZE);
+      let (mut i, mut patterns) = (0, [[IsAny; 16]; 16]);
+      while i < mem::size_of::<T::Integer>() {
+        let mut j = 0;
+        while j <= i {
+          let byte_offset = match <T::Integer as Integer>::SPEC.endianness {
+            Endianness::LE => mem::size_of::<T::Integer>() - j - 1,
+            Endianness::BE => j,
+          };
+          patterns[i][byte_offset] = if j + 1 == mem::size_of::<T::Integer>() {
+            IsGte(size_bytes[byte_offset], 0xff)
+          } else if j == i {
+            IsGt(size_bytes[byte_offset], 0xff)
+          } else if j < i {
+            IsEq(size_bytes[byte_offset], 0xff)
+          } else {
+            IsAny
+          };
+          j += 1;
+        }
+        i += 1;
+      }
+      patterns
+    };
+    const GTE_MIN_SIZE: [BytesPattern<'static>; 16] = {
+      let (mut i, mut patterns) = (0, [Uninit; 16]);
+      while i < 16 {
+        patterns[i] = Cat(Self::GTE_MIN_SIZE_PATTERNS[i].split_at(mem::size_of::<T::Integer>()).0);
+        i += 1;
+      }
+      patterns
+    };
   }
 
   // impl Data -------------------------------------------------------------------------------------
@@ -2647,7 +2652,8 @@ mod internal {
     type TailSliceItem = ();
     type Sized = Self;
     type TailField = ();
-    type Repr = T::Repr;
+    type Integer = T;
+    type Container = ();
     const LAYOUT: Layout<Self> = Layout::Integer { spec: T::SPEC };
   }
 
@@ -2656,7 +2662,8 @@ mod internal {
     type TailSliceItem = T;
     type Sized = ();
     type TailField = ();
-    type Repr = ();
+    type Integer = ();
+    type Container = ();
     const LAYOUT: Layout<Self> = Layout::Slice;
   }
 
@@ -2665,44 +2672,71 @@ mod internal {
     type TailSliceItem = ();
     type Sized = Self;
     type TailField = ();
-    type Repr = ();
+    type Integer = ();
+    type Container = ();
     const LAYOUT: Layout<Self> = Layout::Array;
   }
 
-  pub struct ManuallyDropRepr;
-
-  unsafe impl<T: ?Sized + Data> Field<ManuallyDrop<T>> for ManuallyDropRepr {
-    type Type = T;
-    type PrevField = ();
-    const OFFSET: usize = 0;
-    const INDEX: usize = 0;
-  }
-
   unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
-    type Item = ();
+    type Item = T::Item;
     type TailSliceItem = T::TailSliceItem;
     type Sized = T::Sized;
-    type TailField = ManuallyDropRepr;
-    type Repr = ();
+    type TailField = T::TailField;
+    type Integer = T::Integer;
+    type Container = T::Container;
     const LAYOUT: Layout<Self> = {
       assert!(!mem::needs_drop::<T>());
-      Layout::Struct
+      match T::LAYOUT {
+        Layout::Integer { spec } => Layout::Integer { spec },
+        Layout::Slice => Layout::Slice,
+        Layout::Array => Layout::Array,
+        Layout::Struct => Layout::Struct,
+      }
     };
   }
 
-  pub struct Tuple0;
-  pub struct Tuple1;
+  unsafe impl<C: ?Sized + Data, T: ?Sized + Data> Data for DataField<C, T> {
+    type Item = T::Item;
+    type TailSliceItem = T::TailSliceItem;
+    type Sized = T::Sized;
+    type TailField = T::TailField;
+    type Integer = T::Integer;
+    type Container = C;
+    const LAYOUT: Layout<Self> = {
+      match T::LAYOUT {
+        Layout::Integer { spec } => {
+          let spec = match spec.size_field {
+            Some(SizeField::Size) => {
+              spec.with_default(Self::DEFAULT).with_bytes_pattern(if is_sized::<C>() {
+                Cat(Self::EQ_MIN_SIZE_PATTERNS.split_at(mem::size_of::<T::Integer>()).0)
+              } else {
+                Any(Self::GTE_MIN_SIZE.split_at(mem::size_of::<T::Integer>()).0)
+              })
+            }
+            None => spec,
+          };
+          Layout::Integer { spec }
+        }
+        Layout::Slice => Layout::Slice,
+        Layout::Array => Layout::Array,
+        Layout::Struct => Layout::Struct,
+      }
+    };
+  }
 
-  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Field<(A, B)> for Tuple0 {
-    type Type = A;
+  pub struct Tuple0<A: Copy + Data, B: Copy + Data>(PhantomData<(A, B)>);
+  pub struct Tuple1<A: Copy + Data, B: Copy + Data>(PhantomData<(A, B)>);
+
+  unsafe impl<A: Copy + Data, B: Copy + Data> Field for Tuple0<A, B> {
+    type Type = DataField<(A, B), A>;
     type PrevField = ();
     const OFFSET: usize = offset_of!((A, B), 0);
     const INDEX: usize = 0;
   }
 
-  unsafe impl<A: Copy + crate::Data, B: Copy + crate::Data> Field<(A, B)> for Tuple1 {
-    type Type = B;
-    type PrevField = Tuple0;
+  unsafe impl<A: Copy + Data, B: Copy + Data> Field for Tuple1<A, B> {
+    type Type = DataField<(A, B), B>;
+    type PrevField = Tuple0<A, B>;
     const OFFSET: usize = offset_of!((A, B), 1);
     const INDEX: usize = 1;
   }
@@ -2711,8 +2745,9 @@ mod internal {
     type Item = ();
     type TailSliceItem = B::TailSliceItem;
     type Sized = Self;
-    type TailField = Tuple1;
-    type Repr = ();
+    type TailField = Tuple1<A, B>;
+    type Integer = ();
+    type Container = ();
     const LAYOUT: Layout<Self> = Layout::Struct;
   }
 
@@ -2720,7 +2755,7 @@ mod internal {
 
   unsafe impl<T: ?Sized + 'static> Integer for PhantomData<T> {
     type Repr = Self;
-    const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::any(&PhantomData);
+    const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::any(PhantomData);
   }
 
   macro_rules! impl_word {
@@ -2728,7 +2763,7 @@ mod internal {
       $(
         unsafe impl Integer for $ty {
           type Repr = $raw;
-          const SPEC: IntegerSpec<'static, Self::Repr> = IntegerSpec::$($spec)+;
+          const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::$($spec)+;
         }
       )+
     };
@@ -2757,19 +2792,19 @@ mod internal {
   }
 
   impl_word!(
-    (() as () where any(&()))
-    (bool as u8 where new(&0, Any(&[Cat(&[IsEq(0, 0xff)]), Cat(&[IsEq(1, 0xff)])])))
-    (u8 as u8 where any(&0)) (u16 as u16 where any(&0)) (u32 as u32 where any(&0))
-    (u64 as u64 where any(&0)) (u128 as u128 where any(&0))
-    (i8 as i8 where any(&0)) (i16 as i16 where any(&0)) (i32 as i32 where any(&0))
-    (i64 as i64 where any(&0)) (i128 as i128 where any(&0))
-    (Option<NonZeroU8> as u8 where any(&0)) (Option<NonZeroU16> as u16 where any(&0))
-    (Option<NonZeroU32> as u32 where any(&0)) (Option<NonZeroU64> as u64 where any(&0))
-    (Option<NonZeroU128> as u128 where any(&0))
-    (NonZeroU8 as u8 where new(&1, non0!(1)))
-    (NonZeroU16 as u16 where new(&1, non0!(2)))
-    (NonZeroU32 as u32 where new(&1, non0!(4)))
-    (NonZeroU64 as u64 where new(&1, non0!(8)))
-    (NonZeroU128 as u128 where new(&1, non0!(16)))
+    (() as () where any(()))
+    (bool as u8 where new(0, Any(&[Cat(&[IsEq(0, 0xff)]), Cat(&[IsEq(1, 0xff)])])))
+    (u8 as u8 where any(0)) (u16 as u16 where any(0)) (u32 as u32 where any(0))
+    (u64 as u64 where any(0)) (u128 as u128 where any(0))
+    (i8 as i8 where any(0)) (i16 as i16 where any(0)) (i32 as i32 where any(0))
+    (i64 as i64 where any(0)) (i128 as i128 where any(0))
+    (Option<NonZeroU8> as u8 where any(0)) (Option<NonZeroU16> as u16 where any(0))
+    (Option<NonZeroU32> as u32 where any(0)) (Option<NonZeroU64> as u64 where any(0))
+    (Option<NonZeroU128> as u128 where any(0))
+    (NonZeroU8 as u8 where new(1, non0!(1)))
+    (NonZeroU16 as u16 where new(1, non0!(2)))
+    (NonZeroU32 as u32 where new(1, non0!(4)))
+    (NonZeroU64 as u64 where new(1, non0!(8)))
+    (NonZeroU128 as u128 where new(1, non0!(16)))
   );
 }
