@@ -134,6 +134,8 @@
 //!
 #![cfg_attr(not(test), no_std)]
 
+// mod bytes;
+mod bytes;
 #[cfg(test)]
 mod tests;
 
@@ -174,16 +176,83 @@ macro_rules! unwrap_err { ($e:expr $(,)?) => (match $e { Ok(r) => r, Err(e) => p
 /// Same as iter.fold() but for const fns.
 #[rustfmt::skip]
 macro_rules! fold {
-  ($iter:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (fold!($iter, $init, |__i, $acc, $it| $x));
+  ($iter:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (
+    fold!($iter, $iter.len(), $init, |__i, $acc, $it| $x)
+  );
   ($iter:expr, $init:expr, |$i:tt, $acc:tt, $it:tt| $x:expr) => {{
+    fold!($iter, $iter.len(), $init, |$i, $acc, $it| $x)
+  }};
+  ($iter:expr, $len:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (
+    fold!($iter, $len, $init, |__i, $acc, $it| $x)
+  );
+  ($iter:expr, $len:expr, $init:expr, |$i:tt, $acc:tt, $it:tt| $x:expr) => {{
     let (mut $i, mut $acc) = (0, $init);
     loop {
-      if $i >= $iter.len() { break $acc; }
+      if $i >= $len { break $acc; }
       let $it = &$iter[$i];
       ($acc, $i) = ($x, $i + 1);
     }
   }};
 }
+
+/// Same as iter.any() but for const fns.
+#[rustfmt::skip]
+macro_rules! any {
+  ($iter:expr, |$it:tt| $x:expr) => (
+    any!($iter, $iter.len(), |__i, $it| $x)
+  );
+  ($iter:expr, |$i:tt, $it:tt| $x:expr) => {{
+    any!($iter, $iter.len(), |$i, $it| $x)
+  }};
+  ($iter:expr, $len:expr, |$it:tt| $x:expr) => (
+    any!($iter, $len, |__i, $it| $x)
+  );
+  ($iter:expr, $len:expr, |$i:tt, $it:tt| $x:expr) => {{
+    let mut $i = 0;
+    loop {
+      if $i >= $len { break false; }
+      let $it = &$iter[$i];
+      if $x { break true; }
+    }
+  }};
+}
+
+#[rustfmt::skip]
+macro_rules! each {
+  ($start:literal..$end:expr, |$it:tt| $x:expr) => {{
+    let mut $it = $start; while $it < $end { $x; $it += 1; }; $it
+  }};
+  ($start:literal..=$end:expr, |$it:tt| $x:expr) => {{
+    let mut $it = $start; while $it <= $end { $x; $it += 1; }; $it
+  }};
+  (..$end:expr, |$it:tt| $x:expr) => {{
+    let mut $it = 0; while $it < $end { $x; $it += 1; }; $it
+  }};
+  (..=$end:expr, |$it:tt| $x:expr) => {{
+    let mut $it = 0; while $it <= $end { $x; $it += 1; }; $it
+  }};
+  ($iter:expr, |$it:tt| $x:expr) => {{
+    let mut __i = 0; while __i < $iter.len() { let $it = &$iter[__i]; $x; __i += 1; }; __i
+  }};
+}
+
+macro_rules! array {
+  ($init:expr, $iter:expr, |$it:tt| $x:expr) => {{
+    let mut __array = $init;
+    let mut __i = 0;
+    while __i < $iter.len() {
+      let $it = &$iter[__i];
+      __array[__i] = $x;
+      __i += 1;
+    }
+    __array
+  }};
+}
+
+pub(crate) use bail;
+pub(crate) use each;
+pub(crate) use fold;
+pub(crate) use unwrap;
 
 // Internal public API -----------------------------------------------------------------------------
 // Even if part of the public API, the following items are not meant to be used directly by the
@@ -211,14 +280,10 @@ pub enum SizeField { Size }
 #[doc(hidden)]
 #[rustfmt::skip]
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum BytePattern { IsAny, IsEq(u8, u8), IsGt(u8, u8), IsGte(u8, u8) }
-
-#[doc(hidden)]
-#[rustfmt::skip]
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum BytesPattern<'a> {
-  Uninit, All(&'a [BytesPattern<'a>]),
-  Any(&'a [BytesPattern<'a>]), Cat(&'a [BytePattern])
+pub enum BytePattern<'a> {
+  Uninit,
+  All(&'a [BytePattern<'a>]), Any(&'a [BytePattern<'a>]),
+  Equ(&'a [u8]), Gte(&'a [u8]), Cat(&'a [(u8, u8)])
 }
 
 #[doc(hidden)]
@@ -226,7 +291,7 @@ pub enum BytesPattern<'a> {
 pub struct IntegerSpec<T> {
   default: [u8; 16],
   endianness: internal::Endianness,
-  bytes_pattern: BytesPattern<'static>,
+  byte_pattern: BytePattern<'static>,
   size_field: Option<SizeField>,
   _type: PhantomData<T>,
 }
@@ -318,22 +383,22 @@ decl_pack! {
   Pack9 (A B C D E F G H =I)
 }
 
-/// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
+/// Assert at compile-time that a type is unaligned (i.e. his alignment is equals to 1).
 #[inline]
 #[doc(hidden)]
 #[rustfmt::skip]
-pub const fn const_assert_unaligned<T: ?Sized + Data>() {
+pub const fn const_assert_unaligned<T: ?Sized>() {
   struct Assert<T: ?Sized>(*const T);
-  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
+  impl<T: ?Sized> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
   #[allow(clippy::let_unit_value)]
     let _ = Assert::<T>::ASSERT_UNALIGNED;
 }
 
-/// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
+/// Assert at compile-time that a type is unaligned (i.e. his alignment is equals to 1).
 #[inline]
 #[doc(hidden)]
 #[rustfmt::skip]
-pub const fn const_assert_unaligned_raw<T: ?Sized + Data>(_: *const T) {
+pub const fn const_assert_unaligned_raw<T: ?Sized>(_: *const T) {
   const_assert_unaligned::<T>();
 }
 
@@ -509,7 +574,7 @@ pub enum Error {
 /// assert_eq!(123, uint.into_inner()); // `u32` is `Copy`
 /// assert_eq!(123, *uint); // this does not compile as it may result in an unaligned read.
 /// ```
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data, DebugPacked)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default, Data)]
 #[data(crate)]
 #[repr(C, packed)]
 pub struct Unalign<T>(ManuallyDrop<T>);
@@ -650,7 +715,7 @@ macro_rules! unaligned_ref {
     $crate::const_assert_unaligned_raw(addr);
     // SAFETY:
     // - `addr` came from valid reference hence not a dangling pointer.
-    // - The call to `const_assert_unaligned` ensure field un-alignment.
+    // - The call to `const_assert_unaligned_raw` ensure field un-alignment.
     unsafe { &*addr }
   }};
   ($base:expr, $($fields:tt).+ in $sized:ident) => {{
@@ -694,7 +759,7 @@ macro_rules! unaligned_mut {
     $crate::const_assert_unaligned_raw(addr);
     // SAFETY:
     // - `addr` came from valid reference hence not a dangling pointer.
-    // - The call to `const_assert_unaligned` ensure field un-alignment.
+    // - The call to `const_assert_unaligned_raw` ensure field un-alignment.
     unsafe { &mut *addr }
   }};
   ($base:tt.$field:tt.$($fields:tt).+) => {{
@@ -980,12 +1045,12 @@ pub const fn transmute<T: Data + Copy, U: Data + Copy>(val: T) -> U {
 /// # Safety
 /// TODO
 #[inline]
-pub const unsafe fn transmute_unchecked<T: Copy, U: Copy>(val: T) -> U {
-  union Transmute<T: Copy, U: Copy> {
-    val: T,
-    dst: U,
+pub const unsafe fn transmute_unchecked<T, U>(val: T) -> U {
+  union Transmute<T, U> {
+    val: ManuallyDrop<T>,
+    dst: ManuallyDrop<U>,
   }
-  Transmute { val }.dst
+  ManuallyDrop::into_inner(Transmute { val: ManuallyDrop::new(val) }.dst)
 }
 
 /// Safe transmute from a reference of type `T` to a value of type `U`. The safety of this
@@ -1484,8 +1549,9 @@ pub mod num {
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
         type Repr = $T;
+        // TODO: use T::SPEC.with_*
         const SPEC: IntegerSpec<Self::Repr> =
-          IntegerSpec::new($v2raw, BytesPattern::Cat(&BytePattern::from_bytes($v2bytes)));
+          IntegerSpec::new($v2raw, BytePattern::Equ(&$v2raw.to_ne_bytes()));
       }
 
       impl<const V: $VT> $ConstT<V> {
@@ -1659,7 +1725,7 @@ mod internal {
   use crate::*;
 
   use BytePattern::*;
-  use BytesPattern::*;
+  use Endianness::*;
   use MetadataChecks::*;
 
   #[inline]
@@ -1679,37 +1745,33 @@ mod internal {
     )
   }
 
-  pub(crate) const fn bytes_pattern_at<T: ?Sized + Data>(offset: usize) -> BytesPattern<'static> {
+  const fn bytes_at<T: ?Sized + Data>(offset: usize) -> Bytes<'static> {
     #[inline]
-    const fn repr_bytes_pattern_at<R: Field, T: ?Sized + Data>(
-      offset: usize,
-    ) -> BytesPattern<'static> {
+    const fn repr_bytes_at<R: Field, T: ?Sized + Data>(offset: usize) -> Bytes<'static> {
       if repr_contains::<R, T>(offset) {
-        return bytes_pattern_at::<R::Type>(offset - R::OFFSET);
+        return bytes_at::<R::Type>(offset - R::OFFSET);
       }
       match R::INDEX {
-        0 => Uninit,
-        _ => repr_bytes_pattern_at::<R::PrevField, T>(offset),
+        0 => Bytes::uninit(),
+        _ => repr_bytes_at::<R::PrevField, T>(offset),
       }
     }
 
     // Check for `offset` to be in bounds.
     if is_sized::<T>() && offset >= min_size_of::<T>() {
-      return Uninit;
+      return Bytes::uninit();
     }
     // Check for `ZST` slices.
     if matches!(T::LAYOUT, Layout::Slice | Layout::Array) && mem::size_of::<T::Item>() == 0 {
-      return Uninit;
+      return Bytes::uninit();
     }
     match T::LAYOUT {
-      Layout::Slice | Layout::Array => {
-        bytes_pattern_at::<T::Item>(offset % mem::size_of::<T::Item>())
-      }
-      Layout::Struct => repr_bytes_pattern_at::<T::TailField, T>(offset),
-      Layout::Integer { spec } if spec.is_uninit() => Uninit,
+      Layout::Slice | Layout::Array => bytes_at::<T::Item>(offset % mem::size_of::<T::Item>()),
+      Layout::Struct => repr_bytes_at::<T::TailField, T>(offset),
+      Layout::Integer { spec } if spec.is_uninit() => Bytes::uninit(),
       Layout::Integer { spec } => {
         assert!(offset == 0);
-        spec.bytes_pattern
+        Bytes::new(spec.endianness, spec.byte_pattern)
       }
     }
   }
@@ -1997,8 +2059,17 @@ mod internal {
       Some(IsAtLeast(n)) => xa + (n * ya) + ya,
       Some(IsAtLeastThenMultipleOf(n, m)) => xa + (n * ya) + (m * ya),
     };
+    {
+      let mut big = [core::ptr::null::<()>(); 1 << 16];
+      let mut i = 0;
+      while i < min_check_size {
+        let ptr = core::ptr::addr_of!(min_check_size);
+        big[i] = ptr.cast();
+        i += 1;
+      }
+    }
     // Check for `Src` and `Dst` bit patterns compatibility (transmutability).
-    let (src, dst) = (bytes_pattern_at::<Src>(0), bytes_pattern_at::<Dst>(0));
+    let (src, dst) = (bytes_at::<Src>(0), bytes_at::<Dst>(0));
     let t = bail!(src.intersects::<Src, Dst>(dst, 0, min_check_size));
     if !t.reachable {
       return Err("none of the bit patterns in source are valid in target");
@@ -2015,18 +2086,16 @@ mod internal {
     ))
   }
 
+  #[rustfmt::skip]
   #[repr(u8)]
   #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-  pub enum Endianness {
-    LE,
-    BE,
-  }
+  pub enum Endianness { LE, BE }
 
   impl Endianness {
     #[cfg(target_endian = "little")]
-    pub const NE: Self = Endianness::LE;
+    pub const NE: Self = LE;
     #[cfg(target_endian = "big")]
-    pub const NE: Self = Endianness::BE;
+    pub const NE: Self = BE;
   }
 
   /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
@@ -2288,68 +2357,48 @@ mod internal {
     };
   }
 
-  // impl BytePattern ------------------------------------------------------------------------------
+  // impl BytesPattern -----------------------------------------------------------------------------
 
-  impl BytePattern {
-    pub const fn from_bytes<const N: usize>(bytes: [u8; N]) -> [Self; N] {
-      let (mut i, mut patterns) = (0, [IsAny; N]);
-      while i < N {
-        patterns[i] = IsEq(bytes[i], 0xff);
-        i += 1;
-      }
-      patterns
+  #[rustfmt::skip]
+  #[derive(Copy, Clone)]
+  struct ByteInterval { start: u8, end: u8 }
+
+  impl ByteInterval {
+    pub const fn any() -> Self {
+      Self::new(0, 0xff)
     }
 
-    /// Returns whatever this pattern matches the given byte.
-    const fn matches(self, byte: u8) -> bool {
-      match self {
-        IsAny => true,
-        IsEq(value, mask) => byte & mask == value,
-        IsGt(value, mask) => byte & mask > value,
-        IsGte(value, mask) => byte & mask >= value,
-      }
+    pub const fn new(start: u8, end: u8) -> Self {
+      assert!(end >= start, "end must be greater or equal to start");
+      Self { start, end }
     }
 
-    /// Returns whatever this pattern contains at least one of the possible values of `other`.
-    const fn contains_any(self, other: BytePattern) -> bool {
-      match (self, other) {
-        (IsAny, _) => true,
-        (_, IsAny) => true,
-        (IsEq(a, _), IsEq(b, _)) => a == b,
-        (IsEq(a, _), IsGt(b, _)) => a > b,
-        (IsEq(a, _), IsGte(b, _)) => a >= b,
-        (IsGt(a, _), IsEq(b, _)) => a < b,
-        (IsGt(a, _), IsGt(b, _)) => a <= b,
-        (IsGt(a, _), IsGte(b, _)) => a < b,
-        (IsGte(a, _), IsEq(b, _)) => a <= b,
-        (IsGte(a, _), IsGt(b, _)) => a < b,
-        (IsGte(a, _), IsGte(b, _)) => a <= b,
-      }
+    pub const fn from_tuple(tuple: (u8, u8)) -> Self {
+      Self::new(tuple.0, tuple.1)
     }
 
-    /// Returns whatever this pattern contains all possible values of `other`.
-    const fn contains_all(self, other: Self) -> bool {
-      match (self, other) {
-        (IsAny, _) => true,
-        (_, IsAny) => false,
-        (IsEq(a, _), IsEq(b, _)) => a == b,
-        (IsEq(a, _), IsGt(b, _)) => b == 0xfe && a == 0xff,
-        (IsEq(a, _), IsGte(b, _)) => b == 0xff && a == 0xff,
-        (IsGt(a, _), IsEq(b, _)) => a < b,
-        (IsGt(a, _), IsGt(b, _)) => a <= b,
-        (IsGt(a, _), IsGte(b, _)) => a < b,
-        (IsGte(a, _), IsEq(b, _)) => a <= b,
-        (IsGte(a, _), IsGt(b, _)) => a < b,
-        (IsGte(a, _), IsGte(b, _)) => a <= b,
+    pub const fn len(self) -> usize {
+      self.end as usize - self.start as usize + 1
+    }
+
+    pub const fn matches(self, byte: u8) -> bool {
+      byte >= self.start && byte <= self.end
+    }
+
+    pub const fn intersects(self, other: Self) -> Option<Self> {
+      let start = if self.start > other.start { self.start } else { other.start };
+      let end = if self.end < other.end { self.end } else { other.end };
+      if start > end {
+        None
+      } else {
+        Some(Self::new(start, end))
       }
     }
   }
 
-  // impl BytesPattern -----------------------------------------------------------------------------
-
-  impl<'a> BytesPattern<'a> {
+  impl<'a> BytePattern<'a> {
     pub const fn any<T>() -> Self {
-      pub const ANY: [BytePattern; 16] = [IsAny; 16];
+      pub const ANY: [(u8, u8); 16] = [(0, 0xff); 16];
       Cat(&ANY.split_at(mem::size_of::<T>()).0)
     }
 
@@ -2358,6 +2407,7 @@ mod internal {
         Uninit => 1,
         All(&[]) | Any(&[]) | Cat(&[]) => 0,
         Cat(patterns) => patterns.len(),
+        Equ(bytes) | Gte(bytes) => bytes.len(),
         All(patterns) | Any(patterns) => {
           let (mut i, size) = (1, patterns[0].size());
           while i < patterns.len() {
@@ -2373,70 +2423,153 @@ mod internal {
     #[inline(always)]
     pub(crate) const fn matches<T: Integer>(&self, int: T) -> bool {
       let bytes = num::to_bytes(int);
-      unsafe { self.matches_ptr(bytes.as_ptr()) }
+      unsafe { self.matches_ptr(bytes.as_ptr(), T::SPEC.endianness) }
     }
 
     #[inline(always)]
-    const unsafe fn matches_ptr(&self, ptr: *const u8) -> bool {
+    const unsafe fn matches_ptr(&self, ptr: *const u8, endianness: Endianness) -> bool {
       match self {
         Uninit => true,
-        All(patterns) => fold!(patterns, true, |r, x| r && x.matches_ptr(ptr)),
-        Any(patterns) => fold!(patterns, false, |r, x| r || x.matches_ptr(ptr)),
-        Cat(patterns) => fold!(patterns, true, |i, r, x| r && x.matches(*ptr.add(i))),
+        All(patterns) => fold!(patterns, true, |r, x| r && x.matches_ptr(ptr, endianness)),
+        Any(patterns) => fold!(patterns, false, |r, x| r || x.matches_ptr(ptr, endianness)),
+        Cat(patterns) => {
+          fold!(patterns, true, |i, r, x| r && ByteInterval::from_tuple(*x).matches(*ptr.add(i)))
+        }
+        Equ(bytes) => fold!(bytes, true, |i, r, x| r && *ptr.add(i) == *x),
+        Gte(bytes) => {
+          let (mut i, mut a, mut b) = (0, 0u128, 0u128);
+          while i < bytes.len() {
+            let shift = 8 * if matches!(endianness, LE) { i } else { bytes.len() - i - 1 };
+            a |= (*ptr.add(i) as u128) << shift;
+            b |= (bytes[i] as u128) << shift;
+            i += 1;
+          }
+          a >= b
+        }
       }
     }
+  }
 
-    const fn intersects<Src: ?Sized + Data, Dst: ?Sized + Data>(
-      &self, dst: Self, off: usize, end: usize,
+  // impl Bytes ------------------------------------------------------------------------------------
+
+  #[derive(Copy, Clone)]
+  struct Bytes<'a> {
+    endianness: Endianness,
+    pattern: BytePattern<'a>,
+    offset: usize,
+    bytes: [ByteInterval; 16],
+  }
+
+  impl<'a> Bytes<'a> {
+    pub const fn new(endianness: Endianness, pattern: BytePattern<'a>) -> Self {
+      Self { endianness, pattern, offset: 0, bytes: [ByteInterval::any(); 16] }
+    }
+
+    pub const fn uninit() -> Self {
+      Self::new(Endianness::NE, Uninit)
+    }
+
+    pub const fn reduce(self, pattern: BytePattern) -> Bytes {
+      Bytes { pattern, ..self }
+    }
+
+    pub const fn append(mut self, byte: ByteInterval) -> Self {
+      self.bytes[self.offset] = byte;
+      self.offset += 1;
+      self
+    }
+
+    const fn intersects<'b, T: ?Sized + Data, U: ?Sized + Data>(
+      &self, mut dst: Bytes<'b>, off: usize, end: usize,
     ) -> Result<Transmutability, &'static str> {
       let (reachable, unreachable) =
         (Transmutability::reachable_infallible_mutable(), Transmutability::unreachable());
       if off >= end {
         return Ok(reachable);
       }
-      match (self, dst) {
-        (Uninit | Cat(&[_]), Uninit) => bytes_pattern_at::<Src>(off + 1).intersects::<Src, Dst>(
-          bytes_pattern_at::<Dst>(off + 1),
-          off + 1,
-          end,
-        ),
+      match (self.pattern, dst.pattern) {
+        (Uninit | Cat(&[_]), Uninit) => {
+          bytes_at::<T>(off + 1).intersects::<T, U>(bytes_at::<U>(off + 1), off + 1, end)
+        }
         (Uninit, _) => return Err("uninitialized byte in source"),
-        (Cat(patterns), Uninit) => Cat(patterns.split_at(1).1).intersects::<Src, Dst>(
-          bytes_pattern_at::<Dst>(off + 1),
-          off + 1,
-          end,
-        ),
-        (All(all), _) => {
-          Ok(fold!(all, reachable, |s, x| s.and(bail!(x.intersects::<Src, Dst>(dst, off, end)))))
+        (All(p), _) | (_, All(p)) => Ok(fold!(p, reachable, |s, x| s.and({
+          let (src, dst) = match self.pattern {
+            All(_) => (self.reduce(*x), dst),
+            _ => (*self, dst.reduce(*x)),
+          };
+          bail!(src.intersects::<T, U>(dst, off, end))
+        }))),
+        (Any(p), _) | (_, Any(p)) => Ok(fold!(p, unreachable, |s, x| s.or({
+          let (src, dst) = match self.pattern {
+            Any(_) => (self.reduce(*x), dst),
+            _ => (*self, dst.reduce(*x)),
+          };
+          bail!(src.intersects::<T, U>(dst, off, end))
+        }))),
+        (Equ(b), _) | (_, Equ(b)) => {
+          let intervals = array!([(0, 0xff); 16], b, |x| (*x, *x));
+          let pattern = Cat(intervals.split_at(b.len()).0);
+          let (src, dst) = match self.pattern {
+            Equ(_) => (self.reduce(pattern), dst),
+            _ => (*self, dst.reduce(pattern)),
+          };
+          src.intersects::<T, U>(dst, off, end)
         }
-        (_, All(all)) => {
-          Ok(fold!(all, reachable, |s, x| s.and(bail!(self.intersects::<Src, Dst>(*x, off, end)))))
-        }
-        (Any(any), _) => {
-          Ok(fold!(any, unreachable, |s, x| s.or(bail!(x.intersects::<Src, Dst>(dst, off, end)))))
-        }
-        (_, Any(any)) => {
-          Ok(fold!(any, unreachable, |s, x| s.or(bail!(self.intersects::<Src, Dst>(*x, off, end)))))
-        }
-        (Cat(src), Cat(dst)) => {
-          let (mut i, mut state) = (0, reachable);
-          while i < src.len() && i < dst.len() {
-            state.reachable &= src[i].contains_any(dst[i]);
-            state.mutable &= src[i].contains_all(dst[i]);
-            state.infallible &= dst[i].contains_all(src[i]);
-            if !state.reachable {
-              return Ok(state);
+        (Gte(b), _) | (_, Gte(b)) => {
+          let endianness = match self.pattern {
+            Gte(_) => self.endianness,
+            _ => dst.endianness,
+          };
+          let (mut i, mut state) = (0, unreachable);
+          while i < b.len() {
+            let (mut j, mut pattern) = (0, [(0, 0xff); 16]);
+            while j <= i {
+              let k = if matches!(endianness, LE) { b.len() - j - 1 } else { j };
+              pattern[k] = match j {
+                _ if j + 1 == b.len() => (b[k], 0xff),
+                _ if j == i => (b[k] + 1, 0xff),
+                _ if j < i => (b[k], b[k]),
+                _ => (0, 0xff),
+              };
+              j += 1;
             }
             i += 1;
+            let pattern = Cat(pattern.split_at(b.len()).0);
+            let (src, dst) = match self.pattern {
+              Gte(_) => (self.reduce(pattern), dst),
+              _ => (*self, dst.reduce(pattern)),
+            };
+            state = state.or(bail!(src.intersects::<T, U>(dst, off, end)));
           }
-          let (src, dst) = if i < src.len() {
-            (Cat(src.split_at(i).1), bytes_pattern_at::<Dst>(off + i))
-          } else if i < dst.len() {
-            (bytes_pattern_at::<Src>(off + i), Cat(dst.split_at(i).1))
+          Ok(state)
+        }
+        (Cat(a), Uninit) => {
+          let byte = ByteInterval::from_tuple(a[0]);
+          self.append(byte).reduce(Cat(a.split_at(1).1)).intersects::<T, U>(
+            bytes_at::<U>(off + 1),
+            off + 1,
+            end,
+          )
+        }
+        (Cat(a), Cat(b)) => {
+          let (mut src, mut i, mut state) = (*self, 0, reachable);
+          while i < a.len() && i < b.len() {
+            let (a, b) = (ByteInterval::from_tuple(a[i]), ByteInterval::from_tuple(b[i]));
+            let intersects = unwrap!(a.intersects(b), return Ok(unreachable));
+            src = src.append(intersects);
+            dst = dst.append(intersects);
+            state.mutable &= b.len() == intersects.len();
+            state.infallible &= a.len() == intersects.len();
+            i += 1;
+          }
+          let (src, dst) = if i < a.len() {
+            (src.reduce(Cat(a.split_at(i).1)), bytes_at::<U>(off + i))
+          } else if i < b.len() {
+            (bytes_at::<T>(off + i), dst.reduce(Cat(b.split_at(i).1)))
           } else {
-            (bytes_pattern_at::<Src>(off + i), bytes_pattern_at::<Dst>(off + i))
+            (bytes_at::<T>(off + i), bytes_at::<U>(off + i))
           };
-          Ok(state.and(bail!(src.intersects::<Src, Dst>(dst, off + i, end))))
+          Ok(state.and(bail!(src.intersects::<T, U>(dst, off + i, end))))
         }
       }
     }
@@ -2451,14 +2584,14 @@ mod internal {
         default: num::to_bytes(default),
         size_field: None,
         endianness: Endianness::NE,
-        bytes_pattern: BytesPattern::any::<T>(),
+        byte_pattern: BytePattern::any::<T>(),
         _type: PhantomData,
       }
     }
 
     #[inline]
-    pub const fn new(default: T, bytes_pattern: BytesPattern<'static>) -> Self {
-      Self::any(default).with_bytes_pattern(bytes_pattern)
+    pub const fn new(default: T, byte_pattern: BytePattern<'static>) -> Self {
+      Self::any(default).with_bytes_pattern(byte_pattern)
     }
 
     #[inline]
@@ -2468,10 +2601,11 @@ mod internal {
     }
 
     #[inline]
-    pub const fn with_bytes_pattern(self, bytes_pattern: BytesPattern<'static>) -> Self {
-      assert!(bytes_pattern.size() == mem::size_of::<T>());
-      assert!(unsafe { bytes_pattern.matches_ptr(self.default.as_ptr()) });
-      Self { bytes_pattern, ..self }
+    pub const fn with_bytes_pattern(self, byte_pattern: BytePattern<'static>) -> Self {
+      assert!(byte_pattern.size() == mem::size_of::<T>());
+      let this = Self { byte_pattern, ..self };
+      assert!(this.matches_bytes(this.default));
+      this
     }
 
     #[inline]
@@ -2486,7 +2620,7 @@ mod internal {
 
     #[inline]
     pub const fn is_uninit(&self) -> bool {
-      matches!(self.bytes_pattern, Uninit)
+      matches!(self.byte_pattern, Uninit)
     }
 
     #[inline]
@@ -2502,7 +2636,7 @@ mod internal {
     #[inline]
     pub const fn matches_bytes(&self, bytes: [u8; 16]) -> bool {
       // SAFETY: `bytes` is a valid location to with enough bytes for `T`.
-      unsafe { self.bytes_pattern.matches_ptr(bytes.as_ptr()) }
+      unsafe { self.byte_pattern.matches_ptr(bytes.as_ptr(), self.endianness) }
     }
 
     #[inline]
@@ -2515,7 +2649,7 @@ mod internal {
     /// `value` must be a valid reference to `T`, but not necessarily aligned on `T`.
     #[inline]
     pub const unsafe fn matches_ptr(&self, value: *const T) -> bool {
-      self.bytes_pattern.matches_ptr(value.cast())
+      self.byte_pattern.matches_ptr(value.cast(), self.endianness)
     }
   }
 
@@ -2525,6 +2659,13 @@ mod internal {
     #[inline]
     pub const fn new(value: T) -> Self {
       Self(ManuallyDrop::new(value))
+    }
+
+    #[inline]
+    pub const fn deref(&self) -> &T {
+      let x: &T = unsafe { transmute_unchecked(self) };
+      const_assert_unaligned_raw(x);
+      x
     }
   }
 
@@ -2542,19 +2683,26 @@ mod internal {
     }
   }
 
-  impl<T: Data> Deref for Unalign<T> {
+  impl<T> Deref for Unalign<T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-      unaligned_ref!(self.0)
+      Unalign::deref(self)
     }
   }
 
-  impl<T: Data> DerefMut for Unalign<T> {
+  impl<T> DerefMut for Unalign<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
       unaligned_mut!(self.0)
+    }
+  }
+
+  impl<T: Debug + Copy> Debug for Unalign<T> {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+      Debug::fmt(&self.into_inner(), f)
     }
   }
 
@@ -2600,49 +2748,8 @@ mod internal {
 
   impl<C: ?Sized + Data, T: ?Sized + Data> DataField<C, T> {
     const MIN_SIZE: <T::Integer as Integer>::Repr = num::cast(min_size_of::<C>() as u64);
+    const MIN_SIZE_BYTES: [u8; 16] = num::to_bytes(Self::MIN_SIZE);
     const DEFAULT: <T::Integer as Integer>::Repr = num::cast(Self::MIN_SIZE);
-    const EQ_MIN_SIZE_PATTERNS: [BytePattern; 16] = {
-      let size_bytes = num::to_bytes(Self::MIN_SIZE);
-      let (mut i, mut patterns) = (0, [IsAny; 16]);
-      while i < size_bytes.len() {
-        patterns[i] = IsEq(size_bytes[i], 0xff);
-        i += 1;
-      }
-      patterns
-    };
-    const GTE_MIN_SIZE_PATTERNS: [[BytePattern; 16]; 16] = {
-      let size_bytes = num::to_bytes(Self::MIN_SIZE);
-      let (mut i, mut patterns) = (0, [[IsAny; 16]; 16]);
-      while i < mem::size_of::<T::Integer>() {
-        let mut j = 0;
-        while j <= i {
-          let byte_offset = match <T::Integer as Integer>::SPEC.endianness {
-            Endianness::LE => mem::size_of::<T::Integer>() - j - 1,
-            Endianness::BE => j,
-          };
-          patterns[i][byte_offset] = if j + 1 == mem::size_of::<T::Integer>() {
-            IsGte(size_bytes[byte_offset], 0xff)
-          } else if j == i {
-            IsGt(size_bytes[byte_offset], 0xff)
-          } else if j < i {
-            IsEq(size_bytes[byte_offset], 0xff)
-          } else {
-            IsAny
-          };
-          j += 1;
-        }
-        i += 1;
-      }
-      patterns
-    };
-    const GTE_MIN_SIZE: [BytesPattern<'static>; 16] = {
-      let (mut i, mut patterns) = (0, [Uninit; 16]);
-      while i < 16 {
-        patterns[i] = Cat(Self::GTE_MIN_SIZE_PATTERNS[i].split_at(mem::size_of::<T::Integer>()).0);
-        i += 1;
-      }
-      patterns
-    };
   }
 
   // impl Data -------------------------------------------------------------------------------------
@@ -2708,9 +2815,9 @@ mod internal {
           let spec = match spec.size_field {
             Some(SizeField::Size) => {
               spec.with_default(Self::DEFAULT).with_bytes_pattern(if is_sized::<C>() {
-                Cat(Self::EQ_MIN_SIZE_PATTERNS.split_at(mem::size_of::<T::Integer>()).0)
+                Equ(Self::MIN_SIZE_BYTES.split_at(mem::size_of::<T::Integer>()).0)
               } else {
-                Any(Self::GTE_MIN_SIZE.split_at(mem::size_of::<T::Integer>()).0)
+                Gte(Self::MIN_SIZE_BYTES.split_at(mem::size_of::<T::Integer>()).0)
               })
             }
             None => spec,
@@ -2769,31 +2876,9 @@ mod internal {
     };
   }
 
-  macro_rules! non0 {
-    ($n:literal) => {{
-      const BYTE_PATTERNS: [[BytePattern; $n]; $n] = {
-        let (mut i, mut patterns) = (0, [[IsAny; $n]; $n]);
-        while i < $n {
-          patterns[i][i] = IsGt(0, 0xff);
-          i += 1;
-        }
-        patterns
-      };
-      const PATTERNS: [BytesPattern; $n] = {
-        let (mut i, mut patterns) = (0, [Uninit; $n]);
-        while i < $n {
-          patterns[i] = Cat(&BYTE_PATTERNS[i]);
-          i += 1;
-        }
-        patterns
-      };
-      Any(&PATTERNS)
-    }};
-  }
-
   impl_word!(
     (() as () where any(()))
-    (bool as u8 where new(0, Any(&[Cat(&[IsEq(0, 0xff)]), Cat(&[IsEq(1, 0xff)])])))
+    (bool as u8 where new(0, Cat(&[(0, 1)])))
     (u8 as u8 where any(0)) (u16 as u16 where any(0)) (u32 as u32 where any(0))
     (u64 as u64 where any(0)) (u128 as u128 where any(0))
     (i8 as i8 where any(0)) (i16 as i16 where any(0)) (i32 as i32 where any(0))
@@ -2801,10 +2886,10 @@ mod internal {
     (Option<NonZeroU8> as u8 where any(0)) (Option<NonZeroU16> as u16 where any(0))
     (Option<NonZeroU32> as u32 where any(0)) (Option<NonZeroU64> as u64 where any(0))
     (Option<NonZeroU128> as u128 where any(0))
-    (NonZeroU8 as u8 where new(1, non0!(1)))
-    (NonZeroU16 as u16 where new(1, non0!(2)))
-    (NonZeroU32 as u32 where new(1, non0!(4)))
-    (NonZeroU64 as u64 where new(1, non0!(8)))
-    (NonZeroU128 as u128 where new(1, non0!(16)))
+    (NonZeroU8 as u8 where new(1, Gte(&1u8.to_ne_bytes())))
+    (NonZeroU16 as u16 where new(1, Gte(&1u16.to_ne_bytes())))
+    (NonZeroU32 as u32 where new(1, Gte(&1u32.to_ne_bytes())))
+    (NonZeroU64 as u64 where new(1, Gte(&1u64.to_ne_bytes())))
+    (NonZeroU128 as u128 where new(1, Gte(&1u128.to_ne_bytes())))
   );
 }

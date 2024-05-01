@@ -16,10 +16,50 @@ unsafe impl Integer for TestEnum {
   type Repr = u32;
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0x01010101u32,
-    BytesPattern::Any(&[
-      BytesPattern::Cat(&BytePattern::from_bytes(0x01010101u32.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(0x02020202u32.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(0x03030303u32.to_ne_bytes())),
+    BytePattern::Any(&[
+      BytePattern::Equ(&0x01010101u32.to_ne_bytes()),
+      BytePattern::Equ(&0x02020202u32.to_ne_bytes()),
+      BytePattern::Equ(&0x03030303u32.to_ne_bytes()),
+    ]),
+  );
+}
+
+#[repr(u16)]
+#[allow(unused)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum _0or4 {
+  A = 0,
+  B = 4,
+}
+
+unsafe impl Integer for _0or4 {
+  type Repr = u16;
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
+    BytePattern::Any(&[
+      BytePattern::Equ(&0u16.to_ne_bytes()),
+      BytePattern::Equ(&4u16.to_ne_bytes()),
+    ]),
+  );
+}
+
+#[repr(u16)]
+#[allow(unused)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum _0or4or8 {
+  A = 0,
+  B = 4,
+  C = 8,
+}
+
+unsafe impl Integer for _0or4or8 {
+  type Repr = u16;
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
+    0,
+    BytePattern::Any(&[
+      BytePattern::Equ(&0u16.to_ne_bytes()),
+      BytePattern::Equ(&4u16.to_ne_bytes()),
+      BytePattern::Equ(&8u16.to_ne_bytes()),
     ]),
   );
 }
@@ -35,10 +75,7 @@ unsafe impl Integer for UpTo1u8 {
   type Repr = u8;
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
-    BytesPattern::Any(&[
-      BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
-    ]),
+    BytePattern::Any(&[BytePattern::Equ(&0u8.to_ne_bytes()), BytePattern::Equ(&1u8.to_ne_bytes())]),
   );
 }
 
@@ -53,9 +90,9 @@ unsafe impl Integer for UpTo1u16 {
   type Repr = u16;
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
-    BytesPattern::Any(&[
-      BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
+    BytePattern::Any(&[
+      BytePattern::Equ(&0u16.to_ne_bytes()),
+      BytePattern::Equ(&1u16.to_ne_bytes()),
     ]),
   );
 }
@@ -72,10 +109,10 @@ unsafe impl Integer for UpTo2u8 {
   type Repr = u8;
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
-    BytesPattern::Any(&[
-      BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(2u8.to_ne_bytes())),
+    BytePattern::Any(&[
+      BytePattern::Equ(&0u8.to_ne_bytes()),
+      BytePattern::Equ(&1u8.to_ne_bytes()),
+      BytePattern::Equ(&2u8.to_ne_bytes()),
     ]),
   );
 }
@@ -92,10 +129,10 @@ unsafe impl Integer for UpTo2u16 {
   type Repr = u16;
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
-    BytesPattern::Any(&[
-      BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
-      BytesPattern::Cat(&BytePattern::from_bytes(2u16.to_ne_bytes())),
+    BytePattern::Any(&[
+      BytePattern::Equ(&0u16.to_ne_bytes()),
+      BytePattern::Equ(&1u16.to_ne_bytes()),
+      BytePattern::Equ(&2u16.to_ne_bytes()),
     ]),
   );
 }
@@ -106,7 +143,7 @@ struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
   type Repr = u8;
-  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(0, BytesPattern::Uninit);
+  const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(0, BytePattern::Uninit);
 }
 
 #[repr(C)]
@@ -324,6 +361,11 @@ fn test_internal_static_analyze() {
   test!(TestEnum u64 => "source too small to fit target");
   test!(u64 TestEnum => fallible_mutable_truncate);
 
+  // TODO: test!(_0or4 _0or4 => infallible_mutable);
+  // TODO: test!(_0or4or8 _0or4or8 => infallible_mutable);
+  // TODO: test!(_0or4or8 _0or4 => fallible_mutable);
+  // TODO: test!(_0or4 _0or4or8 => infallible);
+
   test!((u8c<1>) NonZeroU8 => infallible);
   test!((u16c<1>) NonZeroU16 => infallible);
   test!((u32c<1>) NonZeroU32 => infallible);
@@ -475,9 +517,9 @@ fn test_size_field() {
 
   type SizeType<T> = <<<T as Data>::TailField as Field>::PrevField as Field>::Type;
 
-  pub const fn pat_of<T: ?Sized + Data>() -> BytesPattern<'static> {
+  pub const fn pat_of<T: ?Sized + Data>() -> BytePattern<'static> {
     match <SizeType<T> as Data>::LAYOUT {
-      Layout::Integer { spec } => spec.bytes_pattern,
+      Layout::Integer { spec } => spec.byte_pattern,
       _ => unreachable!(),
     }
   }
