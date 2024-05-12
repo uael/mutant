@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! ***Efficient, safe, transmutation. Even for dynamically-sized types.***
 //!
 //! # Example
@@ -134,10 +135,13 @@
 //!
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 // mod bytes;
 mod bytes;
 #[cfg(test)]
 mod tests;
+mod layout;
 
 use core::fmt::Debug;
 use core::marker::PhantomData;

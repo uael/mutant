@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 mutant-derive = { path = "derive" }
+typenum = { version = "1.17.0", features = ["const-generics"] }
+repeated = "=0.1.2"
 
 [features]
 doctest = []

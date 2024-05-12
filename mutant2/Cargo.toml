@@ -1,0 +1,11 @@
+[package]
+name = "mutant2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+typenum = { version = "1.17.0", features = ["const-generics"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
