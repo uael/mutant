@@ -363,8 +363,8 @@ fn test_internal_static_analyze() {
 
   // TODO: test!(_0or4 _0or4 => infallible_mutable);
   // TODO: test!(_0or4or8 _0or4or8 => infallible_mutable);
-  // TODO: test!(_0or4or8 _0or4 => fallible_mutable);
   // TODO: test!(_0or4 _0or4or8 => infallible);
+  // TODO: test!(_0or4or8 _0or4 => fallible_mutable);
 
   test!((u8c<1>) NonZeroU8 => infallible);
   test!((u16c<1>) NonZeroU16 => infallible);

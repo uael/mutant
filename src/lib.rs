@@ -1,15 +1,9 @@
-mod tmp;
-
+#![cfg_attr(not(test), no_std)]
 use core::num::NonZeroU8;
-use core::num::NonZeroUsize;
 use core::marker::PhantomData;
-
-/// Unwrap a `Result` and return the error if it is `Err`.
-#[rustfmt::skip]
-macro_rules! bail {
-  ($e:expr $(,)?) => (match $e { Ok(r) => r, Err(e) => return Err(e) });
-  ($e:expr, $x:ident => $map:expr $(,)?) => (match $e { Ok(r) => r, Err($x) => return Err($map) });
-}
+use core::fmt;
+use core::fmt::{Debug, Formatter};
+use core::mem;
 
 /// Check a condition and return an error if it is `false`.
 #[rustfmt::skip]
@@ -51,35 +45,557 @@ macro_rules! unwrap {
   ($e:expr $(,)?) => (unwrap!($e, unreachable!()));
 }
 
+// -------------------------------------------------------------------------------------------------
+// `Interval`
+
+/// An inclusive byte interval, as of `start..=end`.
 #[derive(Debug, Copy, Clone)]
-struct Interval {
-  start: u8,
-  end: u8,
+struct Interval { start: u8, end: u8 }
+
+impl Interval {
+  const fn new(start: u8, end: u8) -> Self {
+    Self { start, end }
+  }
+
+  #[inline(always)]
+  const fn contains(self, value: u8) -> bool {
+    debug_assert!(self.start <= self.end);
+    value >= self.start && value <= self.end
+  }
 }
 
+// -------------------------------------------------------------------------------------------------
+// `ByteSet`
+
+/// A set of byte values.
 #[derive(Debug, Copy, Clone)]
-enum Byte {
-  Initialized(Interval),
-  Uninitialized,
+struct ByteSet { l: u128, h: u128 }
+
+const fn mask(x: u8) -> u128 { if x == 0 { 0 } else { u128::MAX >> (128 - x) } }
+
+const fn mask_interval(s: u8, e: u8) -> u128 { mask(e + 1) & !mask(s) }
+
+impl ByteSet {
+  const fn from_value(val: u8) -> Self {
+    match val {
+      ..=127 => Self { l: 1 << val, h: 0 },
+      _ => Self { l: 0, h: 1 << (val - 128) },
+    }
+  }
+
+  const fn from_interval(interval: Interval) -> Self {
+    let Interval { start, end } = interval;
+    assert!(start <= end);
+    match (start, end) {
+      (..=127, ..=127) => Self { l: mask_interval(start, end), h: 0 },
+      (..=127, _) => Self { l: mask_interval(start, 127), h: mask_interval(0, end - 128) },
+      _ => Self { l: 0, h: mask_interval(start - 128, end - 128) },
+    }
+  }
+
+  const fn len(&self) -> usize {
+    (self.l.count_ones() + self.h.count_ones()) as usize
+  }
+
+  const fn union(self, with: Self) -> Self {
+    Self { l: self.l | with.l, h: self.h | with.h }
+  }
+
+  const fn intersects(self, with: Self) -> Self {
+    Self { l: self.l & with.l, h: self.h & with.h }
+  }
 }
 
-#[derive(Debug, Copy, Clone)]
-enum MaybeOob<T> {
-  InBounds(T),
-  OutOfBounds,
-}
+// -------------------------------------------------------------------------------------------------
+// `MaskedInterval`
 
 #[derive(Debug, Copy, Clone)]
-enum Intersection {
-  Empty,
-  Complete,
-  Incomplete,
+struct MaskedInterval(Option<NonZeroU8>, Interval);
+
+impl MaskedInterval {
+  const fn new(mask: u8, interval: Interval) -> Self {
+    let mask = if mask == 0xff { None } else { Some(unwrap!(NonZeroU8::new(mask))) };
+    Self(mask, interval)
+  }
+
+  const fn contains(&self, value: u8) -> bool {
+    match self.0 {
+      Some(mask) => self.1.contains((value & mask.get()) >> mask.trailing_zeros()),
+      None => self.1.contains(value),
+    }
+  }
+
+  const fn intersects(&self, o: Self) -> ByteSet {
+    self.byteset().intersects(o.byteset())
+  }
+
+  const fn byteset(&self) -> ByteSet {
+    let MaskedInterval(mask, Interval { mut start, end }) = *self;
+    match mask {
+      None => ByteSet::from_interval(Interval::new(start, end)),
+      Some(mask) => {
+        let mut set = ByteSet::from_value(end << mask.trailing_zeros());
+        while start < end {
+          set = set.union(ByteSet::from_value(start << mask.trailing_zeros()));
+          start += 1;
+        }
+        set
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// `MaybeUninit`
+
+/// `T` is either initialized or uninitialized.
+#[derive(Debug, Copy, Clone)]
+pub enum MaybeUninit<T> { Init(T), Uninit }
+
+impl MaybeUninit<MaskedInterval> {
+  const fn contains(&self, value: u8) -> bool {
+    use MaybeUninit::*;
+    match self {
+      Uninit => true,
+      Init(interval) => interval.contains(value)
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// `Pack`
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Pack<A, B: ?Sized>(A, B);
+
+// -------------------------------------------------------------------------------------------------
+// `Literal`
+
+trait Literal<T> {
+  const VALUE: T;
+}
+
+struct Uninit;
+struct Exact<const VALUE: u8>;
+struct Range<const START: u8, const END: u8>;
+struct RangeFrom<const START: u8>;
+struct RangeFull;
+struct RangeInclusive<const START: u8, const END: u8>;
+struct RangeTo<const END: u8>;
+struct RangeToInclusive<const END: u8>;
+struct Mask<const MASK: u8, T: Literal<Interval>>(PhantomData<T>);
+
+/// Internal implements.
+const _: () = {
+  impl Literal<MaybeUninit<MaskedInterval>> for Uninit {
+    const VALUE: MaybeUninit<MaskedInterval> = MaybeUninit::Uninit;
+  }
+
+  impl<const VALUE: u8> Literal<Interval> for Exact<VALUE> {
+    const VALUE: Interval = Interval { start: VALUE, end: VALUE };
+  }
+
+  impl<const START: u8, const END: u8> Literal<Interval> for Range<START, END>{
+    const VALUE: Interval = Interval { start: START, end: END - 1 };
+  }
+
+  impl<const START: u8> Literal<Interval> for RangeFrom<START> {
+    const VALUE: Interval = Interval { start: START, end: 0xff };
+  }
+
+  impl Literal<Interval> for RangeFull {
+    const VALUE: Interval = Interval { start: 0, end: 0xff };
+  }
+
+  impl<const START: u8, const END: u8> Literal<Interval> for RangeInclusive<START, END>{
+    const VALUE: Interval = Interval { start: START, end: END };
+  }
+
+  impl<const END: u8> Literal<Interval> for RangeTo<END> {
+    const VALUE: Interval = Interval { start: 0, end: END - 1 };
+  }
+
+  impl<const END: u8> Literal<Interval> for RangeToInclusive<END> {
+    const VALUE: Interval = Interval { start: 0, end: END };
+  }
+
+  impl<T: Literal<Interval>> Literal<MaybeUninit<MaskedInterval>> for T {
+    const VALUE: MaybeUninit<MaskedInterval> = MaybeUninit::Init(
+      MaskedInterval::new(0xff, T::VALUE)
+    );
+  }
+
+  impl<const M: u8, T: Literal<Interval>> Literal<MaybeUninit<MaskedInterval>> for Mask<M, T> {
+    const VALUE: MaybeUninit<MaskedInterval> = MaybeUninit::Init(
+      MaskedInterval::new(M, T::VALUE)
+    );
+  }
+};
+
+// -------------------------------------------------------------------------------------------------
+// `BitsExpr`
+
+/// Bits expressions.
+#[derive(Debug)]
+enum BitsExpr {
+  Void, Byte(MaybeUninit<MaskedInterval>),
+  Array(usize), Slice, Any, All
+}
+
+// -------------------------------------------------------------------------------------------------
+// `Bits`
+
+pub trait Bits {
+  type Lhs: Bits + ?Sized;
+  type Rhs: Bits + ?Sized;
+  #[allow(private_interfaces)]
+  const EXPR: BitsExpr;
+
+  /// Append `T` to `Self`.
+  type Append<T: Bits + ?Sized>: Bits + ?Sized;
+
+  /// Tail hack used
+  #[doc(hidden)]
+  type TailHack: Bits + ?Sized;
+}
+
+type Join<L, R> = <L as Bits>::Append<R>;
+
+/// Bits are full maybe uninitialized byte.
+#[repr(transparent)]
+struct Byte<P>(PhantomData<P>, u8);
+
+/// Bits are either `L` or `R`.
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+struct Any<L: ?Sized, R: ?Sized> { rhs: PhantomData<R>, lhs: L }
+
+/// Bits are both `L` and `R`.
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+struct All<L: ?Sized, R: ?Sized> { rhs: PhantomData<R>, lhs: L }
+
+/// Internal implements.
+const _: () = {
+  impl Bits for () {
+    type Lhs = ();
+    type Rhs = ();
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = BitsExpr::Void;
+    /// `() + T -> T`
+    type Append<T: Bits + ?Sized> = T;
+    type TailHack = ();
+  }
+
+  impl<P> Copy for Byte<P> {}
+
+  impl<P> Clone for Byte<P> {
+    fn clone(&self) -> Self {
+      *self
+    }
+  }
+
+  impl<P: Literal<MaybeUninit<MaskedInterval>>> Bits for Byte<P> {
+    type Lhs = ();
+    type Rhs = ();
+    const EXPR: BitsExpr = BitsExpr::Byte(P::VALUE);
+    /// `Byte<P> + T -> Pack<Byte<P>, T>`
+    type Append<T: Bits + ?Sized> = Pack<Byte<P>, T>;
+    type TailHack = ();
+  }
+
+  impl<P: Literal<MaybeUninit<MaskedInterval>>, Tl: Bits + ?Sized> Bits for Pack<Byte<P>, Tl> {
+    type Lhs = Tl;
+    type Rhs = ();
+    const EXPR: BitsExpr = BitsExpr::Byte(P::VALUE);
+    /// `Pack<Byte<P>, Tl> + Tr -> Pack<Byte<P>, Tl + Tr>`
+    type Append<Tr: Bits + ?Sized> = Pack<Byte<P>, Tl::Append<Tr>>;
+    type TailHack = ();
+  }
+
+  pub struct ArrayTailHack<T: Bits + ?Sized>(PhantomData<T>);
+
+  impl<T: Bits + ?Sized> Bits for ArrayTailHack<T> {
+    type Lhs = T::Lhs;
+    type Rhs = T::Rhs;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = match T::EXPR {
+      BitsExpr::Array(len) => BitsExpr::Array(len.saturating_sub(1)),
+      _ => panic!("`ArrayTailHack` can only be applied to an array"),
+    };
+    type Append<Tr: Bits + ?Sized> = T::Append<Tr>;
+    type TailHack = ArrayTailHack<Self>;
+  }
+
+  impl<I: Bits, const N: usize> Bits for [I; N] {
+    type Lhs = ();
+    type Rhs = I;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = BitsExpr::Array(N);
+    /// `[I; N] + T -> Pack<[I; N], T>`
+    type Append<T: Bits + ?Sized> = Pack<[I; N], T>;
+    type TailHack = ArrayTailHack<[I; N]>;
+  }
+
+  impl<I: Bits, Tl: Bits + ?Sized, const N: usize> Bits for Pack<[I; N], Tl> {
+    type Lhs = Tl;
+    type Rhs = I;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = BitsExpr::Array(N);
+    /// `Pack<[I; N], Tl> + Tr -> Pack<[I; N], Tl + Tr>`
+    type Append<Tr: Bits + ?Sized> = Pack<[I; N], Tl::Append<Tr>>;
+    type TailHack = ();
+  }
+
+  impl<I: Bits> Bits for [I] {
+    type Lhs = ();
+    type Rhs = I;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = BitsExpr::Slice;
+    /// `[I] + T -> [I]`
+    type Append<T: Bits + ?Sized> = [I];
+    type TailHack = ();
+  }
+
+  impl<L: Bits + ?Sized, R: Bits + ?Sized> Bits for Any<L, R> {
+    type Lhs = L;
+    type Rhs = R;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = {
+      assert!(min_size_of::<L>() == min_size_of::<R>());
+      BitsExpr::Any
+    };
+    /// `Any<L, R> + T -> Any<L + T, R + T>`
+    type Append<T: Bits + ?Sized> = Any<L::Append<T>, R::Append<T>>;
+    type TailHack = ();
+  }
+
+  impl<L: Bits + ?Sized, R: Bits + ?Sized> Bits for All<L, R> {
+    type Lhs = L;
+    type Rhs = R;
+    #[allow(private_interfaces)]
+    const EXPR: BitsExpr = {
+      assert!(min_size_of::<L>() == min_size_of::<R>());
+      BitsExpr::All
+    };
+    /// `All<L, R> + T -> All<L + T, R + T>`
+    type Append<T: Bits + ?Sized> = All<L::Append<T>, R::Append<T>>;
+    type TailHack = ();
+  }
+};
+
+pub const fn min_size_of<T: Bits + ?Sized>() -> usize {
+  const {
+    use BitsExpr::*;
+    match T::EXPR {
+      Void => 0,
+      Byte(_) => 1 + min_size_of::<T::Lhs>(),
+      Array(len) => len * min_size_of::<T::Rhs>() + min_size_of::<T::Lhs>(),
+      Slice => 0,
+      Any | All => min_size_of::<T::Lhs>(),
+    }
+  }
+}
+
+pub const fn size_of_dst_slice_item<T: Bits + ?Sized>() -> usize {
+  const {
+    use BitsExpr::*;
+    match T::EXPR {
+      Void => 0,
+      Byte(_) => size_of_dst_slice_item::<T::Lhs>(),
+      Array(_) => size_of_dst_slice_item::<T::Lhs>(),
+      Slice => min_size_of::<T::Rhs>(),
+      Any | All => size_of_dst_slice_item::<T::Lhs>(),
+    }
+  }
+}
+
+#[inline(always)]
+pub const unsafe fn matches_ptr<T: Bits + ?Sized>(ptr: *const u8, metadata: usize) -> bool {
+  use BitsExpr::*;
+  match T::EXPR {
+    Void => true,
+    Byte(byte) => matches_ptr::<T::Lhs>(ptr.add(1), metadata) && byte.contains(*ptr),
+    Array(len) => matches_ptr::<T::Lhs>(ptr.add(1), metadata) && fold!(..len,
+      true,
+      |j, m| m && matches_ptr::<T::Rhs>(ptr.add(j * min_size_of::<T::Rhs>()), metadata)
+    ),
+    Slice => fold!(..metadata,
+      true,
+      |j, m| m && matches_ptr::<T::Lhs>(ptr.add(j * min_size_of::<T::Rhs>()), metadata)
+    ),
+    Any => matches_ptr::<T::Lhs>(ptr, metadata) || matches_ptr::<T::Rhs>(ptr, metadata),
+    All => matches_ptr::<T::Lhs>(ptr, metadata) && matches_ptr::<T::Rhs>(ptr, metadata),
+  }
+}
+
+const fn resolve<Src: Bits + ?Sized, Dst: Bits + ?Sized>()
+  -> Result<(usize, usize, Option<MetadataChecks>), &'static str>
+{
+  use MetadataChecks::*;
+  // Try to resolve `xa[ya] => xb[yb]`, where:
+  // - `a` and `b` are `Src` and `Dst` respectively,
+  // - `xa` and `xb` are the minimum sizes of `a` and `b` respectively,
+  // - `ya` and `yb` are the tail slice item sizes of `a` and `b` respectively.
+  // - `n` is the minimum number of the source tail slice items needed to align `a` and `b`.
+  // - `m` is the source tail slice items multiplier.
+  // Calculate minimum and tail slice item sizes for both source and target types.
+  let (xa, ya) = (min_size_of::<Src>(), size_of_dst_slice_item::<Src>());
+  let (xb, yb) = (min_size_of::<Dst>(), size_of_dst_slice_item::<Dst>());
+  // Compute if source and target are DSTs, i.e. had a tail slice with a non-zero item size.
+  let (src_is_dst, dst_is_dst) = (ya != 0, yb != 0);
+  // Compute `n` the minimum source tail slice items needed to align source and target.
+  // 1. Source is smaller than target:
+  //  - Check for source to be a DST.
+  //  - Compute the missing bytes to fit the target.
+  //  - In case the target isn't a DST, check if the missing bytes are a multiple of
+  //    the source DST tail slice item size.
+  //  - The minimum source tail slice items is the missing bytes ceil divided by the source DST
+  //    tail slice item size.
+  let mut n = if xa < xb {
+    // Check for source to be a DST.
+    check!(src_is_dst, "source too small to fit target");
+    // Compute the missing bytes to fit the target.
+    let missing = xb - xa;
+    // In case the target isn't a DST:
+    if !dst_is_dst {
+      // Check if the missing bytes are a multiple of the source DST tail slice item size.
+      check!(
+        missing % ya == 0,
+        "missing bytes to fit the target is not a multiple of the source DST trailing slice \
+         item size"
+      );
+    }
+    // The minimum source tail slice items is the missing bytes ceil divided by the source DST
+    // tail slice item size.
+    (missing + ya - 1) / ya
+  }
+  // 2. Source is larger or equal to target:
+  //  - The minimum source tail slice items is 0.
+  else {
+    // In case the target is a DST:
+    // - Compute the remaining bytes to fit in the target.
+    // - In case the source isn't a DST, check if the remaining bytes is a multiple
+    //   of the target DST tail slice item size.
+    if dst_is_dst {
+      // Compute the remaining bytes to fit in the target.
+      let remaining = xa - xb;
+      // In case the source isn't a DST:
+      if !src_is_dst {
+        // Check if the remaining bytes is a multiple of the target DST tail slice item size.
+        check!(
+          remaining % yb == 0,
+          "remaining bytes to fit in the target is not a multiple of the target DST trailing \
+           slice item size",
+        );
+      }
+    }
+    // The minimum source tail slice items is 0.
+    0
+  };
+  // Compute the possible size mismatch between source and target.
+  // 1. Source isn't a DST:
+  let metadata_checks = if !src_is_dst {
+    // No size mismatch.
+    None
+  }
+  // 2. Source is a DST and target isn't a DST:
+  else if !dst_is_dst {
+    // In case the source is smaller than the target, the source metadata must be the minimum
+    // source tail slice items count.
+    // Otherwise, the source metadata must be empty.
+    Some(if xa < xb { Is(n) } else { IsEmpty })
+  }
+  // 3. Source and target are DSTs:
+  else {
+    /// Greatest common divisor and least common multiple calculations to determine the alignment
+    /// and size compatibility.
+    const fn gcd(a: usize, b: usize) -> usize {
+      match b {
+        0 => a,
+        _ => gcd(b, a % b),
+      }
+    }
+    // Compute the GCD of the source and target DST trailing slice item sizes.
+    let gcd = gcd(ya, yb);
+    // Compute the absolute difference between the source and target DST minimum sizes.
+    let absolute_miss = if xa < xb { xb - xa } else { xa - xb };
+    // Make sure the source can catch up on the target.
+    check!(absolute_miss % gcd == 0, "DST source cannot catch up on DST target");
+    // Compute the minimum number of source tail slice items needed to align source and target.
+    // We need to find `n` in a way that `xa + n*ya - yb` is a multiple of `yb`. Although this
+    // could be resolved using complex equations, for the sake of readability, we can simplify it
+    // by using the following loop:
+    // - `n * ya` is the total size in bytes of the source tail slice for `n` source items.
+    // - `xa + n * ya` is the total size in bytes of the source for `n` source items.
+    // - `(xa + n * ya - xb)` is the total size of the target tail slice for `n` source items.
+    // If the latter is a multiple of `yb`, then we found the minimum number of source tail slice
+    // items needed to align source and target.
+    while (xa + n * ya - xb) % yb != 0 {
+      n += 1; // Increment the minimum number of source tail slice items by 1.
+    }
+    // Compute the metadata checks for the source DST tail slice.
+    match (n, yb / gcd) {
+      // No size mismatch.
+      (0, 1) => None,
+      // Source metadata must be a multiple of the GCD.
+      (0, m) => Some(IsMultipleOf(m)),
+      // Source metadata must be at least `n` and a multiple of `m`.
+      (n, 1) => Some(IsAtLeast(n)),
+      // Source metadata must be at least `n` and a multiple of `m`.
+      (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+    }
+  };
+  // Compute `m` the minimum number of target tail slice items needed to align source and target.
+  let m = if yb == 0 { 0 } else { (xa + n * ya - xb) / yb };
+  Ok((n, m, metadata_checks))
+}
+
+const ANY: u8 = 0b01;
+const ALL: u8 = 0b11;
+
+const fn intersects<Src: Bits + ?Sized, Dst: Bits + ?Sized>(n: usize, m: usize) -> u8 {
+  use BitsExpr::*;
+  use MaybeUninit::*;
+  match (Src::EXPR, Dst::EXPR) {
+    (Void, _) => ALL,
+    (Array(0), _) => intersects::<Src::Lhs, Dst>(n, m),
+    (Array(_), _) => intersects::<Join<Src::Rhs, Src::TailHack>, Dst>(n, m),
+    (Slice, _) if n == 0 => ALL,
+    (Slice, _) => intersects::<Join<Src::Rhs, Src>, Dst>(n - 1, m),
+    (All, _) => intersects::<Src::Lhs, Dst>(n, m) & intersects::<Src::Rhs, Dst>(n, m),
+    (Any, _) => match (intersects::<Src::Lhs, Dst>(n, m), intersects::<Src::Rhs, Dst>(n, m)) {
+      (ALL, ALL) => ALL,
+      (0, 0) => 0,
+      _ => ANY,
+    },
+    (_, Void) => unreachable!(),
+    (_, Array(0)) => intersects::<Src, Dst::Lhs>(n, m),
+    (_, Array(_)) => intersects::<Src, Join<Dst::Rhs, Dst::TailHack>>(n, m),
+    (_, Slice) if m == 0 => ALL,
+    (_, Slice) => intersects::<Src, Join<Dst::Rhs, Dst>>(n, m - 1),
+    (_, All) => intersects::<Src, Dst::Lhs>(n, m) & intersects::<Src, Dst::Rhs>(n, m),
+    (_, Any) => match (intersects::<Src, Dst::Lhs>(n, m), intersects::<Src, Dst::Rhs>(n, m)) {
+      (ALL, _) | (_, ALL) => ALL,
+      (0, 0) => 0,
+      _ => ANY,
+    }
+    (Byte(Uninit), Byte(Uninit)) => intersects::<Src::Lhs, Dst::Lhs>(n, m),
+    (Byte(Uninit), Byte(_)) => todo!(),
+    (Byte(_), Byte(Uninit)) => todo!(),
+    (Byte(Init(a)), Byte(Init(b))) => match (a.byteset(), a.intersects(b)) {
+      (a, b) if a.len() == b.len() => intersects::<Src::Lhs, Dst::Lhs>(n, m),
+      (_, b) if b.len() > 0 => ANY & intersects::<Src::Lhs, Dst::Lhs>(n, m),
+      _ => 0,
+    }
+  }
 }
 
 /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
 ///
 /// # Internals
-/// DSTs metadata represents the length of it's [dst slice](#dst-slice), such as `.1` in
+/// DSTs metadata represents the length of it's [tail slice](#tail-slice), such as `.1` in
 /// `(u16, [u16])`. These checks [validate](MetadataChecks::validate) such metadata to ensure safe
 /// and sound transmutations.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -91,587 +607,173 @@ pub(crate) enum MetadataChecks {
   IsEmpty,                               // Implies no data, i.e. should be zero.
 }
 
-enum Tag {
-  TVoid, TAny, TAll, TJoin,
-  TByte { byte: Byte, mask: Option<NonZeroU8> },
-  TOff { off: usize }, TArr { len: NonZeroUsize },
-}
+impl MetadataChecks {
+  /// Validates `metadata` against constraints.
+  /// In case of an error `Err(e)`, a positive `e` indicates an overflow of `metadata` by `e`,
+  /// while a negative value signifies an underflow by `-e`.
+  #[inline]
+  pub const fn validate(self, metadata: usize) -> Result<(), isize> {
+    use MetadataChecks::*;
+    match self {
+      Is(n) if metadata == n => Ok(()),
+      IsAtLeast(n) if metadata >= n => Ok(()),
+      Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
+      IsMultipleOf(m) if metadata % m == 0 => Ok(()),
+      IsMultipleOf(m) => Err(m as isize - (metadata % m) as isize),
+      IsAtLeastThenMultipleOf(n, m) if metadata >= n && (metadata - n) % m == 0 => Ok(()),
+      IsAtLeastThenMultipleOf(n, _) if metadata < n => Err(n as isize - metadata as isize),
+      IsAtLeastThenMultipleOf(_, m) => Err(m as isize - (metadata % m) as isize),
+      IsEmpty if metadata == 0 => Ok(()),
+      IsEmpty => Err(-(metadata as isize)),
+    }
+  }
 
-/// Layout is a single initialized byte ranging from `START` to `END`.
-struct Init<const START: u8 = 0, const END: u8 = 0xff, const MASK: u8 = 0xff>;
-
-/// Layout is a single uninitialized byte.
-struct Uninit;
-
-/// Layout is `T` offset by `OFF` bytes.
-struct Off<const OFF: usize, T>(PhantomData<T>);
-
-/// Where `T` is a tuple of layouts, layout is any item of `T`.
-struct Any<T>(PhantomData<T>);
-
-/// Where `T` is a tuple of layouts, layout is all items of `T`.
-struct All<T>(PhantomData<T>);
-
-/// Where `T` is a tuple of layouts, layout is all concatenated items of `T`.
-///
-/// # Internals
-/// `Join` isn't required and could be implemented using `All` and `Off`, but it adds some
-/// indirection hence reducing the risk to reach the recursion limit.
-struct Join<T>(PhantomData<T>);
-
-trait BitsPattern: Sized {
-  const TAG: Tag;
-  type Lhs: BitsPattern;
-  type Rhs: BitsPattern;
-}
-
-struct Layout<S, T> {
-  sized: S,
-  dst_slice_item: Option<T>,
-}
-
-use Byte::*;
-use MaybeOob::*;
-use Tag::*;
-use Intersection::*;
-use MetadataChecks::*;
-
-const fn size<T: BitsPattern>() -> usize {
-  const {
-    match T::TAG {
-      TVoid => 0,
-      TByte { .. } => 1,
-      TOff { off } => off + size::<T::Lhs>(),
-      TArr { len } => len.get() * size::<T::Lhs>(),
-      TJoin => size::<T::Lhs>() + size::<T::Rhs>(),
-      _ => match (size::<T::Lhs>(), size::<T::Rhs>()) {
-        (a, b) if a > b => a,
-        (_, b) => b
-      },
+  /// Same as [`MetadataChecks::validate`] but when unpacking, i.e. the `MultipleOf` checks aren't
+  /// checked anymore.
+  #[inline]
+  pub const fn validate_for_unpack(self, metadata: usize) -> Result<(), isize> {
+    use MetadataChecks::*;
+    match self {
+      Is(n) | IsAtLeast(n) if metadata >= n => Ok(()),
+      Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
+      IsMultipleOf(_) => Ok(()),
+      IsAtLeastThenMultipleOf(n, _) if metadata >= n => Ok(()),
+      IsAtLeastThenMultipleOf(n, _) => Err(n as isize - metadata as isize),
+      IsEmpty => Ok(()),
     }
   }
 }
 
-const fn is_any<T: BitsPattern, const ACCEPT_UNINIT: bool>() -> bool {
-  const {
-    match T::TAG {
-      TVoid => true,
-      TByte { byte: Uninitialized, .. } => ACCEPT_UNINIT,
-      TByte { byte: Initialized(interval), .. } => interval.len() == 256,
-      TOff { .. } => is_any::<T::Lhs, ACCEPT_UNINIT>(),
-      TArr { .. } => is_any::<T::Lhs, ACCEPT_UNINIT>(),
-      _ => is_any::<T::Lhs, ACCEPT_UNINIT>() && is_any::<T::Rhs, ACCEPT_UNINIT>()
-    }
-  }
+/// Static analyze result.
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(crate) struct StaticAnalyze {
+  pub(crate) maybe_size_mismatch: Option<MetadataChecks>,
+  pub(crate) maybe_invalid_bit_pattern: bool,
+  pub(crate) sound_target_mutation: bool,
 }
 
-impl Intersection {
-  const fn and(self, other: Self) -> Self {
-    match (self, other) {
-      (Complete, Complete) => Complete,
-      (Empty, _) | (_, Empty) => Empty,
-      _ => Incomplete,
-    }
-  }
-}
-
-const fn intersects<A: BitsPattern, B: BitsPattern>(x: usize) -> Result<Intersection, &'static str> {
-  let ok = match (A::TAG, B::TAG) {
-    (TVoid, _) => Complete,
-    (TByte { byte, .. }, _) => match (byte, byte.intersects::<B>(x)) {
-      (_, OutOfBounds) => return Err("out-of-bounds"),
-      (Initialized(_), InBounds(Uninitialized)) => return Err("uninitialized byte"),
-      (Uninitialized, InBounds(Uninitialized)) => Complete,
-      (Initialized(a), InBounds(Initialized(b))) if a.len() == b.len() => Complete,
-      (_, InBounds(Initialized(b))) if b.len() > 0 => Incomplete,
-      _ => Incomplete,
-    },
-    (TOff { off }, _) => return intersects::<A::Lhs, B>(x + off),
-    (TArr { len }, _) => fold!(..len.get(), bail!(intersects::<A::Lhs, B>(x)), |j, acc| match acc {
-      Incomplete => Incomplete,
-      i => i.and(bail!(intersects::<A::Lhs, B>(x + j * size::<A::Lhs>())))
-    }),
-    (TAll, _) => match bail!(intersects::<A::Lhs, B>(x)) {
-      Incomplete => Incomplete,
-      i => i.and(bail!(intersects::<A::Rhs, B>(x))),
-    }
-    (TAny, _) => match (bail!(intersects::<A::Lhs, B>(x)), bail!(intersects::<A::Rhs, B>(x))) {
-      (Complete, Complete) => Complete,
-      (Empty, Empty) => Empty,
-      _ => Incomplete,
-    }
-    (TJoin, _) => match bail!(intersects::<A::Lhs, B>(x)) {
-      Incomplete => Incomplete,
-      i => i.and(bail!(intersects::<A::Rhs, B>(x + size::<A::Lhs>())))
-    }
-  };
-  Ok(ok)
-}
-
-#[inline(always)]
-const unsafe fn matches<T: BitsPattern>(ptr: *const u8) -> bool {
-  if is_any::<T, true>() {
-    return true;
-  }
-  match T::TAG {
-    TVoid => true,
-    TAny => matches::<T::Lhs>(ptr) || matches::<T::Rhs>(ptr),
-    TAll => matches::<T::Lhs>(ptr) && matches::<T::Rhs>(ptr),
-    TJoin => matches::<T::Lhs>(ptr) && matches::<T::Rhs>(ptr.add(size::<T::Lhs>())),
-    TByte { byte, mask: Some(mask) } => byte.contains(*ptr & mask.get()),
-    TByte { byte, .. } => byte.contains(*ptr),
-    TOff { off } => matches::<T::Lhs>(ptr.add(off)),
-    TArr { len } => fold!(..len.get(),
-      true,
-      |j, acc| acc && matches::<T::Lhs>(ptr.add(j * size::<T::Lhs>()))
-    )
-  }
-}
-
-// -------------------------------------------------------------------------------------------------
-// Internal implements.
-
-include!(concat!(env!("OUT_DIR"), "/impls.rs"));
-
-const _: () =  {
-
-  // -----------------------------------------------------------------------------------------------
-  // impl `Bits`
-
-  impl BitsPattern for () {
-    const TAG: Tag = TVoid;
-    type Lhs = ();
-    type Rhs = ();
-  }
-
-  impl BitsPattern for Uninit {
-    const TAG: Tag = TByte { byte: Uninitialized, mask: None };
-    type Lhs = ();
-    type Rhs = ();
-  }
-
-  impl<const START: u8, const END: u8, const MASK: u8> BitsPattern for Init<START, END, MASK> {
-    const TAG: Tag = TByte {
-      byte: Initialized(Interval { start: START, end: END }),
-      mask: if MASK == 0xff { None } else { Some(unwrap!(NonZeroU8::new(MASK))) }
+#[cfg(test)]
+impl Debug for StaticAnalyze {
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    let tag = match (self.maybe_invalid_bit_pattern, self.sound_target_mutation) {
+      (true, false) => "fallible",
+      (true, true) => "fallible_mutable",
+      (false, false) => "infallible",
+      (false, true) => "infallible_mutable",
     };
-    type Lhs = ();
-    type Rhs = ();
+    let mut d = f.debug_tuple(tag);
+    d.field(&self.maybe_size_mismatch);
+    d.finish()
   }
+}
 
-  impl<const OFF: usize, T: BitsPattern> BitsPattern for Off<OFF, T> {
-    const TAG: Tag = TOff { off: OFF };
-    type Lhs = T;
-    type Rhs = ();
-  }
-
-  impl<const N: usize, T: BitsPattern> BitsPattern for [T; N] {
-    const TAG: Tag = TArr { len: unwrap!(NonZeroUsize::new(N)) };
-    type Lhs = T;
-    type Rhs = ();
-  }
-
-  // -----------------------------------------------------------------------------------------------
-  // impl `Layout`
-
-  impl<H: BitsPattern, T: BitsPattern> Layout<H, T> {
-    const fn is_sized(&self) -> bool {
-      self.dst_slice_item.is_none()
-    }
-
-    const fn min_size_of(&self) -> usize {
-      size::<H>()
-    }
-
-    const fn size_of_dst_slice_item(&self) -> usize {
-      size::<T>()
-    }
-
-    #[inline(always)]
-    const unsafe fn matches(mut ptr: *const u8, mut metadata: usize) -> bool {
-      if !matches::<H>(ptr) {
-        return false;
-      }
-      ptr = ptr.add(size::<H>());
-      while metadata > 0 {
-        if !matches::<T>(ptr) {
-          return false;
-        }
-        ptr = ptr.add(size::<T>());
-        metadata -= 1;
-      }
-      true
-    }
-
-    const fn intersects<Dh: BitsPattern, Dt: BitsPattern>(
-      &self, dst: &Layout<Dh, Dt>, oob: usize,
-    ) -> Result<Intersection, &'static str> {
-      // Alias self to `src`:
-      let src = self;
-      // let int = intersects::<H, Dh>(0)?;
-      todo!()
-    }
-
-    const fn intersects_unidirectional<Dh: BitsPattern, Dt: BitsPattern>(
-      &self, dst: &Layout<Dh, Dt>
-    ) -> Result<(Intersection, Intersection), &'static str> {
-      // Alias self to `src`:
-      let src = self;
-      // Try to resolve `xa[ya] => xb[yb]`, where:
-      // - `a` and `b` are source and target respectively,
-      // - `xa` and `xb` are the minimum sizes of `a` and `b` respectively,
-      // - `ya` and `yb` are the DST slice item sizes of `a` and `b` respectively.
-      // - `n` is the minimum number of the source DST slice items needed to align `a` and `b`.
-      // - `m` is the source DST slice items multiplier.
-      // Calculate minimum and DST slice item sizes for both source and target types.
-      let (xa, ya) = (src.min_size_of(), src.size_of_dst_slice_item());
-      let (xb, yb) = (dst.min_size_of(), dst.size_of_dst_slice_item());
-      // Compute if source and target are DSTs, i.e. had a DST slice with a non-zero item size.
-      let (src_is_dst, dst_is_dst) = (ya != 0, yb != 0);
-      // Compute the minimum source DST slice items needed to align source and target.
-      // 1. Source is smaller than target:
-      //  - Check for source to be a DST.
-      //  - Compute the missing bytes to fit the target.
-      //  - In case the target isn't a DST, check if the missing bytes are a multiple of
-      //    the source DST slice item size.
-      //  - The minimum source DST slice items is the missing bytes ceil divided by the source DST
-      //    slice item size.
-      let mut n = if xa < xb {
-        // Check for source to be a DST.
-        check!(src_is_dst, "source too small to fit target");
-        // Compute the missing bytes to fit the target.
-        let missing = xb - xa;
-        // In case the target isn't a DST:
-        if !dst_is_dst {
-          // Check if the missing bytes are a multiple of the source DST slice item size.
-          check!(
-          missing % ya == 0,
-          "missing bytes to fit the target is not a multiple of the source DST trailing slice \
-           item size"
-        );
-        }
-        // The minimum source DST slice items is the missing bytes ceil divided by the source DST
-        // slice item size.
-        (missing + ya - 1) / ya
-      }
-      // 2. Source is larger or equal to target:
-      //  - The minimum source DST slice items is 0.
-      else {
-        // In case the target is a DST:
-        // - Compute the remaining bytes to fit in the target.
-        // - In case the source isn't a DST, check if the remaining bytes is a multiple
-        //   of the target DST slice item size.
-        if dst_is_dst {
-          // Compute the remaining bytes to fit in the target.
-          let remaining = xa - xb;
-          // In case the source isn't a DST:
-          if !src_is_dst {
-            // Check if the remaining bytes is a multiple of the target DST slice item size.
-            check!(
-            remaining % yb == 0,
-            "remaining bytes to fit in the target is not a multiple of the target DST trailing \
-             slice item size",
-          );
-          }
-        }
-        // The minimum source DST slice items is 0.
-        0
-      };
-      // Compute the possible size mismatch between source and target.
-      // 1. Source isn't a DST:
-      let maybe_size_mismatch = if !src_is_dst {
-        // No size mismatch.
-        None
-      }
-      // 2. Source is a DST and target isn't a DST:
-      else if !dst_is_dst {
-        // In case the source is smaller than the target, the source metadata must be the minimum
-        // source DST slice items count.
-        // Otherwise, the source metadata must be empty.
-        Some(if xa < xb { Is(n) } else { IsEmpty })
-      }
-      // 3. Source and target are DSTs:
-      else {
-        /// Greatest common divisor and least common multiple calculations to determine the
-        /// alignment and size compatibility.
-        const fn gcd(a: usize, b: usize) -> usize {
-          match b {
-            0 => a,
-            _ => gcd(b, a % b),
-          }
-        }
-        // Compute the GCD of the source and target DST trailing slice item sizes.
-        let gcd = gcd(ya, yb);
-        // Compute the absolute difference between the source and target DST minimum sizes.
-        let absolute_miss = if xa < xb { xb - xa } else { xa - xb };
-        // Make sure the source can catch up on the target.
-        check!(absolute_miss % gcd == 0, "DST source cannot catch up on DST target");
-        // Compute the minimum number of source DST slice items needed to align source and target.
-        // We need to find `n` in a way that `xa + n*ya - yb` is a multiple of `yb`. Although this
-        // could be resolved using complex equations, for the sake of readability, we can simplify
-        // it by using the following loop:
-        // - `n * ya` is the total size in bytes of the source DST slice for `n` source items.
-        // - `xa + n * ya` is the total size in bytes of the source for `n` source items.
-        // - `(xa + n * ya - xb)` is the total size of the target DST slice for `n` source items.
-        // If the latter is a multiple of `yb`, then we found the minimum number of source DST slice
-        // items needed to align source and target.
-        while (xa + n * ya - xb) % yb != 0 {
-          n += 1; // Increment the minimum number of source DST slice items by 1.
-        }
-        // Compute the metadata checks for the source DST slice.
-        match (n, yb / gcd) {
-          // No size mismatch.
-          (0, 1) => None,
-          // Source metadata must be a multiple of the GCD.
-          (0, m) => Some(IsMultipleOf(m)),
-          // Source metadata must be at least `n` and a multiple of `m`.
-          (n, 1) => Some(IsAtLeast(n)),
-          // Source metadata must be at least `n` and a multiple of `m`.
-          (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
-        }
-      };
-      // Compute the minimum size in bytes need to fully check `Src` and `Dst` bit patterns
-      // compatibility (transmutability).
-      let min_check_size = match maybe_size_mismatch {
-        None if ya != 0 => xa + ya,
-        None => xb,
-        Some(IsEmpty) => xa,
-        Some(IsMultipleOf(m)) => xa + (m * ya),
-        Some(Is(n)) => xa + (n * ya),
-        Some(IsAtLeast(n)) => xa + (n * ya) + ya,
-        Some(IsAtLeastThenMultipleOf(n, m)) => xa + (n * ya) + (m * ya),
-      };
-      todo!()
-    }
-  }
-
-  // -----------------------------------------------------------------------------------------------
-  // impl `MaybeOob`
-
-  impl MaybeOob<Byte> {
-    const fn union(self, other: Self) -> Self {
-      match (self, other) {
-        (InBounds(a), InBounds(b)) => InBounds(a.union(b)),
-        (InBounds(a), _) | (_, InBounds(a)) => InBounds(a),
-        _ => OutOfBounds,
-      }
-    }
-
-    const fn intersection(self, other: Self) -> Self {
-      match (self, other) {
-        (InBounds(a), InBounds(b)) => InBounds(a.intersection(b)),
-        _ => OutOfBounds,
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------------------------------------
-  // impl `Byte`
-
-  impl Byte {
-    const fn contains(&self, value: u8) -> bool {
-      match self {
-        Uninitialized => true,
-        Initialized(interval) => interval.contains(value)
-      }
-    }
-
-    const fn union(self, o: Self) -> Self {
-      match (self, o) {
-        (Initialized(a), Initialized(b)) => Initialized(a.union(b)),
-        (Initialized(a), _) | (_, Initialized(a)) => Initialized(a),
-        _ => Uninitialized,
-      }
-    }
-
-    const fn intersection(self, o: Self) -> Self {
-      match (self, o) {
-        (Uninitialized, _) | (_, Uninitialized) => Uninitialized,
-        (Initialized(a), Initialized(b)) => Initialized(a.intersects(b)),
-      }
-    }
-
-    const fn intersects<T: BitsPattern>(&self, x: usize) -> MaybeOob<Self> {
-      if x > size::<T>() {
-        return OutOfBounds;
-      }
-      self.n::<T>(x, 0)
-    }
-
-    const fn n<T: BitsPattern>(&self, x: usize, y: usize) -> MaybeOob<Self> {
-      if is_any::<T, false>() {
-        return InBounds(*self);
-      }
-      match T::TAG {
-        // This path is unreachable because of the above ifs, but left here for completeness.
-        TVoid => OutOfBounds,
-        TOff { off } => self.n::<T::Lhs>(x, y + off),
-        TArr { len } => fold!(..len.get(),
-          self.n::<T::Lhs>(x, y),
-          |j, acc| acc.intersection(self.n::<T::Lhs>(x, y + (j * size::<T::Lhs>())))
-        ),
-        TAny => self.n::<T::Lhs>(x, y).union(self.n::<T::Rhs>(x, y)),
-        TAll => self.n::<T::Lhs>(x, y).intersection(self.n::<T::Rhs>(x, y)),
-        TJoin => self.n::<T::Lhs>(x, y).intersection(self.n::<T::Rhs>(x, y + size::<T::Lhs>())),
-        _ if x != y => return InBounds(*self),
-        TByte { byte, .. } => InBounds(self.intersection(byte)),
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------------------------------------
-  // impl `Interval`
-
-  impl Interval {
-    const fn len(self) -> usize {
-      let Self { start, end } = self;
-      if start > end { 0 } else { (end - start) as usize + 1 }
-    }
-
-    #[inline(always)]
-    const fn contains(self, value: u8) -> bool {
-      debug_assert!(self.start <= self.end);
-      value >= self.start && value <= self.end
-    }
-
-    const fn union(self, o: Self) -> Self {
-      match (self, o) {
-        (a, b) if a.len() == 0 => b,
-        (a, b) if b.len() == 0 => a,
-        (Self { start: a, end: b }, Self { start: x, end: y }) => {
-          let start = if a < x { a } else { x };
-          let end = if b > y { b } else { y };
-          Self { start, end }
-        }
-      }
-    }
-
-    const fn intersects(self, o: Self) -> Self {
-      match (self, o) {
-        (a, _) if a.len() == 0 => a,
-        (_, b) if b.len() == 0 => b,
-        (Self { start: a, end: b }, Self { start: x, end: y }) => {
-          let start = if a > x { a } else { x };
-          let end = if b < y { b } else { y };
-          Self { start, end }
+pub(crate) const fn static_analysis<Src: Bits + ?Sized, Dst: Bits + ?Sized>()
+  -> Result<StaticAnalyze, &'static str>
+{
+  const {
+    match resolve::<Src, Dst>() {
+      Err(e) => Err(e),
+      Ok((n, m, maybe_size_mismatch)) => {
+        let src = intersects::<Src, Dst>(n, m);
+        if src == 0 {
+          Err("none of the bits patterns in source are valid in target")
+        } else {
+          let dst = intersects::<Dst, Src>(m, n);
+          assert!(dst != 0);
+          let maybe_invalid_bit_pattern = src != ALL;
+          let sound_target_mutation = dst == ALL;
+          Ok(StaticAnalyze {
+            maybe_size_mismatch,
+            maybe_invalid_bit_pattern,
+            sound_target_mutation,
+          })
         }
       }
     }
   }
-};
-
-type _0or4 = Any<(
-  Join<(Init<0, 0>, Init<0, 0xff>)>,
-  Join<(Init<4, 4>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8 = Any<(
-  _0or4,
-  Join<(Init<8, 8>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12 = Any<(
-  _0or4or8,
-  Join<(Init<12, 12>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16 = Any<(
-  _0or4or8or12,
-  Join<(Init<16, 16>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20 = Any<(
-  _0or4or8or12or16,
-  Join<(Init<20, 20>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24 = Any<(
-  _0or4or8or12or16or20,
-  Join<(Init<24, 24>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24or28 = Any<(
-  _0or4or8or12or16or20or24,
-  Join<(Init<28, 28>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24or28or32 = Any<(
-  _0or4or8or12or16or20or24or28,
-  Join<(Init<32, 32>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24or28or32or36 = Any<(
-  _0or4or8or12or16or20or24or28or32,
-  Join<(Init<36, 36>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24or28or32or36or40 = Any<(
-  _0or4or8or12or16or20or24or28or32or36,
-  Join<(Init<40, 40>, Init<0, 0xff>)>,
-)>;
-
-type _0or4or8or12or16or20or24or28or32or36or40or44 = Any<(
-  _0or4or8or12or16or20or24or28or32or36or40,
-  Join<(Init<44, 44>, Init<0, 0xff>)>,
-)>;
-
-type Yolo = Join<(Init, Init, Init, Init, Init, Init, Init, Init, Init, Init, Init, Init, Init)>;
-type Yala = Join<(Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo, Yolo)>;
-type Toto = Join<(Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala, Yala)>;
-type Titi = Join<(Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto, Toto)>;
+}
 
 #[test]
 fn test() {
-  println!("{}", size::<_0or4>());
-  println!("{}", size::<_0or4or8>());
-  println!("{}", size::<_0or4or8or12>());
-  println!("{}", size::<_0or4or8or12or16>());
-  println!("{}", size::<_0or4or8or12or16or20>());
-  println!("{}", size::<_0or4or8or12or16or20or24>());
-  println!("{}", size::<_0or4or8or12or16or20or24or28>());
-  println!("{}", size::<_0or4or8or12or16or20or24or28or32>());
-  println!("{}", size::<_0or4or8or12or16or20or24or28or32or36>());
-  println!("{}", size::<_0or4or8or12or16or20or24or28or32or36or40>());
-  println!("{}", size::<_0or4or8or12or16or20or24or28or32or36or40or44>());
-  println!("{}", size::<Titi>());
+  type Bool = Byte<RangeToInclusive<1>>;
+  type U8 = Byte<RangeFull>;
+  type U32 = [U8; 4];
+  type NonZeroU8 = Byte<RangeFrom<1>>;
+  type NonZeroU16 = Any<
+    Join<Byte<RangeFrom<1>>, Byte<RangeFull>>,
+    Join<Byte<RangeFull>, Byte<RangeFrom<1>>>,
+  >;
+  type NonZeroU32 = Any<
+    Join<Byte<RangeFrom<1>>, Join<Byte<RangeFull>, Join<Byte<RangeFull>, Byte<RangeFull>>>>,
+    Any<
+      Join<Byte<RangeFull>, Join<Byte<RangeFrom<1>>, Join<Byte<RangeFull>, Byte<RangeFull>>>>,
+      Any<
+        Join<Byte<RangeFull>, Join<Byte<RangeFull>, Join<Byte<RangeFrom<1>>, Byte<RangeFull>>>>,
+        Join<Byte<RangeFull>, Join<Byte<RangeFull>, Join<Byte<RangeFull>, Byte<RangeFrom<1>>>>>,
+      >
+    >
+  >;
 
-  println!("{:?}", intersects::<_0or4, _0or4>(0));
-  println!("{:?}", intersects::<_0or4or8, _0or4or8>(0));
-  println!("{:?}", intersects::<_0or4, _0or4or8>(0));
-  println!("{:?}", intersects::<_0or4or8, _0or4>(0));
+  assert_eq!(4, mem::size_of::<U32>());
 
-  type BoolPattern = Init<0, 1>;
-  type U8Pattern = Init<0, 0xff>;
+  println!("{}", min_size_of::<Bool>());
+  println!("{}", min_size_of::<U8>());
 
-  println!("{:?}", intersects::<BoolPattern, U8Pattern>(0));
-  println!("{:?}", intersects::<U8Pattern, BoolPattern>(0));
-  println!("{:?}", intersects::<Titi, Titi>(0));
-}
+  println!("{:?}", static_analysis::<Bool, Bool>());
+  println!("{:?}", static_analysis::<U8, U8>());
+  println!("{:?}", static_analysis::<Bool, U8>());
+  println!("{:?}", static_analysis::<U8, Bool>());
 
-pub const unsafe fn test_0or4(ptr: *const u8) -> bool {
-  matches::<_0or4>(ptr)
-}
+  type Foo = Join<Bool, U8>;
+  type Bar = Join<U8, Bool>;
+  type Baz = Any<Foo, Bar>;
+  type Yaz = Join<Foo, Bar>;
 
-pub const unsafe fn test_0or4or8(ptr: *const u8) -> bool {
-  matches::<_0or4or8>(ptr)
-}
+  println!("{}", min_size_of::<Foo>());
+  println!("{}", min_size_of::<Bar>());
+  println!("{}", min_size_of::<Baz>());
+  println!("{}", min_size_of::<Yaz>());
 
-pub const unsafe fn test_0or4or8or12(ptr: *const u8) -> bool {
-  matches::<_0or4or8or12>(ptr)
-}
+  type A = Join<[Bar; 24234], Join<Baz, [Bar]>>;
+  type B = Join<[Foo; 24234], Join<Baz, [Foo]>>;
 
-pub const unsafe fn test_0or4or8or12or16(ptr: *const u8) -> bool {
-  matches::<_0or4or8or12or16>(ptr)
-}
+  assert_eq!((2 * 24234) + 2, mem::size_of::<Join<[Bar; 24234], Baz>>());
 
-pub const unsafe fn test_0or4or8or12or16or20(ptr: *const u8) -> bool {
-  matches::<_0or4or8or12or16or20>(ptr)
-}
+  println!("{}", min_size_of::<A>());
+  println!("{}", min_size_of::<B>());
 
-pub const unsafe fn test_0or4or8or12or16or20or24(ptr: *const u8) -> bool {
-  matches::<_0or4or8or12or16or20or24>(ptr)
-}
+  println!("{:?}", static_analysis::<A, A>());
+  println!("{:?}", static_analysis::<B, B>());
+  println!("{:?}", static_analysis::<A, B>());
+  println!("{:?}", static_analysis::<B, A>());
 
-pub const unsafe fn test_0or4or8or12or16or20or24or28(ptr: *const u8) -> bool {
-  matches::<_0or4or8or12or16or20or24or28>(ptr)
+  type _0or4 = Any<
+    Byte<Exact<0>>,
+    Byte<Exact<4>>,
+  >;
+
+  type _0or4or8 = Any<
+    _0or4,
+    Byte<Exact<8>>,
+  >;
+
+  println!("{:?}", static_analysis::<_0or4, _0or4>());
+  println!("{:?}", static_analysis::<_0or4or8, _0or4or8>());
+  println!("{:?}", static_analysis::<_0or4, _0or4or8>());
+  println!("{:?}", static_analysis::<_0or4or8, _0or4>());
+
+  // println!("{:#05b}", intersects::<Foo, Foo>());
+  // println!("{:#05b}", intersects::<Foo, Bar>());
+  // println!("{:#05b}", intersects::<Bar, Foo>());
+  // println!("{:#05b}", intersects::<Join<U8, U8>, Join<U8, U8>>());
+  // println!("{:#05b}", intersects::<Join<Bool, Bool>, Join<Bool, Bool>>());
+  //
+  // type _0or4 = Bits<byte::Init<0, 0>, (), Bits<byte::Init<4, 4>, (), ()>>;
+  // type _0or4or8 = Any<_0or4, Bits<byte::Init<8, 8>, (), ()>>;
+  //
+  // println!("{:#05b}", intersects::<_0or4, _0or4>());
+  // println!("{:#05b}", intersects::<_0or4or8, _0or4or8>());
+  // println!("{:#05b}", intersects::<_0or4, _0or4or8>());
+  // println!("{:#05b}", intersects::<_0or4or8, _0or4>());
 }
