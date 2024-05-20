@@ -101,7 +101,7 @@ impl ByteSet {
     Self { l: self.l | with.l, h: self.h | with.h }
   }
 
-  const fn intersects(self, with: Self) -> Self {
+  const fn intersects(&self, with: &Self) -> Self {
     Self { l: self.l & with.l, h: self.h & with.h }
   }
 }
@@ -126,7 +126,7 @@ impl MaskedInterval {
   }
 
   const fn intersects(&self, o: Self) -> ByteSet {
-    self.byteset().intersects(o.byteset())
+    self.byteset().intersects(&o.byteset())
   }
 
   const fn byteset(&self) -> ByteSet {
@@ -254,10 +254,6 @@ pub trait Bits {
 
   /// Append `T` to `Self`.
   type Append<T: Bits + ?Sized>: Bits + ?Sized;
-
-  /// Tail hack used
-  #[doc(hidden)]
-  type TailHack: Bits + ?Sized;
 }
 
 type Join<L, R> = <L as Bits>::Append<R>;
@@ -285,7 +281,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Void;
     /// `() + T -> T`
     type Append<T: Bits + ?Sized> = T;
-    type TailHack = ();
   }
 
   impl<P> Copy for Byte<P> {}
@@ -302,7 +297,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Byte(P::VALUE);
     /// `Byte<P> + T -> Pack<Byte<P>, T>`
     type Append<T: Bits + ?Sized> = Pack<Byte<P>, T>;
-    type TailHack = ();
   }
 
   impl<P: Literal<MaybeUninit<MaskedInterval>>, Tl: Bits + ?Sized> Bits for Pack<Byte<P>, Tl> {
@@ -311,21 +305,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Byte(P::VALUE);
     /// `Pack<Byte<P>, Tl> + Tr -> Pack<Byte<P>, Tl + Tr>`
     type Append<Tr: Bits + ?Sized> = Pack<Byte<P>, Tl::Append<Tr>>;
-    type TailHack = ();
-  }
-
-  pub struct ArrayTailHack<T: Bits + ?Sized>(PhantomData<T>);
-
-  impl<T: Bits + ?Sized> Bits for ArrayTailHack<T> {
-    type Lhs = T::Lhs;
-    type Rhs = T::Rhs;
-    #[allow(private_interfaces)]
-    const EXPR: BitsExpr = match T::EXPR {
-      BitsExpr::Array(len) => BitsExpr::Array(len.saturating_sub(1)),
-      _ => panic!("`ArrayTailHack` can only be applied to an array"),
-    };
-    type Append<Tr: Bits + ?Sized> = T::Append<Tr>;
-    type TailHack = ArrayTailHack<Self>;
   }
 
   impl<I: Bits, const N: usize> Bits for [I; N] {
@@ -335,7 +314,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Array(N);
     /// `[I; N] + T -> Pack<[I; N], T>`
     type Append<T: Bits + ?Sized> = Pack<[I; N], T>;
-    type TailHack = ArrayTailHack<[I; N]>;
   }
 
   impl<I: Bits, Tl: Bits + ?Sized, const N: usize> Bits for Pack<[I; N], Tl> {
@@ -345,7 +323,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Array(N);
     /// `Pack<[I; N], Tl> + Tr -> Pack<[I; N], Tl + Tr>`
     type Append<Tr: Bits + ?Sized> = Pack<[I; N], Tl::Append<Tr>>;
-    type TailHack = ();
   }
 
   impl<I: Bits> Bits for [I] {
@@ -355,7 +332,6 @@ const _: () = {
     const EXPR: BitsExpr = BitsExpr::Slice;
     /// `[I] + T -> [I]`
     type Append<T: Bits + ?Sized> = [I];
-    type TailHack = ();
   }
 
   impl<L: Bits + ?Sized, R: Bits + ?Sized> Bits for Any<L, R> {
@@ -368,7 +344,6 @@ const _: () = {
     };
     /// `Any<L, R> + T -> Any<L + T, R + T>`
     type Append<T: Bits + ?Sized> = Any<L::Append<T>, R::Append<T>>;
-    type TailHack = ();
   }
 
   impl<L: Bits + ?Sized, R: Bits + ?Sized> Bits for All<L, R> {
@@ -381,7 +356,6 @@ const _: () = {
     };
     /// `All<L, R> + T -> All<L + T, R + T>`
     type Append<T: Bits + ?Sized> = All<L::Append<T>, R::Append<T>>;
-    type TailHack = ();
   }
 };
 
@@ -555,42 +529,42 @@ const fn resolve<Src: Bits + ?Sized, Dst: Bits + ?Sized>()
 const ANY: u8 = 0b01;
 const ALL: u8 = 0b11;
 
-const fn intersects<Src: Bits + ?Sized, Dst: Bits + ?Sized>(n: usize, m: usize) -> u8 {
-  use BitsExpr::*;
-  use MaybeUninit::*;
-  match (Src::EXPR, Dst::EXPR) {
-    (Void, _) => ALL,
-    (Array(0), _) => intersects::<Src::Lhs, Dst>(n, m),
-    (Array(_), _) => intersects::<Join<Src::Rhs, Src::TailHack>, Dst>(n, m),
-    (Slice, _) if n == 0 => ALL,
-    (Slice, _) => intersects::<Join<Src::Rhs, Src>, Dst>(n - 1, m),
-    (All, _) => intersects::<Src::Lhs, Dst>(n, m) & intersects::<Src::Rhs, Dst>(n, m),
-    (Any, _) => match (intersects::<Src::Lhs, Dst>(n, m), intersects::<Src::Rhs, Dst>(n, m)) {
-      (ALL, ALL) => ALL,
-      (0, 0) => 0,
-      _ => ANY,
-    },
-    (_, Void) => unreachable!(),
-    (_, Array(0)) => intersects::<Src, Dst::Lhs>(n, m),
-    (_, Array(_)) => intersects::<Src, Join<Dst::Rhs, Dst::TailHack>>(n, m),
-    (_, Slice) if m == 0 => ALL,
-    (_, Slice) => intersects::<Src, Join<Dst::Rhs, Dst>>(n, m - 1),
-    (_, All) => intersects::<Src, Dst::Lhs>(n, m) & intersects::<Src, Dst::Rhs>(n, m),
-    (_, Any) => match (intersects::<Src, Dst::Lhs>(n, m), intersects::<Src, Dst::Rhs>(n, m)) {
-      (ALL, _) | (_, ALL) => ALL,
-      (0, 0) => 0,
-      _ => ANY,
-    }
-    (Byte(Uninit), Byte(Uninit)) => intersects::<Src::Lhs, Dst::Lhs>(n, m),
-    (Byte(Uninit), Byte(_)) => todo!(),
-    (Byte(_), Byte(Uninit)) => todo!(),
-    (Byte(Init(a)), Byte(Init(b))) => match (a.byteset(), a.intersects(b)) {
-      (a, b) if a.len() == b.len() => intersects::<Src::Lhs, Dst::Lhs>(n, m),
-      (_, b) if b.len() > 0 => ANY & intersects::<Src::Lhs, Dst::Lhs>(n, m),
-      _ => 0,
-    }
-  }
-}
+// const fn intersects<Src: Bits + ?Sized, Dst: Bits + ?Sized>(n: usize, m: usize) -> u8 {
+//   use BitsExpr::*;
+//   use MaybeUninit::*;
+//   match (Src::EXPR, Dst::EXPR) {
+//     (Void, _) => ALL,
+//     (Array(0), _) => intersects::<Src::Lhs, Dst>(n, m),
+//     (Array(_), _) => intersects::<Join<Src::Rhs, Src::TailHack>, Dst>(n, m),
+//     (Slice, _) if n == 0 => ALL,
+//     (Slice, _) => intersects::<Join<Src::Rhs, Src>, Dst>(n - 1, m),
+//     (All, _) => intersects::<Src::Lhs, Dst>(n, m) & intersects::<Src::Rhs, Dst>(n, m),
+//     (Any, _) => match (intersects::<Src::Lhs, Dst>(n, m), intersects::<Src::Rhs, Dst>(n, m)) {
+//       (ALL, ALL) => ALL,
+//       (0, 0) => 0,
+//       _ => ANY,
+//     },
+//     (_, Void) => unreachable!(),
+//     (_, Array(0)) => intersects::<Src, Dst::Lhs>(n, m),
+//     (_, Array(_)) => intersects::<Src, Join<Dst::Rhs, Dst::TailHack>>(n, m),
+//     (_, Slice) if m == 0 => ALL,
+//     (_, Slice) => intersects::<Src, Join<Dst::Rhs, Dst>>(n, m - 1),
+//     (_, All) => intersects::<Src, Dst::Lhs>(n, m) & intersects::<Src, Dst::Rhs>(n, m),
+//     (_, Any) => match (intersects::<Src, Dst::Lhs>(n, m), intersects::<Src, Dst::Rhs>(n, m)) {
+//       (ALL, _) | (_, ALL) => ALL,
+//       (0, 0) => 0,
+//       _ => ANY,
+//     }
+//     (Byte(Uninit), Byte(Uninit)) => intersects::<Src::Lhs, Dst::Lhs>(n, m),
+//     (Byte(Uninit), Byte(_)) => todo!(),
+//     (Byte(_), Byte(Uninit)) => todo!(),
+//     (Byte(Init(a)), Byte(Init(b))) => match (a.byteset(), a.intersects(b)) {
+//       (a, b) if a.len() == b.len() => intersects::<Src::Lhs, Dst::Lhs>(n, m),
+//       (_, b) if b.len() > 0 => ANY & intersects::<Src::Lhs, Dst::Lhs>(n, m),
+//       _ => 0,
+//     }
+//   }
+// }
 
 /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
 ///
@@ -675,11 +649,11 @@ pub(crate) const fn static_analysis<Src: Bits + ?Sized, Dst: Bits + ?Sized>()
     match resolve::<Src, Dst>() {
       Err(e) => Err(e),
       Ok((n, m, maybe_size_mismatch)) => {
-        let src = intersects::<Src, Dst>(n, m);
+        let src = ALL; // TODO
         if src == 0 {
           Err("none of the bits patterns in source are valid in target")
         } else {
-          let dst = intersects::<Dst, Src>(m, n);
+          let dst = ALL; // TODO
           assert!(dst != 0);
           let maybe_invalid_bit_pattern = src != ALL;
           let sound_target_mutation = dst == ALL;
@@ -699,21 +673,6 @@ fn test() {
   type Bool = Byte<RangeToInclusive<1>>;
   type U8 = Byte<RangeFull>;
   type U32 = [U8; 4];
-  type NonZeroU8 = Byte<RangeFrom<1>>;
-  type NonZeroU16 = Any<
-    Join<Byte<RangeFrom<1>>, Byte<RangeFull>>,
-    Join<Byte<RangeFull>, Byte<RangeFrom<1>>>,
-  >;
-  type NonZeroU32 = Any<
-    Join<Byte<RangeFrom<1>>, Join<Byte<RangeFull>, Join<Byte<RangeFull>, Byte<RangeFull>>>>,
-    Any<
-      Join<Byte<RangeFull>, Join<Byte<RangeFrom<1>>, Join<Byte<RangeFull>, Byte<RangeFull>>>>,
-      Any<
-        Join<Byte<RangeFull>, Join<Byte<RangeFull>, Join<Byte<RangeFrom<1>>, Byte<RangeFull>>>>,
-        Join<Byte<RangeFull>, Join<Byte<RangeFull>, Join<Byte<RangeFull>, Byte<RangeFrom<1>>>>>,
-      >
-    >
-  >;
 
   assert_eq!(4, mem::size_of::<U32>());
 
@@ -776,4 +735,184 @@ fn test() {
   // println!("{:#05b}", intersects::<_0or4or8, _0or4or8>());
   // println!("{:#05b}", intersects::<_0or4, _0or4or8>());
   // println!("{:#05b}", intersects::<_0or4or8, _0or4>());
+}
+
+#[derive(Copy, Clone)]
+enum Expr<'a> {
+  Void,
+  Uninit,
+  Init(&'a ByteSet),
+  Array(usize, &'a Expr<'a>),
+  Slice(&'a Expr<'a>),
+  Cat(&'a [Expr<'a>]),
+  Any(&'a [Expr<'a>], Option<Option<u8>>),
+}
+
+impl<'a> Expr<'a> {
+  const fn intersects(&self, mut b: Expr<'a>, mut n: usize) -> u8 {
+    use Expr::*;
+
+    let mut a = *self;
+    let (mut sa, mut sb) = (([Void; 64], 0), ([Void; 64], 0));
+
+    macro_rules! push {
+      ($e:expr => $s:expr $(,$then:expr)?) => {{
+        $s.0[$s.1] = $e;
+        $s.1 += 1;
+        $($then)?
+      }};
+    }
+    macro_rules! top {
+      ($s:expr) => { match $s.1 { 0 => None, _ => { Some($s.0[$s.1 - 1]) } } }
+    }
+    macro_rules! pop {
+      ($s:expr) => { match $s.1 { 0 => None, _ => { $s.1 -= 1; Some($s.0[$s.1]) } } }
+    }
+
+    let mut i = ALL; // intersection result.
+    loop {
+      i = match (a, b) {
+        (Array(0, _), _) => i,
+        (Array(1, i), _) => { a = *i; continue; }
+        (Array(n, i), _) => { a = *i; push!(Array(n - 1, i) => sa, continue); }
+
+        (Slice(_), _) if n == 0 => i,
+        (Slice(i), _) if n == 1 => { a = *i; n -= 1; continue; }
+        (Slice(i), _) => { a = *i; n -= 1; push!(Slice(i) => sa, continue); }
+
+        (Cat([l]), _) => { a = *l; continue; }
+        (Cat([l, r @ ..]), _) => { a = *l; push!(Cat(r) => sa, continue); }
+
+        (Any([l, r @ ..], None), _) => {
+          a = *l;
+          push!(b => sa); // Save `b` state on the `sa` stack.
+          push!(Any(r, Some(None)) => sa, continue);
+        }
+        (Any([l, r @ ..], Some(j)), _) => {
+          a = *l;
+          b = unwrap!(top!(sa));
+          let j = match (i, j) {
+            (i, None) => i,
+            (ALL, Some(ALL)) => ALL,
+            (0, Some(0)) => 0,
+            _ => ANY,
+          };
+          i = ALL;
+          push!(Any(r, Some(Some(j))) => sa, continue);
+        }
+        (Any([], Some(j)), _) => {
+          let _ = unwrap!(pop!(sa)); // Remove `b` state from the `sa` stack.
+          match (i, j) {
+            (i, None) => i,
+            (ALL, Some(ALL)) => ALL,
+            (0, Some(0)) => 0,
+            _ => ANY,
+          }
+        }
+
+        (_, Array(0, _)) => i,
+        (_, Array(1, i)) => { b = *i; continue; }
+        (_, Array(n, i)) => { b = *i; push!(Array(n - 1, i) => sb, continue); }
+
+        (_, Slice(i)) => { b = *i; n -= 1; push!(Slice(i) => sb, continue); }
+
+        (_, Cat([l])) => { b = *l; continue; }
+        (_, Cat([l, r @ ..])) => { b = *l; push!(Cat(r) => sb, continue); }
+
+        (_, Any([l, r @ ..], None)) => {
+          b = *l;
+          // TODO: Save previous `i`.
+          push!(a => sa); // Duplicate `a` state on the `sa` stack.
+          push!(Any(r, Some(None)) => sb, continue);
+        }
+        (_, Any([l, r @ ..], Some(j))) => {
+          b = *l;
+          let j = match (i, j) {
+            (i, None) => i,
+            (ALL, _) | (_, Some(ALL)) => ALL,
+            (0, Some(0)) => 0,
+            _ => ANY,
+          };
+          i = ALL;
+          push!(a => sa); // Duplicate `a` state on the `sa` stack.
+          push!(Any(r, Some(Some(j))) => sb, continue);
+        }
+        (_, Any([], Some(j))) => {
+          // let _ = unwrap!(pop!(sa)); // Remove duplicated `a` state from the `sa` stack.
+          match (i, j) {
+            (i, None) => i,
+            (ALL, _) | (_, Some(ALL)) => ALL,
+            (0, Some(0)) => 0,
+            _ => ANY,
+          }
+        }
+
+        (_, Void | Cat([]) | Any([], None)) => i,
+        (Void | Cat([]) | Any([], None), _) => i,
+
+        (Uninit, Uninit) => ALL,
+        (Uninit, _) => todo!(),
+        (_, Uninit) => todo!(),
+        (Init(a), Init(b)) => {
+          let x = match (a, a.intersects(b)) {
+            (a, b) if a.len() == b.len() => i & ALL,
+            (_, b) if b.len() > 0 => i & ANY,
+            _ => 0,
+          };
+          // println!("test {:?} n {:?} -> {}", a, b, x);
+          x
+        }
+      };
+      a = match pop!(sa) { None => break, Some(a) => a };
+      b = match pop!(sb) { None => Void, Some(b) => b };
+    }
+    i
+  }
+}
+
+const _0: ByteSet = ByteSet::from_interval(Interval::new(0, 0));
+const _4: ByteSet = ByteSet::from_interval(Interval::new(4, 4));
+const _8: ByteSet = ByteSet::from_interval(Interval::new(8, 8));
+const _0OR4OR8: Expr = Expr::Any(&[Expr::Init(&_0), Expr::Init(&_4), Expr::Init(&_8)], None);
+const _ULTIMATE_TEST: Expr = Expr::Array(8192, &_0OR4OR8);
+
+const _X: u8 = _ULTIMATE_TEST.intersects(_ULTIMATE_TEST, 0);
+
+#[test]
+fn test_expr() {
+  use Expr::*;
+
+  let a = ByteSet::from_interval(Interval::new(1, 1));
+  let b = ByteSet::from_interval(Interval::new(2, 2));
+  let c = ByteSet::from_interval(Interval::new(3, 3));
+  let d = ByteSet::from_interval(Interval::new(4, 4));
+  let a = Init(&a);
+  let b = Init(&b);
+  let c = Init(&c);
+  let d = Init(&d);
+
+  let binding = [a, b, c, d];
+  let binding = [Cat(&binding), b, c, d];
+  let binding = [a, Cat(&binding), c, d];
+  let binding = [a, b, Cat(&binding), d];
+  let e = Cat(&binding);
+  let f = Array(4096, &e);
+
+  println!("{:#05b}", f.intersects(f, 0));
+
+  let binding = [Init(&_0), Init(&_4)];
+  let _0or4 = Any(&binding, None);
+  let binding = [Init(&_0), Init(&_4), Init(&_8)];
+  let _0or4or8 = Any(&binding, None);
+
+  println!("{:#05b}", _0or4.intersects(Init(&_0), 0));
+  println!("{:#05b}", _0or4.intersects(Init(&_4), 0));
+  println!("{:#05b}", _0or4.intersects(Init(&_8), 0));
+  println!("{:#05b}", _0or4.intersects(_0or4, 0));
+  println!("{:#05b}", _0or4or8.intersects(_0or4or8, 0));
+  println!("{:#05b}", _0or4.intersects(_0or4or8, 0));
+  println!("{:#05b}", _0or4or8.intersects(_0or4, 0));
+
+  let ultimate_test = Array(4096 * 100, &_0or4or8);
+  println!("{:#05b}", ultimate_test.intersects(ultimate_test, 0));
 }
