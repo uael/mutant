@@ -591,6 +591,7 @@ pub unsafe trait Integer: Copy + 'static {
   /// Representation of `Self` that can accept any bit pattern.
   /// The size of `Self::Repr` is equals to the size of `Self`.
   type Repr: Integer<Repr = Self::Repr>;
+  type Bits: bits::TypedBits;
 
   /// # Safety
   /// Implementor is responsible for `SPEC` to represents only valid values for `Self`.
@@ -1407,6 +1408,7 @@ pub mod num {
 
       unsafe impl Integer for $T {
         type Repr = $T;
+        type Bits = [bits::RangeFull; $N];
         const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::any(Self::MIN)
           .with_endianness(internal::Endianness::$endianness);
       }
@@ -1547,6 +1549,7 @@ pub mod num {
 
       unsafe impl<const V: $VT> Integer for $ConstT<V> {
         type Repr = $T;
+        type Bits = <$T as Integer>::Bits;
         // TODO: use T::SPEC.with_*
         const SPEC: IntegerSpec<Self::Repr> =
           IntegerSpec::new($v2raw, BytePattern::Equ(&$v2raw.to_ne_bytes()));
@@ -1645,6 +1648,7 @@ pub mod num {
 
   unsafe impl<T: Integer, const DEFAULT: u128> Integer for SetDefault<T, DEFAULT> {
     type Repr = T::Repr;
+    type Bits = T::Bits;
     const SPEC: IntegerSpec<Self::Repr> = T::SPEC.with_default(truncate(DEFAULT));
   }
 
@@ -1769,7 +1773,9 @@ mod internal {
       Layout::Integer { spec } if spec.is_uninit() => Bytes::uninit(),
       Layout::Integer { spec } => {
         assert!(offset == 0);
-        Bytes::new(spec.endianness, spec.byte_pattern)
+        let mut x = Bytes::new(spec.endianness, spec.byte_pattern);
+        x.pattern2 = <<T::Integer as Integer>::Bits as bits::Lit<bits::BitsPattern>>::VALUE;
+        x
       }
     }
   }
@@ -2454,13 +2460,14 @@ mod internal {
   struct Bytes<'a> {
     endianness: Endianness,
     pattern: BytePattern<'a>,
+    pattern2: bits::BitsPattern,
     offset: usize,
     bytes: [ByteInterval; 16],
   }
 
   impl<'a> Bytes<'a> {
     pub const fn new(endianness: Endianness, pattern: BytePattern<'a>) -> Self {
-      Self { endianness, pattern, offset: 0, bytes: [ByteInterval::any(); 16] }
+      Self { endianness, pattern, pattern2: bits::BitsPattern::Void, offset: 0, bytes: [ByteInterval::any(); 16] }
     }
 
     pub const fn uninit() -> Self {
@@ -2715,6 +2722,7 @@ mod internal {
 
   unsafe impl<T: Integer> Integer for Size<T> {
     type Repr = T::Repr;
+    type Bits = T::Bits;
     const SPEC: IntegerSpec<Self::Repr> = T::SPEC.with_size_field(SizeField::Size);
   }
 
@@ -2860,6 +2868,7 @@ mod internal {
 
   unsafe impl<T: ?Sized + 'static> Integer for PhantomData<T> {
     type Repr = Self;
+    type Bits = ();
     const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::any(PhantomData);
   }
 
@@ -2868,6 +2877,7 @@ mod internal {
       $(
         unsafe impl Integer for $ty {
           type Repr = $raw;
+          type Bits = ();
           const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::$($spec)+;
         }
       )+

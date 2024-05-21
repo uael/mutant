@@ -14,6 +14,7 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Repr = u32;
+  type Bits = ();
 
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0x01010101u32,
@@ -35,6 +36,7 @@ enum _0or4 {
 
 unsafe impl Integer for _0or4 {
   type Repr = u16;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[
@@ -55,6 +57,7 @@ enum _0or4or8 {
 
 unsafe impl Integer for _0or4or8 {
   type Repr = u16;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[
@@ -74,6 +77,7 @@ enum UpTo1u8 {
 
 unsafe impl Integer for UpTo1u8 {
   type Repr = u8;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[BytePattern::Equ(&0u8.to_ne_bytes()), BytePattern::Equ(&1u8.to_ne_bytes())]),
@@ -89,6 +93,7 @@ enum UpTo1u16 {
 
 unsafe impl Integer for UpTo1u16 {
   type Repr = u16;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[
@@ -108,6 +113,7 @@ enum UpTo2u8 {
 
 unsafe impl Integer for UpTo2u8 {
   type Repr = u8;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[
@@ -128,6 +134,7 @@ enum UpTo2u16 {
 
 unsafe impl Integer for UpTo2u16 {
   type Repr = u16;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0,
     BytePattern::Any(&[
@@ -144,6 +151,7 @@ struct Uninit(u8);
 
 unsafe impl Integer for Uninit {
   type Repr = u8;
+  type Bits = ();
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(0, BytePattern::Uninit);
 }
 
