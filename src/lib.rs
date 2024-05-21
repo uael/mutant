@@ -1,42 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use core::num::NonZeroU8;
 use core::marker::PhantomData;
-use core::fmt;
-use core::fmt::{Debug, Formatter};
-use core::mem;
-
-/// Check a condition and return an error if it is `false`.
-#[rustfmt::skip]
-macro_rules! check { ($c:expr, $e:expr $(,)?) => { if (!$c) { return Err($e); } } }
-
-/// Same as iter.fold() but for const fns.
-#[rustfmt::skip]
-macro_rules! fold {
-  (..$len:expr, $init:expr, |$i:tt, $acc:tt| $x:expr) => {{
-    let (mut $i, mut $acc) = (0, $init);
-    loop {
-      if $i >= $len { break $acc; }
-      ($acc, $i) = ($x, $i + 1);
-    }
-  }};
-  ($iter:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (
-    fold!($iter, $iter.len(), $init, |__i, $acc, $it| $x)
-  );
-  ($iter:expr, $init:expr, |$i:tt, $acc:tt, $it:tt| $x:expr) => {{
-    fold!($iter, $iter.len(), $init, |$i, $acc, $it| $x)
-  }};
-  ($iter:expr, $len:expr, $init:expr, |$acc:tt, $it:tt| $x:expr) => (
-    fold!($iter, $len, $init, |__i, $acc, $it| $x)
-  );
-  ($iter:expr, $len:expr, $init:expr, |$i:tt, $acc:tt, $it:tt| $x:expr) => {{
-    let (mut $i, mut $acc) = (0, $init);
-    loop {
-      if $i >= $len { break $acc; }
-      let $it = &$iter[$i];
-      ($acc, $i) = ($x, $i + 1);
-    }
-  }};
-}
+use core::fmt::Debug;
 
 /// Unwrap an `Option` and panic if it is `None`.
 #[rustfmt::skip]
@@ -109,8 +74,9 @@ impl ByteSet {
 // -------------------------------------------------------------------------------------------------
 // `Pattern`
 
+#[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
-struct Pattern { mask: Option<NonZeroU8>, interval: Interval }
+pub struct Pattern { mask: Option<NonZeroU8>, interval: Interval }
 
 impl Pattern {
   const fn new(mask: u8, interval: Interval) -> Self {
@@ -148,24 +114,39 @@ impl Pattern {
 // -------------------------------------------------------------------------------------------------
 // `Pack`
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
-pub struct Pack<A, B: ?Sized>(A, B);
+pub struct Pack<A, B>(A, B);
 
 // -------------------------------------------------------------------------------------------------
 // `Literal`
 
-trait Literal<T>: 'static {
+trait Literal<T>: Copy + 'static {
   const VALUE: T;
 }
 
+#[derive(Copy, Clone)]
 struct Exact<const VALUE: u8>;
+
+#[derive(Copy, Clone)]
 struct Range<const START: u8, const END: u8>;
+
+#[derive(Copy, Clone)]
 struct RangeFrom<const START: u8>;
+
+#[derive(Copy, Clone)]
 struct RangeFull;
+
+#[derive(Copy, Clone)]
 struct RangeInclusive<const START: u8, const END: u8>;
+
+#[derive(Copy, Clone)]
 struct RangeTo<const END: u8>;
+
+#[derive(Copy, Clone)]
 struct RangeToInclusive<const END: u8>;
+
+#[derive(Copy, Clone)]
 struct Mask<const MASK: u8, T: Literal<Interval>>(PhantomData<T>);
 
 /// Internal implements.
@@ -211,8 +192,9 @@ const _: () = {
 // `Expr`
 
 /// Bits expressions.
+#[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
-enum Expr<'a> {
+pub enum Expr<'a> {
   Void,
   Any(&'a Expr<'a>, &'a Expr<'a>),
   All(&'a Expr<'a>, &'a Expr<'a>),
@@ -222,7 +204,7 @@ enum Expr<'a> {
 // -------------------------------------------------------------------------------------------------
 // `Bits`
 
-pub trait Bits: Copy + 'static {
+pub trait Bits: 'static {
   type Lhs: Bits;
   type Rhs: Bits;
   const EXPR: Expr<'static>;
@@ -231,21 +213,14 @@ pub trait Bits: Copy + 'static {
   type Append<T: Bits>: Bits;
 }
 
-type Join<L, R> = <L as Bits>::Append<R>;
-
-/// Bits are full maybe uninitialized byte.
-#[repr(transparent)]
-struct Byte<P>(PhantomData<P>, u8);
-
 /// Bits are either `L` or `R`.
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-struct Any<L: ?Sized, R: ?Sized>(PhantomData<R>, L);
+struct Any<L, R>(PhantomData<(L, R)>);
 
 /// Bits are both `L` and `R`.
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-struct All<L: ?Sized, R: ?Sized>(PhantomData<R>, L);
+struct All<L, R>(PhantomData<(L, R)>);
+
+/// Join two patterns.
+type Join<L, R> = <L as Bits>::Append<R>;
 
 /// Internal implements.
 const _: () = {
@@ -257,28 +232,20 @@ const _: () = {
     type Append<T: Bits> = T;
   }
 
-  impl<P> Copy for Byte<P> {}
-
-  impl<P> Clone for Byte<P> {
-    fn clone(&self) -> Self {
-      *self
-    }
-  }
-
-  impl<P: Literal<Pattern>> Bits for Byte<P> {
+  impl<T: Literal<Pattern>> Bits for T {
     type Lhs = ();
     type Rhs = ();
-    const EXPR: Expr<'static> = Expr::Byte(P::VALUE, &Expr::Void);
-    /// `Byte<P> + T -> Pack<Byte<P>, T>`
-    type Append<T: Bits> = Pack<Byte<P>, T>;
+    const EXPR: Expr<'static> = Expr::Byte(T::VALUE, &Expr::Void);
+    /// `T + Tr -> Pack<T, Tr>`
+    type Append<Tr: Bits> = Pack<T, Tr>;
   }
 
-  impl<P: Literal<Pattern>, Tl: Bits> Bits for Pack<Byte<P>, Tl> {
+  impl<T: Literal<Pattern>, Tl: Bits> Bits for Pack<T, Tl> {
     type Lhs = Tl;
     type Rhs = ();
-    const EXPR: Expr<'static> = Expr::Byte(P::VALUE, &Tl::EXPR);
-    /// `Pack<Byte<P>, Tl> + Tr -> Pack<Byte<P>, Tl + Tr>`
-    type Append<Tr: Bits> = Pack<Byte<P>, Tl::Append<Tr>>;
+    const EXPR: Expr<'static> = Expr::Byte(T::VALUE, &Tl::EXPR);
+    /// `Pack<T, Tl> + Tr -> Pack<T, Tl + Tr>`
+    type Append<Tr: Bits> = Pack<T, Tl::Append<Tr>>;
   }
 
   impl<L: Bits, R: Bits> Bits for Any<L, R> {
@@ -352,11 +319,8 @@ impl<'a> Expr<'a> {
 
 #[test]
 fn test() {
-  type Bool = Byte<RangeToInclusive<1>>;
-  type U8 = Byte<RangeFull>;
-  type U32 = [U8; 4];
-
-  assert_eq!(4, mem::size_of::<U32>());
+  type Bool = RangeToInclusive<1>;
+  type U8 = RangeFull;
 
   println!("{}", size::<Bool>());
   println!("{}", size::<U8>());
@@ -377,13 +341,13 @@ fn test() {
   println!("{}", size::<Yaz>());
 
   type _0or4 = Any<
-    Byte<Exact<0>>,
-    Byte<Exact<4>>,
+    Exact<0>,
+    Exact<4>,
   >;
 
   type _0or4or8 = Any<
     _0or4,
-    Byte<Exact<8>>,
+    Exact<8>,
   >;
 
   // println!("{:?}", static_analysis::<_0or4, _0or4>());
