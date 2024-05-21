@@ -107,21 +107,21 @@ impl ByteSet {
 }
 
 // -------------------------------------------------------------------------------------------------
-// `MaskedInterval`
+// `Pattern`
 
 #[derive(Debug, Copy, Clone)]
-struct MaskedInterval(Option<NonZeroU8>, Interval);
+struct Pattern { mask: Option<NonZeroU8>, interval: Interval }
 
-impl MaskedInterval {
+impl Pattern {
   const fn new(mask: u8, interval: Interval) -> Self {
     let mask = if mask == 0xff { None } else { Some(unwrap!(NonZeroU8::new(mask))) };
-    Self(mask, interval)
+    Self { mask, interval }
   }
 
   const fn contains(&self, value: u8) -> bool {
-    match self.0 {
-      Some(mask) => self.1.contains((value & mask.get()) >> mask.trailing_zeros()),
-      None => self.1.contains(value),
+    match self.mask {
+      Some(mask) => self.interval.contains((value & mask.get()) >> mask.trailing_zeros()),
+      None => self.interval.contains(value),
     }
   }
 
@@ -130,7 +130,7 @@ impl MaskedInterval {
   }
 
   const fn byteset(&self) -> ByteSet {
-    let MaskedInterval(mask, Interval { mut start, end }) = *self;
+    let Pattern { mask, interval: Interval { mut start, end } } = *self;
     match mask {
       None => ByteSet::from_interval(Interval::new(start, end)),
       Some(mask) => {
@@ -155,7 +155,7 @@ pub struct Pack<A, B: ?Sized>(A, B);
 // -------------------------------------------------------------------------------------------------
 // `Literal`
 
-trait Literal<T> {
+trait Literal<T>: 'static {
   const VALUE: T;
 }
 
@@ -198,12 +198,12 @@ const _: () = {
     const VALUE: Interval = Interval { start: 0, end: END };
   }
 
-  impl<T: Literal<Interval>> Literal<MaskedInterval> for T {
-    const VALUE: MaskedInterval = MaskedInterval::new(0xff, T::VALUE);
+  impl<T: Literal<Interval>> Literal<Pattern> for T {
+    const VALUE: Pattern = Pattern::new(0xff, T::VALUE);
   }
 
-  impl<const M: u8, T: Literal<Interval>> Literal<MaskedInterval> for Mask<M, T> {
-    const VALUE: MaskedInterval = MaskedInterval::new(M, T::VALUE);
+  impl<const M: u8, T: Literal<Interval>> Literal<Pattern> for Mask<M, T> {
+    const VALUE: Pattern = Pattern::new(M, T::VALUE);
   }
 };
 
@@ -216,13 +216,13 @@ enum Expr<'a> {
   Void,
   Any(&'a Expr<'a>, &'a Expr<'a>),
   All(&'a Expr<'a>, &'a Expr<'a>),
-  Byte(MaskedInterval, &'a Expr<'a>),
+  Byte(Pattern, &'a Expr<'a>),
 }
 
 // -------------------------------------------------------------------------------------------------
 // `Bits`
 
-pub trait Bits {
+pub trait Bits: Copy + 'static {
   type Lhs: Bits;
   type Rhs: Bits;
   const EXPR: Expr<'static>;
@@ -240,12 +240,12 @@ struct Byte<P>(PhantomData<P>, u8);
 /// Bits are either `L` or `R`.
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-struct Any<L: ?Sized, R: ?Sized> { rhs: PhantomData<R>, lhs: L }
+struct Any<L: ?Sized, R: ?Sized>(PhantomData<R>, L);
 
 /// Bits are both `L` and `R`.
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-struct All<L: ?Sized, R: ?Sized> { rhs: PhantomData<R>, lhs: L }
+struct All<L: ?Sized, R: ?Sized>(PhantomData<R>, L);
 
 /// Internal implements.
 const _: () = {
@@ -265,7 +265,7 @@ const _: () = {
     }
   }
 
-  impl<P: Literal<MaskedInterval>> Bits for Byte<P> {
+  impl<P: Literal<Pattern>> Bits for Byte<P> {
     type Lhs = ();
     type Rhs = ();
     const EXPR: Expr<'static> = Expr::Byte(P::VALUE, &Expr::Void);
@@ -273,7 +273,7 @@ const _: () = {
     type Append<T: Bits> = Pack<Byte<P>, T>;
   }
 
-  impl<P: Literal<MaskedInterval>, Tl: Bits> Bits for Pack<Byte<P>, Tl> {
+  impl<P: Literal<Pattern>, Tl: Bits> Bits for Pack<Byte<P>, Tl> {
     type Lhs = Tl;
     type Rhs = ();
     const EXPR: Expr<'static> = Expr::Byte(P::VALUE, &Tl::EXPR);
@@ -346,31 +346,6 @@ impl<'a> Expr<'a> {
         (_, b) if b > 0 => ANY & x.intersects(y),
         _ => 0,
       }
-    }
-  }
-}
-
-const fn intersects<A: Bits, B: Bits>(n: usize, m: usize) -> u8 {
-  use Expr::*;
-  match (A::EXPR, B::EXPR) {
-    (Void, _) => ALL,
-    (All(..), _) => intersects::<A::Lhs, B>(n, m) & intersects::<A::Rhs, B>(n, m),
-    (Any(..), _) => match (intersects::<A::Lhs, B>(n, m), intersects::<A::Rhs, B>(n, m)) {
-      (ALL, ALL) => ALL,
-      (0, 0) => 0,
-      _ => ANY,
-    },
-    (_, Void) => unreachable!(),
-    (_, All(..)) => intersects::<A, B::Lhs>(n, m) & intersects::<A, B::Rhs>(n, m),
-    (_, Any(..)) => match (intersects::<A, B::Lhs>(n, m), intersects::<A, B::Rhs>(n, m)) {
-      (ALL, _) | (_, ALL) => ALL,
-      (0, 0) => 0,
-      _ => ANY,
-    }
-    (Byte(a, _), Byte(b, _)) => match (a.byteset(), a.intersects(&b)) {
-      (a, b) if a.len() == b => intersects::<A::Lhs, B::Lhs>(n, m),
-      (_, b) if b > 0 => ANY & intersects::<A::Lhs, B::Lhs>(n, m),
-      _ => 0,
     }
   }
 }
