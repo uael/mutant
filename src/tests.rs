@@ -14,6 +14,7 @@ enum TestEnum {
 
 unsafe impl Integer for TestEnum {
   type Repr = u32;
+
   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
     0x01010101u32,
     BytePattern::Any(&[
