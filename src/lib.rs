@@ -19,7 +19,12 @@ struct Interval { start: u8, end: u8 }
 
 impl Interval {
   const fn new(start: u8, end: u8) -> Self {
+    assert!(start <= end);
     Self { start, end }
+  }
+
+  const fn len(&self) -> usize {
+    1usize + (self.end - self.start) as usize
   }
 
   #[inline(always)]
@@ -72,16 +77,20 @@ impl ByteSet {
 }
 
 // -------------------------------------------------------------------------------------------------
-// `Pattern`
+// `BytePattern`
 
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
-pub struct Pattern { mask: Option<NonZeroU8>, interval: Interval }
+pub struct BytePattern { mask: Option<NonZeroU8>, interval: Interval }
 
-impl Pattern {
+impl BytePattern {
   const fn new(mask: u8, interval: Interval) -> Self {
     let mask = if mask == 0xff { None } else { Some(unwrap!(NonZeroU8::new(mask))) };
     Self { mask, interval }
+  }
+
+  const fn len(&self) -> usize {
+    self.interval.len()
   }
 
   const fn contains(&self, value: u8) -> bool {
@@ -96,7 +105,7 @@ impl Pattern {
   }
 
   const fn byteset(&self) -> ByteSet {
-    let Pattern { mask, interval: Interval { mut start, end } } = *self;
+    let BytePattern { mask, interval: Interval { mut start, end } } = *self;
     match mask {
       None => ByteSet::from_interval(Interval::new(start, end)),
       Some(mask) => {
@@ -121,7 +130,7 @@ pub struct Pack<A, B>(A, B);
 // -------------------------------------------------------------------------------------------------
 // `Literal`
 
-trait Literal<T>: Copy + 'static {
+trait Lit<T>: 'static {
   const VALUE: T;
 }
 
@@ -147,70 +156,68 @@ struct RangeTo<const END: u8>;
 struct RangeToInclusive<const END: u8>;
 
 #[derive(Copy, Clone)]
-struct Mask<const MASK: u8, T: Literal<Interval>>(PhantomData<T>);
+struct Mask<const MASK: u8, T: Lit<Interval>>(PhantomData<T>);
 
 /// Internal implements.
 const _: () = {
-  impl<const VALUE: u8> Literal<Interval> for Exact<VALUE> {
+  impl<const VALUE: u8> Lit<Interval> for Exact<VALUE> {
     const VALUE: Interval = Interval { start: VALUE, end: VALUE };
   }
 
-  impl<const START: u8, const END: u8> Literal<Interval> for Range<START, END>{
+  impl<const START: u8, const END: u8> Lit<Interval> for Range<START, END>{
     const VALUE: Interval = Interval { start: START, end: END - 1 };
   }
 
-  impl<const START: u8> Literal<Interval> for RangeFrom<START> {
+  impl<const START: u8> Lit<Interval> for RangeFrom<START> {
     const VALUE: Interval = Interval { start: START, end: 0xff };
   }
 
-  impl Literal<Interval> for RangeFull {
+  impl Lit<Interval> for RangeFull {
     const VALUE: Interval = Interval { start: 0, end: 0xff };
   }
 
-  impl<const START: u8, const END: u8> Literal<Interval> for RangeInclusive<START, END>{
+  impl<const START: u8, const END: u8> Lit<Interval> for RangeInclusive<START, END>{
     const VALUE: Interval = Interval { start: START, end: END };
   }
 
-  impl<const END: u8> Literal<Interval> for RangeTo<END> {
+  impl<const END: u8> Lit<Interval> for RangeTo<END> {
     const VALUE: Interval = Interval { start: 0, end: END - 1 };
   }
 
-  impl<const END: u8> Literal<Interval> for RangeToInclusive<END> {
+  impl<const END: u8> Lit<Interval> for RangeToInclusive<END> {
     const VALUE: Interval = Interval { start: 0, end: END };
   }
 
-  impl<T: Literal<Interval>> Literal<Pattern> for T {
-    const VALUE: Pattern = Pattern::new(0xff, T::VALUE);
+  impl<T: Lit<Interval>> Lit<BytePattern> for T {
+    const VALUE: BytePattern = BytePattern::new(0xff, T::VALUE);
   }
 
-  impl<const M: u8, T: Literal<Interval>> Literal<Pattern> for Mask<M, T> {
-    const VALUE: Pattern = Pattern::new(M, T::VALUE);
+  impl<const M: u8, T: Lit<Interval>> Lit<BytePattern> for Mask<M, T> {
+    const VALUE: BytePattern = BytePattern::new(M, T::VALUE);
   }
 };
 
 // -------------------------------------------------------------------------------------------------
-// `Expr`
+// `BitsPattern`
 
-/// Bits expressions.
+/// Bits pattern.
 #[doc(hidden)]
 #[derive(Debug, Copy, Clone)]
-pub enum Expr<'a> {
+pub enum BitsPattern {
   Void,
-  Any(&'a Expr<'a>, &'a Expr<'a>),
-  All(&'a Expr<'a>, &'a Expr<'a>),
-  Byte(Pattern, &'a Expr<'a>),
+  Any(&'static BitsPattern, &'static BitsPattern),
+  All(&'static BitsPattern, &'static BitsPattern),
+  Byte(BytePattern, &'static BitsPattern),
 }
 
 // -------------------------------------------------------------------------------------------------
 // `Bits`
 
-pub trait Bits: 'static {
-  type Lhs: Bits;
-  type Rhs: Bits;
-  const EXPR: Expr<'static>;
-
+pub trait TypedBits: Lit<BitsPattern> {
+  type Lhs: TypedBits;
+  type Rhs: TypedBits;
   /// Append `T` to `Self`.
-  type Append<T: Bits>: Bits;
+  type Append<T: TypedBits>: TypedBits;
 }
 
 /// Bits are either `L` or `R`.
@@ -220,55 +227,70 @@ struct Any<L, R>(PhantomData<(L, R)>);
 struct All<L, R>(PhantomData<(L, R)>);
 
 /// Join two patterns.
-type Join<L, R> = <L as Bits>::Append<R>;
+type Join<L, R> = <L as TypedBits>::Append<R>;
 
 /// Internal implements.
 const _: () = {
-  impl Bits for () {
+  impl Lit<BitsPattern> for () {
+    const VALUE: BitsPattern = BitsPattern::Void;
+  }
+
+  impl<T: Lit<BytePattern>> Lit<BitsPattern> for T {
+    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &BitsPattern::Void);
+  }
+
+  impl<T: Lit<BytePattern>, Tl: Lit<BitsPattern>> Lit<BitsPattern> for Pack<T, Tl> {
+    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &Tl::VALUE);
+  }
+
+  impl<L: Lit<BitsPattern>, R: Lit<BitsPattern>> Lit<BitsPattern> for Any<L, R> {
+    const VALUE: BitsPattern = BitsPattern::Any(&L::VALUE, &R::VALUE);
+  }
+
+  impl<L: Lit<BitsPattern>, R: Lit<BitsPattern>> Lit<BitsPattern> for All<L, R> {
+    const VALUE: BitsPattern = BitsPattern::All(&L::VALUE, &R::VALUE);
+  }
+
+  impl TypedBits for () {
     type Lhs = ();
     type Rhs = ();
-    const EXPR: Expr<'static> = Expr::Void;
     /// `() + T -> T`
-    type Append<T: Bits> = T;
+    type Append<T: TypedBits> = T;
   }
 
-  impl<T: Literal<Pattern>> Bits for T {
+  impl<T: Lit<BytePattern>> TypedBits for T {
     type Lhs = ();
     type Rhs = ();
-    const EXPR: Expr<'static> = Expr::Byte(T::VALUE, &Expr::Void);
     /// `T + Tr -> Pack<T, Tr>`
-    type Append<Tr: Bits> = Pack<T, Tr>;
+    type Append<Tr: TypedBits> = Pack<T, Tr>;
   }
 
-  impl<T: Literal<Pattern>, Tl: Bits> Bits for Pack<T, Tl> {
+  impl<T: Lit<BytePattern>, Tl: TypedBits> TypedBits for Pack<T, Tl> {
     type Lhs = Tl;
     type Rhs = ();
-    const EXPR: Expr<'static> = Expr::Byte(T::VALUE, &Tl::EXPR);
     /// `Pack<T, Tl> + Tr -> Pack<T, Tl + Tr>`
-    type Append<Tr: Bits> = Pack<T, Tl::Append<Tr>>;
+    type Append<Tr: TypedBits> = Pack<T, Tl::Append<Tr>>;
   }
 
-  impl<L: Bits, R: Bits> Bits for Any<L, R> {
+  impl<L: TypedBits, R: TypedBits> TypedBits for Any<L, R> {
     type Lhs = L;
     type Rhs = R;
-    const EXPR: Expr<'static> = Expr::Any(&L::EXPR, &R::EXPR);
     /// `Any<L, R> + T -> Any<L + T, R + T>`
-    type Append<T: Bits> = Any<L::Append<T>, R::Append<T>>;
+    type Append<T: TypedBits> = Any<L::Append<T>, R::Append<T>>;
   }
 
-  impl<L: Bits, R: Bits> Bits for All<L, R> {
+  impl<L: TypedBits, R: TypedBits> TypedBits for All<L, R> {
     type Lhs = L;
     type Rhs = R;
-    const EXPR: Expr<'static> = Expr::All(&L::EXPR, &R::EXPR);
     /// `All<L, R> + T -> All<L + T, R + T>`
-    type Append<T: Bits> = All<L::Append<T>, R::Append<T>>;
+    type Append<T: TypedBits> = All<L::Append<T>, R::Append<T>>;
   }
 };
 
-pub const fn size<T: Bits>() -> usize {
+pub const fn size<T: TypedBits>() -> usize {
   const {
-    use Expr::*;
-    match T::EXPR {
+    use BitsPattern::*;
+    match T::VALUE {
       Void => 0,
       Byte { .. } => 1 + size::<T::Lhs>(),
       Any { .. } | All { .. } => size::<T::Lhs>(),
@@ -277,9 +299,9 @@ pub const fn size<T: Bits>() -> usize {
 }
 
 #[inline(always)]
-pub const unsafe fn matches_ptr<T: Bits>(ptr: *const u8) -> bool {
-  use Expr::*;
-  match T::EXPR {
+pub const unsafe fn matches_ptr<T: TypedBits>(ptr: *const u8) -> bool {
+  use BitsPattern::*;
+  match T::VALUE {
     Void => true,
     Byte(byte, _) => byte.contains(*ptr) && matches_ptr::<T::Lhs>(ptr.add(1)),
     Any(..) => matches_ptr::<T::Lhs>(ptr) || matches_ptr::<T::Rhs>(ptr),
@@ -290,9 +312,9 @@ pub const unsafe fn matches_ptr<T: Bits>(ptr: *const u8) -> bool {
 const ANY: u8 = 0b01;
 const ALL: u8 = 0b11;
 
-impl<'a> Expr<'a> {
-  const fn intersects(&self, b: &Expr) -> u8 {
-    use Expr::*;
+impl BitsPattern {
+  const fn intersects(&self, b: &BitsPattern) -> u8 {
+    use BitsPattern::*;
     match (self, b) {
       (Void, _) => ALL,
       (All(lhs, rhs), _) => lhs.intersects(b) & rhs.intersects(b),
@@ -308,7 +330,7 @@ impl<'a> Expr<'a> {
         (0, 0) => 0,
         _ => ANY,
       }
-      (Byte(a, x), Byte(b, y)) => match (a.byteset(), a.intersects(b)) {
+      (Byte(a, x), Byte(b, y)) => match (a, a.intersects(b)) {
         (a, b) if a.len() == b => x.intersects(y),
         (_, b) if b > 0 => ANY & x.intersects(y),
         _ => 0,
