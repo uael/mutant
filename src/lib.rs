@@ -591,7 +591,7 @@ pub unsafe trait Integer: Copy + 'static {
   /// Representation of `Self` that can accept any bit pattern.
   /// The size of `Self::Repr` is equals to the size of `Self`.
   type Repr: Integer<Repr = Self::Repr>;
-  type Bits: bits::TypedBits;
+  type Bits: bits::Bits;
 
   /// # Safety
   /// Implementor is responsible for `SPEC` to represents only valid values for `Self`.
@@ -1408,7 +1408,7 @@ pub mod num {
 
       unsafe impl Integer for $T {
         type Repr = $T;
-        type Bits = [bits::RangeFull; $N];
+        type Bits = ();
         const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::any(Self::MIN)
           .with_endianness(internal::Endianness::$endianness);
       }
@@ -1774,7 +1774,7 @@ mod internal {
       Layout::Integer { spec } => {
         assert!(offset == 0);
         let mut x = Bytes::new(spec.endianness, spec.byte_pattern);
-        x.pattern2 = <<T::Integer as Integer>::Bits as bits::Lit<bits::BitsPattern>>::VALUE;
+        // x.pattern2 = <<T::Integer as Integer>::Bits as bits::Lit<bits::BitsPattern>>::VALUE;
         x
       }
     }

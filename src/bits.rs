@@ -211,11 +211,11 @@ pub enum BitsPattern {
 // -------------------------------------------------------------------------------------------------
 // `Bits`
 
-pub trait TypedBits: Lit<BitsPattern> {
-  type Lhs: TypedBits;
-  type Rhs: TypedBits;
+pub trait Bits: Lit<BitsPattern> {
+  type Lhs: Bits;
+  type Rhs: Bits;
   /// Append `T` to `Self`.
-  type Append<T: TypedBits>: TypedBits;
+  type Append<T: Bits>: Bits;
 }
 
 /// Bits are either `L` or `R`.
@@ -225,7 +225,7 @@ struct Any<L, R>(PhantomData<(L, R)>);
 struct All<L, R>(PhantomData<(L, R)>);
 
 /// Join two patterns.
-type Join<L, R> = <L as TypedBits>::Append<R>;
+type Join<L, R> = <L as Bits>::Append<R>;
 
 /// Internal implements.
 const _: () = {
@@ -241,70 +241,6 @@ const _: () = {
     const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &Tl::VALUE);
   }
 
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 1] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &BitsPattern::Void);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 2] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 1] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 3] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 2] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 4] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 3] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 5] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 4] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 6] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 5] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 7] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 6] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 8] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 7] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 9] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 8] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 10] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 9] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 11] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 10] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 12] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 11] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 13] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 12] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 14] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 13] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 15] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 14] as Lit<BitsPattern>>::VALUE);
-  }
-
-  impl<T: Lit<BytePattern>> Lit<BitsPattern> for [T; 16] {
-    const VALUE: BitsPattern = BitsPattern::Byte(T::VALUE, &<[T; 15] as Lit<BitsPattern>>::VALUE);
-  }
-
   impl<L: Lit<BitsPattern>, R: Lit<BitsPattern>> Lit<BitsPattern> for Any<L, R> {
     const VALUE: BitsPattern = BitsPattern::Any(&L::VALUE, &R::VALUE);
   }
@@ -313,155 +249,43 @@ const _: () = {
     const VALUE: BitsPattern = BitsPattern::All(&L::VALUE, &R::VALUE);
   }
 
-  impl TypedBits for () {
+  impl Bits for () {
     type Lhs = ();
     type Rhs = ();
     /// `() + T -> T`
-    type Append<T: TypedBits> = T;
+    type Append<T: Bits> = T;
   }
 
-  impl<T: Lit<BytePattern>> TypedBits for T {
+  impl<T: Lit<BytePattern>> Bits for T {
     type Lhs = ();
     type Rhs = ();
     /// `T + Tr -> Pack<T, Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Tr>;
+    type Append<Tr: Bits> = Pack<T, Tr>;
   }
 
-  impl<T: Lit<BytePattern>, Tl: TypedBits> TypedBits for Pack<T, Tl> {
+  impl<T: Lit<BytePattern>, Tl: Bits> Bits for Pack<T, Tl> {
     type Lhs = Tl;
     type Rhs = ();
     /// `Pack<T, Tl> + Tr -> Pack<T, Tl + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Tl::Append<Tr>>;
+    type Append<Tr: Bits> = Pack<T, Tl::Append<Tr>>;
   }
 
-  impl<T: Lit<BytePattern>> TypedBits for [T; 1] {
-    type Lhs = ();
-    type Rhs = ();
-    /// `T + Tr -> Pack<T, Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Tr>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 2] {
-    type Lhs = [T; 1];
-    type Rhs = ();
-    /// `[T; 2] + Tr -> Pack<T, [T; 1] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 1], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 3] {
-    type Lhs = [T; 2];
-    type Rhs = ();
-    /// `[T; 3] + Tr -> Pack<T, [T; 2] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 2], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 4] {
-    type Lhs = [T; 3];
-    type Rhs = ();
-    /// `[T; 4] + Tr -> Pack<T, [T; 3] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 3], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 5] {
-    type Lhs = [T; 4];
-    type Rhs = ();
-    /// `[T; 5] + Tr -> Pack<T, [T; 4] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 4], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 6] {
-    type Lhs = [T; 5];
-    type Rhs = ();
-    /// `[T; 6] + Tr -> Pack<T, [T; 5] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 5], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 7] {
-    type Lhs = [T; 6];
-    type Rhs = ();
-    /// `[T; 7] + Tr -> Pack<T, [T; 6] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 6], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 8] {
-    type Lhs = [T; 7];
-    type Rhs = ();
-    /// `[T; 8] + Tr -> Pack<T, [T; 7] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 7], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 9] {
-    type Lhs = [T; 8];
-    type Rhs = ();
-    /// `[T; 9] + Tr -> Pack<T, [T; 8] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 8], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 10] {
-    type Lhs = [T; 9];
-    type Rhs = ();
-    /// `[T; 10] + Tr -> Pack<T, [T; 9] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 9], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 11] {
-    type Lhs = [T; 10];
-    type Rhs = ();
-    /// `[T; 11] + Tr -> Pack<T, [T; 10] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 10], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 12] {
-    type Lhs = [T; 11];
-    type Rhs = ();
-    /// `[T; 12] + Tr -> Pack<T, [T; 11] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 11], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 13] {
-    type Lhs = [T; 12];
-    type Rhs = ();
-    /// `[T; 13] + Tr -> Pack<T, [T; 12] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 12], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 14] {
-    type Lhs = [T; 13];
-    type Rhs = ();
-    /// `[T; 14] + Tr -> Pack<T, [T; 13] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 13], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 15] {
-    type Lhs = [T; 14];
-    type Rhs = ();
-    /// `[T; 15] + Tr -> Pack<T, [T; 14] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 14], Tr>>;
-  }
-
-  impl<T: Lit<BytePattern>> TypedBits for [T; 16] {
-    type Lhs = [T; 15];
-    type Rhs = ();
-    /// `[T; 16] + Tr -> Pack<T, [T; 15] + Tr>`
-    type Append<Tr: TypedBits> = Pack<T, Join<[T; 15], Tr>>;
-  }
-
-  impl<L: TypedBits, R: TypedBits> TypedBits for Any<L, R> {
+  impl<L: Bits, R: Bits> Bits for Any<L, R> {
     type Lhs = L;
     type Rhs = R;
     /// `Any<L, R> + T -> Any<L + T, R + T>`
-    type Append<T: TypedBits> = Any<L::Append<T>, R::Append<T>>;
+    type Append<T: Bits> = Any<L::Append<T>, R::Append<T>>;
   }
 
-  impl<L: TypedBits, R: TypedBits> TypedBits for All<L, R> {
+  impl<L: Bits, R: Bits> Bits for All<L, R> {
     type Lhs = L;
     type Rhs = R;
     /// `All<L, R> + T -> All<L + T, R + T>`
-    type Append<T: TypedBits> = All<L::Append<T>, R::Append<T>>;
+    type Append<T: Bits> = All<L::Append<T>, R::Append<T>>;
   }
 };
 
-const fn size<T: TypedBits>() -> usize {
+const fn size<T: Bits>() -> usize {
   const {
     use BitsPattern::*;
     match T::VALUE {
@@ -473,7 +297,7 @@ const fn size<T: TypedBits>() -> usize {
 }
 
 #[inline(always)]
-const unsafe fn matches_ptr<T: TypedBits>(ptr: *const u8) -> bool {
+const unsafe fn matches_ptr<T: Bits>(ptr: *const u8) -> bool {
   use BitsPattern::*;
   match T::VALUE {
     Void => true,
@@ -511,4 +335,204 @@ impl BitsPattern {
       }
     }
   }
+}
+
+// -------------------------------------------------------------------------------------------------
+// `WIP`
+
+trait Int: Copy + 'static {
+  type Bits: Bits;
+}
+
+impl Int for u32 {
+  type Bits = ();
+}
+
+struct True;
+struct False;
+
+trait MaybeSized {
+  type Sized;
+}
+
+trait Introspect<I, S = <Self as MaybeSized>::Sized>: MaybeSized {
+  type Output;
+}
+
+trait IntrospectInt<T: Int> {
+  type Output;
+}
+
+trait IntrospectArray<T, const N: usize> {
+  type Output;
+}
+
+trait IntrospectSizedStruct<T: Struct> {
+  type Output;
+}
+
+trait IntrospectUnsizedStruct<T: Struct + ?Sized> {
+  type Output;
+}
+
+impl<T: Int> MaybeSized for T {
+  type Sized = True;
+}
+
+impl<T, const N: usize> MaybeSized for [T; N] {
+  type Sized = True;
+}
+
+impl<T: Int, I: IntrospectInt<Self>, S> Introspect<I, S> for T {
+  type Output = I::Output;
+}
+
+impl<T, const N: usize, I: IntrospectArray<T, N>, S> Introspect<I, S> for [T; N] {
+  type Output = I::Output;
+}
+
+macro_rules! visit {
+  ($output:ty, match $T:ty {
+    Bits($b:ident) => $bo:expr,
+    Fields($f:ident) => $fo:expr,
+    Array($i:ident, $n:ident) => $ao:expr,
+    Slice($s:ident) -> $so:expr $(,)?
+  } $(,)?) => {{
+    struct __V;
+
+    struct __B<$b: Bits>(PhantomData<$b>);
+    impl<$b: Bits> Lit<$output> for __B<$b> { const VALUE: usize = $bo; }
+
+    struct __F<$f: Field>(PhantomData<$f>);
+    impl<$f: Field> Lit<$output> for __F<$f> { const VALUE: usize = $fo; }
+
+    struct __A<$i: DataType, const $n: usize>(PhantomData<$i>);
+    impl<$i: DataType, const $n: usize> Lit<$output> for __A<$i, $n> { const VALUE: usize = $ao; }
+
+    struct __S<$s: DataType>(PhantomData<$s>);
+    impl<$s: DataType> Lit<$output> for __S<$s> { const VALUE: usize = $so; }
+
+    impl Visitor for __V {
+      type Output = $output;
+      type VisitBits<$b: Bits> = __B<$b>;
+      type VisitStruct<$f: Field> = __F<$f>;
+      type VisitArray<$i: DataType, const $n: usize> = __A<$i, $n>;
+      type VisitSlice<$s: DataType> = __S<$s>;
+    }
+
+    <<$T as DataType>::Visit::<__V> as Lit<$output>>::VALUE
+  }};
+}
+
+trait Struct {
+  type TrailingField: MaybeUnsizedField;
+}
+
+trait MaybeUnsizedField: Field {
+  type Type: DataType + ?Sized;
+}
+
+trait SizedField: Field {
+  type Type: DataType;
+}
+
+trait Field: 'static {
+  type Prev: SizedField;
+  const OFFSET: usize;
+  const INDEX: usize;
+}
+
+trait Visitor {
+  type Output;
+
+  type VisitBits<B: Bits>: Lit<Self::Output>;
+  type VisitStruct<F: Field>: Lit<Self::Output>;
+  type VisitArray<I: DataType, const N: usize>: Lit<Self::Output>;
+  type VisitSlice<I: DataType>: Lit<Self::Output>;
+}
+
+trait DataType: 'static {
+  type Visit<V: Visitor>: Lit<V::Output>;
+}
+
+struct PhantomStruct<T>(PhantomData<T>);
+
+struct PhantomField<const OFFSET: usize, const INDEX: usize, T: ?Sized, U>(PhantomData<(U, T)>);
+
+impl<T: MaybeUnsizedField> DataType for PhantomStruct<T> {
+  type Visit<V: Visitor> = V::VisitStruct<T>;
+}
+
+impl<T: Bits> DataType for T {
+  type Visit<V: Visitor> = V::VisitBits<T>;
+}
+
+impl<T: DataType, const N: usize> DataType for [T; N] {
+  type Visit<V: Visitor> = V::VisitArray<T, N>;
+}
+
+impl<T: DataType> DataType for [T] {
+  type Visit<V: Visitor> = V::VisitSlice<T>;
+}
+
+impl<const OFFSET: usize, const INDEX: usize, T: DataType + ?Sized, U: SizedField> Field
+  for PhantomField<OFFSET, INDEX, T, U>
+{
+  type Prev = U;
+  const OFFSET: usize = OFFSET;
+  const INDEX: usize = INDEX;
+}
+
+impl<const OFFSET: usize, const INDEX: usize, T: DataType, U: SizedField> SizedField
+  for PhantomField<OFFSET, INDEX, T, U>
+{
+  type Type = T;
+}
+
+impl<const OFFSET: usize, const INDEX: usize, T: DataType + ?Sized, U: SizedField> MaybeUnsizedField
+for PhantomField<OFFSET, INDEX, T, U>
+{
+  type Type = T;
+}
+
+macro_rules! introspect {
+  (type $name:ident () -> $output:ty = match {
+    Int($b:ident) => $bo:expr,
+    Array($i:ident, $n:ident) => $ao:expr,
+  };) => {
+    struct $name;
+
+    struct __I<$b: Int>(PhantomData<$b>);
+    impl<$b: Int> Lit<$output> for __I<$b> { const VALUE: usize = $bo; }
+
+    impl<T: Int> IntrospectInt<T> for $name {
+      type Output = __I<T>;
+    }
+
+    struct __A<$i, const $n: usize>(PhantomData<$i>);
+    impl<$i: 'static, const $n: usize> Lit<$output> for __A<$i, $n> { const VALUE: usize = $ao; }
+
+    impl<T: 'static, const N: usize> IntrospectArray<T, N> for $name {
+      type Output = __A<T, N>;
+    }
+  };
+}
+
+introspect! {
+  type SizeOf () -> usize = match {
+    Int(B) => core::mem::size_of::<B>(),
+    Array(I, N) => N * core::mem::size_of::<I>(),
+  };
+}
+
+const fn min_size_of<T: Introspect<SizeOf, Output: Lit<usize>>>() -> usize {
+  <T::Output as Lit<usize>>::VALUE
+}
+
+#[test]
+fn test() {
+  println!("{}", min_size_of::<[u32; 2134]>());
+  println!("{}", min_size_of::<u32>());
+
+  println!("{}", <<[u32; 2134] as Introspect<SizeOf>>::Output as Lit<usize>>::VALUE);
 }
