@@ -1363,6 +1363,74 @@ pub mod theory {
     const KIND: TheoryKind = TheoryKind::And(LOff::LITERAL, ROff::LITERAL);
   }
 
+  #[inline(always)]
+  const fn offset_unbounded<T: Theory>(off: usize) -> &'static Pattern {
+    use TheoryKind::*;
+    match T::KIND {
+      Term if off == 0 => &T::Term::COMPILED,
+      Term => &Pattern::Uninit,
+      Repeat(n, s) if off == 0 || off < n * s => offset_unbounded::<T::Lhs>(off % s),
+      Repeat(_, _) => &Pattern::Uninit,
+      Wildcard(s) => offset_unbounded::<T::Lhs>(off % s),
+      And(l, r) => {
+        let l = if off >= l {
+          offset_unbounded::<T::Lhs>(off - l)
+        } else {
+          &Pattern::Uninit
+        };
+        if matches!(l, &Pattern::Uninit) && off >= r {
+          offset_unbounded::<T::Rhs>(off - r)
+        } else {
+          &Pattern::Uninit
+        }
+      }
+    }
+  }
+
+  const fn offset<T: Theory>(off: usize, max: usize) -> &'static Pattern {
+    if off >= max {
+      return &Pattern::Uninit;
+    }
+    offset_unbounded::<T>(off)
+  }
+
+  const ANY: u8 = 0b01;
+  const ALL: u8 = 0b11;
+
+  pub(crate) const fn intersects<A: Theory, B: Theory>(m: usize) -> u8 {
+    int::<A, B>(offset::<A>(0, m), offset::<B>(0, m), 0, m)
+  }
+
+  const fn int<A: Theory, B: Theory>(a: &Pattern, b: &Pattern, i: usize, m: usize) -> u8 {
+    use Pattern::*;
+    match (a, b) {
+      _ if i >= m => ALL,
+      (Init([]) | All([]) | Any([]), _) => int::<A, B>(offset::<A>(i, m), b, i, m),
+      (All([a]) | Any([a]), _) => int::<A, B>(a, b, i, m),
+      (All([la, ra @ ..]), _) => int::<A, B>(la, b, i, m) & int::<A, B>(&All(ra), b, i, m),
+      (Any([la, ra @ ..]), _) => match (int::<A, B>(la, b, i, m), int::<A, B>(&Any(ra), b, i, m)) {
+        (ALL, ALL) => ALL,
+        (0, 0) => 0,
+        _ => ANY,
+      },
+      (_, Init([]) | All([]) | Any([])) => int::<A, B>(a, offset::<B>(i, m), i, m),
+      (_, All([b]) | Any([b])) => int::<A, B>(a, b, i, m),
+      (_, All([lb, rb @ ..])) => int::<A, B>(a, lb, i, m) & int::<A, B>(a, &All(rb), i, m),
+      (_, Any([lb, rb @ ..])) => match (int::<A, B>(a, lb, i, m), int::<A, B>(a, &Any(rb), i, m)) {
+        (ALL, _) | (_, ALL) => ALL,
+        (0, 0) => 0,
+        _ => ANY,
+      },
+      (Uninit, Uninit) => int::<A, B>(&Init(&[]), &Init(&[]), i + 1, m),
+      (Init([_, ra @ ..]), Uninit) => int::<A, B>(&Init(ra), &Init(&[]), i + 1, m),
+      (Uninit, Init([_, rb @ ..])) => int::<A, B>(&Init(&[]), &Init(rb), i + 1, m),
+      (Init([la, ra @ ..]), Init([lb, rb @ ..])) => match (la.len(), la.intersects(lb)) {
+        (_, 0) => 0,
+        (l, r) => (if l == r { ALL } else { ANY }) & int::<A, B>(&Init(ra), &Init(rb), i + 1, m)
+      }
+    }
+  }
+
   const fn compile<O: Native, T: Boolean<O>, E: Endianness, const N: usize>() -> Pattern {
     /// Returns the constant operand of operator expressions.
     const fn operand<O: Native, T: Boolean<O>>() -> O {
@@ -1926,7 +1994,6 @@ pub mod bits {
 
   #[derive(Debug, Copy, Clone)]
   pub(crate) enum Pattern {
-    Overlap,
     Uninit,
     Init(&'static [Interval]),
     All(&'static [Pattern]),
@@ -1956,11 +2023,11 @@ pub mod bits {
       Self::new(mask, val, val)
     }
 
-    const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
       1usize + (self.end - self.start) as usize
     }
 
-    const fn contains(&self, byte: u8) -> bool {
+    pub(crate) const fn contains(&self, byte: u8) -> bool {
       let byte = match self.mask {
         0x00 => return false,
         0xff => byte,
@@ -1970,7 +2037,7 @@ pub mod bits {
       self.start <= byte && byte <= self.end
     }
 
-    const fn intersects(&self, o: &Self) -> usize {
+    pub(crate) const fn intersects(&self, o: &Self) -> usize {
       // If the masks don't intersect, the patterns don't intersect.
       if self.mask & o.mask == 0 {
         return 0;
@@ -2001,7 +2068,6 @@ pub mod bits {
       use Pattern::*;
       match (self, o) {
         (Uninit, _) | (_, Uninit) => todo!(),
-        (Overlap, _) | (_, Overlap) => panic!("internal error"),
         (Init([]) | All([]) | Any([]), _) => a.load(i, m).intersects(o, a, b, i, m),
         (All([l]) | Any([l]), _) => l.intersects(o, a, b, i, m),
         (All([l, ln @ ..]), _) => l.intersects(o, a, b, i, m) & All(ln).intersects(o, a, b, i, m),
@@ -2161,6 +2227,171 @@ const _: () = {
   }
 };
 
+mod internal {
+  /// Check a condition and return an error if it is `false`.
+  #[rustfmt::skip]
+  macro_rules! check { ($c:expr, $e:expr $(,)?) => { if (!$c) { return Err($e); } } }
+
+  /// Enumerates metadata constraints for transmutations involving dynamically sized types (DSTs).
+  #[derive(Copy, Clone)]
+  enum MetadataChecks {
+    Is(usize),                             // Is equals to `n`
+    IsAtLeast(usize),                      // Is at least `n`
+    IsMultipleOf(usize),                   // Is a multiple of `m`.
+    IsAtLeastThenMultipleOf(usize, usize), // Is at least `n` and a multiple of `m`.
+    IsEmpty,                               // Implies no data, i.e. should be zero.
+  }
+
+  impl MetadataChecks {
+    /// Validates `metadata` against constraints.
+    /// In case of an error `Err(e)`, a positive `e` indicates an overflow of `metadata` by `e`,
+    /// while a negative value signifies an underflow by `-e`.
+    #[inline]
+    pub const fn validate(self, metadata: usize) -> Result<(), isize> {
+      use MetadataChecks::*;
+      match self {
+        Is(n) if metadata == n => Ok(()),
+        IsAtLeast(n) if metadata >= n => Ok(()),
+        Is(n) | IsAtLeast(n) => Err(n as isize - metadata as isize),
+        IsMultipleOf(m) if metadata % m == 0 => Ok(()),
+        IsMultipleOf(m) => Err(m as isize - (metadata % m) as isize),
+        IsAtLeastThenMultipleOf(n, m) if metadata >= n && (metadata - n) % m == 0 => Ok(()),
+        IsAtLeastThenMultipleOf(n, _) if metadata < n => Err(n as isize - metadata as isize),
+        IsAtLeastThenMultipleOf(_, m) => Err(m as isize - (metadata % m) as isize),
+        IsEmpty if metadata == 0 => Ok(()),
+        IsEmpty => Err(-(metadata as isize)),
+      }
+    }
+  }
+
+  /// Internal type layout representation.
+  #[derive(Copy, Clone)]
+  struct Layout {
+    size_of_sized: usize,
+    size_of_dst_slice_item: usize
+  }
+
+  impl Layout {
+    const fn transmute(&self, dst: &Self) -> Result<Option<MetadataChecks>, &'static str> {
+      use MetadataChecks::*;
+      // Try to resolve `xa[ya] => xb[yb]`, where:
+      // - `a` and `b` are `Src` and `Dst` respectively,
+      // - `xa` and `xb` are the minimum sizes of `a` and `b` respectively,
+      // - `ya` and `yb` are the DST slice item sizes of `a` and `b` respectively.
+      // - `n` is the minimum number of the source DST slice items needed to align `a` and `b`.
+      // - `m` is the source DST slice items multiplier.
+      // Calculate minimum and DST slice item sizes for both source and target types.
+      let (xa, xb) = (self.size_of_sized, dst.size_of_sized);
+      let (ya, yb) = (self.size_of_dst_slice_item, dst.size_of_dst_slice_item);
+      // Compute if source and target are DSTs, i.e. had a DST slice with a non-zero item size.
+      let (src_is_dst, dst_is_dst) = (ya != 0, yb != 0);
+      // Compute the minimum source DST slice items needed to align source and target.
+      // 1. Source is smaller than target:
+      //  - Check for source to be a DST.
+      //  - Compute the missing bytes to fit the target.
+      //  - In case the target isn't a DST, check if the missing bytes are a multiple of
+      //    the source DST slice item size.
+      //  - The minimum source DST slice items is the missing bytes ceil divided by the source DST
+      //    slice item size.
+      let mut n = if xa < xb {
+        // Check for source to be a DST.
+        check!(src_is_dst, "source too small to fit target");
+        // Compute the missing bytes to fit the target.
+        let missing = xb - xa;
+        // In case the target isn't a DST:
+        if !dst_is_dst {
+          // Check if the missing bytes are a multiple of the source DST slice item size.
+          check!(
+            missing % ya == 0,
+            "missing bytes to fit the target is not a multiple of the source DST trailing slice \
+             item size"
+          );
+        }
+        // The minimum source DST slice items is the missing bytes ceil divided by the source DST
+        // slice item size.
+        (missing + ya - 1) / ya
+      }
+      // 2. Source is larger or equal to target:
+      //  - The minimum source DST slice items is 0.
+      else {
+        // In case the target is a DST:
+        // - Compute the remaining bytes to fit in the target.
+        // - In case the source isn't a DST, check if the remaining bytes is a multiple
+        //   of the target DST slice item size.
+        if dst_is_dst {
+          // Compute the remaining bytes to fit in the target.
+          let remaining = xa - xb;
+          // In case the source isn't a DST:
+          if !src_is_dst {
+            // Check if the remaining bytes is a multiple of the target DST slice item size.
+            check!(
+              remaining % yb == 0,
+              "remaining bytes to fit in the target is not a multiple of the target DST trailing \
+               slice item size",
+            );
+          }
+        }
+        // The minimum source DST slice items is 0.
+        0
+      };
+      // Compute the possible size mismatch between source and target.
+      // 1. Source isn't a DST:
+      let maybe_size_mismatch = if !src_is_dst {
+        // No size mismatch.
+        None
+      }
+      // 2. Source is a DST and target isn't a DST:
+      else if !dst_is_dst {
+        // In case the source is smaller than the target, the source metadata must be the minimum
+        // source DST slice items count.
+        // Otherwise, the source metadata must be empty.
+        Some(if xa < xb { Is(n) } else { IsEmpty })
+      }
+      // 3. Source and target are DSTs:
+      else {
+        /// Greatest common divisor and least common multiple calculations to determine the alignment
+        /// and size compatibility.
+        const fn gcd(a: usize, b: usize) -> usize {
+          match b {
+            0 => a,
+            _ => gcd(b, a % b),
+          }
+        }
+        // Compute the GCD of the source and target DST trailing slice item sizes.
+        let gcd = gcd(ya, yb);
+        // Compute the absolute difference between the source and target DST minimum sizes.
+        let absolute_miss = if xa < xb { xb - xa } else { xa - xb };
+        // Make sure the source can catch up on the target.
+        check!(absolute_miss % gcd == 0, "DST source cannot catch up on DST target");
+        // Compute the minimum number of source DST slice items needed to align source and target.
+        // We need to find `n` in a way that `xa + n*ya - yb` is a multiple of `yb`. Although this
+        // could be resolved using complex equations, for the sake of readability, we can simplify it
+        // by using the following loop:
+        // - `n * ya` is the total size in bytes of the source DST slice for `n` source items.
+        // - `xa + n * ya` is the total size in bytes of the source for `n` source items.
+        // - `(xa + n * ya - xb)` is the total size of the target DST slice for `n` source items.
+        // If the latter is a multiple of `yb`, then we found the minimum number of source DST slice
+        // items needed to align source and target.
+        while (xa + n * ya - xb) % yb != 0 {
+          n += 1; // Increment the minimum number of source DST slice items by 1.
+        }
+        // Compute the metadata checks for the source DST slice.
+        match (n, yb / gcd) {
+          // No size mismatch.
+          (0, 1) => None,
+          // Source metadata must be a multiple of the GCD.
+          (0, m) => Some(IsMultipleOf(m)),
+          // Source metadata must be at least `n` and a multiple of `m`.
+          (n, 1) => Some(IsAtLeast(n)),
+          // Source metadata must be at least `n` and a multiple of `m`.
+          (n, m) => Some(IsAtLeastThenMultipleOf(n, m)),
+        }
+      };
+      Ok(maybe_size_mismatch)
+    }
+  }
+}
+
 
 // TODO:
 // - move out `bits` and `data`
@@ -2219,7 +2450,10 @@ fn main() {
     println!("{}", validate::<Yolo>(from_ref(&Yolo {
       a: false,
       b: 0,
-      c: NonZero::new(0).unwrap(),
+      c: NonZero::new(1).unwrap(),
     }).cast(), 3));
+
+
+    println!("{}", theory::intersects::<<Yolo as Type>::Theory, <Yolo as Type>::Theory>(size_of::<Yolo>()))
   }
 }
