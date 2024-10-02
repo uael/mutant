@@ -30,6 +30,9 @@ pub mod ipv4 {
   #[rustfmt::skip]
   #[repr(C, packed)]
   #[derive(Data, DebugPacked, Copy, Clone, PartialEq, Eq)]
+  // version_ihl & 0x0F > 5
+  // total_length > ((version_ihl & 0x0F) * 4) as u16
+  // @size_of_val == total_length as usize
   pub struct Ipv4Packet<T: ?Sized> {
     // Version (4 bits) + IHL (4 bits) + TOS (8 bits) + Total Length (16 bits).
     version_ihl: u8, tos: u8, total_length: Size<u16>,

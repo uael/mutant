@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 mutant-derive = { path = "derive" }
+bytes = "1.7.2"
 
 [features]
 doctest = []

@@ -1,3 +1,5 @@
+#![feature(const_mut_refs)]
+#![feature(const_refs_to_cell)]
 //! ***Efficient, safe, transmutation. Even for dynamically-sized types.***
 //!
 //! # Example
@@ -323,10 +325,7 @@ decl_pack! {
 #[doc(hidden)]
 #[rustfmt::skip]
 pub const fn const_assert_unaligned<T: ?Sized + Data>() {
-  struct Assert<T: ?Sized>(*const T);
-  impl<T: ?Sized + Data> Assert<T> { const ASSERT_UNALIGNED: () = assert!(align_of::<T>() == 1); }
-  #[allow(clippy::let_unit_value)]
-    let _ = Assert::<T>::ASSERT_UNALIGNED;
+  const { assert!(align_of::<T>() == 1) }
 }
 
 /// Assert at compile-time that a [`Data`] type is unaligned (i.e. his alignment is equals to 1).
@@ -374,7 +373,7 @@ pub mod ptr {
   /// type or mutability, in particular if the code is refactored.
   #[inline]
   #[must_use]
-  pub fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
+  pub const fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
     r
   }
 
@@ -766,7 +765,7 @@ pub const fn align_of_val_raw<T: ?Sized>(_: *const T) -> usize {
 }
 
 #[inline]
-pub fn as_mut_slice<T: ?Sized + Data>(val: &mut T) -> &mut [T::Item] {
+pub const fn as_mut_slice<T: ?Sized + Data>(val: &mut T) -> &mut [T::Item] {
   let ptr: *mut T = val;
   let len = match T::LAYOUT {
     Layout::Slice | Layout::Array if mem::size_of::<T::Item>() == 0 => return &mut [],
@@ -807,16 +806,22 @@ pub const fn default<T: Copy + Data>() -> T {
         "default value is only supported for types up to `1 << 20` bytes"
       );
 
-      let mut bytes = [0u8; 1 << 20];
+      union Uninit<T: Copy + Data> {
+        data: T,
+        bytes: [u8; 0],
+      }
+
+      let mut data: Uninit<T> = Uninit { bytes: [] };
       let mut i = 0;
       while i < min_size_of::<T>() {
         if let Some(byte) = internal::default_at::<T>(i) {
-          bytes[i] = byte;
+          let ptr = ptr::from_mut(&mut data).cast::<u8>().wrapping_add(i);
+          unsafe { *ptr = byte };
         }
         i += 1;
       }
 
-      unsafe { transmute_unchecked(bytes) }
+      unsafe { data.data }
     };
   }
 
@@ -1029,7 +1034,7 @@ pub const fn transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> U {
 /// assert_eq!(&mut [0, 0], mutant::transmute_mut::<_, [u8; 2]>(&mut 0u16));
 /// ```
 #[inline]
-pub fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> &mut U {
+pub const fn transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> &mut U {
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
@@ -1143,7 +1148,7 @@ pub const fn try_split_at<T: ?Sized + Data>(
 }
 
 #[inline]
-pub fn try_transmute<T: Data + Copy, U: Data + Copy>(val: T) -> Option<U> {
+pub const fn try_transmute<T: Data + Copy, U: Data + Copy>(val: T) -> Option<U> {
   try_transmute_copy(&val)
 }
 
@@ -1164,7 +1169,9 @@ pub const fn try_transmute_copy<T: Data + Copy, U: Data + Copy>(val: &T) -> Opti
 }
 
 #[inline]
-pub fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(val: &mut T) -> Result<&mut U, Error> {
+pub const fn try_transmute_mut<T: ?Sized + Data, U: ?Sized + Data>(
+  val: &mut T,
+) -> Result<&mut U, Error> {
   #[allow(clippy::let_unit_value)]
   let _ = (
     internal::Transmutation::<T, U>::CHECK,
@@ -1226,19 +1233,9 @@ pub const fn unpack<T: ?Sized + Data>(bytes: &[u8]) -> Result<(&T, &[u8]), Error
 
 /// Returns zeroed value for `T` (only support types up to `1 << 20` bytes).
 pub const fn zeroed<T: Copy + Data>() -> T {
-  // Used to evaluate an expression at compile time.
-  // TODO: use `const_inline` when stabilized.
-  struct CompileTime<T>(PhantomData<T>);
-
-  impl<T: Copy + Data> CompileTime<T> {
-    // A call to truncate on bytes that only accept 0 as bits pattern will
-    // only compile if `T` is actually zero-able.
-    const ZEROED: T = truncate([num::u8c::<0>::new(); 1 << 20]);
-  }
-
-  // As a big buffer is used, make sure to compute the value only
-  // at compile time.
-  CompileTime::<T>::ZEROED
+  // A call to truncate on bytes that only accept 0 as bits pattern will
+  // only compile if `T` is actually zero-able.
+  const { truncate([num::u8c::<0>::new(); 1 << 20]) }
 }
 
 pub mod num {
