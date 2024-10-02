@@ -1447,7 +1447,7 @@ pub mod theory {
     }
   }
 
-  pub(crate) trait CompileInner<B, O, E> {
+  pub(crate) trait CompileInner<B, T, E> {
     const INNER: Pattern;
   }
 
@@ -1455,9 +1455,7 @@ pub mod theory {
     const OUTPUT: Pattern;
   }
 
-  impl<Input: Integer, B: Boolean<Input>> Compile<Input> for B
-    where B: CompileInner<Input::Bytes, Input::Native, Input::Endian>
-  {
+  impl<T: Integer, B: CompileInner<T::Bytes, T::Native, T::Endian>> Compile<T> for B {
     const OUTPUT: Pattern = B::INNER;
   }
 
@@ -2176,6 +2174,32 @@ fn main() {
   use num::UnsignedLiteral;
   use core::num::NonZero;
 
+  struct Yolo {
+    a: bool,
+    b: u8,
+    c: NonZero<u16>,
+  }
+
+  unsafe impl ptr::Pointee for Yolo {
+    type Metadata = ();
+  }
+
+  macro_rules! field_theory {
+    ($field:ident: $ty:ty) => {
+      (<$ty as Type>::Theory, UnsignedLiteral<usize, { offset_of!(Self, $field) as u128 }>)
+    };
+  }
+
+  impl Type for Yolo {
+    type Theory = theory::And<
+      field_theory!(a: bool),
+      (theory::And<
+        field_theory!(b: u8),
+        field_theory!(c: NonZero<u16>),
+      >, UnsignedLiteral<usize, 0>)
+    >;
+  }
+
   unsafe {
     println!("{:?}", <theory::Gte<u16, UnsignedLiteral<u16, 0xabcd>> as theory::CompileInner<[u8; 2], u16, endian::Le>>::INNER);
     println!("{:?}", <theory::Gte<u16, UnsignedLiteral<u16, 0xabcd>> as theory::CompileInner<[u8; 2], u16, endian::Be>>::INNER);
@@ -2192,5 +2216,10 @@ fn main() {
     println!("{}", validate::<[NonZero<u8>; 3]>(from_ref(&[1u8, 0u8, 1u8]).cast(), 0));
     println!("{}", validate::<[NonZero<u8>]>(from_ref(&[1u8, 1u8, 1u8]).cast(), 3));
     println!("{}", validate::<[NonZero<u8>]>(from_ref(&[1u8, 0u8, 1u8]).cast(), 3));
+    println!("{}", validate::<Yolo>(from_ref(&Yolo {
+      a: false,
+      b: 0,
+      c: NonZero::new(0).unwrap(),
+    }).cast(), 3));
   }
 }
