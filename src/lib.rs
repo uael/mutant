@@ -1,5 +1,9 @@
 #![feature(const_mut_refs)]
 #![feature(const_refs_to_cell)]
+pub use mutant_derive::Type;
+
+#[cfg(test)]
+mod tests;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -9,6 +13,14 @@ use core::ptr::{from_ref, from_mut};
 /// # mutant
 ///
 ///
+
+#[macro_export]
+macro_rules! field {
+  ($($fields:tt).+: $ty:ty $(,)?) => ((
+    $crate::num::LiteralUint<usize, { $crate::offset_of!(Self, $($fields).+) as u128 }>,
+    <$ty as $crate::Type>::Layout,
+  ));
+}
 
 // -------------------------------------------------------------------------------------------------
 // marker
@@ -45,7 +57,7 @@ pub const fn bytes_of_mut<T: ByteArray>(val: &mut T) -> &mut [u8] {
   unsafe { &mut *ptr::from_raw_parts_mut(from_mut(val).cast(), T::LEN) }
 }
 
-#[inline(always)]
+#[inline]
 const unsafe fn transmute_unchecked<T: Copy, U: Copy>(val: T) -> U {
   union Transmute<T: Copy, U: Copy> {
     val: T,
@@ -141,7 +153,7 @@ pub mod endian {
     }
 
     impl Endian {
-      #[inline(always)]
+      #[inline]
       pub const fn is_native(&self) -> bool {
         match self {
           Endian::Le => cfg!(target_endian = "little"),
@@ -149,12 +161,12 @@ pub mod endian {
         }
       }
 
-      #[inline(always)]
+      #[inline]
       pub const fn is_little(&self) -> bool {
         matches!(self, Endian::Le)
       }
 
-      #[inline(always)]
+      #[inline]
       pub const fn is_big(&self) -> bool {
         matches!(self, Endian::Be)
       }
@@ -209,12 +221,12 @@ pub mod sign {
     }
 
     impl Sign {
-      #[inline(always)]
+      #[inline]
       pub const fn is_signed(&self) -> bool {
         matches!(self, Sign::Signed)
       }
 
-      #[inline(always)]
+      #[inline]
       pub const fn is_unsigned(&self) -> bool {
         matches!(self, Sign::Unsigned)
       }
@@ -243,12 +255,12 @@ pub mod num {
   // impl `UnsignedLiteral`
   const _: () = {
     impl<T: Integer, const VALUE: u128> LiteralUint<T, VALUE> {
-      #[inline(always)]
+      #[inline]
       const fn new() -> Self {
         Self(Self::LITERAL)
       }
 
-      #[inline(always)]
+      #[inline]
       const fn into_inner(self) -> T {
         Self::LITERAL
       }
@@ -295,21 +307,21 @@ pub mod num {
     const MAX: Self;
   }
 
-  pub trait Native: Integer {}
+  pub trait Native: Integer<Native = Self> {}
 
-  impl<T: Integer<Endian = endian::Ne>> Native for T {}
-
-  #[repr(transparent)]
-  #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-  pub struct Le<T: Integer<Endian = endian::Ne>>(T);
+  impl<T: Integer<Endian = endian::Ne, Native = T>> Native for T {}
 
   #[repr(transparent)]
   #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-  pub struct Be<T: Integer<Endian = endian::Ne>>(T);
+  pub struct Le<T: Native>(T);
 
-  #[inline(always)]
+  #[repr(transparent)]
+  #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+  pub struct Be<T: Native>(T);
+
+  #[inline]
   pub const fn swap_bytes<T: Integer + Default>(n: T) -> T {
-    #[inline(always)]
+    #[inline]
     const fn swap<const N: usize>(bytes: [u8; N]) -> [u8; N] {
       let mut i = 0;
       let mut result = [0; N];
@@ -340,7 +352,7 @@ pub mod num {
     unsafe { core::hint::unreachable_unchecked() }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn from_bytes<T: Integer>(bytes: T::Bytes) -> T {
     const {
       assert!(size_of::<T>() >= size_of::<T::Bytes>());
@@ -348,7 +360,7 @@ pub mod num {
     unsafe { transmute_unchecked(bytes) }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_bytes<T: Integer>(n: T) -> T::Bytes {
     const {
       assert!(size_of::<T>() >= size_of::<T::Bytes>());
@@ -356,7 +368,7 @@ pub mod num {
     unsafe { transmute_unchecked(n) }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn from_ne_bytes<T: Integer>(bytes: T::Bytes) -> T {
     let n = from_bytes(bytes);
     if const { !T::Endian::LITERAL.is_native() } {
@@ -366,7 +378,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn from_le_bytes<T: Integer>(bytes: T::Bytes) -> T {
     let n = from_bytes(bytes);
     if const { !T::Endian::LITERAL.is_little() } {
@@ -376,7 +388,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn from_be_bytes<T: Integer>(bytes: T::Bytes) -> T {
     let n = from_bytes(bytes);
     if const { !T::Endian::LITERAL.is_big() } {
@@ -386,7 +398,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_ne_bytes<T: Integer>(n: T) -> T::Bytes {
     if const { !T::Endian::LITERAL.is_native() } {
       to_bytes(swap_bytes(n))
@@ -395,7 +407,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_le_bytes<T: Integer>(n: T) -> T::Bytes {
     if const { !T::Endian::LITERAL.is_little() } {
       to_bytes(swap_bytes(n))
@@ -404,7 +416,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_be_bytes<T: Integer>(n: T) -> T::Bytes {
     if const { !T::Endian::LITERAL.is_big() } {
       to_bytes(swap_bytes(n))
@@ -413,7 +425,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_ne<T: Integer>(n: T) -> T {
     if const { !T::Endian::LITERAL.is_native() } {
       swap_bytes(n)
@@ -422,7 +434,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_be<T: Integer>(n: T) -> T {
     if const { !T::Endian::LITERAL.is_big() } {
       swap_bytes(n)
@@ -431,7 +443,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn to_le<T: Integer>(n: T) -> T {
     if const { !T::Endian::LITERAL.is_little() } {
       swap_bytes(n)
@@ -440,7 +452,7 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn cast<T: Integer, U: Integer>(n: T) -> U {
     union Cast<T: Copy, U: Copy> {
       src: T,
@@ -452,7 +464,7 @@ pub mod num {
     from_le_bytes(unsafe { cast.dst })
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn cast_checked<T: Integer, U: Integer>(n: T) -> Option<U> {
     let new_n = cast(n);
     match is_eq(cast(new_n), n) {
@@ -461,102 +473,102 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn count_zeros<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).count_zeros()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn count_ones<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).count_ones()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn leading_zeros<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).leading_zeros()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn trailing_zeros<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).trailing_zeros()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn leading_ones<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).leading_ones()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn trailing_ones<T: Integer>(n: T) -> u32 {
     cast::<T, u128>(n).trailing_ones()
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn rotate_left<T: Integer>(n: T, count: u32) -> T {
     cast(cast::<T, u128>(n).rotate_left(count))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn rotate_right<T: Integer>(n: T, count: u32) -> T {
     cast(cast::<T, u128>(n).rotate_right(count))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn not<T: Integer>(n: T) -> T {
     cast(!cast::<T, u128>(n))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn add<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) + cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn sub<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) - cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn mul<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) * cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn div<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) / cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn rem<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) % cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn shr<T: Integer>(a: T, b: u32) -> T {
     cast(cast::<T, u128>(a) >> b)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn shl<T: Integer>(a: T, b: u32) -> T {
     cast(cast::<T, u128>(a) << b)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn and<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) & cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn xor<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) ^ cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn or<T: Integer>(a: T, b: T) -> T {
     cast(cast::<T, u128>(a) | cast::<T, u128>(b))
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn cmp<T: Integer>(a: T, b: T) -> Ordering {
     let (a, b): (u128, u128) = (cast(a), cast(b));
     if a < b {
@@ -568,32 +580,32 @@ pub mod num {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_lt<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Less)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_le<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Less | Ordering::Equal)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_gt<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Greater)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_ge<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Greater | Ordering::Equal)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_eq<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Equal)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_ne<T: Integer>(a: T, b: T) -> bool {
     matches!(cmp(a, b), Ordering::Less | Ordering::Greater)
   }
@@ -719,10 +731,6 @@ pub mod num {
     const MAX: Self = Self::ONES;
   }
 
-  unsafe impl<T: Integer> ptr::Pointee for T {
-    type Metadata = ();
-  }
-
   impl<T: Default> Literal<T> for () {
     const LITERAL: T = T::DEFAULT;
   }
@@ -739,13 +747,13 @@ pub mod num {
     type Endian = endian::Ne;
   }
 
-  unsafe impl<T: Integer<Endian = endian::Ne>> Integer for Le<T> {
+  unsafe impl<T: Native> Integer for Le<T> {
     type Bytes = T::Bytes;
     type Native = T;
     type Endian = endian::Le;
   }
 
-  unsafe impl<T: Integer<Endian = endian::Ne>> Integer for Be<T> {
+  unsafe impl<T: Native> Integer for Be<T> {
     type Bytes = T::Bytes;
     type Native = T;
     type Endian = endian::Be;
@@ -776,7 +784,7 @@ pub mod num {
   macro_rules! impl_adt_from {
     { $T:ty[$Raw:ident] } => {
       impl From<$T> for $Raw {
-        #[inline(always)]
+        #[inline]
         fn from(value: $T) -> Self {
           cast(value)
         }
@@ -787,166 +795,166 @@ pub mod num {
   macro_rules! impl_adt {
     (($($generics:tt)*) $T:ty[$Raw:ty] ($Bytes:ty)) => {
       impl <$($generics)*> $T {
-        #[inline(always)]
+        #[inline]
         pub const fn from<U: Integer>(n: U) -> Self {
           cast(n)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn into<U: Integer>(self) -> U {
           cast(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_bytes(bytes: $Bytes) -> Self {
           from_bytes(bytes)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_bytes(self) -> $Bytes {
           to_bytes(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn swap_bytes(self) -> Self {
           swap_bytes(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_ne_bytes(bytes: $Bytes) -> Self {
           from_ne_bytes(bytes)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_le_bytes(bytes: $Bytes) -> Self {
           from_le_bytes(bytes)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn from_be_bytes(bytes: $Bytes) -> Self {
           from_be_bytes(bytes)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_ne_bytes(self) -> $Bytes {
           to_ne_bytes(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_le_bytes(self) -> $Bytes {
           to_le_bytes(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_be_bytes(self) -> $Bytes {
           to_be_bytes(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_ne(self) -> Self {
           to_ne(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_le(self) -> Self {
           to_le(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn to_be(self) -> Self {
           to_be(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn count_zeros(self) -> u32 {
           count_zeros(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn count_ones(self) -> u32 {
           count_ones(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn leading_zeros(self) -> u32 {
           leading_zeros(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn trailing_zeros(self) -> u32 {
           trailing_zeros(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn leading_ones(self) -> u32 {
           leading_ones(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn trailing_ones(self) -> u32 {
           trailing_ones(self)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn rotate_left(self, count: u32) -> Self {
           rotate_left(self, count)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn rotate_right(self, count: u32) -> Self {
           rotate_right(self, count)
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn cmp(self, other: Self) -> Ordering {
           cmp(self, other)
         }
       }
 
       impl <$($generics)*> From<$Raw> for $T {
-        #[inline(always)]
+        #[inline]
         fn from(raw: $Raw) -> Self {
           cast(raw)
         }
       }
 
       impl <$($generics)*> Debug for $T where $Raw: Debug {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as Debug>::fmt(&cast(*self), f)
         }
       }
 
       impl <$($generics)*> Display for $T where $Raw: Display {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as Display>::fmt(&cast(*self), f)
         }
       }
 
       impl <$($generics)*> Binary for $T where $Raw: Binary {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as Binary>::fmt(&cast(*self), f)
         }
       }
 
       impl <$($generics)*> Octal for $T where $Raw: Octal {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as Octal>::fmt(&cast(*self), f)
         }
       }
 
       impl <$($generics)*> LowerHex for $T where $Raw: LowerHex {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as LowerHex>::fmt(&cast(*self), f)
         }
       }
 
       impl <$($generics)*> UpperHex for $T where $Raw: UpperHex {
-        #[inline(always)]
+        #[inline]
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
           <$Raw as UpperHex>::fmt(&cast(*self), f)
         }
@@ -955,7 +963,7 @@ pub mod num {
       impl <Rhs: Integer, $($generics)*> Add<Rhs> for $T where $Raw: Add, <$Raw as Add>::Output: Integer {
         type Output = Self;
 
-        #[inline(always)]
+        #[inline]
         fn add(self, rhs: Rhs) -> Self {
           cast(cast::<_, $Raw>(self) + cast::<_, $Raw>(rhs))
         }
@@ -973,8 +981,8 @@ pub mod num {
     u72 9 u80 10 u88 11 u96 12 u104 13 u112 14 u120 15 u128 16
   }
 
-  impl_adt! { (T: Integer<Endian = endian::Ne>) Le<T>[T] (<T as Integer>::Bytes) }
-  impl_adt! { (T: Integer<Endian = endian::Ne>) Be<T>[T] (<T as Integer>::Bytes) }
+  impl_adt! { (T: Native) Le<T>[T] (<T as Integer>::Bytes) }
+  impl_adt! { (T: Native) Be<T>[T] (<T as Integer>::Bytes) }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -1030,13 +1038,13 @@ pub mod ptr {
   }
 
   /// Extract the metadata component of a pointer.
-  #[inline(always)]
+  #[inline]
   pub const fn metadata<T: Pointee + ?Sized>(ptr: *const T) -> T::Metadata {
     unsafe { PtrRepr::empty().set_const(ptr).components.metadata }
   }
 
   /// Forms a (possibly-wide) raw pointer from a data address and metadata.
-  #[inline(always)]
+  #[inline]
   pub const fn from_raw_parts<T: Pointee + ?Sized>(
     address: *const (), metadata: T::Metadata,
   ) -> *const T {
@@ -1045,7 +1053,7 @@ pub mod ptr {
 
   /// Performs the same functionality as [`from_raw_parts`], except that a
   /// raw `*mut` pointer is returned, as opposed to a raw `*const` pointer.
-  #[inline(always)]
+  #[inline]
   pub const fn from_raw_parts_mut<T: Pointee + ?Sized>(
     address: *mut (), metadata: T::Metadata,
   ) -> *mut T {
@@ -1053,7 +1061,7 @@ pub mod ptr {
   }
 
   /// Extract the address component of a non-dangling pointer.
-  #[inline(always)]
+  #[inline]
   pub(crate) const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
     // Compute `ptr` raw pointer `ptr`.
     let ptr = ptr.cast::<()>();
@@ -1089,22 +1097,22 @@ pub mod ptr {
   // impl
   const _: () = {
     impl<T: Pointee + ?Sized> PtrRepr<T> {
-      #[inline(always)]
+      #[inline]
       const fn empty() -> Self {
         Self::empty_with(core::ptr::null())
       }
 
-      #[inline(always)]
+      #[inline]
       const fn empty_with(address: *const ()) -> Self {
         Self::with_components(address, T::Metadata::DEFAULT)
       }
 
-      #[inline(always)]
+      #[inline]
       const fn with_components(address: *const (), metadata: T::Metadata) -> Self {
         Self { components: PtrComponents { address, metadata } }
       }
 
-      #[inline(always)]
+      #[inline]
       const fn set_const(mut self, const_ptr: *const T) -> Self {
         self.const_ptr = const_ptr;
         self
@@ -1154,6 +1162,7 @@ pub mod layout {
       }
 
       pub(crate) const fn len(&self) -> usize {
+        if self.mask == 0 { return 0 }
         1usize + (self.end - self.start) as usize
       }
 
@@ -1195,6 +1204,8 @@ pub mod layout {
 
     impl core::fmt::Debug for ByteInterval {
       fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.mask == 0x00 { return write!(f, "∅"); }
+        if self.start == self.end { return write!(f, "{:#02x}", self.start) }
         if self.start != 0 { write!(f, "{:#02x}", self.start)?; }
         write!(f, "..")?;
         if self.end != 0xff { write!(f, "={:#02x}", self.end)?; }
@@ -1211,15 +1222,49 @@ pub mod layout {
     Any(&'static [BitsPattern]),
   }
 
+  #[derive(Debug, Copy, Clone)]
+  pub struct ByteSet {
+    lower: u128,
+    upper: u128,
+  }
+
+  pub enum Branch<'a> {
+    None,
+    Then(&'a Tree<'a>),
+    ThenElse(&'a Tree<'a>, &'a Tree<'a>)
+  }
+
+  pub struct Tree<'a> {
+    bytes: &'a [ByteSet],
+    branch: Branch<'a>,
+  }
+
   // impl `BitsPattern`
   const _: () = {
     impl BitsPattern {
+      const fn reachable(&self) -> bool {
+        match self {
+          BitsPattern::Uninit => true,
+          BitsPattern::Init(x) => {
+            let mut i = 0;
+            while i < x.len() {
+              if x[i].len() == 0 {
+                return false;
+              }
+              i += 1;
+            }
+            true
+          }
+          BitsPattern::All(_) => true,
+          BitsPattern::Any(_) => true,
+        }
+      }
+
       #[cfg(test)]
       pub fn matches<T: Copy>(&self, memory: T) -> bool {
         use BitsPattern::*;
         match self {
           Uninit => true,
-          Overlap => unreachable!(),
           Any(patterns) => patterns.iter().any(|p| p.matches(memory)),
           All(patterns) => patterns.iter().all(|p| p.matches(memory)),
           Init(intervals) => {
@@ -1237,7 +1282,7 @@ pub mod layout {
   };
 
   pub enum Operator<T> {
-    True, Equ(T), Gte(T), Lte(T), And, Or
+    True, Equ(T), RangeFrom(T), RangeTo(T), Range(T, T), And, Or
   }
 
   pub trait Formula<T> {
@@ -1246,14 +1291,30 @@ pub mod layout {
     const OP: Operator<T>;
   }
 
-  #[derive(Copy, Clone)]
-  pub struct Equ<T, Val>(PhantomData<(T, Val)>);
+  pub enum Jump {
+    None,
+    Then,
+    Next(u64),
+    NextElse(u64, u64)
+  }
+
+  pub struct Block {
+    size: u8,
+    jump: Jump,
+    sets: [(u8, u8)]
+  }
 
   #[derive(Copy, Clone)]
-  pub struct Gte<T, Val>(PhantomData<(T, Val)>);
+  pub struct Equ<T, Val>(PhantomData<(T, Val)>); // 1 block
 
   #[derive(Copy, Clone)]
-  pub struct Lte<T, Val>(PhantomData<(T, Val)>);
+  pub struct RangeFrom<T, Val>(PhantomData<(T, Val)>); // N blocks
+
+  #[derive(Copy, Clone)]
+  pub struct RangeTo<T, Val>(PhantomData<(T, Val)>); // N blocks
+
+  #[derive(Copy, Clone)]
+  pub struct Range<T, Start, End>(PhantomData<(T, Start, End)>);
 
   #[derive(Copy, Clone)]
   pub struct And<Lhs, Rhs>(PhantomData<(Lhs, Rhs)>);
@@ -1261,17 +1322,18 @@ pub mod layout {
   #[derive(Copy, Clone)]
   pub struct Or<Lhs, Rhs>(PhantomData<(Lhs, Rhs)>);
 
-  #[inline(always)]
+  #[inline]
   pub const fn is_true<O: Copy, T: Formula<O>>() -> bool {
     matches!(T::OP, Operator::True)
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn eval<O: Native, T: Formula<O>>(val: O) -> bool {
     match T::OP {
       Operator::True => true,
-      Operator::Gte(rhs) => num::is_ge(val, rhs),
-      Operator::Lte(rhs) => num::is_le(val, rhs),
+      Operator::RangeFrom(start) => num::is_ge(val, start),
+      Operator::RangeTo(end) => num::is_le(val, end),
+      Operator::Range(start, end) => num::is_ge(val, start) && num::is_le(val, end),
       Operator::Equ(rhs) => num::is_eq(val, rhs),
       Operator::And => eval::<O, T::Lhs>(val) && eval::<O, T::Rhs>(val),
       Operator::Or => eval::<O, T::Lhs>(val) || eval::<O, T::Rhs>(val),
@@ -1292,16 +1354,25 @@ pub mod layout {
       const OP: Operator<T> = Operator::Equ(Val::LITERAL);
     }
 
-    impl<T, Val: Literal<T>> Formula<T> for Gte<T, Val> {
+    impl<T, Val: Literal<T>> Formula<T> for RangeFrom<T, Val> {
       type Lhs = ();
       type Rhs = ();
-      const OP: Operator<T> = Operator::Gte(Val::LITERAL);
+      const OP: Operator<T> = Operator::RangeFrom(Val::LITERAL);
     }
 
-    impl<T, Val: Literal<T>> Formula<T> for Lte<T, Val> {
+    impl<T, Val: Literal<T>> Formula<T> for RangeTo<T, Val> {
       type Lhs = ();
       type Rhs = ();
-      const OP: Operator<T> = Operator::Lte(Val::LITERAL);
+      const OP: Operator<T> = Operator::RangeTo(Val::LITERAL);
+    }
+
+    impl<T: Native, Start: Literal<T>, End: Literal<T>> Formula<T> for Range<T, Start, End> {
+      type Lhs = ();
+      type Rhs = ();
+      const OP: Operator<T> = {
+        assert!(num::is_le(Start::LITERAL, End::LITERAL));
+        Operator::Range(Start::LITERAL, End::LITERAL)
+      };
     }
 
     impl<O, Lhs: Formula<O>, Rhs: Formula<O>> Formula<O> for And<Lhs, Rhs> {
@@ -1324,12 +1395,18 @@ pub mod layout {
     const DEFAULT: Self::Input;
   }
 
-  #[inline(always)]
+  #[derive(Copy, Clone)]
+  pub struct Any<T>(PhantomData<T>);
+
+  #[derive(Copy, Clone)]
+  pub struct Satisfy<T, F>(PhantomData<(T, F)>);
+
+  #[inline]
   pub const fn size_of_term<T: Term>() -> usize {
     const { size_of::<T::Input>() }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const unsafe fn satisfy_term<F: Term>(ptr: *const u8) -> bool {
     if const { is_true::<NativeOf<F::Input>, F::Satisfy>() } {
       return true;
@@ -1352,10 +1429,24 @@ pub mod layout {
       const BITS: Option<()> = None;
       const DEFAULT: Self::Input = ();
     }
+
+    impl<T: Integer> Term for Any<T> {
+      type Input = T::Native;
+      type Satisfy = ();
+      const BITS: Option<T::Native> = None;
+      const DEFAULT: T::Native = <T::Native as Default>::DEFAULT;
+    }
+
+    impl<T: Integer, F: Formula<T::Native>> Term for Satisfy<T, F> {
+      type Input = T::Native;
+      type Satisfy = F;
+      const BITS: Option<T::Native> = None;
+      const DEFAULT: T::Native = <T::Native as Default>::DEFAULT;
+    }
   };
 
   pub enum LayoutKind {
-    Term, And(usize, usize), Repeat(usize, usize), Wildcard(usize)
+    Term, And(usize, usize), Repeat(usize, usize), Wildcard(usize), #[cfg(test)] Uninit
   }
 
   pub trait Layout {
@@ -1365,7 +1456,7 @@ pub mod layout {
     const KIND: LayoutKind;
   }
 
-  #[inline(always)]
+  #[inline]
   pub const unsafe fn satisfy<T: Layout>(ptr: *const u8, metadata: usize) -> bool {
     use LayoutKind::*;
     match const { T::KIND } {
@@ -1373,6 +1464,7 @@ pub mod layout {
       And(l, r) =>
         satisfy::<T::Lhs>(ptr.wrapping_add(l), metadata)
           && satisfy::<T::Rhs>(ptr.wrapping_add(r), metadata),
+      Repeat(_, 0) | Wildcard(0) => true,
       Repeat(_, s) | Wildcard(s) => {
         let (mut i, n) = (0, if let Repeat(n, _) = const { T::KIND } { n } else { metadata });
         while i < n {
@@ -1383,10 +1475,11 @@ pub mod layout {
         }
         true
       }
+      #[cfg(test)] Uninit => true
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn wildcard_size<T: Layout>() -> usize {
     use LayoutKind::*;
     const {
@@ -1394,11 +1487,12 @@ pub mod layout {
         Term | Repeat(_, _) => 0,
         And(_, _) => wildcard_size::<T::Lhs>() + wildcard_size::<T::Rhs>(),
         Wildcard(s) => s,
+        #[cfg(test)] Uninit => 0,
       }
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const unsafe fn initialize_to_default<T: Layout>(ptr: *mut u8) {
     use LayoutKind::*;
     match const { T::KIND } {
@@ -1415,29 +1509,22 @@ pub mod layout {
         }
       },
       Wildcard(_) => {},
+      #[cfg(test)] Uninit => {},
     }
   }
 
   /// Compile `T` term type into `BitsPattern`
-  #[inline(always)]
-  const fn compile<T: Term, const N: usize>() -> BitsPattern {
-    const fn compile_impl<O: Native, T: Formula<O>, E: Endianness, const N: usize>()
+  #[inline]
+  const fn compile<T: Term, const N: usize, const M: usize>() -> BitsPattern {
+    const fn compile_impl<O: Native, T: Formula<O>, E: Endianness, const N: usize, const M: usize>()
       -> BitsPattern
     {
-      /// Returns the constant operand of operator expressions.
-      const fn operand<O: Native, T: Formula<O>>() -> O {
-        match T::OP {
-          Equ(val) | Gte(val) | Lte(val) => val,
-          _ => O::DEFAULT,
-        }
-      }
-
       /// Compile both `lhs` and `rhs` sides of the expression.
       /// NOTE: Function indirection is required as it avoid a "cycle detected" compilation error.
-      const fn operands<O: Native, T: Formula<O>, E: Endianness, const N: usize>()
+      const fn operands<O: Native, T: Formula<O>, E: Endianness, const N: usize, const M: usize>()
         -> &'static [BitsPattern]
       {
-        &const { [compile_impl::<O, T::Lhs, E, N>(), compile_impl::<O, T::Rhs, E, N>()] }
+        &const { [compile_impl::<O, T::Lhs, E, N, M>(), compile_impl::<O, T::Rhs, E, N, M>()] }
       }
 
       use Operator::*;
@@ -1445,12 +1532,13 @@ pub mod layout {
 
       match T::OP {
         True => Init(&[ByteInterval::ANY; N]),
-        And => All(operands::<O, T, E, N>()),
-        Or => Any(operands::<O, T, E, N>()),
+        And => All(operands::<O, T, E, N, M>()),
+        Or => Any(operands::<O, T, E, N, M>()),
         Equ(_) => Init(&const {
+          let val = if let Equ(x) = T::OP { x } else { num::cast(0u8) };
           let bytes = match E::LITERAL.is_little() {
-            true => num::to_le_bytes(operand::<O, T>()),
-            _ => num::to_be_bytes(operand::<O, T>()),
+            true => num::to_le_bytes(val),
+            _ => num::to_be_bytes(val),
           };
           // SAFETY: `bytes` is a valid memory region of `[u8; N]`.
           let bytes: &[u8; N] = unsafe { core::mem::transmute(&bytes) };
@@ -1462,96 +1550,191 @@ pub mod layout {
           }
           intervals
         }),
-        Gte(_) | Lte(_) => Any(&const {
-          let intervals = &const {
-            let bytes = num::to_be_bytes(operand::<O, T>());
-            // SAFETY: `bytes` is a valid memory region of `[u8; N]`.
-            let bytes: &[u8; N] = unsafe { core::mem::transmute(&bytes) };
-            let mut intervals = [[ByteInterval::ANY; N]; N];
+        Range(_, _) => {
+          let patterns = &const {
+            let intervals = &const {
+              use num::{cast, to_le_bytes, to_be_bytes};
+              use core::mem::transmute;
+              let (s, e) = if let Range(s, e) = T::OP { (s, e) } else { (cast(()), cast(())) };
+              let (s, e) = (to_be_bytes(s), to_be_bytes(e));
+              // SAFETY: `bytes` is a valid memory region of `[u8; N]`.
+              let (s, e): (&[u8; N], &[u8; N]) = unsafe { (transmute(&s), transmute(&e)) };
+              let mut intervals = [[ByteInterval::EMPTY; N]; M];
+              // e.g.
+              // big-endian:
+              //   [0x11, 0x22, 0x33]..=[0xAB, 0xCD, 0xEF]
+              //   = [0x11,        0x22,    0x33..]
+              //   | [0x11,        0x23..,  ..]
+              //   | [0x12..=0xAA, ..,      ..]
+              //   | [0xAB,        ..=0xCB, ..]
+              //   | [0xAB,        0xCD,    ..=0xEF]
+              let mut i = 0;
+
+              macro_rules! r#for {
+                ($i:ident in $s:tt..$e:tt => $b:expr) => {{
+                  let mut $i = $s;
+                  while $i < $e {
+                    $b;
+                    $i += 1;
+                  }
+                }};
+              }
+
+              // skip equals bytes.
+              let mut b = 0;
+              while b < N && s[b] == e[b] {
+                intervals[i][b] = ByteInterval::new(0xff, s[b], s[b]);
+                b += 1;
+              }
+
+              // build lower bound:
+              r#for!(xb in 0..N => r#for!(yb in 0..N => {
+                let k = if E::LITERAL.is_little() { N - xb - 1 } else { xb };
+
+              }));
+
+              // while b < N {
+              //   // first interval:
+              //   let end = if b + 1 >= N - 1 { e[N - 1] } else { 0xff };
+              //   intervals[i][N - 1] = ByteInterval::new(0xff, s[N - 1], end);
+              //   let mut bb = b;
+              //   while bb < N - 1 {
+              //     intervals[i][bb] = ByteInterval::new(0xff, s[bb], s[bb]);
+              //   }
+              //   // end interval
+              // }
+
+              intervals
+            };
+            let mut patterns = [Uninit; M];
             let mut i = 0;
-            while i < N {
-              let mut j = 0;
-              while j <= i {
-                let k = if E::LITERAL.is_little() { N - j - 1 } else { j };
-                intervals[i][k] = match T::OP {
-                  // Greater-than-or-equals cases (`>=`).
-                  Gte(_) if j + 1 == N => ByteInterval::new(0xff, bytes[j], 0xff),
-                  Gte(_) if j == i => match bytes[j].checked_add(1) {
-                    Some(start) => ByteInterval::new(0xff, start, 0xff),
-                    _ => ByteInterval::EMPTY,
-                  },
-                  // Lower-than-or-equals cases (`<=`).
-                  Lte(_) if j + 1 == N => ByteInterval::new(0xff, 0x00, bytes[j]),
-                  Lte(_) if j == i => match bytes[j].checked_sub(1) {
-                    Some(end) => ByteInterval::new(0xff, 0x00, end),
-                    _ => ByteInterval::EMPTY,
-                  },
-                  // Common cases.
-                  _ if j < i => ByteInterval::eq(0xff, bytes[j]),
-                  _ => ByteInterval::ANY,
-                };
+            let mut j = 0;
+            while i < M {
+              if Init(&intervals[i]).reachable() {
+                patterns[j] = Init(&intervals[i]);
                 j += 1;
               }
               i += 1;
             }
-            intervals
+            patterns
           };
-          let mut patterns = [Uninit; N];
           let mut i = 0;
-          while i < N {
-            patterns[i] = Init(&intervals[i]);
+          while i < M {
+            if matches!(patterns[i], Uninit) {
+              break
+            }
             i += 1;
           }
-          patterns
-        }),
+          Any(patterns.split_at(i).0)
+        },
+        RangeFrom(_) | RangeTo(_) => {
+          let patterns = &const {
+            let intervals = &const {
+              let val = if let RangeFrom(x) | RangeTo(x) = T::OP { x } else { num::cast(0u8) };
+              let bytes = num::to_be_bytes(val);
+              // SAFETY: `bytes` is a valid memory region of `[u8; N]`.
+              let bytes: &[u8; N] = unsafe { core::mem::transmute(&bytes) };
+              let mut intervals = [[ByteInterval::ANY; N]; N];
+              let mut i = 0;
+              while i < N {
+                let mut j = 0;
+                while j <= i {
+                  let k = if E::LITERAL.is_little() { N - j - 1 } else { j };
+                  intervals[i][k] = match T::OP {
+                    // Greater-than-or-equals cases (`>=`).
+                    RangeFrom(_) if j + 1 == N => ByteInterval::new(0xff, bytes[j], 0xff),
+                    RangeFrom(_) if j == i => match bytes[j].checked_add(1) {
+                      Some(start) => ByteInterval::new(0xff, start, 0xff),
+                      _ => ByteInterval::EMPTY,
+                    },
+                    // Lower-than-or-equals cases (`<=`).
+                    RangeTo(_) if j + 1 == N => ByteInterval::new(0xff, 0x00, bytes[j]),
+                    RangeTo(_) if j == i => match bytes[j].checked_sub(1) {
+                      Some(end) => ByteInterval::new(0xff, 0x00, end),
+                      _ => ByteInterval::EMPTY,
+                    },
+                    // Common cases.
+                    _ if j < i => ByteInterval::eq(0xff, bytes[j]),
+                    _ => ByteInterval::ANY,
+                  };
+                  j += 1;
+                }
+                i += 1;
+              }
+              intervals
+            };
+            let mut patterns = [Uninit; N];
+            let mut i = 0;
+            let mut j = 0;
+            while i < N {
+              if Init(&intervals[i]).reachable() {
+                patterns[j] = Init(&intervals[i]);
+                j += 1;
+              }
+              i += 1;
+            }
+            patterns
+          };
+          let mut i = 0;
+          while i < N {
+            if matches!(patterns[i], Uninit) {
+              break
+            }
+            i += 1;
+          }
+          Any(patterns.split_at(i).0)
+        },
       }
     }
 
-    const { compile_impl::<NativeOf<T::Input>, T::Satisfy, <T::Input as Integer>::Endian, N>() }
+    const { compile_impl::<NativeOf<T::Input>, T::Satisfy, <T::Input as Integer>::Endian, N, M>() }
   }
 
-  #[inline(always)]
-  const fn offset<T: Layout>(off: usize, max: usize) -> &'static BitsPattern {
-
-
-    #[inline(always)]
-    const fn unbounded<T: Layout>(off: usize) -> &'static BitsPattern {
-      use LayoutKind::*;
-      match T::KIND {
-        Term if off == 0 => &const {
-          macro_rules! compile_dispatch {
-            ($($size:literal)+) => {
-              match size_of_term::<T::Term>() {
-                $($size => compile::<T::Term, $size>(),)+
-                _ => unreachable!(),
-              }
-            };
-          }
-          compile_dispatch!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
-        },
-        Term => &BitsPattern::Uninit,
-        Repeat(n, s) if off == 0 || off < n * s => unbounded::<T::Lhs>(off % s),
-        Repeat(_, _) => &BitsPattern::Uninit,
-        Wildcard(s) => unbounded::<T::Lhs>(off % s),
-        And(l, r) => {
-          let l = if off >= l {
-            unbounded::<T::Lhs>(off - l)
-          } else {
-            &BitsPattern::Uninit
+  pub(crate) const fn offset<T: Layout>(off: usize) -> &'static BitsPattern {
+    use LayoutKind::*;
+    match T::KIND {
+      #[cfg(test)] Uninit => &BitsPattern::Uninit,
+      Term if off == 0 => &const {
+        macro_rules! compile_dispatch {
+          ($($size:literal)+) => {
+            match size_of_term::<T::Term>() {
+              0 => BitsPattern::Init(&[]),
+              $($size => compile::<T::Term, $size, { 2 * $size - 1 }>(),)+
+              _ => unreachable!(),
+            }
           };
-          if matches!(l, &BitsPattern::Uninit) && off >= r {
-            unbounded::<T::Rhs>(off - r)
-          } else {
-            &BitsPattern::Uninit
-          }
+        }
+        compile_dispatch!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+      },
+      Term => &BitsPattern::Uninit,
+      Repeat(n, s) if off < n * s => offset::<T::Lhs>(off % s),
+      Repeat(_, _) => &BitsPattern::Uninit,
+      Wildcard(0) =>  &BitsPattern::Uninit,
+      Wildcard(s) => offset::<T::Lhs>(off % s),
+      And(l, r) => {
+        let l = if off >= l {
+          offset::<T::Lhs>(off - l)
+        } else {
+          &BitsPattern::Uninit
+        };
+        if matches!(l, &BitsPattern::Uninit) && off >= r {
+          offset::<T::Rhs>(off - r)
+        } else {
+          l
         }
       }
     }
+  }
 
-    if off >= max {
-      return &BitsPattern::Uninit;
-    }
-    unbounded::<T>(off)
+  #[cfg(test)]
+  pub struct Uninit;
+
+  #[cfg(test)]
+  impl Layout for Uninit {
+    type Lhs = ();
+    type Rhs = ();
+    type Term = ();
+    const KIND: LayoutKind = LayoutKind::Uninit;
   }
 
   // impl `Layout`
@@ -1563,13 +1746,47 @@ pub mod layout {
       const KIND: LayoutKind = LayoutKind::Term;
     }
 
-    impl<L: Layout, LOff: Literal<usize>, R: Layout, ROff: Literal<usize>> Layout for
-    And<(L, LOff), (R, ROff)>
-    {
-      type Lhs = L;
-      type Rhs = R;
+    impl<_0: Layout, _0O: Literal<usize>> Layout for ((_0O, _0),) {
+      type Lhs = _0;
+      type Rhs = ();
       type Term = ();
-      const KIND: LayoutKind = LayoutKind::And(LOff::LITERAL, ROff::LITERAL);
+      const KIND: LayoutKind = LayoutKind::And(_0O::LITERAL, 0);
+    }
+
+    impl<_0: Layout, _0O: Literal<usize>, _1: Layout, _1O: Literal<usize>> Layout
+      for ((_0O, _0), (_1O, _1))
+    {
+      type Lhs = _0;
+      type Rhs = _1;
+      type Term = ();
+      const KIND: LayoutKind = LayoutKind::And(_0O::LITERAL, _1O::LITERAL);
+    }
+
+    macro_rules! impl_and {
+      // Match at least one pair
+      { ($TOff:ident $T:ident), ($ROff:ident $R:ident) } => {};
+      { ($TOff:ident $T:ident), $( ($ROff:ident $R:ident) ),* } => {
+        impl_and! { $( ($ROff $R) ),* }
+        impl<$TOff: Literal<usize>, $T: Layout, $( $ROff: Literal<usize>, $R: Layout ),*> Layout
+          for (($TOff, $T), $( ($ROff, $R) ),*)
+        {
+          type Lhs = $T;
+          type Rhs = ($( ($ROff, $R) ),*);
+          type Term = ();
+          const KIND: LayoutKind = LayoutKind::And($TOff::LITERAL, 0);
+        }
+      };
+    }
+
+    impl_and! {
+      (_0Off _0), (_1Off _1), (_2Off _2), (_3Off _3),
+      (_4Off _4), (_5Off _5), (_6Off _6), (_7Off _7),
+      (_8Off _8), (_9Off _9), (_10Off _10), (_11Off _11),
+      (_12Off _12), (_13Off _13), (_14Off _14), (_15Off _15),
+      (_16Off _16), (_17Off _17), (_18Off _18), (_19Off _19),
+      (_20Off _20), (_21Off _21), (_22Off _22), (_23Off _23),
+      (_24Off _24), (_25Off _25), (_26Off _26), (_27Off _27),
+      (_28Off _28), (_29Off _29), (_30Off _30), (_31Off _31)
     }
   };
 
@@ -1580,78 +1797,111 @@ pub mod layout {
     Subset,   // 𝐴 ⊆ 𝐵 and 𝐴 ∩ 𝐵 = 𝐴 (𝐴 is a subset of 𝐵)
   }
 
-  pub(crate) const fn intersects<A: Layout, B: Layout>(bound: usize) -> Intersection {
-    struct Intersects<A, B> {
-      a: BitsPattern,
-      b: BitsPattern,
-      bound: usize,
-      offset: usize,
-      _types: PhantomData<(A, B)>,
-    }
-
-    const ANY: u8 = 0b01;
+  pub(crate) fn intersects<A: Layout, B: Layout>(end: usize) -> Intersection {
     const ALL: u8 = 0b11;
+    const SOME: u8 = 0b01;
 
-    impl<A: Layout, B: Layout> Intersects<A, B> {
-      const fn with_a(&mut self, a: BitsPattern) -> u8 {
-        self.a = a;
-        self.compute()
-      }
-
-      const fn with_b(&mut self, b: BitsPattern) -> u8 {
-        self.b = b;
-        self.compute()
-      }
-
-      const fn offset_a(&mut self) -> u8 {
-        self.with_a(*offset::<A>(self.offset, self.bound))
-      }
-
-      const fn offset_b(&mut self) -> u8 {
-        self.with_b(*offset::<B>(self.offset, self.bound))
-      }
-
-      const fn next(&mut self, a: &'static [ByteInterval], b: &'static [ByteInterval]) -> u8 {
-        self.offset += 1;
-        self.a = BitsPattern::Init(a);
-        self.b = BitsPattern::Init(b);
-        self.compute()
-      }
-
-      const fn compute(&mut self) -> u8 {
-        use BitsPattern::*;
-        match (self.a, self.b) {
-          _ if self.offset >= self.bound => ALL,
-          (Init([]) | All([]) | Any([]), _) => self.offset_a(),
-          (All([a]) | Any([a]), _) => self.with_a(*a),
-          (All([la, ra @ ..]), _) => self.with_a(*la) & self.with_a(All(ra)),
-          (Any([la, ra @ ..]), _) => match (self.with_a(*la), self.with_a(Any(ra))) {
-            (ALL, ALL) => ALL,
-            (0, 0) => 0,
-            _ => ANY,
+    fn step<A: Layout, B: Layout>(
+      mut off: usize, mut a: BitsPattern, mut b: BitsPattern, end: &mut usize
+    ) -> u8 {
+      use BitsPattern::*;
+      let mut result = ALL;
+      loop {
+        match (a, b) {
+          // terminal conditions:
+          (Uninit, Uninit) => break { *end = off + 1; result },
+          (Init([]), Init([])) => break { *end = off; result },
+          // overlapping patterns:
+          (Init([]), _) => a = *offset::<A>(off),
+          (_, Init([])) => b = *offset::<B>(off),
+          // uninitialized against initialized:
+          (Init([_, na @ ..]), Uninit) => {
+            off += 1;
+            a = Init(na);
+            b = *offset::<B>(off);
           },
-          (_, Init([]) | All([]) | Any([])) => self.offset_b(),
-          (_, All([b]) | Any([b])) => self.with_b(*b),
-          (_, All([lb, rb @ ..])) => self.with_b(*lb) & self.with_b(All(rb)),
-          (_, Any([lb, rb @ ..])) => match (self.with_b(*lb), self.with_b(Any(rb))) {
-            (ALL, _) | (_, ALL) => ALL,
-            (0, 0) => 0,
-            _ => ANY,
+          (Uninit, Init([_, rb @ ..])) => {
+            off += 1;
+            a = *offset::<A>(off);
+            b = Init(rb);
           },
-          (Uninit, Uninit) => self.next(&[], &[]),
-          (Init([_, ra @ ..]), Uninit) => self.next(ra, &[]),
-          (Uninit, Init([_, rb @ ..])) => self.next(&[], rb),
+          // all & any:
+          (All(a), _) => {
+            let mut inner_result = step::<A, B>(off, a[0], b, end);
+            let mut i = 1;
+            while inner_result != 0 && i < a.len() {
+              inner_result &= step::<A, B>(off, a[i], b, end);
+              i += 1;
+            }
+            println!("All(a) => All({a:?}) ∩ {b:?} = {inner_result}");
+            break result & inner_result;
+          }
+          (Any(a), _) => {
+            //   0 ∩ {0, 1} = ALL
+            // | 1 ∩ {0, 1} = ALL
+            // | 2 ∩ {0, 1} = 0
+            // = SOME
+            let mut inner_result = step::<A, B>(off, a[0], b, end);
+            let mut i = 1;
+            while i < a.len() {
+              inner_result = match (inner_result, step::<A, B>(off, a[i], b, end)) {
+                (ALL, ALL) => ALL,
+                (0, 0) => 0,
+                _ => SOME,
+              };
+              i += 1;
+            }
+            println!("Any(a) => Any({a:?}) ∩ {b:?} = {inner_result}");
+            break result & inner_result;
+          }
+          (_, All(b)) => {
+            let mut inner_result = step::<A, B>(off, a, b[0], end);
+            let mut i = 1;
+            while inner_result != 0 && i < b.len() {
+              inner_result &= step::<A, B>(off, a, b[i], end);
+              i += 1;
+            }
+            println!("All(b) => {a:?} ∩ All({b:?}) = {inner_result}");
+            break result & inner_result;
+          }
+          (_, Any(b)) => {
+            //   0 ∩ {0, 1} = 0 ∩ 0 | 0 ∩ 1 = ALL | 0 = ALL
+            // | 1 ∩ {0, 1} = 1 ∩ 0 | 1 ∩ 1 = 0 | ALL = ALL
+            // | 2 ∩ {0, 1} = 2 ∩ 0 | 2 ∩ 1 = 0 | 0 = 0
+            let mut inner_result = step::<A, B>(off, a, b[0], end);
+            let mut i = 1;
+            while i < b.len() {
+              inner_result |= step::<A, B>(off, a, b[i], end);
+              i += 1;
+            }
+            println!("Any(b) => {a:?} ∩ Any({b:?}) = {inner_result}");
+            break result & inner_result;
+          }
+          // both initialized:
           (Init([la, ra @ ..]), Init([lb, rb @ ..])) => match (la.len(), la.intersects(lb)) {
-            (_, 0) => 0,
-            (l, r) => (if l == r { ALL } else { ANY }) & self.next(ra, rb)
+            (_, 0) => {
+              println!("  {la:?} ∩ {lb:?} = {}", 0);
+              break 0
+            },
+            (l, r) => {
+              println!("  {la:?} ∩ {lb:?} = {}", if l == r { ALL } else { SOME });
+              result &= if l == r { ALL } else { SOME };
+              off += 1;
+              a = Init(ra);
+              b = Init(rb);
+            }
           }
         }
       }
     }
 
-    let (a, b) = (*offset::<A>(0, bound), *offset::<B>(0, bound));
-    match (Intersects::<A, B> { a, b, bound, offset: 0, _types: PhantomData }.compute()) {
-      ANY => Intersection::Overlap,
+    let (mut off, mut result) = (0, ALL);
+    while result != 0 && off < end {
+      result &= step::<A, B>(off, *offset::<A>(off), *offset::<B>(off), &mut off);
+    }
+
+    match result {
+      SOME => Intersection::Overlap,
       ALL => Intersection::Subset,
       _ => Intersection::Disjoint,
     }
@@ -1705,12 +1955,12 @@ pub mod sizing {
     }
 
     impl MaybeUnsized {
-      #[inline(always)]
+      #[inline]
       pub const fn is_sized(&self) -> bool {
         matches!(self, MaybeUnsized::Sized)
       }
 
-      #[inline(always)]
+      #[inline]
       pub const fn is_unsized(&self) -> bool {
         matches!(self, MaybeUnsized::Unsized)
       }
@@ -1806,25 +2056,29 @@ const _: () = {
 
   impl Scalar for bool {
     type Repr = u8;
-    type Satisfy = layout::Lte<u8, num::LiteralUint<u8, 1>>;
+    type Satisfy = layout::RangeTo<u8, num::LiteralUint<u8, 1>>;
     const RAWDEFAULT: Self = false;
   }
 
   impl Scalar for char {
     type Repr = u32;
-    type Satisfy = layout::Or<
-      layout::Gte<u32, num::LiteralUint<u32, 0x110000>>,
-      layout::And<
-        layout::Gte<u32, num::LiteralUint<u32, 0xD800>>,
-        layout::Lte<u32, num::LiteralUint<u32, 0xDFFF>>,
-      >
+    // type Satisfy = layout::Or<
+    //   layout::Gte<u32, num::LiteralUint<u32, 0x110000>>,
+    //   layout::And<
+    //     layout::Gte<u32, num::LiteralUint<u32, 0xD800>>,
+    //     layout::Lte<u32, num::LiteralUint<u32, 0xDFFF>>,
+    //   >
+    // >;
+    type Satisfy = layout::And<
+      layout::RangeFrom<u32, num::LiteralUint<u32, 0xD800>>,
+      layout::RangeTo<u32, num::LiteralUint<u32, 0xDFFF>>,
     >;
     const RAWDEFAULT: Self = '\0';
   }
 
   impl Scalar for NonZero<u8> {
     type Repr = u8;
-    type Satisfy = layout::Gte<u8, num::LiteralUint<u8, 1>>;
+    type Satisfy = layout::RangeFrom<u8, num::LiteralUint<u8, 1>>;
     const RAWDEFAULT: Self = match NonZero::new(1) {
       Some(val) => val,
       _ => unreachable!()
@@ -1833,7 +2087,7 @@ const _: () = {
 
   impl Scalar for NonZero<u16> {
     type Repr = u16;
-    type Satisfy = layout::Gte<u16, num::LiteralUint<u16, 1>>;
+    type Satisfy = layout::RangeFrom<u16, num::LiteralUint<u16, 1>>;
     const RAWDEFAULT: Self = match NonZero::new(1) {
       Some(val) => val,
       _ => unreachable!()
@@ -1846,22 +2100,22 @@ pub trait Type: MinimallySized<Self::Sizing> {
   type Layout: layout::Layout;
 }
 
-#[inline(always)]
+#[inline]
 pub const fn min_size_of<T: Type + ?Sized>() -> usize {
   <T as MinimallySized<T::Sizing>>::MINSIZE
 }
 
-#[inline(always)]
+#[inline]
 pub const fn is_sized<T: Type + ?Sized>() -> bool {
   T::Sizing::LITERAL.is_sized()
 }
 
-#[inline(always)]
+#[inline]
 pub const fn is_unsized<T: Type + ?Sized>() -> bool {
   T::Sizing::LITERAL.is_unsized()
 }
 
-#[inline(always)]
+#[inline]
 const unsafe fn validate<T: Type + ?Sized>(ptr: *const (), metadata: usize) -> bool {
   layout::satisfy::<T::Layout>(ptr.cast(), metadata)
 }
@@ -1874,6 +2128,21 @@ const fn default<T: Type + Copy>() -> T {
       transmute_unchecked(uninit)
     }
   }
+}
+
+#[cfg(test)]
+#[derive(Debug, Copy, Clone)]
+pub struct Uninit(u8);
+
+#[cfg(test)]
+impl Type for Uninit {
+  type Sizing = sizing::Sized;
+  type Layout = layout::Uninit;
+}
+
+#[cfg(test)]
+unsafe impl ptr::Pointee for Uninit {
+  type Metadata = ();
 }
 
 // impl `Type`
@@ -1889,6 +2158,10 @@ const _: () = {
     type Satisfy = T::Satisfy;
     const BITS: Option<num::NativeOf<Self::Input>> = None;
     const DEFAULT: Self::Input = unsafe { transmute_unchecked(T::RAWDEFAULT) };
+  }
+
+  unsafe impl<T: Scalar> ptr::Pointee for T {
+    type Metadata = ();
   }
 
   impl<T: Scalar> Type for T {
@@ -1927,7 +2200,7 @@ const _: () = {
 
 mod internal {
   use crate::layout::{intersects, wildcard_size, Intersection};
-  use crate::{min_size_of, Type, Default};
+  use crate::{min_size_of, Type, Default, layout};
   use crate::num::{cast, Integer};
 
   /// Unwrap a `Result` and return the error if it is `Err`.
@@ -1949,13 +2222,13 @@ mod internal {
   }
 
   impl Layout {
-    #[inline(always)]
+    #[inline]
     const fn size_of_with<M: Integer>(&self, metadata: M) -> usize {
       self.min_size + cast::<_, usize>(metadata) * self.dst_slice_item_size
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn layout_of<T: ?Sized + Type>() -> Layout {
     const {
       let min_size = min_size_of::<T>();
@@ -1964,7 +2237,7 @@ mod internal {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn transmute_metadata<M: Integer>(a: &Layout, b: &Layout, metadata: M) -> M {
     match b.dst_slice_item_size {
       0 => M::DEFAULT,
@@ -1972,7 +2245,7 @@ mod internal {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   pub const fn transmute_metadata_checked<M: Integer>(
     a: &Layout, b: &Layout, metadata: M, checks: &Option<MetadataChecks>
   ) -> Result<M, isize> {
@@ -1996,7 +2269,7 @@ mod internal {
     /// Validates `metadata` against constraints.
     /// In case of an error `Err(e)`, a positive `e` indicates an overflow of `metadata` by `e`,
     /// while a negative value signifies an underflow by `-e`.
-    #[inline(always)]
+    #[inline]
     pub(super) const fn validate(self, metadata: usize) -> Result<(), isize> {
       use MetadataChecks::*;
       match self {
@@ -2019,7 +2292,7 @@ mod internal {
   /// - `xa` and `xb` are the minimum sizes of `a` and `b` respectively,
   /// - `ya` and `yb` are the DST slice item sizes of `a` and `b` respectively.
   pub const fn maybe_size_mismatch(a: &Layout, b: &Layout)
-                                   -> Result<Option<MetadataChecks>, &'static str>
+    -> Result<Option<MetadataChecks>, &'static str>
   {
     use MetadataChecks::*;
     // Where:
@@ -2144,7 +2417,7 @@ mod internal {
   pub(super) const fn transmutation<Src: ?Sized + Type, Dst: ?Sized + Type>()
     -> Result<Transmutation, &'static str>
   {
-    const {
+    // const {
       let (a, b) = (&layout_of::<Src>(), &layout_of::<Dst>());
       // Compute the possible size mismatch from `Src` and `Dst` layouts.
       match maybe_size_mismatch(a, b) {
@@ -2164,17 +2437,19 @@ mod internal {
           // Finalize by intersecting `Src` and `Dst` in both direction.
           Ok(Transmutation {
             maybe_size_mismatch,
-            source_to_target_intersection: intersects::<Src::Layout, Dst::Layout>(bound),
-            target_to_source_intersection: intersects::<Dst::Layout, Src::Layout>(bound),
+            // source_to_target_intersection: intersects::<Src::Layout, Dst::Layout>(bound),
+            // target_to_source_intersection: intersects::<Dst::Layout, Src::Layout>(bound),
+            source_to_target_intersection: Intersection::Subset,
+            target_to_source_intersection: Intersection::Subset,
           })
         }
       }
-    }
+    // }
   }
 
-  #[inline(always)]
+  #[inline]
   pub(super) const fn convert_metadata<Src: ?Sized + Type, Dst: ?Sized + Type>(metadata: usize)
-                                                                               -> usize
+    -> usize
   {
     let (a, b) = const { (&layout_of::<Src>(), &layout_of::<Dst>()) };
     match b.dst_slice_item_size {
@@ -2185,7 +2460,7 @@ mod internal {
 
   #[cfg(test)]
   impl Transmutation {
-    #[inline(always)]
+    #[inline]
     const fn new(
       maybe_size_mismatch: Option<MetadataChecks>,
       source_to_target_intersection: Intersection,
@@ -2194,28 +2469,28 @@ mod internal {
       Self { maybe_size_mismatch, source_to_target_intersection, target_to_source_intersection }
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn unreachable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self::new(maybe_size_mismatch, Intersection::Disjoint, Intersection::Disjoint)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn fallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self::new(maybe_size_mismatch, Intersection::Overlap, Intersection::Overlap)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn fallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self::new(maybe_size_mismatch, Intersection::Overlap, Intersection::Subset)
     }
 
-    #[inline(always)]
+    #[inline]
     pub const fn infallible(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self::new(maybe_size_mismatch, Intersection::Subset, Intersection::Overlap)
     }
 
     #[cfg(test)]
-    #[inline(always)]
+    #[inline]
     pub const fn infallible_mutable(maybe_size_mismatch: Option<MetadataChecks>) -> Self {
       Self::new(maybe_size_mismatch, Intersection::Subset, Intersection::Subset)
     }
@@ -2231,6 +2506,8 @@ mod internal {
 // - default
 // - ...
 
+
+#[test]
 fn main() {
   use std::ptr::from_ref;
   use num::LiteralUint;
@@ -2247,21 +2524,13 @@ fn main() {
     type Metadata = ();
   }
 
-  macro_rules! field_layout {
-    ($field:ident: $ty:ty) => {
-      (<$ty as Type>::Layout, LiteralUint<usize, { offset_of!(Self, $field) as u128 }>)
-    };
-  }
-
   impl Type for Yolo {
     type Sizing = <NonZero<u16> as Type>::Sizing;
-    type Layout = layout::And<
-      field_layout!(a: bool),
-      (layout::And<
-        field_layout!(b: u8),
-        field_layout!(c: NonZero<u16>),
-      >, LiteralUint<usize, 0>)
-    >;
+    type Layout = (
+      field!(a: bool),
+      field!(b: u8),
+      field!(c: NonZero<u16>),
+    );
   }
 
   impl MinimallySized<sizing::Unsized> for Yolo {
@@ -2273,10 +2542,10 @@ fn main() {
   }
 
   unsafe {
-    println!("{}", layout::eval::<u16, layout::Gte<u16, LiteralUint<u16, 0xabcd>>>(0xabcd));
-    println!("{}", layout::eval::<u16, layout::Gte<u16, LiteralUint<u16, 0xabcd>>>(0xabcd - 1));
-    println!("{}", layout::eval::<u16, layout::Lte<u16, LiteralUint<u16, 0xabcd>>>(0xabcd));
-    println!("{}", layout::eval::<u16, layout::Lte<u16, LiteralUint<u16, 0xabcd>>>(0xabcd + 1));
+    println!("{}", layout::eval::<u16, layout::RangeFrom<u16, LiteralUint<u16, 0xabcd>>>(0xabcd));
+    println!("{}", layout::eval::<u16, layout::RangeFrom<u16, LiteralUint<u16, 0xabcd>>>(0xabcd - 1));
+    println!("{}", layout::eval::<u16, layout::RangeTo<u16, LiteralUint<u16, 0xabcd>>>(0xabcd));
+    println!("{}", layout::eval::<u16, layout::RangeTo<u16, LiteralUint<u16, 0xabcd>>>(0xabcd + 1));
 
     println!("{}", validate::<[bool; 3]>(from_ref(&[1u8, 0u8, 1u8]).cast(), 0));
     println!("{}", validate::<[bool; 3]>(from_ref(&[1u8, 0u8, 2u8]).cast(), 0));

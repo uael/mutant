@@ -61,21 +61,21 @@ impl Repr {
   }
 }
 
-#[proc_macro_derive(Data, attributes(data))]
-pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_derive(Type, attributes(mutant))]
+pub fn derive_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
   let (repr, root) = parse_derive_attr(&input.attrs);
 
   // Derive `Data` for input.
   let args = (repr, root, input.vis, input.ident, input.generics.split_for_impl());
   proc_macro::TokenStream::from(match input.data {
-    Data::Enum(data) => derive_data_for_enum(args, data),
-    Data::Struct(data) => derive_data_for_struct(args, data),
-    _ => bail!("#[derive(Data)] is yet only implemented for struct and enum"),
+    Data::Enum(data) => derive_type_for_enum(args, data),
+    Data::Struct(data) => derive_type_for_struct(args, data),
+    _ => bail!("#[derive(Type)] is yet only implemented for struct and enum"),
   })
 }
 
-#[proc_macro_derive(DebugPacked, attributes(data))]
+#[proc_macro_derive(DebugPacked, attributes(mutant))]
 pub fn derive_debug_packed(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
   let (repr, root) = parse_derive_attr(&input.attrs);
@@ -88,7 +88,7 @@ pub fn derive_debug_packed(input: proc_macro::TokenStream) -> proc_macro::TokenS
   })
 }
 
-#[proc_macro_derive(PartialEqPacked, attributes(data))]
+#[proc_macro_derive(PartialEqPacked, attributes(mutant))]
 pub fn derive_partial_eq_packed(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
   let (repr, root) = parse_derive_attr(&input.attrs);
@@ -101,7 +101,7 @@ pub fn derive_partial_eq_packed(input: proc_macro::TokenStream) -> proc_macro::T
   })
 }
 
-fn derive_data_for_enum(
+fn derive_type_for_enum(
   args: (Repr, TokenStream, Visibility, Ident, (ImplGenerics, TypeGenerics, Option<&WhereClause>)),
   data: DataEnum,
 ) -> proc_macro2::TokenStream {
@@ -110,9 +110,9 @@ fn derive_data_for_enum(
   // Compute repr scalar type.
   let scalar = match repr {
     Repr::Scalar(scalar) => scalar,
-    _ => bail!("#[derive(Data)] on enums requires #[repr(u*|i*)]"),
+    _ => bail!("#[derive(Type)] on enums requires #[repr(u*|i*)]"),
   };
-  // Tokens that prefix `Data` implementation.
+  // Tokens that prefix `Type` implementation.
   let mut allowed_values = vec![];
   for variant in &data.variants {
     let variant_ident = &variant.ident;
@@ -135,163 +135,92 @@ fn derive_data_for_enum(
   }
 }
 
-fn derive_data_for_struct(
+fn derive_type_for_struct(
   args: (Repr, TokenStream, Visibility, Ident, (ImplGenerics, TypeGenerics, Option<&WhereClause>)),
   data: DataStruct,
 ) -> proc_macro2::TokenStream {
   // Unpack arguments.
   let (repr, root, vis, ident, (impl_generics, ty_generics, where_clause)) = args;
   // Compute fields from input.
+  let bound = Some(quote!(+ #root::Type+ #root::ptr::Pointee));
   let (input_fields, where_clause) =
-    match preprocess_data_struct(data, repr, &root, where_clause, Some(quote!(+ #root::Data))) {
+    match preprocess_data_struct(data, repr, &root, where_clause, bound) {
       Some(fields) => fields,
-      // Empty struct, impl as `Layout::Void`.
+      // Empty struct, impl as `()`.
       None => {
         return quote! {
-          unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-            type Item = ();
-            type TailSliceItem = ();
-            type Sized = Self;
-            type TailField = ();
-            type Integer = ();
-            type Container = ();
+          unsafe impl #impl_generics #root::ptr::Pointee for #ident #ty_generics #where_clause {
+            type Metadata = ();
+          }
 
-            const LAYOUT: #root::Layout<Self> = #root::Layout::Integer {
-              spec: #root::IntegerSpec::any(()),
-            };
+          unsafe impl #impl_generics #root::Type for #ident #ty_generics #where_clause {
+            type Sizing = #root::sizing::Sized;
+            type Layout = ();
           }
         }
       }
     };
 
-  // Compute head.
+  // Compute tail.
   let tail = match input_fields.last() {
     Some(field) => field,
     _ => unreachable!(),
   };
   let tail_ty = &tail.ty;
+  let tail_ident = quote_field_ident(tail, input_fields.len() - 1);
 
-  // Tokens that prefix `Data` implementation.
+  // Tokens that prefix `Type` implementation.
   let mut prefix = vec![];
 
-  // Compute `TailField` type.
-  let tail_field_ty =
-    input_fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
+  // Compute `Pointee` assocative types.
+  let metadata_ty = quote!(<#tail_ty as #root::ptr::Pointee>::Metadata);
+
+  // Compute `Type` assocative types.
+  let sizing_ty = quote!(<#tail_ty as #root::Type>::Sizing);
+  let layout_ty = input_fields
+    .iter()
+    .enumerate()
+    .map(|(i, field)| {
       let ty = &field.ty;
       let field_ident = quote_field_ident(field, i);
-      let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
+      let struct_ident = format_ident!("__{}{}Offset", ident.to_string(), i);
       prefix.push(quote! {
-        #[allow(non_camel_case_types)]
         #vis struct #struct_ident #impl_generics(::core::marker::PhantomData<#ident #ty_generics>)
           #where_clause;
 
-        unsafe impl #impl_generics #root::Field for #struct_ident #ty_generics
-          #where_clause
-        {
-          type Type = #root::DataField<#ident #ty_generics, #ty>;
-          type PrevField = #prev_field_ty;
-          const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-          const INDEX: usize = #i;
+        impl #impl_generics #root::Literal<usize> for #struct_ident #ty_generics #where_clause {
+          const LITERAL: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
         }
       });
-      quote!(#struct_ident #ty_generics)
-    });
-
-  // Compute `Sized` type.
-  let sized_ty = match repr {
-    Repr::Scalar(_) => unreachable!(),
-    Repr::Rust(_) => quote!(Self),
-    Repr::Transparant => quote!(<#tail_ty as #root::Data>::Sized),
-    Repr::C(_) if input_fields.len() == 1 => quote!(<#tail_ty as #root::Data>::Sized),
-    Repr::C(packed) => {
-      let ident = format_ident!("__{}Sized", ident.to_string());
-      let map_tail_ty = |new_type| {
-        let mut field = tail.clone();
-        field.ty = parse2(new_type).unwrap();
-        field
-      };
-      let fields = input_fields
-        .iter()
-        .take(input_fields.len() - 1)
-        .cloned()
-        .chain([
-          map_tail_ty(quote!(<#tail_ty as #root::Data>::Sized)),
-          map_tail_ty(quote!([<#tail_ty as #root::Data>::TailSliceItem; 0])),
-        ])
-        .map(|mut field| {
-          field.ident = None;
-          field
-        })
-        .collect::<Vec<_>>();
-      let tail_field_ty =
-        fields.iter().enumerate().fold(quote!(()), |prev_field_ty, (i, field)| {
-          let ty = &field.ty;
-          let field_ident = {
-            let ident = Index { index: i as u32, span: Span::call_site() };
-            quote!(#ident)
-          };
-          let struct_ident = format_ident!("__{}Field{}", ident.to_string(), i);
-          prefix.push(quote! {
-          #[allow(non_camel_case_types)]
-          #vis struct #struct_ident #impl_generics(::core::marker::PhantomData<#ident #ty_generics>)
-            #where_clause;
-
-          unsafe impl #impl_generics #root::Field for #struct_ident #ty_generics
-            #where_clause
-          {
-            type Type = #root::DataField<#ident #ty_generics, #ty>;
-            type PrevField = #prev_field_ty;
-
-            const OFFSET: usize = #root::offset_of!(#ident #ty_generics, #field_ident);
-            const INDEX: usize = #i;
-          }
-        });
-          quote!(#struct_ident #ty_generics)
-        });
-      let field_types = fields.iter().map(|field| &field.ty);
-      let repr_attr = if packed { quote!(#[repr(packed)]) } else { quote!(#[repr(C, packed)]) };
-      prefix.push(quote! {
-        #[allow(non_camel_case_types)]
-        #repr_attr
-        #vis struct #ident #impl_generics (#(#field_types),*) #where_clause;
-
-        impl #impl_generics ::core::marker::Copy for #ident #ty_generics #where_clause {}
-
-        impl #impl_generics ::core::clone::Clone for #ident #ty_generics #where_clause {
-          #[inline(always)]
-          fn clone(&self) -> Self {
-            *self
-          }
-        }
-
-        unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-          type Item = ();
-          type TailSliceItem = ();
-          type Sized = Self;
-          type TailField = #tail_field_ty;
-          type Integer = ();
-          type Container = ();
-
-          const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
-        }
-      });
-      quote!(#ident #ty_generics)
-    }
-  };
+      quote!((#struct_ident #ty_generics, <#ty as #root::Type>::Layout))
+    })
+    .collect::<Vec<_>>();
 
   quote!(
     const _: () = {
       #(#prefix)*
 
-      unsafe impl #impl_generics #root::Data for #ident #ty_generics #where_clause {
-        type Item = ();
-        type TailSliceItem = <#tail_ty as #root::Data>::TailSliceItem;
-        type Sized = #sized_ty;
-        type TailField = #tail_field_ty;
-        type Integer = ();
-        type Container = ();
+      unsafe impl #impl_generics #root::ptr::Pointee
+        for #ident #ty_generics #where_clause
+      {
+        type Metadata = #metadata_ty;
+      }
 
-        const LAYOUT: #root::Layout<Self> = #root::Layout::Struct;
+      impl #impl_generics #root::Type
+        for #ident #ty_generics #where_clause Self: #root::MinimallySized<#sizing_ty>
+      {
+        type Sizing = #sizing_ty;
+        type Layout = (#(#layout_ty,)*);
+      }
+
+      impl #impl_generics #root::MinimallySized<#root::sizing::Unsized>
+        for #ident #ty_generics #where_clause
+      {
+        const MINSIZE: usize = if #root::is_unsized::<#tail_ty>() {
+          #root::offset_of!(Self, #tail_ident) + #root::min_size_of::<#tail_ty>()
+        } else {
+          panic!("use of `MINSIZE` with an invalid `Unsized` sizing")
+        };
       }
     };
   )
@@ -508,10 +437,10 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
         })
         .unwrap();
     }
-    if attr.path().is_ident("data") {
+    if attr.path().is_ident("mutant") {
       attr
         .parse_nested_meta(|meta| {
-          // #[data(crate(<Path>))]
+          // #[mutant(crate(<Path>))]
           if meta.path.is_ident("crate") {
             root = if meta.input.peek(token::Paren) {
               let content;
@@ -524,7 +453,7 @@ fn parse_derive_attr(attrs: &[Attribute]) -> (Repr, TokenStream) {
             return Ok(());
           }
 
-          Err(meta.error("unrecognized data attribute"))
+          Err(meta.error("unrecognized mutant attribute"))
         })
         .unwrap();
     }
@@ -565,7 +494,7 @@ fn preprocess_data_struct(
       .take(input_fields.len() - 1)
       .map(|field| &field.ty)
       .map(|ty| quote!(#ty: ::core::marker::Copy #bound))
-      .chain([quote!(#tail_ty: #root::Data #bound)])
+      .chain([quote!(#tail_ty: #root::Type #bound)])
       .collect::<Vec<_>>(),
   };
   let where_clause = match where_clause {

@@ -2,144 +2,145 @@
 // use crate::num::*;
 // use crate::*;
 // use core::num::{NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8};
-//
-// #[repr(u32)]
-// #[allow(unused)]
-// #[derive(Debug, Copy, Clone, PartialEq)]
-// enum TestEnum {
-//   A = 0x01010101,
-//   B = 0x02020202,
-//   C = 0x03030303,
-// }
-//
-// unsafe impl Integer for TestEnum {
-//   type Repr = u32;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
-//     0x01010101u32,
-//     BytesPattern::Any(&[
-//       BytesPattern::Cat(&BytePattern::from_bytes(0x01010101u32.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(0x02020202u32.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(0x03030303u32.to_ne_bytes())),
-//     ]),
-//   );
-// }
-//
-// #[repr(u8)]
-// #[derive(Copy, Clone)]
-// enum UpTo1u8 {
-//   _0 = 0,
-//   _1 = 1,
-// }
-//
-// unsafe impl Integer for UpTo1u8 {
-//   type Repr = u8;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
-//     0,
-//     BytesPattern::Any(&[
-//       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
-//     ]),
-//   );
-// }
-//
-// #[repr(u16)]
-// #[derive(Copy, Clone)]
-// enum UpTo1u16 {
-//   _0 = 0,
-//   _1 = 1,
-// }
-//
-// unsafe impl Integer for UpTo1u16 {
-//   type Repr = u16;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
-//     0,
-//     BytesPattern::Any(&[
-//       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
-//     ]),
-//   );
-// }
-//
-// #[repr(u8)]
-// #[derive(Copy, Clone)]
-// enum UpTo2u8 {
-//   _0 = 0,
-//   _1 = 1,
-//   _2 = 2,
-// }
-//
-// unsafe impl Integer for UpTo2u8 {
-//   type Repr = u8;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
-//     0,
-//     BytesPattern::Any(&[
-//       BytesPattern::Cat(&BytePattern::from_bytes(0u8.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(1u8.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(2u8.to_ne_bytes())),
-//     ]),
-//   );
-// }
-//
-// #[repr(u16)]
-// #[derive(Copy, Clone)]
-// enum UpTo2u16 {
-//   _0 = 0,
-//   _1 = 1,
-//   _2 = 2,
-// }
-//
-// unsafe impl Integer for UpTo2u16 {
-//   type Repr = u16;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(
-//     0,
-//     BytesPattern::Any(&[
-//       BytesPattern::Cat(&BytePattern::from_bytes(0u16.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(1u16.to_ne_bytes())),
-//       BytesPattern::Cat(&BytePattern::from_bytes(2u16.to_ne_bytes())),
-//     ]),
-//   );
-// }
-//
-// #[repr(transparent)]
-// #[derive(Copy, Clone)]
-// struct Uninit(u8);
-//
-// unsafe impl Integer for Uninit {
-//   type Repr = u8;
-//   const SPEC: IntegerSpec<Self::Repr> = IntegerSpec::new(0, BytesPattern::Uninit);
-// }
-//
-// #[repr(C)]
-// #[derive(Data, Debug, PartialEq)]
-// #[data(crate)]
-// struct TailSliceDst {
-//   info: u32,
-//   data: [u8], // `tail slice` of type `[u8]`.
-// }
-//
-// #[repr(C)]
-// #[derive(Data, Debug, PartialEq)]
-// #[data(crate)]
-// struct TailDst {
-//   version: u32,
-//   payload: TailSliceDst, // `tail` DST of type `TailSliceDst`.
-// }
-//
-// #[repr(C)]
-// #[derive(Data, Debug, PartialEq)]
-// #[data(crate)]
-// struct MaybeDst<T: ?Sized> {
-//   info: u32,
-//   data: T, // `tail` of type `T`.
-// }
-//
-// #[derive(Data, Copy, Clone, Debug, PartialEq)]
-// #[data(crate)]
-// struct NotDstRust {
-//   info: u32,
-//   data: [u32; 21],
-// }
-//
+
+use std::mem::ManuallyDrop;
+use crate::*;
+use crate::num::LiteralUint;
+
+#[derive(Debug, Copy, Clone, Type)]
+#[mutant(crate)]
+struct TestDerive {
+  a: bool,
+  b: u8,
+  c: NonZero<u16>,
+}
+
+
+
+#[repr(u32)]
+#[allow(unused)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum TestEnum {
+  A = 0x01010101,
+  B = 0x02020202,
+  C = 0x03030303,
+}
+
+impl Scalar for TestEnum {
+  type Repr = u32;
+  type Satisfy = layout::Or<
+    layout::Equ<u32, LiteralUint<u32, 0x01010101>>,
+    layout::Or<
+      layout::Equ<u32, LiteralUint<u32, 0x02020202>>,
+      layout::Equ<u32, LiteralUint<u32, 0x03030303>>,
+    >,
+  >;
+  const RAWDEFAULT: Self = Self::A;
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+enum UpTo1u8 {
+  _0 = 0,
+  _1 = 1,
+}
+
+impl Scalar for UpTo1u8 {
+  type Repr = u8;
+  type Satisfy = layout::Or<
+    layout::Equ<u8, LiteralUint<u8, 0>>,
+    layout::Equ<u8, LiteralUint<u8, 1>>,
+  >;
+  const RAWDEFAULT: Self = Self::_0;
+}
+
+#[repr(u16)]
+#[derive(Copy, Clone)]
+enum UpTo1u16 {
+  _0 = 0,
+  _1 = 1,
+}
+
+impl Scalar for UpTo1u16 {
+  type Repr = u16;
+  type Satisfy = layout::Or<
+    layout::Equ<u16, LiteralUint<u16, 0>>,
+    layout::Equ<u16, LiteralUint<u16, 1>>,
+  >;
+  const RAWDEFAULT: Self = Self::_0;
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+enum UpTo2u8 {
+  _0 = 0,
+  _1 = 1,
+  _2 = 2,
+}
+
+impl Scalar for UpTo2u8 {
+  type Repr = u8;
+  type Satisfy = layout::Or<
+    layout::Equ<u8, LiteralUint<u8, 0>>,
+    layout::Or<
+      layout::Equ<u8, LiteralUint<u8, 1>>,
+      layout::Equ<u8, LiteralUint<u8, 2>>,
+    >,
+  >;
+  const RAWDEFAULT: Self = Self::_0;
+}
+
+#[repr(u16)]
+#[derive(Copy, Clone)]
+enum UpTo2u16 {
+  _0 = 0,
+  _1 = 1,
+  _2 = 2,
+}
+
+impl Scalar for UpTo2u16 {
+  type Repr = u16;
+  type Satisfy = layout::Or<
+    layout::Equ<u16, LiteralUint<u16, 0>>,
+    layout::Or<
+      layout::Equ<u16, LiteralUint<u16, 1>>,
+      layout::Equ<u16, LiteralUint<u16, 2>>,
+    >,
+  >;
+  const RAWDEFAULT: Self = Self::_0;
+}
+
+#[repr(C)]
+#[derive(Type, Debug, PartialEq)]
+#[mutant(crate)]
+struct TailSliceDst {
+  info: u32,
+  data: [u8], // `tail slice` of type `[u8]`.
+}
+
+#[repr(C)]
+#[derive(Type, Debug, PartialEq)]
+#[mutant(crate)]
+struct TailDst {
+  version: u32,
+  payload: TailSliceDst, // `tail` DST of type `TailSliceDst`.
+}
+
+#[repr(C)]
+#[derive(Type, Debug, PartialEq)]
+#[mutant(crate)]
+struct MaybeDst<T: ?Sized> {
+  info: u32,
+  data: T, // `tail` of type `T`.
+}
+
+#[derive(Type, Copy, Clone, Debug, PartialEq)]
+#[mutant(crate)]
+struct NotDstRust {
+  info: u32,
+  data: [u32; 21],
+}
+
 // #[test]
 // fn test_internal_default_at() {
 //   assert_eq!(default_at::<u8>(0), Some(0));
@@ -251,197 +252,294 @@
 // fn test_internal_validate() {
 //   // TODO
 // }
-//
-// #[test]
-// #[allow(unused_parens)]
-// fn test_internal_static_analyze() {
-//   use MetadataChecks::*;
-//
-//   macro_rules! test {
-//     (@ ($a:tt)) => { test!(@$a) };
-//     (@ [$a:tt; $n:expr]) => { [test!(@$a); $n] };
-//     (@ [$a:tt]) => { [test!(@$a)] };
-//     (@ ($a:tt, $b:tt)) => { Pack2<test!(@$a), test!(@$b)> };
-//     (@ ($a:tt, $b:tt, $c:tt)) => { Pack3<test!(@$a), test!(@$b), test!(@$c)> };
-//     (@ ($a:tt, $b:tt, $c:tt, $d:tt)) => { Pack4<test!(@$a), test!(@$b), test!(@$c), test!(@$d)> };
-//     (@ ($a:tt, $b:tt, $c:tt, $d:tt, $e:tt)) => { Pack5<test!(@$a), test!(@$b), test!(@$c), test!(@$d), test!(@$e)> };
-//     (@ _) => { Uninit };
-//     (@ $a:tt) => { $a };
-//     ($src:tt $dst:tt => $res:literal) => (
-//       assert_eq!(static_analyze::<test!(@$src), test!(@$dst)>(), Err($res))
-//     );
-//     ($src:tt $dst:tt => $res:ident) => (
-//       assert_eq!(static_analyze::<test!(@$src), test!(@$dst)>(), Ok(StaticAnalyze::$res(None)))
-//     );
-//     ($src:tt $dst:tt => $res:ident ($check:expr)) => (
-//       assert_eq!(static_analyze::<test!(@$src), test!(@$dst)>(), Ok(StaticAnalyze::$res(Some($check))))
-//     );
-//   }
-//
-//   test!(u8 u8 => infallible_mutable);
-//   test!((u8, u8) (u8, u8) => infallible_mutable);
-//   test!((u8, [u8]) (u8, [u8]) => infallible_mutable);
-//
-//   test!(u8 u8 => infallible_mutable);
-//   test!(bool bool => infallible_mutable);
-//   test!(u8 bool => fallible_mutable);
-//   test!(bool u8 => infallible);
-//
-//   test!((bool, _, _, bool) (u8, _, _, u8) => infallible);
-//
-//   test!(u32 [u8] => infallible_mutable);
-//   test!(u32 (u8, [u8]) => infallible_mutable);
-//   test!(u32 (u32, [u8]) => infallible_mutable);
-//
-//   test!([u8] u8 => infallible_mutable(Is(1)));
-//   test!([u8] u16 => infallible_mutable(Is(2)));
-//
-//   test!((u8, [u8]) u8 => infallible_mutable(IsEmpty));
-//   test!((u16, [u8]) u16 => infallible_mutable(IsEmpty));
-//
-//   test!([u8] [bool] => fallible_mutable);
-//   test!((bool) [bool] => infallible_mutable);
-//   test!((bool, bool) [bool] => infallible_mutable);
-//   test!((bool, bool, bool) [bool] => infallible_mutable);
-//   test!((bool, bool, bool, bool) [bool] => infallible_mutable);
-//
-//   test!(u32 u8 => infallible_mutable_truncate);
-//   test!(u8 u32 => "source too small to fit target");
-//
-//   // Test with UpTo2u8 type
-//   test!(UpTo2u8 UpTo2u8 => infallible_mutable);
-//   test!(UpTo2u8 u8 => infallible);
-//   test!(u8 UpTo2u8 => fallible_mutable);
-//   test!(UpTo2u8 u16 => "source too small to fit target");
-//   test!(u16 UpTo2u8 => fallible_mutable_truncate);
-//
-//   // Test with TestEnum type
-//   test!(TestEnum TestEnum => infallible_mutable);
-//   test!(TestEnum u32 => infallible);
-//   test!(TestEnum u16 => infallible_truncate);
-//   test!(TestEnum u8 => infallible_truncate);
-//   test!(u32 TestEnum => fallible_mutable);
-//   test!(TestEnum u64 => "source too small to fit target");
-//   test!(u64 TestEnum => fallible_mutable_truncate);
-//
-//   test!((u8c<1>) NonZeroU8 => infallible);
-//   test!((u16c<1>) NonZeroU16 => infallible);
-//   test!((u32c<1>) NonZeroU32 => infallible);
-//   test!((u64c<1>) NonZeroU64 => infallible);
-//   test!((u128c<1>) NonZeroU128 => infallible);
-//
-//   #[derive(Data)]
-//   #[repr(C, packed)]
-//   #[data(crate)]
-//   struct T<const HEAD: usize, const TAIL: usize = 0>([u8; HEAD], [[u8; TAIL]]);
-//
-//   // Basic tests for equal head and tail sizes
-//   test!((T<1>) (T<1>) => infallible_mutable);
-//   test!((T<42>) (T<42>) => infallible_mutable);
-//   test!((T<42, 1>) (T<42, 1>) => infallible_mutable);
-//
-//   // Test for equal head sizes with different tail sizes
-//   test!((T<42, 3>) (T<42, 1>) => infallible_mutable);
-//   test!((T<50, 10>) (T<50, 100>) => infallible_mutable(IsMultipleOf(10)));
-//   test!((T<50, 5>) (T<50, 100>) => infallible_mutable(IsMultipleOf(20)));
-//
-//   // Test cases for transmuting to and from empty tail
-//   test!((T<42, 1>) (T<42>) => infallible_mutable(IsEmpty));
-//   test!((T<35, 1>) (T<42>) => infallible_mutable(Is(7)));
-//   test!((T<2>) (T<1>) => infallible_mutable_truncate);
-//
-//   // Test cases for large difference in head sizes
-//   test!((T<20, 1>) (T<100>) => infallible_mutable(Is(80)));
-//
-//   // Test cases for tail sizes as multiples
-//   test!((T<42, 1>) (T<42, 2>) => infallible_mutable(IsMultipleOf(2)));
-//   test!((T<42, 1>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
-//   test!((T<42, 2>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
-//   test!((T<42, 4>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
-//   test!((T<42, 5>) (T<42, 8>) => infallible_mutable(IsMultipleOf(8)));
-//   test!((T<42, 2>) (T<42, 6>) => infallible_mutable(IsMultipleOf(3)));
-//
-//   // Test zero heads
-//   test!((T<0, 1>) (T<42>) => infallible_mutable(Is(42)));
-//   // test!((T<0, 1>) (T<42, 1>) => infallible_mutable(IsAtLeast(42)));
-//
-//   // Test cases for alignment and complex transmutations
-//   test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
-//   test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
-//   test!((T<42, 1>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
-//   test!((T<42, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<43, 2>) (T<39, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<43, 2>) (T<39, 4>) => infallible_mutable(IsMultipleOf(2)));
-//   test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
-//   test!((T<45, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<40, 1>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
-//   test!((T<44, 5>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
-//   test!((T<38, 3>) (T<42, 1>) => infallible_mutable(IsAtLeast(2)));
-//   test!((T<38, 3>) (T<41, 3>) => infallible_mutable(IsAtLeast(1)));
-//   test!((T<1, 2>) (T<1, 4>) => infallible_mutable(IsMultipleOf(2)));
-//
-//   test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
-//   test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
-//   test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
-//   test!((T<7, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<8, 2>) (T<1, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
-//   test!((T<2, 1>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
-//   test!((T<6, 5>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
-//   test!((T<0, 3>) (T<4, 1>) => infallible_mutable(IsAtLeast(2)));
-//   test!((T<0, 3>) (T<3, 3>) => infallible_mutable(IsAtLeast(1)));
-//
-//   // Test cases for incompatible transmutations
-//   test!((T<1>) (T<2>) => "source too small to fit target");
-//   test!((T<35, 2>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
-//   test!((T<40, 3>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
-//   test!((T<42>) (T<38, 3>) => "remaining bytes to fit in the target is not a multiple of the target DST trailing slice item size");
-//   test!((T<42, 3>) (T<38, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<43, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<4, 3>) (T<0, 6>) => "DST source cannot catch up on DST target");
-//   test!((T<5, 3>) (T<1, 6>) => "DST source cannot catch up on DST target");
-//   test!((T<43, 3>) (T<39, 6>) => "DST source cannot catch up on DST target");
-//   test!((T<41, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<38, 3>) (T<42, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 3>) (T<41, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 3>) (T<41, 6>) => "DST source cannot catch up on DST target");
-//   test!((T<0, 6>) (T<2, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<1, 6>) (T<3, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 6>) (T<41, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<40, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 6>) (T<41, 9>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 3>) (T<41, 9>) => "DST source cannot catch up on DST target");
-//   test!((T<38, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<39, 9>) (T<41, 3>) => "DST source cannot catch up on DST target");
-//   test!((T<2, 2>) (T<5, 2>) => "DST source cannot catch up on DST target");
-//   test!((T<3, 2>) (T<6, 2>) => "DST source cannot catch up on DST target");
-//   test!((T<4, 2>) (T<7, 2>) => "DST source cannot catch up on DST target");
-//
-//   // Test cases for transmuting to and from empty head
-//   test!((T<0, 1>) (T<0, 1>) => infallible_mutable);
-//   test!((T<0, 1>) (T<0>) => infallible_mutable(IsEmpty));
-//   test!((T<0, 1>) (T<0, 2>) => infallible_mutable(IsMultipleOf(2)));
-//   test!((T<0, 1>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
-//   test!((T<0, 1>) (T<0, 4>) => infallible_mutable(IsMultipleOf(4)));
-//   test!((T<0, 3>) (T<0, 5>) => infallible_mutable(IsMultipleOf(5)));
-//   test!((T<0, 2>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
-//   test!((T<0, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
-//
-//   // Test cases for transmuting to and from empty head and tail
-//   test!((T<0, 0>) (T<0, 0>) => infallible_mutable);
-//
+
+#[test]
+fn a() {
+  println!("{:?}", internal::transmutation::<Pack2<u8, [u8]>, Pack2<u8, [bool]>>());
+}
+
+macro_rules! decl_pack {
+  ($($name:ident ($($t:ident)* =$tt:ident))+) => {$(
+    #[doc(hidden)]
+    #[repr(C, packed)]
+    #[derive(Type, Copy, Clone)]
+    #[mutant(crate)]
+    pub struct $name<$($t,)* $tt: Type + ?Sized>($(pub $t,)* pub core::mem::ManuallyDrop<$tt>);
+  )+};
+}
+
+decl_pack! {
+  Pack1 (=A)
+  Pack2 (A =B)
+  Pack3 (A B =C)
+  Pack4 (A B C =D)
+  Pack5 (A B C D =E)
+  Pack6 (A B C D E =F)
+  Pack7 (A B C D E F =G)
+  Pack8 (A B C D E F G =H)
+  Pack9 (A B C D E F G H =I)
+}
+
+unsafe impl<T: ptr::Pointee + ?Sized> ptr::Pointee for ManuallyDrop<T> {
+  type Metadata = T::Metadata;
+}
+
+impl<T: Type + ?Sized> Type for ManuallyDrop<T> where Self: MinimallySized<T::Sizing> {
+  type Sizing = T::Sizing;
+  type Layout = T::Layout;
+}
+
+impl<T: Type + ?Sized> MinimallySized<sizing::Unsized> for ManuallyDrop<T> {
+  const MINSIZE: usize = T::MINSIZE;
+}
+
+#[test]
+#[allow(unused_parens)]
+fn test_layout_intersects() {
+  use layout::*;
+  use layout::Intersection::*;
+
+  type X = Satisfy<u16, Range<u16, LiteralUint<u16, 0x1122>, LiteralUint<u16, 0xabcd>>>;
+  println!("{:?}", offset::<X>(0));
+
+  // type Lte0xABCD = Satisfy<u16, Lte<u16, LiteralUint<u16, 0xabcd>>>;
+  // assert_eq!(Subset, intersects::<Lte0xABCD, Lte0xABCD>(2));
+  //
+  // type Lte0xAB = Satisfy<u16, Lte<u16, LiteralUint<u16, 0xab>>>;
+  // println!("{:?}", offset::<Lte0xAB>(0));
+  // assert_eq!(Subset, intersects::<Lte0xAB, Lte0xAB>(2));
+
+  // type _0or1u8 = Satisfy<u8, Or<
+  //   Equ<u8, LiteralUint<u8, 0>>,
+  //   Equ<u8, LiteralUint<u8, 1>>,
+  // >>;
+  //
+  // type _0or1or2u8 = Satisfy<u8, Or<
+  //   Equ<u8, LiteralUint<u8, 0>>,
+  //   Or<
+  //     Equ<u8, LiteralUint<u8, 1>>,
+  //     Equ<u8, LiteralUint<u8, 2>>,
+  //   >,
+  // >>;
+  //
+  // println!("-- {:?}", offset::<_0or1u8>(0));
+  // println!("-- {:?}", offset::<_0or1or2u8>(0));
+  // assert_eq!(Subset, intersects::<_0or1u8, _0or1u8>(1)); // Fail
+  // assert_eq!(Subset, intersects::<_0or1or2u8, _0or1or2u8>(1)); // Fail
+  // assert_eq!(Subset, intersects::<_0or1u8, _0or1or2u8>(1)); // Fail
+  // assert_eq!(Overlap, intersects::<_0or1or2u8, _0or1u8>(1)); // Pass
+  //
+  // type Test = Satisfy<num::le16, And<
+  //   RangeFrom<u16, LiteralUint<u16, 0xD800>>,
+  //   RangeTo<u16, LiteralUint<u16, 0xDFFF>>
+  // >>;
+  //
+  // println!("-- {:?}", offset::<Test>(0));
+  // assert_eq!(Subset, intersects::<Test, Test>(2)); // Fail
+
+  // assert_eq!(Overlap, intersects::<Any<u8>, Satisfy<u8, Lte<u8, LiteralUint<u8, 1>>>>(1));
+  // assert_eq!(Subset, intersects::<Satisfy<u8, Lte<u8, LiteralUint<u8, 1>>>, Any<u8>>(1));
+  // assert_eq!(Subset, intersects::<<UpTo2u8 as Type>::Layout, <UpTo2u8 as Type>::Layout>(1));
+}
+
+#[test]
+#[allow(unused_parens)]
+fn test_internal_static_analyze() {
+  use internal::MetadataChecks::*;
+  use internal::Transmutation;
+  use internal::transmutation;
+
+  macro_rules! test {
+    (@ ($a:tt)) => { test!(@$a) };
+    (@ [$a:tt; $n:expr]) => { [test!(@$a); $n] };
+    (@ [$a:tt]) => { [test!(@$a)] };
+    (@ ($a:tt, $b:tt)) => { Pack2<test!(@$a), test!(@$b)> };
+    (@ ($a:tt, $b:tt, $c:tt)) => { Pack3<test!(@$a), test!(@$b), test!(@$c)> };
+    (@ ($a:tt, $b:tt, $c:tt, $d:tt)) => { Pack4<test!(@$a), test!(@$b), test!(@$c), test!(@$d)> };
+    (@ ($a:tt, $b:tt, $c:tt, $d:tt, $e:tt)) => { Pack5<test!(@$a), test!(@$b), test!(@$c), test!(@$d), test!(@$e)> };
+    (@ _) => { Uninit };
+    (@ $a:tt) => { $a };
+    ($src:tt $dst:tt => $res:literal) => (
+      assert_eq!(transmutation::<test!(@$src), test!(@$dst)>(), Err($res))
+    );
+    ($src:tt $dst:tt => $res:ident) => (
+      assert_eq!(transmutation::<test!(@$src), test!(@$dst)>(), Ok(Transmutation::$res(None)))
+    );
+    ($src:tt $dst:tt => $res:ident ($check:expr)) => (
+      assert_eq!(transmutation::<test!(@$src), test!(@$dst)>(), Ok(Transmutation::$res(Some($check))))
+    );
+  }
+
+  test!(u8 u8 => infallible_mutable);
+  test!((u8, u8) (u8, u8) => infallible_mutable);
+  test!((u8, [u8]) (u8, [u8]) => infallible_mutable);
+
+  test!(u8 u8 => infallible_mutable);
+  test!(bool bool => infallible_mutable);
+  test!(u8 bool => fallible_mutable);
+  test!(bool u8 => infallible);
+
+  test!((bool, _, _, bool) (u8, _, _, u8) => infallible);
+
+  test!(u32 [u8] => infallible_mutable);
+  test!(u32 (u8, [u8]) => infallible_mutable);
+  test!(u32 (u32, [u8]) => infallible_mutable);
+
+  test!([u8] u8 => infallible_mutable(Is(1)));
+  test!([u8] u16 => infallible_mutable(Is(2)));
+
+  test!((u8, [u8]) u8 => infallible_mutable(IsEmpty));
+  test!((u16, [u8]) u16 => infallible_mutable(IsEmpty));
+
+  test!([u8] [bool] => fallible_mutable);
+  test!((bool) [bool] => infallible_mutable);
+  test!((bool, bool) [bool] => infallible_mutable);
+  test!((bool, bool, bool) [bool] => infallible_mutable);
+  test!((bool, bool, bool, bool) [bool] => infallible_mutable);
+  test!((bool, bool, bool, bool) [bool; 4] => infallible_mutable);
+
+  test!(u32 u8 => infallible_mutable);
+  test!(u8 u32 => "source too small to fit target");
+
+  test!(char char => infallible_mutable);
+
+  // test!(UpTo1u8 UpTo2u8 => infallible_mutable);
+  // test!(UpTo2u8 UpTo1u8 => fallible_mutable);
+
+  // Test with UpTo2u8 type
+  test!(UpTo2u8 UpTo2u8 => infallible_mutable);
+  test!(UpTo2u8 u8 => infallible);
+  test!(u8 UpTo2u8 => fallible_mutable);
+  test!(UpTo2u8 u16 => "source too small to fit target");
+  test!(u16 UpTo2u8 => fallible_mutable);
+
+  // Test with TestEnum type
+  test!(TestEnum TestEnum => infallible_mutable);
+  test!(TestEnum u32 => infallible);
+  test!(TestEnum u16 => infallible);
+  test!(TestEnum u8 => infallible);
+  test!(u32 TestEnum => fallible_mutable);
+  test!(TestEnum u64 => "source too small to fit target");
+  test!(u64 TestEnum => fallible_mutable);
+
+  // test!((u8c<1>) NonZeroU8 => infallible);
+  // test!((u16c<1>) NonZeroU16 => infallible);
+  // test!((u32c<1>) NonZeroU32 => infallible);
+  // test!((u64c<1>) NonZeroU64 => infallible);
+  // test!((u128c<1>) NonZeroU128 => infallible);
+
+  #[derive(Type)]
+  #[repr(C, packed)]
+  #[mutant(crate)]
+  struct T<const HEAD: usize, const TAIL: usize = 0>([u8; HEAD], [[u8; TAIL]]);
+
+  // Basic tests for equal head and tail sizes
+  test!((T<1>) (T<1>) => infallible_mutable);
+  test!((T<16>) (T<16>) => infallible_mutable);
+  test!((T<42, 1>) (T<42, 1>) => infallible_mutable);
+
+  // Test for equal head sizes with different tail sizes
+  test!((T<42, 3>) (T<42, 1>) => infallible_mutable);
+  test!((T<50, 10>) (T<50, 100>) => infallible_mutable(IsMultipleOf(10)));
+  test!((T<50, 5>) (T<50, 100>) => infallible_mutable(IsMultipleOf(20)));
+
+  // Test cases for transmuting to and from empty tail
+  test!((T<42, 1>) (T<42>) => infallible_mutable(IsEmpty));
+  test!((T<35, 1>) (T<42>) => infallible_mutable(Is(7)));
+  test!((T<2>) (T<1>) => infallible_mutable);
+
+  // Test cases for large difference in head sizes
+  test!((T<20, 1>) (T<100>) => infallible_mutable(Is(80)));
+
+  // Test cases for tail sizes as multiples
+  test!((T<42, 1>) (T<42, 2>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<42, 1>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<42, 2>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<42, 4>) (T<42, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<42, 5>) (T<42, 8>) => infallible_mutable(IsMultipleOf(8)));
+  test!((T<42, 2>) (T<42, 6>) => infallible_mutable(IsMultipleOf(3)));
+
+  // Test zero heads
+  test!((T<0, 1>) (T<42>) => infallible_mutable(Is(42)));
+  test!((T<0, 1>) (T<42, 1>) => infallible_mutable(IsAtLeast(42)));
+
+  // Test cases for alignment and complex transmutations
+  test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<42, 1>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
+  test!((T<42, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<43, 2>) (T<39, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<43, 2>) (T<39, 4>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<45, 2>) (T<38, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<40, 1>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<44, 5>) (T<38, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<38, 3>) (T<42, 1>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<38, 3>) (T<41, 3>) => infallible_mutable(IsAtLeast(1)));
+  test!((T<1, 2>) (T<1, 4>) => infallible_mutable(IsMultipleOf(2)));
+
+  test!((T<4, 1>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<4, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<1, 2>) (T<5, 2>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<7, 2>) (T<0, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<8, 2>) (T<1, 3>) => infallible_mutable(IsAtLeastThenMultipleOf(1, 3)));
+  test!((T<2, 1>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<6, 5>) (T<0, 4>) => infallible_mutable(IsAtLeastThenMultipleOf(2, 4)));
+  test!((T<0, 3>) (T<4, 1>) => infallible_mutable(IsAtLeast(2)));
+  test!((T<0, 3>) (T<3, 3>) => infallible_mutable(IsAtLeast(1)));
+
+  // Test cases for incompatible transmutations
+  test!((T<1>) (T<2>) => "source too small to fit target");
+  test!((T<35, 2>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
+  test!((T<40, 3>) (T<42>) => "missing bytes to fit the target is not a multiple of the source DST trailing slice item size");
+  test!((T<42>) (T<38, 3>) => "remaining bytes to fit in the target is not a multiple of the target DST trailing slice item size");
+  test!((T<42, 3>) (T<38, 3>) => "DST source cannot catch up on DST target");
+  test!((T<43, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
+  test!((T<4, 3>) (T<0, 6>) => "DST source cannot catch up on DST target");
+  test!((T<5, 3>) (T<1, 6>) => "DST source cannot catch up on DST target");
+  test!((T<43, 3>) (T<39, 6>) => "DST source cannot catch up on DST target");
+  test!((T<41, 3>) (T<39, 3>) => "DST source cannot catch up on DST target");
+  test!((T<38, 3>) (T<42, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 6>) => "DST source cannot catch up on DST target");
+  test!((T<0, 6>) (T<2, 3>) => "DST source cannot catch up on DST target");
+  test!((T<1, 6>) (T<3, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 6>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<40, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 6>) (T<41, 9>) => "DST source cannot catch up on DST target");
+  test!((T<39, 3>) (T<41, 9>) => "DST source cannot catch up on DST target");
+  test!((T<38, 6>) (T<42, 3>) => "DST source cannot catch up on DST target");
+  test!((T<39, 9>) (T<41, 3>) => "DST source cannot catch up on DST target");
+  test!((T<2, 2>) (T<5, 2>) => "DST source cannot catch up on DST target");
+  test!((T<3, 2>) (T<6, 2>) => "DST source cannot catch up on DST target");
+  test!((T<4, 2>) (T<7, 2>) => "DST source cannot catch up on DST target");
+
+  // Test cases for transmuting to and from empty head
+  test!((T<0, 1>) (T<0, 1>) => infallible_mutable);
+  test!((T<0, 1>) (T<0>) => infallible_mutable(IsEmpty));
+  test!((T<0, 1>) (T<0, 2>) => infallible_mutable(IsMultipleOf(2)));
+  test!((T<0, 1>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<0, 1>) (T<0, 4>) => infallible_mutable(IsMultipleOf(4)));
+  test!((T<0, 3>) (T<0, 5>) => infallible_mutable(IsMultipleOf(5)));
+  test!((T<0, 2>) (T<0, 3>) => infallible_mutable(IsMultipleOf(3)));
+  test!((T<0, 2>) (T<0, 4>) => infallible_mutable(IsMultipleOf(2)));
+
+  // Test cases for transmuting to and from empty head and tail
+  test!((T<0, 0>) (T<0, 0>) => infallible_mutable);
+
 //   // Test cases for transmuting to and from empty padded types
 //   test!(_ u8 => "uninitialized byte in source");
 //   test!((_, _, u16) u32 => "uninitialized byte in source");
 //   test!(((u8, _), u16) u32 => "uninitialized byte in source");
-//   test!(((u8, _), (u8, _)) ((bool, _), (bool, _)) => fallible_mutable);
+  test!(((u8, _), (u8, _)) ((bool, _), (bool, _)) => fallible_mutable);
 //   test!((u32, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
-//   test!((u32, [(u8, _)]) (u32, [(bool, _)]) => fallible_mutable);
+  test!((u32, [(u8, _)]) (u32, [(bool, _)]) => fallible_mutable);
 //   test!((u16, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
-//   test!(((u8, u8), u16) ((u8, bool), u16) => fallible_mutable);
+  test!(((u8, u8), u16) ((u8, bool), u16) => fallible_mutable);
 //
 //   // Test for unreachable transmutations
 //   test!((u8c<2>) bool => "none of the bit patterns in source are valid in target");
@@ -462,8 +560,8 @@
 //   test!((u32c<0>) TestEnum => "none of the bit patterns in source are valid in target");
 //
 //   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
-// }
-//
+}
+
 // #[test]
 // fn test_size_field() {
 //   type T0 = Pack!(Size<u32>, ());
@@ -657,7 +755,7 @@
 // }
 //
 // #[test]
-// fn test_truncate() {
+// fn test() {
 //   assert_eq!(0, truncate::<u16, u8>(0));
 //   assert_eq!(1, truncate::<u16le, u8>(u16le::new(1)));
 //   assert_eq!(0, truncate::<u16be, u8>(u16be::new(1)));
