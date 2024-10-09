@@ -86,6 +86,10 @@ impl core::fmt::Debug for ByteInterval {
 const fn compile<const N: usize, const M: usize>(start: &[u8; N], end: &[u8; N], lsb: bool)
   -> [[ByteInterval; N]; M]
 {
+  const fn offset<const N: usize>(off: usize, lsb: bool) -> usize {
+    if lsb { N - off - 1 } else { off }
+  }
+
   const fn range<const N: usize>(off: usize, fixed: &[u8; N], lsb: bool) -> [ByteInterval; N] {
     let mut sub = [ByteInterval::ANY; N];
     // Fill empty sub-range with fixed bytes.
@@ -97,8 +101,9 @@ const fn compile<const N: usize, const M: usize>(start: &[u8; N], end: &[u8; N],
     sub
   }
 
-  const fn offset<const N: usize>(off: usize, lsb: bool) -> usize {
-    if lsb { N - off - 1 } else { off }
+  const fn all<const N: usize>(mut idx: usize, val: u8, bytes: &[u8; N]) -> bool {
+    while idx < N && bytes[idx] == val { idx += 1; }
+    idx == N
   }
 
   let mut res = [[ByteInterval::EMPTY; N]; M];
@@ -111,57 +116,64 @@ const fn compile<const N: usize, const M: usize>(start: &[u8; N], end: &[u8; N],
   }
 
   // All bytes are equals.
-  if off == N {
-    res[0] = range::<N>(N, start, lsb);
-    return res;
-  }
-
-  // First sub-range:
-  let mut sub = range::<N>(N, start, lsb);
-  sub[offset::<N>(N - 1, lsb)].end = if off == N - 1 { end[N - 1] } else { 0xff };
-  res[res_count] = sub;
-  res_count += 1;
-
-  // Only the last byte is different.
   if off + 1 >= N {
+    res[0] = range::<N>(N, start, lsb);
+    if off < N {
+      res[0][offset::<N>(N - 1, lsb)].end = end[N - 1];
+    }
     return res;
   }
 
-  // Start bound middle ranges:
-  let mut idx = off + 1;
-  while idx < N - 1 {
-    sub = range::<N>(idx, start, lsb);
-    if let Some(s) = start[idx].checked_add(1) {
-      sub[offset::<N>(idx, lsb)].start = s;
-      res[res_count] = sub;
-      res_count += 1;
-    };
-    idx += 1;
-  }
+  let middle_end = if all::<N>(off, 0xff, end) { 0xff } else { end[off] - 1 };
+  let middle_start = if all::<N>(off, 0x00, start) {
+    0x00
+  } else {
+    // First sub-range:
+    let mut sub = range::<N>(N, start, lsb);
+    sub[offset::<N>(N - 1, lsb)].end = 0xff;
+    res[res_count] = sub;
+    res_count += 1;
+
+    // Start bound middle ranges:
+    let mut idx = off + 1;
+    while idx < N - 1 {
+      sub = range::<N>(idx, start, lsb);
+      if let Some(s) = start[idx].checked_add(1) {
+        sub[offset::<N>(idx, lsb)].start = s;
+        res[res_count] = sub;
+        res_count += 1;
+      };
+      idx += 1;
+    }
+
+    start[off] + 1
+  };
 
   // Middle range:
-  sub = range::<N>(off, start, lsb);
-  sub[offset::<N>(off, lsb)].start = start[off] + 1;
-  sub[offset::<N>(off, lsb)].end = end[off] - 1;
+  let mut sub = range::<N>(off, start, lsb);
+  sub[offset::<N>(off, lsb)].start = middle_start;
+  sub[offset::<N>(off, lsb)].end = middle_end;
   res[res_count] = sub;
   res_count += 1;
 
-  // End bound middle ranges:
-  let mut idx = off + 1;
-  while idx < N - 1 {
-    sub = range::<N>(idx, end, lsb);
-    if let Some(s) = end[idx].checked_sub(1) {
-      sub[offset::<N>(idx, lsb)].end = s;
-      res[res_count] = sub;
-      res_count += 1;
-    };
-    idx += 1;
-  }
+  if middle_end != 0xff {
+    // End bound middle ranges:
+    let mut idx = off + 1;
+    while idx < N - 1 {
+      sub = range::<N>(idx, end, lsb);
+      if let Some(s) = end[idx].checked_sub(1) {
+        sub[offset::<N>(idx, lsb)].end = s;
+        res[res_count] = sub;
+        res_count += 1;
+      };
+      idx += 1;
+    }
 
-  // Last sub-range:
-  sub = range::<N>(N, end, lsb);
-  sub[offset::<N>(N - 1, lsb)].start = if off == N - 1 { start[N - 1] } else { 0x00 };
-  res[res_count] = sub;
+    // Last sub-range:
+    sub = range::<N>(N, end, lsb);
+    sub[offset::<N>(N - 1, lsb)].start = 0x00;
+    res[res_count] = sub;
+  }
 
   res
 }
@@ -181,9 +193,13 @@ fn main() {
   println!("{:?}", compile::<3, 5>(&[0x22, 0x33, 0x44], &[0x22, 0x33, 0xab], false));
   println!("{:?}", compile::<3, 5>(&[0x22, 0x33, 0x44], &[0x22, 0xab, 0xcd], false));
   println!("{:?}", compile::<3, 5>(&[0x22, 0x33, 0x44], &[0xCD, 0xEF, 0xFE], false));
+  println!("{:?}", compile::<3, 5>(&[0x00, 0x00, 0x00], &[0xCD, 0xEF, 0xFE], false));
+  println!("{:?}", compile::<3, 5>(&[0x01, 0x00, 0x00], &[0xCD, 0xEF, 0xFE], false));
+  println!("{:?}", compile::<3, 5>(&[0x22, 0x33, 0x44], &[0xff, 0xff, 0xff], false));
 
   println!("{:?}", compile::<2, 3>(&[0x11, 0x22], &[0xab, 0xcd], false));
   println!("{:?}", compile::<2, 3>(&[0x11, 0x22], &[0x11, 0xcd], false));
+  println!("{:?}", compile::<2, 3>(&[0x00, 0x22], &[0xff, 0xcd], false));
 
   println!("{:?}", compile::<1, 1>(&[0x11], &[0xab], false));
   println!("{:?}", compile::<1, 1>(&[0x11], &[0x11], false));
