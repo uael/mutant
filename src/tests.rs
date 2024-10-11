@@ -1,11 +1,11 @@
 // use crate::internal::*;
 // use crate::num::*;
 // use crate::*;
-// use core::num::{NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8};
+// use core::num::{NonZero<u128>, NonZero<u16>, NonZero<u32>, NonZero<u64>, NonZero<u8>};
 
-use std::mem::ManuallyDrop;
-use crate::*;
 use crate::num::LiteralUint;
+use crate::*;
+use core::mem::ManuallyDrop;
 
 #[derive(Debug, Copy, Clone, Type)]
 #[mutant(crate)]
@@ -14,8 +14,6 @@ struct TestDerive {
   b: u8,
   c: NonZero<u16>,
 }
-
-
 
 #[repr(u32)]
 #[allow(unused)]
@@ -26,7 +24,7 @@ enum TestEnum {
   C = 0x03030303,
 }
 
-impl Scalar for TestEnum {
+impl layout::Raw for TestEnum {
   type Repr = u32;
   type Satisfy = layout::Or<
     layout::Equ<u32, LiteralUint<u32, 0x01010101>>,
@@ -35,7 +33,7 @@ impl Scalar for TestEnum {
       layout::Equ<u32, LiteralUint<u32, 0x03030303>>,
     >,
   >;
-  const RAWDEFAULT: Self = Self::A;
+  const RAW_DEFAULT: Self = Self::A;
 }
 
 #[repr(u8)]
@@ -45,13 +43,11 @@ enum UpTo1u8 {
   _1 = 1,
 }
 
-impl Scalar for UpTo1u8 {
+impl layout::Raw for UpTo1u8 {
   type Repr = u8;
-  type Satisfy = layout::Or<
-    layout::Equ<u8, LiteralUint<u8, 0>>,
-    layout::Equ<u8, LiteralUint<u8, 1>>,
-  >;
-  const RAWDEFAULT: Self = Self::_0;
+  type Satisfy =
+    layout::Or<layout::Equ<u8, LiteralUint<u8, 0>>, layout::Equ<u8, LiteralUint<u8, 1>>>;
+  const RAW_DEFAULT: Self = Self::_0;
 }
 
 #[repr(u16)]
@@ -61,13 +57,11 @@ enum UpTo1u16 {
   _1 = 1,
 }
 
-impl Scalar for UpTo1u16 {
+impl layout::Raw for UpTo1u16 {
   type Repr = u16;
-  type Satisfy = layout::Or<
-    layout::Equ<u16, LiteralUint<u16, 0>>,
-    layout::Equ<u16, LiteralUint<u16, 1>>,
-  >;
-  const RAWDEFAULT: Self = Self::_0;
+  type Satisfy =
+    layout::Or<layout::Equ<u16, LiteralUint<u16, 0>>, layout::Equ<u16, LiteralUint<u16, 1>>>;
+  const RAW_DEFAULT: Self = Self::_0;
 }
 
 #[repr(u8)]
@@ -78,16 +72,13 @@ enum UpTo2u8 {
   _2 = 2,
 }
 
-impl Scalar for UpTo2u8 {
+impl layout::Raw for UpTo2u8 {
   type Repr = u8;
   type Satisfy = layout::Or<
     layout::Equ<u8, LiteralUint<u8, 0>>,
-    layout::Or<
-      layout::Equ<u8, LiteralUint<u8, 1>>,
-      layout::Equ<u8, LiteralUint<u8, 2>>,
-    >,
+    layout::Or<layout::Equ<u8, LiteralUint<u8, 1>>, layout::Equ<u8, LiteralUint<u8, 2>>>,
   >;
-  const RAWDEFAULT: Self = Self::_0;
+  const RAW_DEFAULT: Self = Self::_0;
 }
 
 #[repr(u16)]
@@ -98,16 +89,13 @@ enum UpTo2u16 {
   _2 = 2,
 }
 
-impl Scalar for UpTo2u16 {
+impl layout::Raw for UpTo2u16 {
   type Repr = u16;
   type Satisfy = layout::Or<
     layout::Equ<u16, LiteralUint<u16, 0>>,
-    layout::Or<
-      layout::Equ<u16, LiteralUint<u16, 1>>,
-      layout::Equ<u16, LiteralUint<u16, 2>>,
-    >,
+    layout::Or<layout::Equ<u16, LiteralUint<u16, 1>>, layout::Equ<u16, LiteralUint<u16, 2>>>,
   >;
-  const RAWDEFAULT: Self = Self::_0;
+  const RAW_DEFAULT: Self = Self::_0;
 }
 
 #[repr(C)]
@@ -115,6 +103,9 @@ impl Scalar for UpTo2u16 {
 #[mutant(crate)]
 struct TailSliceDst {
   info: u32,
+  info_1: u32,
+  info_2: u32,
+  info_3: u32,
   data: [u8], // `tail slice` of type `[u8]`.
 }
 
@@ -141,35 +132,6 @@ struct NotDstRust {
   data: [u32; 21],
 }
 
-// #[test]
-// fn test_internal_default_at() {
-//   assert_eq!(default_at::<u8>(0), Some(0));
-//   assert_eq!(default_at::<u8>(1), None);
-//   assert_eq!(default_at::<u8>(usize::MAX), None);
-//   assert_eq!(default_at::<u32>(0), Some(0));
-//   assert_eq!(default_at::<u32>(1), Some(0));
-//   assert_eq!(default_at::<u32>(2), Some(0));
-//   assert_eq!(default_at::<u32>(3), Some(0));
-//   assert_eq!(default_at::<u32>(4), None);
-//   assert_eq!(default_at::<u32>(usize::MAX), None);
-//   assert_eq!(default_at::<TailSliceDst>(0), Some(0));
-//   assert_eq!(default_at::<TailSliceDst>(1), Some(0));
-//   assert_eq!(default_at::<TailSliceDst>(2), Some(0));
-//   assert_eq!(default_at::<TailSliceDst>(3), Some(0));
-//   assert_eq!(default_at::<TailSliceDst>(4), Some(0));
-//   assert_eq!(default_at::<TailSliceDst>(5), Some(0)); // etc..
-//   assert_eq!(default_at::<TailDst>(0), Some(0));
-//   assert_eq!(default_at::<TailDst>(1), Some(0));
-//   assert_eq!(default_at::<TailDst>(2), Some(0));
-//   assert_eq!(default_at::<TailDst>(3), Some(0));
-//   assert_eq!(default_at::<TailDst>(4), Some(0));
-//   assert_eq!(default_at::<TailDst>(5), Some(0));
-//   assert_eq!(default_at::<TailDst>(6), Some(0));
-//   assert_eq!(default_at::<TailDst>(7), Some(0));
-//   assert_eq!(default_at::<TailDst>(8), Some(0));
-//   assert_eq!(default_at::<TailDst>(9), Some(0)); // etc..
-// }
-//
 // #[test]
 // fn test_internal_convert_metadata() {
 //   assert_eq!(convert_metadata::<u8, u8>(0), 0);
@@ -284,7 +246,10 @@ unsafe impl<T: ptr::Pointee + ?Sized> ptr::Pointee for ManuallyDrop<T> {
   type Metadata = T::Metadata;
 }
 
-impl<T: Type + ?Sized> Type for ManuallyDrop<T> where Self: MinimallySized<T::Sizing> {
+impl<T: Type + ?Sized> Type for ManuallyDrop<T>
+where
+  Self: MinimallySized<T::Sizing>,
+{
   type Sizing = T::Sizing;
   type Layout = T::Layout;
 }
@@ -295,59 +260,10 @@ impl<T: Type + ?Sized> MinimallySized<sizing::Unsized> for ManuallyDrop<T> {
 
 #[test]
 #[allow(unused_parens)]
-fn test_layout_intersects() {
-  use layout::*;
-  use layout::Intersection::*;
-
-  type X = Satisfy<u16, Range<u16, LiteralUint<u16, 0x1122>, LiteralUint<u16, 0xabcd>>>;
-  println!("{:?}", offset::<X>(0));
-
-  // type Lte0xABCD = Satisfy<u16, Lte<u16, LiteralUint<u16, 0xabcd>>>;
-  // assert_eq!(Subset, intersects::<Lte0xABCD, Lte0xABCD>(2));
-  //
-  // type Lte0xAB = Satisfy<u16, Lte<u16, LiteralUint<u16, 0xab>>>;
-  // println!("{:?}", offset::<Lte0xAB>(0));
-  // assert_eq!(Subset, intersects::<Lte0xAB, Lte0xAB>(2));
-
-  // type _0or1u8 = Satisfy<u8, Or<
-  //   Equ<u8, LiteralUint<u8, 0>>,
-  //   Equ<u8, LiteralUint<u8, 1>>,
-  // >>;
-  //
-  // type _0or1or2u8 = Satisfy<u8, Or<
-  //   Equ<u8, LiteralUint<u8, 0>>,
-  //   Or<
-  //     Equ<u8, LiteralUint<u8, 1>>,
-  //     Equ<u8, LiteralUint<u8, 2>>,
-  //   >,
-  // >>;
-  //
-  // println!("-- {:?}", offset::<_0or1u8>(0));
-  // println!("-- {:?}", offset::<_0or1or2u8>(0));
-  // assert_eq!(Subset, intersects::<_0or1u8, _0or1u8>(1)); // Fail
-  // assert_eq!(Subset, intersects::<_0or1or2u8, _0or1or2u8>(1)); // Fail
-  // assert_eq!(Subset, intersects::<_0or1u8, _0or1or2u8>(1)); // Fail
-  // assert_eq!(Overlap, intersects::<_0or1or2u8, _0or1u8>(1)); // Pass
-  //
-  // type Test = Satisfy<num::le16, And<
-  //   RangeFrom<u16, LiteralUint<u16, 0xD800>>,
-  //   RangeTo<u16, LiteralUint<u16, 0xDFFF>>
-  // >>;
-  //
-  // println!("-- {:?}", offset::<Test>(0));
-  // assert_eq!(Subset, intersects::<Test, Test>(2)); // Fail
-
-  // assert_eq!(Overlap, intersects::<Any<u8>, Satisfy<u8, Lte<u8, LiteralUint<u8, 1>>>>(1));
-  // assert_eq!(Subset, intersects::<Satisfy<u8, Lte<u8, LiteralUint<u8, 1>>>, Any<u8>>(1));
-  // assert_eq!(Subset, intersects::<<UpTo2u8 as Type>::Layout, <UpTo2u8 as Type>::Layout>(1));
-}
-
-#[test]
-#[allow(unused_parens)]
 fn test_internal_static_analyze() {
+  use internal::transmutation;
   use internal::MetadataChecks::*;
   use internal::Transmutation;
-  use internal::transmutation;
 
   macro_rules! test {
     (@ ($a:tt)) => { test!(@$a) };
@@ -376,6 +292,7 @@ fn test_internal_static_analyze() {
 
   test!(u8 u8 => infallible_mutable);
   test!(bool bool => infallible_mutable);
+  test!(char char => infallible_mutable);
   test!(u8 bool => fallible_mutable);
   test!(bool u8 => infallible);
 
@@ -403,8 +320,8 @@ fn test_internal_static_analyze() {
 
   test!(char char => infallible_mutable);
 
-  // test!(UpTo1u8 UpTo2u8 => infallible_mutable);
-  // test!(UpTo2u8 UpTo1u8 => fallible_mutable);
+  test!(UpTo1u8 UpTo2u8 => infallible);
+  test!(UpTo2u8 UpTo1u8 => fallible_mutable);
 
   // Test with UpTo2u8 type
   test!(UpTo2u8 UpTo2u8 => infallible_mutable);
@@ -422,11 +339,11 @@ fn test_internal_static_analyze() {
   test!(TestEnum u64 => "source too small to fit target");
   test!(u64 TestEnum => fallible_mutable);
 
-  // test!((u8c<1>) NonZeroU8 => infallible);
-  // test!((u16c<1>) NonZeroU16 => infallible);
-  // test!((u32c<1>) NonZeroU32 => infallible);
-  // test!((u64c<1>) NonZeroU64 => infallible);
-  // test!((u128c<1>) NonZeroU128 => infallible);
+  test!((LiteralUint<u8, 1>) (NonZero<u8>) => infallible);
+  test!((LiteralUint<u16, 1>) (NonZero<u16>) => infallible);
+  test!((LiteralUint<u32, 1>) (NonZero<u32>) => infallible);
+  test!((LiteralUint<u64, 1>) (NonZero<u64>) => infallible);
+  test!((LiteralUint<u128, 1>) (NonZero<u128>) => infallible);
 
   #[derive(Type)]
   #[repr(C, packed)]
@@ -531,35 +448,35 @@ fn test_internal_static_analyze() {
   // Test cases for transmuting to and from empty head and tail
   test!((T<0, 0>) (T<0, 0>) => infallible_mutable);
 
-//   // Test cases for transmuting to and from empty padded types
-//   test!(_ u8 => "uninitialized byte in source");
-//   test!((_, _, u16) u32 => "uninitialized byte in source");
-//   test!(((u8, _), u16) u32 => "uninitialized byte in source");
+  //   // Test cases for transmuting to and from empty padded types
+  //   test!(_ u8 => "uninitialized byte in source");
+  //   test!((_, _, u16) u32 => "uninitialized byte in source");
+  //   test!(((u8, _), u16) u32 => "uninitialized byte in source");
   test!(((u8, _), (u8, _)) ((bool, _), (bool, _)) => fallible_mutable);
-//   test!((u32, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
+  //   test!((u32, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
   test!((u32, [(u8, _)]) (u32, [(bool, _)]) => fallible_mutable);
-//   test!((u16, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
+  //   test!((u16, [(u8, _)]) (u32, [u16]) => "uninitialized byte in source");
   test!(((u8, u8), u16) ((u8, bool), u16) => fallible_mutable);
-//
-//   // Test for unreachable transmutations
-//   test!((u8c<2>) bool => "none of the bit patterns in source are valid in target");
-//   test!((u8c<0>) u8 => infallible);
-//   test!((u8c<0>) NonZeroU8 => "none of the bit patterns in source are valid in target");
-//   test!((u16c<0>) u16 => infallible);
-//   test!((u16c<0>) NonZeroU16 => "none of the bit patterns in source are valid in target");
-//   test!((u32c<0>) u32 => infallible);
-//   test!((u32c<0>) NonZeroU32 => "none of the bit patterns in source are valid in target");
-//   test!((u64c<0>) u64 => infallible);
-//   test!((u64c<0>) NonZeroU64 => "none of the bit patterns in source are valid in target");
-//   test!((u128c<0>) u128 => infallible);
-//   test!((u128c<0>) NonZeroU128 => "none of the bit patterns in source are valid in target");
-//   test!((u128c<0>) (Option<NonZeroU128>) => infallible);
-//   test!(TestEnum NonZeroU32 => infallible);
-//   test!(NonZeroU32 TestEnum => fallible_mutable);
-//   test!(TestEnum (u32c<0>) => "none of the bit patterns in source are valid in target");
-//   test!((u32c<0>) TestEnum => "none of the bit patterns in source are valid in target");
-//
-//   test!([u8; 16] (TestEnum, (u16lec<0xcafe>), [((u8c<0x42>), TestEnum); 2]) => fallible_mutable);
+
+  // Test for unreachable transmutations
+  test!((LiteralUint<u8, 2>) bool => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u8, 0>) u8 => infallible);
+  test!((LiteralUint<u8, 0>) (NonZero<u8>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u16, 0>) u16 => infallible);
+  test!((LiteralUint<u16, 0>) (NonZero<u16>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u32, 0>) u32 => infallible);
+  test!((LiteralUint<u32, 0>) (NonZero<u32>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u64, 0>) u64 => infallible);
+  test!((LiteralUint<u64, 0>) (NonZero<u64>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u128, 0>) u128 => infallible);
+  test!((LiteralUint<u128, 0>) (NonZero<u128>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u128, 0>) (Option<NonZero<u128>>) => infallible);
+  test!(TestEnum (NonZero<u32>) => infallible);
+  test!((NonZero<u32>) TestEnum => fallible_mutable);
+  test!(TestEnum (LiteralUint<u32, 0>) => "none of the bit patterns in source are valid in target");
+  test!((LiteralUint<u32, 0>) TestEnum => "none of the bit patterns in source are valid in target");
+
+  test!([u8; 16] (TestEnum, (LiteralUint<num::le16, 0xcafe>), [((LiteralUint<u8, 0x42>), TestEnum); 2]) => fallible_mutable);
 }
 
 // #[test]
@@ -619,122 +536,123 @@ fn test_internal_static_analyze() {
 //   assert!(pat_of::<T5>().matches(u32be::from_raw(0xcafebeefu32 + 4 + 1)));
 //   assert!(pat_of::<T4>().matches(u32be::MAX));
 // }
-//
-// #[test]
-// fn test_num() {
-//   use core::array::from_fn;
-//   use rand::Rng;
-//
-//   #[rustfmt::skip]
-//   macro_rules! test {
-//     ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
-//       let val = rand::thread_rng().gen_range($min..=$max);
-//       assert_eq!($sz, mem::size_of::<$ty>());
-//       assert_eq!($max, $ty::MAX.into());
-//       assert_eq!($min, $ty::from($min).into());
-//       assert_eq!($max, $ty::from($max).into());
-//       assert_eq!(val, $ty::from(val).into());
-//       assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
-//       assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
-//       assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
-//     )+};
-//   }
-//
-//   test!(2, [u16, u16le, u16be], 0u16, 0xffffu16);
-//   test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32);
-//   test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32);
-//   test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64);
-//   test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64);
-//   test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64);
-//   test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64);
-//   test!(9, [u72, u72le, u72be], 0u128, 0xffffffffffffffffffu128);
-//   test!(10, [u80, u80le, u80be], 0u128, 0xffffffffffffffffffffu128);
-//   test!(11, [u88, u88le, u88be], 0u128, 0xffffffffffffffffffffffu128);
-//   test!(12, [u96, u96le, u96be], 0u128, 0xffffffffffffffffffffffffu128);
-//   test!(13, [u104, u104le, u104be], 0u128, 0xffffffffffffffffffffffffffu128);
-//   test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
-//   test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
-//   test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
-//
-//   let big: u128 = 0x112233445566778899aabbccddeeff;
-//   assert_eq!(0xff, cast::<_, u8>(big));
-//   assert_eq!(0xeeff, cast::<_, u16>(big));
-//   assert_eq!(0xeeff, cast::<_, u16le>(big).into_raw());
-//   assert_eq!(0xeeff, cast::<_, u16be>(big).into_raw());
-//   assert_eq!(0xddeeff, cast::<_, u24>(big).into_raw());
-//   assert_eq!(0xddeeff, cast::<_, u24le>(big).into_raw());
-//   assert_eq!(0xddeeff, cast::<_, u24be>(big).into_raw());
-//   assert_eq!(0xccddeeff, cast::<_, u32>(big));
-//   assert_eq!(0xccddeeff, cast::<_, u32le>(big).into_raw());
-//   assert_eq!(0xccddeeff, cast::<_, u32be>(big).into_raw());
-//   assert_eq!(0xbbccddeeff, cast::<_, u40>(big).into_raw());
-//   assert_eq!(0xbbccddeeff, cast::<_, u40le>(big).into_raw());
-//   assert_eq!(0xbbccddeeff, cast::<_, u40be>(big).into_raw());
-//   assert_eq!(0xaabbccddeeff, cast::<_, u48>(big).into_raw());
-//   assert_eq!(0xaabbccddeeff, cast::<_, u48le>(big).into_raw());
-//   assert_eq!(0xaabbccddeeff, cast::<_, u48be>(big).into_raw());
-//   assert_eq!(0x99aabbccddeeff, cast::<_, u56>(big).into_raw());
-//   assert_eq!(0x99aabbccddeeff, cast::<_, u56le>(big).into_raw());
-//   assert_eq!(0x99aabbccddeeff, cast::<_, u56be>(big).into_raw());
-//   assert_eq!(0x8899aabbccddeeff, cast::<_, u64>(big));
-//   assert_eq!(0x8899aabbccddeeff, cast::<_, u64le>(big).into_raw());
-//   assert_eq!(0x8899aabbccddeeff, cast::<_, u64be>(big).into_raw());
-//
-//   assert_eq!(0xff, cast::<u8, u128>(0xff));
-//   assert_eq!(0xff, cast::<u8, u128le>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u128be>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u64>(0xff));
-//   assert_eq!(0xff, cast::<u8, u64le>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u64be>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u32>(0xff));
-//   assert_eq!(0xff, cast::<u8, u32le>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u32be>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u16>(0xff));
-//   assert_eq!(0xff, cast::<u8, u16le>(0xff).into_raw());
-//   assert_eq!(0xff, cast::<u8, u16be>(0xff).into_raw());
-//
-//   assert_eq!(0xeeff, cast::<u16, u128>(0xeeff));
-//   assert_eq!(0xeeff, cast::<u16, u128le>(0xeeff).into_raw());
-//   assert_eq!(0xeeff, cast::<u16, u128be>(0xeeff).into_raw());
-//   assert_eq!(0xeeff, cast::<u16, u64>(0xeeff));
-//   assert_eq!(0xeeff, cast::<u16, u64le>(0xeeff).into_raw());
-//   assert_eq!(0xeeff, cast::<u16, u64be>(0xeeff).into_raw());
-//   assert_eq!(0xeeff, cast::<u16, u32>(0xeeff));
-//   assert_eq!(0xeeff, cast::<u16, u32le>(0xeeff).into_raw());
-//   assert_eq!(0xeeff, cast::<u16, u32be>(0xeeff).into_raw());
-//   assert_eq!(0xff, cast::<u16, u8>(0xeeff));
-//
-//   assert_eq!(0, cast::<(), u8>(()));
-//   assert_eq!(0, cast::<(), u16>(()));
-//   assert_eq!(0, cast::<(), u32>(()));
-//   assert_eq!(0, cast::<(), u64>(()));
-//   assert_eq!(0, cast::<(), u128>(()));
-// }
-//
-// #[test]
-// #[allow(clippy::bool_assert_comparison)]
-// fn test_default() {
-//   assert_eq!(0, default::<u8>());
-//   assert_eq!(0, default::<u16>());
-//   assert_eq!(false, default::<bool>());
-//   assert_eq!(None, default::<Option<NonZeroU8>>());
-//   assert_eq!(NonZeroU8::new(1).unwrap(), default::<NonZeroU8>());
-//   assert_eq!(NonZeroU16::new(1).unwrap(), default::<NonZeroU16>());
-//   assert_eq!(NonZeroU32::new(1).unwrap(), default::<NonZeroU32>());
-//   assert_eq!([false, false, false, false], default::<[bool; 4]>());
-//   assert_eq!([0xca; 4], transmute::<_, [u8; 4]>(default::<[u8c<0xca>; 4]>()));
-//   assert_eq!([0xcafe; 4], transmute::<_, [u16; 4]>(default::<[u16c<0xcafe>; 4]>()));
-//   assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[u32c<0xcafebeef>; 4]>()));
-//   assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[u32c<0xcafebeef>; 4]>()));
-// }
-//
+
+#[test]
+fn test_num() {
+  use num::*;
+  use core::array::from_fn;
+  use rand::Rng;
+
+  #[rustfmt::skip]
+  macro_rules! test {
+    ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
+      let val = rand::thread_rng().gen_range($min..=$max);
+      assert_eq!($sz, size_of::<$ty>());
+      assert_eq!($max, $ty::MAX.into());
+      assert_eq!($min, $ty::from($min).into());
+      assert_eq!($max, $ty::from($max).into());
+      assert_eq!(val, $ty::from(val).into());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
+      assert_eq!(from_fn(|i| i as u8), $ty::from_be_bytes(from_fn(|i| i as u8)).to_be_bytes());
+    )+};
+  }
+
+  test!(2, [u16, u16le, u16be], 0u16, 0xffffu16);
+  test!(3, [u24, u24le, u24be], 0u32, 0xffffffu32);
+  test!(4, [u32, u32le, u32be], 0u32, 0xffffffffu32);
+  test!(5, [u40, u40le, u40be], 0u64, 0xffffffffffu64);
+  test!(6, [u48, u48le, u48be], 0u64, 0xffffffffffffu64);
+  test!(7, [u56, u56le, u56be], 0u64, 0xffffffffffffffu64);
+  test!(8, [u64, u64le, u64be], 0u64, 0xffffffffffffffffu64);
+  test!(9, [u72, u72le, u72be], 0u128, 0xffffffffffffffffffu128);
+  test!(10, [u80, u80le, u80be], 0u128, 0xffffffffffffffffffffu128);
+  test!(11, [u88, u88le, u88be], 0u128, 0xffffffffffffffffffffffu128);
+  test!(12, [u96, u96le, u96be], 0u128, 0xffffffffffffffffffffffffu128);
+  test!(13, [u104, u104le, u104be], 0u128, 0xffffffffffffffffffffffffffu128);
+  test!(14, [u112, u112le, u112be], 0u128, 0xffffffffffffffffffffffffffffu128);
+  test!(15, [u120, u120le, u120be], 0u128, 0xffffffffffffffffffffffffffffffu128);
+  test!(16, [u128, u128le, u128be], 0u128, 0xffffffffffffffffffffffffffffffffu128);
+
+  let big: u128 = 0x112233445566778899aabbccddeeff;
+  assert_eq!(0xffu64, cast::<_, u8>(big).into());
+  assert_eq!(0xeeffu64, cast::<_, u16>(big).into());
+  assert_eq!(0xeeffu64, cast::<_, u16le>(big).into());
+  assert_eq!(0xeeffu64, cast::<_, u16be>(big).into());
+  assert_eq!(0xddeeffu64, cast::<_, u24>(big).into());
+  assert_eq!(0xddeeffu64, cast::<_, u24le>(big).into());
+  assert_eq!(0xddeeffu64, cast::<_, u24be>(big).into());
+  assert_eq!(0xccddeeffu64, cast::<_, u32>(big).into());
+  assert_eq!(0xccddeeffu64, cast::<_, u32le>(big).into());
+  assert_eq!(0xccddeeffu64, cast::<_, u32be>(big).into());
+  assert_eq!(0xbbccddeeffu64, cast::<_, u40>(big).into());
+  assert_eq!(0xbbccddeeffu64, cast::<_, u40le>(big).into());
+  assert_eq!(0xbbccddeeffu64, cast::<_, u40be>(big).into());
+  assert_eq!(0xaabbccddeeffu64, cast::<_, u48>(big).into());
+  assert_eq!(0xaabbccddeeffu64, cast::<_, u48le>(big).into());
+  assert_eq!(0xaabbccddeeffu64, cast::<_, u48be>(big).into());
+  assert_eq!(0x99aabbccddeeffu64, cast::<_, u56>(big).into());
+  assert_eq!(0x99aabbccddeeffu64, cast::<_, u56le>(big).into());
+  assert_eq!(0x99aabbccddeeffu64, cast::<_, u56be>(big).into());
+  assert_eq!(0x8899aabbccddeeffu64, cast::<_, u64>(big).into());
+  assert_eq!(0x8899aabbccddeeffu64, cast::<_, u64le>(big).into());
+  assert_eq!(0x8899aabbccddeeffu64, cast::<_, u64be>(big).into());
+
+  assert_eq!(0xffu128, cast::<u8, u128>(0xff));
+  assert_eq!(0xffu128, cast::<u8, u128le>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u128be>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u64>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u64le>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u64be>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u32>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u32le>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u32be>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u16>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u16le>(0xff).into());
+  assert_eq!(0xffu128, cast::<u8, u16be>(0xff).into());
+
+  assert_eq!(0xeeffu128, cast::<u16, u128>(0xeeff));
+  assert_eq!(0xeeffu128, cast::<u16, u128le>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u128be>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u64>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u64le>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u64be>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u32>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u32le>(0xeeff).into());
+  assert_eq!(0xeeffu128, cast::<u16, u32be>(0xeeff).into());
+  assert_eq!(0xffu128, cast::<u16, u8>(0xeeff).into());
+
+  assert_eq!(0, cast::<(), u8>(()));
+  assert_eq!(0, cast::<(), u16>(()));
+  assert_eq!(0, cast::<(), u32>(()));
+  assert_eq!(0, cast::<(), u64>(()));
+  assert_eq!(0, cast::<(), u128>(()));
+}
+
+#[test]
+#[allow(clippy::bool_assert_comparison)]
+fn test_default() {
+  assert_eq!(0, default::<u8>());
+  assert_eq!(0, default::<u16>());
+  assert_eq!(false, default::<bool>());
+  assert_eq!(None, default::<Option<NonZero<u8>>>());
+  assert_eq!(NonZero::<u8>::new(1).unwrap(), default::<NonZero<u8>>());
+  assert_eq!(NonZero::<u16>::new(1).unwrap(), default::<NonZero<u16>>());
+  assert_eq!(NonZero::<u32>::new(1).unwrap(), default::<NonZero<u32>>());
+  assert_eq!([false, false, false, false], default::<[bool; 4]>());
+  // assert_eq!([0xca; 4], transmute::<_, [u8; 4]>(default::<[LiteralUint<u8, 0xca>; 4]>()));
+  // assert_eq!([0xcafe; 4], transmute::<_, [u16; 4]>(default::<[LiteralUint<u16, 0xcafe>; 4]>()));
+  // assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[LiteralUint<u32, 0xcafebeef>; 4]>()));
+  // assert_eq!([0xcafebeef; 4], transmute::<_, [u32; 4]>(default::<[LiteralUint<u32, 0xcafebeef>; 4]>()));
+}
+
 // #[test]
 // #[allow(clippy::bool_assert_comparison)]
 // fn test_zeroed() {
 //   assert_eq!(0, zeroed::<u8>());
 //   assert_eq!(0, zeroed::<u16>());
 //   assert_eq!(false, zeroed::<bool>());
-//   assert_eq!(None, zeroed::<Option<NonZeroU8>>());
+//   assert_eq!(None, zeroed::<Option<NonZero<u8>>>());
 //   assert_eq!([false, false, false, false], zeroed::<[bool; 4]>());
 // }
 //
@@ -780,8 +698,8 @@ fn test_internal_static_analyze() {
 //   assert_eq!(Some(false), try_transmute(0u8));
 //   assert_eq!(Some(true), try_transmute(1u8));
 //   assert_eq!(None, try_transmute::<_, bool>(2u8));
-//   assert_eq!(Some(NonZeroU8::new(1).unwrap()), try_transmute(1u8));
-//   assert_eq!(None, try_transmute::<_, NonZeroU8>(0u8));
+//   assert_eq!(Some(NonZero<u8>::new(1).unwrap()), try_transmute(1u8));
+//   assert_eq!(None, try_transmute::<_, NonZero<u8>>(0u8));
 //   assert_eq!(Some(0x01010101), try_transmute(TestEnum::A));
 //   assert_eq!(Some(0x02020202), try_transmute(TestEnum::B));
 //   assert_eq!(Some(0x03030303), try_transmute(TestEnum::C));
@@ -791,7 +709,7 @@ fn test_internal_static_analyze() {
 //   assert_eq!(None, try_transmute::<_, TestEnum>(0x00000000));
 //   assert_eq!(None, try_transmute::<_, TestEnum>(0x04040404));
 //
-//   type DstPacked = Pack![TestEnum, u16lec<0xcafe>, [Pack![u8c<0x42>, TestEnum]]];
+//   type DstPacked = Pack![TestEnum, u16lec<0xcafe>, [Pack![LiteralUint<u8, 0x42>, TestEnum]]];
 //
 //   let bytes = [
 //     0x01u8, 0x01, 0x01, 0x01, 0xfe, 0xca, 0x42, 0x02, 0x02, 0x02, 0x02, 0x42, 0x03, 0x03, 0x03,

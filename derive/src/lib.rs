@@ -3,7 +3,7 @@ use quote::{format_ident, quote, ToTokens};
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
 use syn::{
-  parenthesized, parse2, parse_macro_input, token, Attribute, Data, DataEnum, DataStruct,
+  parenthesized, parse_macro_input, token, Attribute, Data, DataEnum, DataStruct,
   DeriveInput, Error, Field, Fields, ImplGenerics, Index, Path, TypeGenerics, Visibility,
   WhereClause,
 };
