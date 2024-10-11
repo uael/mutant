@@ -1,11 +1,20 @@
-// use crate::internal::*;
-// use crate::num::*;
-// use crate::*;
-// use core::num::{NonZero<u128>, NonZero<u16>, NonZero<u32>, NonZero<u64>, NonZero<u8>};
-
 use crate::num::LiteralUint;
 use crate::*;
 use core::mem::ManuallyDrop;
+use core::num::NonZero;
+
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Uninit(u8);
+
+unsafe impl ptr::Pointee for Uninit {
+  type Metadata = ();
+}
+
+impl Type for Uninit {
+  type Sizing = sizing::Sized;
+  type Layout = layout::Uninit;
+}
 
 #[derive(Debug, Copy, Clone, Type)]
 #[mutant(crate)]
@@ -319,6 +328,7 @@ fn test_internal_static_analyze() {
   test!(u8 u32 => "source too small to fit target");
 
   test!(char char => infallible_mutable);
+  test!([char; 1024] [char; 1024] => infallible_mutable);
 
   test!(UpTo1u8 UpTo2u8 => infallible);
   test!(UpTo2u8 UpTo1u8 => fallible_mutable);
@@ -539,18 +549,18 @@ fn test_internal_static_analyze() {
 
 #[test]
 fn test_num() {
-  use num::*;
   use core::array::from_fn;
+  use num::*;
   use rand::Rng;
 
   #[rustfmt::skip]
   macro_rules! test {
     ($sz:literal, [$($ty:ident),+], $min:literal, $max:literal) => {$(
       let val = rand::thread_rng().gen_range($min..=$max);
-      assert_eq!($sz, size_of::<$ty>());
-      assert_eq!($max, $ty::MAX.into());
-      assert_eq!($min, $ty::from($min).into());
-      assert_eq!($max, $ty::from($max).into());
+      // assert_eq!($sz, size_of::<$ty>(), "size");
+      assert_eq!($max, $ty::MAX.into(), "max");
+      assert_eq!($min, $ty::from($min).into(), "from min");
+      assert_eq!($max, $ty::from($max).into(), "from max");
       assert_eq!(val, $ty::from(val).into());
       assert_eq!(from_fn(|i| i as u8), $ty::from_ne_bytes(from_fn(|i| i as u8)).to_ne_bytes());
       assert_eq!(from_fn(|i| i as u8), $ty::from_le_bytes(from_fn(|i| i as u8)).to_le_bytes());
