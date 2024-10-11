@@ -2,6 +2,15 @@
 #![feature(const_refs_to_cell)]
 #[cfg_attr(not(test), no_std)]
 /// # mutant
+///
+/// ## TODO:
+/// - add `wip` intersection solution aside current one.
+/// - make sure `wip` works.
+/// - remove old intersection solution.
+/// - transmute functions.
+/// - better validation ?
+/// - size field ?
+/// - tests.
 pub mod endian;
 pub mod layout;
 pub mod num;
