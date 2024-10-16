@@ -216,36 +216,37 @@ pub(super) struct Transmutation {
 #[allow(long_running_const_eval)]
 pub(super) const fn transmutation<Src: ?Sized + Type, Dst: ?Sized + Type>(
 ) -> Result<Transmutation, &'static str> {
-  const {
-    let (a, b) = (&layout_of::<Src>(), &layout_of::<Dst>());
-    // Compute the possible size mismatch from `Src` and `Dst` layouts.
-    match maybe_size_mismatch(a, b) {
-      Err(e) => Err(e),
-      Ok(maybe_size_mismatch) => {
-        use MetadataChecks::*;
-        // Compute the minimum size in bytes need to fully intersect `Src` and `Dst`.
-        let bound = match maybe_size_mismatch {
-          None if a.dst_slice_item_size != 0 => a.min_size + a.dst_slice_item_size,
-          None => b.min_size,
-          Some(IsEmpty) => a.min_size,
-          Some(IsMultipleOf(m)) => a.min_size + (m * a.dst_slice_item_size),
-          Some(Is(n)) => a.min_size + (n * a.dst_slice_item_size),
-          Some(IsAtLeast(n)) => a.min_size + (n * a.dst_slice_item_size) + a.dst_slice_item_size,
-          Some(IsAtLeastThenMultipleOf(n, m)) => a.min_size + ((n + m) * a.dst_slice_item_size),
-        };
-        // Finalize by intersecting `Src` and `Dst` in both direction.
-        let source_to_target_intersection = intersect::<Src::Layout, Dst::Layout>(bound);
-        if let Intersection::Disjoint = source_to_target_intersection {
-          Err("none of the bit patterns in source are valid in target")
-        } else {
-          Ok(Transmutation {
-            maybe_size_mismatch,
-            source_to_target_intersection,
-            target_to_source_intersection: intersect::<Dst::Layout, Src::Layout>(bound),
-          })
-        }
+  // const {
+  let (a, b) = (&layout_of::<Src>(), &layout_of::<Dst>());
+  // Compute the possible size mismatch from `Src` and `Dst` layouts.
+  match maybe_size_mismatch(a, b) {
+    Err(e) => Err(e),
+    Ok(maybe_size_mismatch) => {
+      use MetadataChecks::*;
+      // Compute the minimum size in bytes need to fully intersect `Src` and `Dst`.
+      let bound = match maybe_size_mismatch {
+        None if a.dst_slice_item_size != 0 => a.min_size + a.dst_slice_item_size,
+        None => b.min_size,
+        Some(IsEmpty) => a.min_size,
+        Some(IsMultipleOf(m)) => a.min_size + (m * a.dst_slice_item_size),
+        Some(Is(n)) => a.min_size + (n * a.dst_slice_item_size),
+        Some(IsAtLeast(n)) => a.min_size + (n * a.dst_slice_item_size) + a.dst_slice_item_size,
+        Some(IsAtLeastThenMultipleOf(n, m)) => a.min_size + ((n + m) * a.dst_slice_item_size),
+      };
+      // Finalize by intersecting `Src` and `Dst` in both direction.
+      let source_to_target_intersection = intersect::<Src::Layout, Dst::Layout>(bound);
+      // let source_to_target_intersection = Intersection::Subset;
+      if let Intersection::Disjoint = source_to_target_intersection {
+        Err("none of the bit patterns in source are valid in target")
+      } else {
+        Ok(Transmutation {
+          maybe_size_mismatch,
+          source_to_target_intersection,
+          // target_to_source_intersection: Intersection::Subset,
+          target_to_source_intersection: intersect::<Dst::Layout, Src::Layout>(bound),
+        })
       }
-    }
+    } // }
   }
 }
 

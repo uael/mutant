@@ -1,6 +1,4 @@
-#![feature(const_mut_refs)]
-#![feature(const_refs_to_cell)]
-#[cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
 /// # mutant
 ///
 /// ## TODO:
@@ -151,12 +149,20 @@ pub unsafe trait ByteArray: Copy + Zero + Ones + 'static {
   const LEN: usize;
 }
 
-pub const fn bytes_of<T: ByteArray>(val: &T) -> &[u8] {
+#[inline]
+pub const fn bytes_of<T: ByteArray, const N: usize>(val: T) -> [u8; N] {
+  const { assert!(N == T::LEN) };
+  unsafe { transmute_unchecked(val) }
+}
+
+#[inline]
+pub const fn bytes_ref<T: ByteArray>(val: &T) -> &[u8] {
   // SAFETY: The `ByteArray` bound imply that `T` is a byte array as of `[u8; T::LEN]`.
   unsafe { &*ptr::from_raw_parts(core::ptr::from_ref(val).cast(), T::LEN) }
 }
 
-pub const fn bytes_of_mut<T: ByteArray>(val: &mut T) -> &mut [u8] {
+#[inline]
+pub const fn bytes_mut<T: ByteArray>(val: &mut T) -> &mut [u8] {
   // SAFETY: The `ByteArray` bound imply that `T` is a byte array as of `[u8; T::LEN]`.
   unsafe { &mut *ptr::from_raw_parts_mut(core::ptr::from_mut(val).cast(), T::LEN) }
 }

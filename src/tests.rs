@@ -35,11 +35,11 @@ enum TestEnum {
 
 impl layout::Raw for TestEnum {
   type Repr = u32;
-  type Satisfy = layout::Or<
-    layout::Equ<u32, LiteralUint<u32, 0x01010101>>,
-    layout::Or<
-      layout::Equ<u32, LiteralUint<u32, 0x02020202>>,
-      layout::Equ<u32, LiteralUint<u32, 0x03030303>>,
+  type Satisfy = layout::Alt<
+    layout::Equals<u32, LiteralUint<u32, 0x01010101>>,
+    layout::Alt<
+      layout::Equals<u32, LiteralUint<u32, 0x02020202>>,
+      layout::Equals<u32, LiteralUint<u32, 0x03030303>>,
     >,
   >;
   const RAW_DEFAULT: Self = Self::A;
@@ -55,7 +55,7 @@ enum UpTo1u8 {
 impl layout::Raw for UpTo1u8 {
   type Repr = u8;
   type Satisfy =
-    layout::Or<layout::Equ<u8, LiteralUint<u8, 0>>, layout::Equ<u8, LiteralUint<u8, 1>>>;
+    layout::Alt<layout::Equals<u8, LiteralUint<u8, 0>>, layout::Equals<u8, LiteralUint<u8, 1>>>;
   const RAW_DEFAULT: Self = Self::_0;
 }
 
@@ -69,7 +69,7 @@ enum UpTo1u16 {
 impl layout::Raw for UpTo1u16 {
   type Repr = u16;
   type Satisfy =
-    layout::Or<layout::Equ<u16, LiteralUint<u16, 0>>, layout::Equ<u16, LiteralUint<u16, 1>>>;
+    layout::Alt<layout::Equals<u16, LiteralUint<u16, 0>>, layout::Equals<u16, LiteralUint<u16, 1>>>;
   const RAW_DEFAULT: Self = Self::_0;
 }
 
@@ -83,9 +83,9 @@ enum UpTo2u8 {
 
 impl layout::Raw for UpTo2u8 {
   type Repr = u8;
-  type Satisfy = layout::Or<
-    layout::Equ<u8, LiteralUint<u8, 0>>,
-    layout::Or<layout::Equ<u8, LiteralUint<u8, 1>>, layout::Equ<u8, LiteralUint<u8, 2>>>,
+  type Satisfy = layout::Alt<
+    layout::Equals<u8, LiteralUint<u8, 0>>,
+    layout::Alt<layout::Equals<u8, LiteralUint<u8, 1>>, layout::Equals<u8, LiteralUint<u8, 2>>>,
   >;
   const RAW_DEFAULT: Self = Self::_0;
 }
@@ -100,9 +100,9 @@ enum UpTo2u16 {
 
 impl layout::Raw for UpTo2u16 {
   type Repr = u16;
-  type Satisfy = layout::Or<
-    layout::Equ<u16, LiteralUint<u16, 0>>,
-    layout::Or<layout::Equ<u16, LiteralUint<u16, 1>>, layout::Equ<u16, LiteralUint<u16, 2>>>,
+  type Satisfy = layout::Alt<
+    layout::Equals<u16, LiteralUint<u16, 0>>,
+    layout::Alt<layout::Equals<u16, LiteralUint<u16, 1>>, layout::Equals<u16, LiteralUint<u16, 2>>>,
   >;
   const RAW_DEFAULT: Self = Self::_0;
 }
@@ -269,6 +269,15 @@ impl<T: Type + ?Sized> MinimallySized<sizing::Unsized> for ManuallyDrop<T> {
 
 #[test]
 #[allow(unused_parens)]
+fn test_intersect() {
+  println!(
+    "{:?}",
+    layout::intersect::<<[char; 1024] as Type>::Layout, <[char; 1024] as Type>::Layout>(1024 * 4)
+  );
+}
+
+#[test]
+#[allow(unused_parens)]
 fn test_internal_static_analyze() {
   use internal::transmutation;
   use internal::MetadataChecks::*;
@@ -328,7 +337,7 @@ fn test_internal_static_analyze() {
   test!(u8 u32 => "source too small to fit target");
 
   test!(char char => infallible_mutable);
-  test!([char; 1024] [char; 1024] => infallible_mutable);
+  test!([(char, bool, char, bool); 1024 * 8] [(char, bool, char, bool); 1024 * 8] => infallible_mutable);
 
   test!(UpTo1u8 UpTo2u8 => infallible);
   test!(UpTo2u8 UpTo1u8 => fallible_mutable);

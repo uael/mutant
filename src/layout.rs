@@ -1,8 +1,8 @@
-use crate::num::LiteralUint;
 use crate::{
+  bytes_of,
   endian::Endianness,
   num,
-  num::{Native, NativeOf, Numeric},
+  num::{LiteralUint, Native, NativeOf, Numeric},
   ptr, Default, Literal,
 };
 use core::marker::PhantomData;
@@ -76,7 +76,6 @@ const _: () = {
   impl BitsPattern {
     const fn reachable(&self) -> bool {
       match self {
-        BitsPattern::Uninit => true,
         BitsPattern::Init(x) => {
           let mut i = 0;
           while i < x.len() && x[i].len() > 0 {
@@ -84,7 +83,7 @@ const _: () = {
           }
           i == x.len()
         }
-        BitsPattern::Any(_) => true,
+        _ => true,
       }
     }
 
@@ -105,23 +104,34 @@ const _: () = {
   }
 };
 
-pub enum Operator<T> {
-  True,
-  Equ(T),
+macro_rules! dispatch {
+  ($s:expr, $e:expr) => { dispatch!($s, $e, 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16) };
+  ($s:expr, $e:expr, $($size:literal)+) => {
+    match $s {
+      0 => &[],
+      $($size => { const N: usize = $size; $e },)+
+      _ => unreachable!(),
+    }
+  };
+}
+
+pub enum Expr<T: 'static = &'static [u8]> {
+  True(usize),
+  Equals(T),
   RangeFrom(T),
   RangeTo(T),
   Range(T, T),
-  Or,
+  Alt(&'static Expr, &'static Expr),
 }
 
-pub trait Satisfy<T> {
+pub trait Satisfy<T: 'static> {
   type Lhs: Satisfy<T>;
   type Rhs: Satisfy<T>;
-  const OP: Operator<T>;
+  const EXPR: Expr<T>;
 }
 
 #[derive(Copy, Clone)]
-pub struct Equ<T, Val>(PhantomData<(T, Val)>);
+pub struct Equals<T, Val>(PhantomData<(T, Val)>);
 
 #[derive(Copy, Clone)]
 pub struct RangeFrom<T, Val>(PhantomData<(T, Val)>);
@@ -132,65 +142,106 @@ pub struct RangeTo<T, Val>(PhantomData<(T, Val)>);
 #[derive(Copy, Clone)]
 pub struct Range<T, Start, End>(PhantomData<(T, Start, End)>);
 
+#[repr(C)]
 #[derive(Copy, Clone)]
-pub struct Or<Lhs, Rhs>(PhantomData<(Lhs, Rhs)>);
+pub struct Alt<Lhs, Rhs>(Lhs, Rhs);
 
 #[inline]
-pub const fn is_true<O: Copy, T: Satisfy<O>>() -> bool {
-  matches!(T::OP, Operator::True)
+pub const fn is_true<O: Copy + 'static, T: Satisfy<O>>() -> bool {
+  matches!(T::EXPR, Expr::True(_))
 }
 
 #[inline]
 pub const fn eval<O: Native, T: Satisfy<O>>(val: O) -> bool {
-  match T::OP {
-    Operator::True => true,
-    Operator::RangeFrom(start) => num::is_ge(val, start),
-    Operator::RangeTo(end) => num::is_le(val, end),
-    Operator::Range(start, end) => num::is_ge(val, start) && num::is_le(val, end),
-    Operator::Equ(rhs) => num::is_eq(val, rhs),
-    Operator::Or => eval::<O, T::Lhs>(val) || eval::<O, T::Rhs>(val),
+  match T::EXPR {
+    Expr::True(_) => true,
+    Expr::RangeFrom(start) => num::is_ge(val, start),
+    Expr::RangeTo(end) => num::is_le(val, end),
+    Expr::Range(start, end) => num::is_ge(val, start) && num::is_le(val, end),
+    Expr::Equals(rhs) => num::is_eq(val, rhs),
+    Expr::Alt(_, _) => eval::<O, T::Lhs>(val) || eval::<O, T::Rhs>(val),
   }
 }
 
 // impl `Satisfy`
 const _: () = {
-  impl<O> Satisfy<O> for () {
+  impl<T: 'static> Satisfy<T> for () {
     type Lhs = ();
     type Rhs = ();
-    const OP: Operator<O> = Operator::True;
+    const EXPR: Expr<T> = Expr::True(size_of::<T>());
   }
 
-  impl<T, Val: Literal<T>> Satisfy<T> for Equ<T, Val> {
+  impl<T: 'static, Val: Literal<T>> Satisfy<T> for Equals<T, Val> {
     type Lhs = ();
     type Rhs = ();
-    const OP: Operator<T> = Operator::Equ(Val::LITERAL);
+    const EXPR: Expr<T> = Expr::Equals(Val::LITERAL);
   }
 
-  impl<T, Val: Literal<T>> Satisfy<T> for RangeFrom<T, Val> {
+  impl<T: 'static, Val: Literal<T>> Satisfy<T> for RangeFrom<T, Val> {
     type Lhs = ();
     type Rhs = ();
-    const OP: Operator<T> = Operator::RangeFrom(Val::LITERAL);
+    const EXPR: Expr<T> = Expr::RangeFrom(Val::LITERAL);
   }
 
-  impl<T, Val: Literal<T>> Satisfy<T> for RangeTo<T, Val> {
+  impl<T: 'static, Val: Literal<T>> Satisfy<T> for RangeTo<T, Val> {
     type Lhs = ();
     type Rhs = ();
-    const OP: Operator<T> = Operator::RangeTo(Val::LITERAL);
+    const EXPR: Expr<T> = Expr::RangeTo(Val::LITERAL);
   }
 
   impl<T: Native, Start: Literal<T>, End: Literal<T>> Satisfy<T> for Range<T, Start, End> {
     type Lhs = ();
     type Rhs = ();
-    const OP: Operator<T> = {
+    const EXPR: Expr<T> = {
       assert!(num::is_le(Start::LITERAL, End::LITERAL));
-      Operator::Range(Start::LITERAL, End::LITERAL)
+      Expr::Range(Start::LITERAL, End::LITERAL)
     };
   }
 
-  impl<O, Lhs: Satisfy<O>, Rhs: Satisfy<O>> Satisfy<O> for Or<Lhs, Rhs> {
+  impl<O: Native, Lhs: Satisfy<O>, Rhs: Satisfy<O>> Satisfy<O> for Alt<Lhs, Rhs> {
     type Lhs = Lhs;
     type Rhs = Rhs;
-    const OP: Operator<O> = Operator::Or;
+    const EXPR: Expr<O> = if is_true::<O, Lhs>() || is_true::<O, Rhs>() {
+      Expr::True(size_of::<O>())
+    } else {
+      const fn compile<T: Native, S: Satisfy<T>>() -> &'static Expr {
+        use Expr::*;
+
+        macro_rules! be_bytes {
+          ($e:expr) => { be_bytes!($e, 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16) };
+          ($e:expr, $($size:literal)+) => {
+            match size_of::<T>() {
+              0 => &[],
+              $($size => &bytes_of::<_, $size>(num::to_be_bytes($e)),)+
+              _ => unreachable!(),
+            }
+          };
+        }
+
+        &const {
+          let (s, e): (&'static [u8], &'static [u8]) = const {
+            match S::EXPR {
+              Equals(n) => (be_bytes!(n), &[]),
+              RangeFrom(s) => (be_bytes!(s), &[]),
+              RangeTo(e) => (&[], be_bytes!(e)),
+              Range(s, e) => (be_bytes!(s), be_bytes!(e)),
+              _ => (&[], &[]),
+            }
+          };
+
+          match S::EXPR {
+            True(s) => True(s),
+            Equals(_) => Equals(s),
+            RangeFrom(_) => RangeFrom(s),
+            RangeTo(_) => RangeTo(e),
+            Range(_, _) => Range(s, e),
+            Alt(l, r) => Alt(l, r),
+          }
+        }
+      }
+
+      Expr::Alt(compile::<O, Lhs>(), compile::<O, Rhs>())
+    };
   }
 };
 
@@ -201,18 +252,13 @@ pub trait Raw: 'static + Copy + Default {
 }
 
 #[inline]
-pub const fn size_of_term<T: Raw>() -> usize {
-  const { size_of::<T::Repr>() }
-}
-
-#[inline]
-pub const unsafe fn satisfy_term<F: Raw>(ptr: *const u8) -> bool {
-  if const { is_true::<NativeOf<F::Repr>, F::Satisfy>() } {
+pub const unsafe fn satisfy_raw<T: Raw>(ptr: *const u8) -> bool {
+  if const { is_true::<NativeOf<T::Repr>, T::Satisfy>() } {
     return true;
   }
-  let ptr = ptr.cast::<F::Repr>();
+  let ptr = ptr.cast::<T::Repr>();
   let val = num::cast(unsafe { ptr.read_unaligned() });
-  eval::<NativeOf<F::Repr>, F::Satisfy>(val)
+  eval::<NativeOf<T::Repr>, T::Satisfy>(val)
 }
 
 // impl `Raw`
@@ -229,7 +275,7 @@ const _: () = {
 
   impl<T: Numeric, const VALUE: u128> Raw for LiteralUint<T, VALUE> {
     type Repr = T;
-    type Satisfy = Equ<T::Native, LiteralUint<T::Native, VALUE>>;
+    type Satisfy = Equals<T::Native, LiteralUint<T::Native, VALUE>>;
     const RAW_DEFAULT: Self = Self::new();
   }
 
@@ -241,7 +287,7 @@ const _: () = {
 
   impl Raw for char {
     type Repr = u32;
-    type Satisfy = Or<
+    type Satisfy = Alt<
       RangeTo<u32, LiteralUint<u32, { 0xD800 - 1 }>>,
       Range<u32, LiteralUint<u32, { 0xDFFF + 1 }>, LiteralUint<u32, { 0x110000 - 1 }>>,
     >;
@@ -290,9 +336,19 @@ const _: () = {
   }
 };
 
+pub enum Tree<'a> {
+  Uninit,
+  Init(&'a [ByteInterval]),
+  Alt(&'a [Tree<'a>]),
+  Seq(&'a [(usize, Tree<'a>)]),
+  Repeat(&'a Tree<'a>, usize),
+  Wildcard(&'a Tree<'a>),
+}
+
 pub enum LayoutKind {
   Raw,
-  And(usize, usize),
+  Alt,
+  Seq(usize, usize),
   Repeat(usize, usize),
   Wildcard(usize),
   #[cfg(test)]
@@ -307,24 +363,22 @@ pub trait Layout {
 }
 
 #[inline]
-pub const unsafe fn satisfy<T: Layout>(ptr: *const u8, metadata: usize) -> bool {
+pub const unsafe fn satisfy<T: Layout>(ptr: *const u8, meta: usize) -> bool {
   use LayoutKind::*;
   match const { T::KIND } {
-    Raw => satisfy_term::<T::Raw>(ptr),
-    And(l, r) => {
-      satisfy::<T::Lhs>(ptr.wrapping_add(l), metadata)
-        && satisfy::<T::Rhs>(ptr.wrapping_add(r), metadata)
+    Raw => satisfy_raw::<T::Raw>(ptr),
+    Alt => satisfy::<T::Lhs>(ptr, meta) || satisfy::<T::Rhs>(ptr, meta),
+    Seq(l, r) => {
+      satisfy::<T::Lhs>(ptr.offset(l as isize), meta)
+        && satisfy::<T::Rhs>(ptr.offset(r as isize), meta)
     }
     Repeat(_, 0) | Wildcard(0) => true,
     Repeat(_, s) | Wildcard(s) => {
-      let (mut i, n) = (0, if let Repeat(n, _) = const { T::KIND } { n } else { metadata });
-      while i < n {
-        if !satisfy::<T::Lhs>(ptr.wrapping_add(i * s), 0) {
-          return false;
-        }
-        i += 1;
+      let (mut i, n) = (0, if let Repeat(n, _) = const { T::KIND } { n } else { meta });
+      while i < n && satisfy::<T::Lhs>(ptr.offset((i * s) as isize), 0) {
+        i += 1
       }
-      true
+      i == n
     }
     #[cfg(test)]
     Uninit => true,
@@ -337,7 +391,8 @@ pub const fn wildcard_size<T: Layout>() -> usize {
   const {
     match T::KIND {
       Raw | Repeat(_, _) => 0,
-      And(_, _) => wildcard_size::<T::Lhs>() + wildcard_size::<T::Rhs>(),
+      Alt => wildcard_size::<T::Lhs>(),
+      Seq(_, _) => wildcard_size::<T::Lhs>() + wildcard_size::<T::Rhs>(),
       Wildcard(s) => s,
       #[cfg(test)]
       Uninit => 0,
@@ -349,15 +404,16 @@ pub const fn wildcard_size<T: Layout>() -> usize {
 pub const unsafe fn initialize_to_default<T: Layout>(ptr: *mut u8) {
   use LayoutKind::*;
   match const { T::KIND } {
-    Raw => *ptr.cast() = T::Raw::RAW_DEFAULT,
-    And(l, r) => {
-      initialize_to_default::<T::Lhs>(ptr.wrapping_add(l));
-      initialize_to_default::<T::Rhs>(ptr.wrapping_add(r));
+    Raw => *ptr.cast() = <T::Raw as self::Raw>::RAW_DEFAULT,
+    Alt => initialize_to_default::<T::Lhs>(ptr),
+    Seq(l, r) => {
+      initialize_to_default::<T::Lhs>(ptr.offset(l as isize));
+      initialize_to_default::<T::Rhs>(ptr.offset(r as isize));
     }
     Repeat(n, s) => {
       let mut i = 0;
       while i < n {
-        initialize_to_default::<T::Lhs>(ptr.wrapping_add(i * s));
+        initialize_to_default::<T::Lhs>(ptr.offset((i * s) as isize));
         i += 1;
       }
     }
@@ -493,14 +549,14 @@ const fn compile<T: Raw, const N: usize, const M: usize>() -> BitsPattern {
     }
 
     use BitsPattern::*;
-    use Operator::*;
+    use Expr::*;
 
-    match T::OP {
-      True => Init(&[ByteInterval::ANY; N]),
-      Or => Any(operands::<O, T, E, N, M>()),
-      Equ(_) => Init(
+    match T::EXPR {
+      True(_) => Init(&[ByteInterval::ANY; N]),
+      Alt(_, _) => Any(operands::<O, T, E, N, M>()),
+      Equals(_) => Init(
         &const {
-          let val = if let Equ(x) = T::OP { x } else { num::cast(0u8) };
+          let val = if let Equals(x) = T::EXPR { x } else { num::cast(0u8) };
           let bytes = match E::LITERAL.is_little() {
             true => num::to_le_bytes(val),
             _ => num::to_be_bytes(val),
@@ -521,7 +577,7 @@ const fn compile<T: Raw, const N: usize, const M: usize>() -> BitsPattern {
           let intervals = &const {
             use core::mem::transmute;
             use num::{cast, to_be_bytes, Maximum, Minimum};
-            let (s, e) = match T::OP {
+            let (s, e) = match T::EXPR {
               RangeFrom(s) => (s, <O as Maximum>::MAX),
               RangeTo(e) => (<O as Minimum>::MIN, e),
               Range(s, e) => (s, e),
@@ -553,6 +609,7 @@ const fn compile<T: Raw, const N: usize, const M: usize>() -> BitsPattern {
 }
 
 pub(crate) const fn offset<T: Layout>(off: usize) -> &'static BitsPattern {
+  // return &const { compile::<NonZero<u32>, 4, 7>() };
   use LayoutKind::*;
   match T::KIND {
     #[cfg(test)]
@@ -575,7 +632,16 @@ pub(crate) const fn offset<T: Layout>(off: usize) -> &'static BitsPattern {
     Repeat(n, s) if off < n * s => offset::<T::Lhs>(off % s),
     Repeat(_, _) | Wildcard(0) => &BitsPattern::Uninit,
     Wildcard(s) => offset::<T::Lhs>(off % s),
-    And(l, r) => {
+    Alt => {
+      let (l, r) = (offset::<T::Lhs>(off), offset::<T::Rhs>(off));
+      if matches!(l, &BitsPattern::Uninit) || matches!(r, &BitsPattern::Uninit) {
+        &BitsPattern::Uninit
+      } else {
+        todo!()
+        // &BitsPattern::Any2(l, r)
+      }
+    }
+    Seq(l, r) => {
       let l = if off >= l { offset::<T::Lhs>(off - l) } else { &BitsPattern::Uninit };
       if matches!(l, &BitsPattern::Uninit) && off >= r {
         offset::<T::Rhs>(off - r)
@@ -583,6 +649,14 @@ pub(crate) const fn offset<T: Layout>(off: usize) -> &'static BitsPattern {
         l
       }
     }
+  }
+}
+
+pub(crate) const unsafe fn compile2<T: Layout>(out: *mut BitsPattern, end: usize) {
+  let mut off = 0;
+  while off < end {
+    *out.offset(off as isize) = *offset::<T>(off);
+    off += 1;
   }
 }
 
@@ -610,7 +684,7 @@ const _: () = {
     type Lhs = _0;
     type Rhs = ();
     type Raw = ();
-    const KIND: LayoutKind = LayoutKind::And(_0Off::LITERAL, 0);
+    const KIND: LayoutKind = LayoutKind::Seq(_0Off::LITERAL, 0);
   }
 
   impl<_0Off: Literal<usize>, _0: Layout, _1Off: Literal<usize>, _1: Layout> Layout
@@ -619,26 +693,26 @@ const _: () = {
     type Lhs = _0;
     type Rhs = _1;
     type Raw = ();
-    const KIND: LayoutKind = LayoutKind::And(_0Off::LITERAL, _1Off::LITERAL);
+    const KIND: LayoutKind = LayoutKind::Seq(_0Off::LITERAL, _1Off::LITERAL);
   }
 
-  macro_rules! impl_and {
+  macro_rules! impl_seq {
     // Match at least one pair
     { ($TOff:ident $T:ident) ($ROff:ident $R:ident) } => {};
     { ($TOff:ident $T:ident) $( ($ROff:ident $R:ident) )* } => {
-      impl_and! { $( ($ROff $R) )* }
+      impl_seq! { $( ($ROff $R) )* }
       impl<$TOff: Literal<usize>, $T: Layout, $($ROff: Literal<usize>, $R: Layout ),*>
         Layout for (($TOff, $T), $( ($ROff, $R) ),*)
       {
         type Lhs = $T;
         type Rhs = ($( ($ROff, $R) ),*);
         type Raw = ();
-        const KIND: LayoutKind = LayoutKind::And($TOff::LITERAL, 0);
+        const KIND: LayoutKind = LayoutKind::Seq($TOff::LITERAL, 0);
       }
     };
   }
 
-  impl_and! {
+  impl_seq! {
     (_0Off _0) (_1Off _1) (_2Off _2) (_3Off _3)
     (_4Off _4) (_5Off _5) (_6Off _6) (_7Off _7)
     (_8Off _8) (_9Off _9) (_10Off _10) (_11Off _11)
@@ -658,91 +732,105 @@ pub(crate) enum Intersection {
 }
 
 pub(crate) const fn intersect<A: Layout, B: Layout>(end: usize) -> Intersection {
-  const ALL: u8 = 0b11;
-  const SOME: u8 = 0b01;
+  use BitsPattern::*;
 
-  const fn step<A: Layout, B: Layout>(
-    mut off: usize, mut a: BitsPattern, mut b: BitsPattern, end: &mut usize,
-  ) -> u8 {
-    use BitsPattern::*;
-    let mut result = ALL;
-    loop {
-      match (a, b) {
-        // terminal conditions:
-        (Uninit, Uninit) => {
-          break {
-            *end = off + 1;
-            result
+  const DISJOINT: u8 = 0b00;
+  const OVERLAP: u8 = 0b01;
+  const SUBSET: u8 = 0b11;
+
+  if end == 0 {
+    return Intersection::Subset;
+  }
+
+  #[derive(Copy, Clone)]
+  struct Frame {
+    left: bool,
+    result: u8,
+    o: BitsPattern,
+    inner: Option<u8>,
+    pats: &'static [BitsPattern],
+    off: usize,
+    idx: usize,
+  }
+
+  let mut result = SUBSET;
+  let mut off = 0;
+  let mut sp = 0;
+
+  let mut s = [Frame { left: false, result, o: Uninit, inner: None, pats: &[], idx: 0, off }; 1024];
+  let (mut a, mut b) = (*offset::<A>(0), *offset::<B>(0));
+
+  loop {
+    match (a, b) {
+      // terminal conditions:
+      (Uninit, Uninit) | (Init([]), Init([])) => {
+        if sp > 0 {
+          let f = &mut s[sp - 1];
+          f.inner = match (f.left, f.inner, result) {
+            (_, None, result) => Some(result),
+            (true, Some(SUBSET), SUBSET) => Some(SUBSET),
+            (true, Some(DISJOINT), DISJOINT) => Some(DISJOINT),
+            (true, _, _) => Some(OVERLAP),
+            (false, Some(inner), result) => Some(inner | result),
+          };
+          if f.idx >= f.pats.len() {
+            sp -= 1;
+            result = f.result & if let Some(x) = f.inner { x } else { SUBSET };
+          } else {
+            (a, b) = if f.left { (f.pats[f.idx], f.o) } else { (f.o, f.pats[f.idx]) };
+            f.idx += 1;
+            result = SUBSET;
+            off = f.off;
           }
+          continue;
         }
-        (Init([]), Init([])) => {
-          break {
-            *end = off;
-            result
-          }
-        }
-        // overlapping patterns:
-        (Init([]), _) => a = *offset::<A>(off),
-        (_, Init([])) => b = *offset::<B>(off),
-        // uninitialized against initialized:
-        (Init([_, na @ ..]), Uninit) => {
+        if let (Uninit, Uninit) = (a, b) {
           off += 1;
-          a = Init(na);
-          b = *offset::<B>(off);
         }
-        (Uninit, Init([_, rb @ ..])) => {
-          off += 1;
-          a = *offset::<A>(off);
-          b = Init(rb);
+        if off >= end {
+          break match result {
+            OVERLAP => Intersection::Overlap,
+            SUBSET => Intersection::Subset,
+            _ => Intersection::Disjoint,
+          };
         }
-        (Any(a), _) => {
-          break result & {
-            let mut result = step::<A, B>(off, a[0], b, end);
-            let mut i = 1;
-            while i < a.len() {
-              result = match (result, step::<A, B>(off, a[i], b, end)) {
-                (ALL, ALL) => ALL,
-                (0, 0) => 0,
-                _ => SOME,
-              };
-              i += 1;
-            }
-            result
-          }
+        (a, b) = (*offset::<A>(off), *offset::<B>(off));
+      }
+      // overlapping patterns:
+      (Init([]), _) => a = *offset::<A>(off),
+      (_, Init([])) => b = *offset::<B>(off),
+      // uninitialized o initialized:
+      (Init([_, na @ ..]), Uninit) => {
+        off += 1;
+        (a, b) = (Init(na), *offset::<B>(off));
+      }
+      (Uninit, Init([_, rb @ ..])) => {
+        off += 1;
+        (a, b) = (*offset::<A>(off), Init(rb));
+      }
+      // branches:
+      (Any(pats), o) => {
+        s[sp] = Frame { left: true, result, o, inner: None, pats, idx: 1, off };
+        sp += 1;
+        a = pats[0];
+        result = SUBSET;
+      }
+      (o, Any(pats)) => {
+        s[sp] = Frame { left: false, result, o, inner: None, pats, idx: 1, off };
+        sp += 1;
+        b = pats[0];
+        result = SUBSET;
+      }
+      // both initialized:
+      (Init([la, ra @ ..]), Init([lb, rb @ ..])) => {
+        off += 1;
+        (a, b) = (Init(ra), Init(rb));
+        result &= match (la.len(), la.intersect(lb)) {
+          (_, 0) => DISJOINT,
+          (l, r) if l != r => OVERLAP,
+          _ => SUBSET,
         }
-        (_, Any(b)) => {
-          break result & {
-            let mut result = step::<A, B>(off, a, b[0], end);
-            let mut i = 1;
-            while i < b.len() {
-              result |= step::<A, B>(off, a, b[i], end);
-              i += 1;
-            }
-            result
-          }
-        }
-        // both initialized:
-        (Init([la, ra @ ..]), Init([lb, rb @ ..])) => match (la.len(), la.intersect(lb)) {
-          (_, 0) => break 0,
-          (l, r) => {
-            result &= if l == r { ALL } else { SOME };
-            off += 1;
-            a = Init(ra);
-            b = Init(rb);
-          }
-        },
       }
     }
-  }
-
-  let (mut off, mut result) = (0, ALL);
-  while result != 0 && off < end {
-    result &= step::<A, B>(off, *offset::<A>(off), *offset::<B>(off), &mut off);
-  }
-
-  match result {
-    SOME => Intersection::Overlap,
-    ALL => Intersection::Subset,
-    _ => Intersection::Disjoint,
   }
 }
