@@ -2,9 +2,7 @@
 /// # mutant
 ///
 /// ## TODO:
-/// - add `wip` intersection solution aside current one.
-/// - make sure `wip` works.
-/// - remove old intersection solution.
+/// - slice intersection.
 /// - transmute functions.
 /// - better validation ?
 /// - size field ?

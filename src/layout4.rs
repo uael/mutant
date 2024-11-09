@@ -60,6 +60,7 @@ pub trait Dfa {
 
   const START: Option<u16>;
   const BRANCH: bool;
+  const WILDCARD: bool = false;
   const ANY: bool;
   const LEN: usize;
 }
@@ -244,6 +245,37 @@ where
   const LEN: usize = LEN * T::LEN;
 }
 
+pub struct Slice<T, const WILDCARD: bool = false>(T);
+
+impl<T: Dfa, const WILDCARD: bool> Dfa for Slice<T, WILDCARD> {
+  type J0 = (T::J0, Slice<T, true>);
+  type J1 = (T::J1, Slice<T, true>);
+  type J2 = (T::J2, Slice<T, true>);
+  type J3 = (T::J3, Slice<T, true>);
+  type J4 = (T::J4, Slice<T, true>);
+  type J5 = (T::J5, Slice<T, true>);
+  type J6 = (T::J6, Slice<T, true>);
+  type J7 = (T::J7, Slice<T, true>);
+  type J8 = (T::J8, Slice<T, true>);
+  type J9 = (T::J9, Slice<T, true>);
+  type Ja = (T::Ja, Slice<T, true>);
+  type Jb = (T::Jb, Slice<T, true>);
+  type Jc = (T::Jc, Slice<T, true>);
+  type Jd = (T::Jd, Slice<T, true>);
+  type Je = (T::Je, Slice<T, true>);
+  type Jf = (T::Jf, Slice<T, true>);
+
+  type Head = T;
+  type Tail = Slice<T, true>;
+  type IfZero<Then: Dfa, Else: Dfa> = Else;
+
+  const START: Option<u16> = T::START;
+  const BRANCH: bool = T::BRANCH;
+  const WILDCARD: bool = WILDCARD;
+  const ANY: bool = T::ANY;
+  const LEN: usize = 0;
+}
+
 macro_rules! impl_seq {
   { $T:ident } => { };
   { $T:ident $( $R:ident )+ } => {
@@ -273,8 +305,8 @@ macro_rules! impl_seq {
 
       const START: Option<u16> = match $T::START { Some(a) => Some(a), _ => <($( $R ),+)>::START  };
       const BRANCH: bool = $T::BRANCH;
-      const ANY: bool = $T::ANY $( && $R::ANY )+;
-      const LEN: usize = $T::LEN $( + $R::LEN )+;
+      const ANY: bool = $T::ANY && <($( $R ),+)>::ANY;
+      const LEN: usize = $T::LEN + <($( $R ),+)>::LEN;
     }
   };
 }
@@ -298,7 +330,7 @@ const fn or(a: u8, b: u8) -> u8 {
 pub const fn intersect<A: Dfa, B: Dfa>() -> u8 {
   const {
     // early optimization when target is any.
-    if B::ANY { 0b11 }
+    if B::ANY || (A::WILDCARD && B::WILDCARD) { 0b11 }
     // non-overlapping states.
     else if A::Tail::LEN > 0 && A::Head::LEN == B::Head::LEN {
       intersect::<A::Head, B::Head>() & intersect::<A::Tail, B::Tail>()
@@ -389,6 +421,9 @@ mod tests {
     assert_eq!(0b11, intersect::<(Bool8x8x8x8, (U88x8x8x8, U88x8x8x8)), (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8))>());
     assert_eq!(0b11, intersect::<(Bool, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8))), (U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8)))>());
     assert_eq!(0b11, intersect::<(U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8))), (U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8)))>());
+
+    assert_eq!(0b01, intersect::<(Bool, Bool, Slice<U8>), (Bool, Bool, Bool, Slice<Bool>)>());
+    assert_eq!(0b01, intersect::<(Bool, Bool, Slice<U8>), (Bool, Bool, Slice<Bool>)>());
 
     // assert_eq!(0b11, intersect::<(NonZero, NonZero8x8x8), (NonZero, NonZero8x8x8)>());
     // assert_eq!(0b11, intersect::<(NonZero, U88x8x8x8), (NonZero, U88x8x8x8)>());
