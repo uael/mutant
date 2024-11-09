@@ -1,5 +1,3 @@
-use core::mem;
-
 use crate::num::Numeric;
 use crate::Default;
 
@@ -69,26 +67,6 @@ pub const fn from_raw_parts_mut<T: Pointee + ?Sized>(
   unsafe { PtrRepr::with_components(address, metadata).mut_ptr }
 }
 
-/// Extract the address component of a non-dangling pointer.
-#[inline]
-pub const fn addr_of<T: ?Sized>(ptr: *const T) -> usize {
-  // Compute `ptr` raw pointer `ptr`.
-  let ptr = ptr.cast::<()>();
-  // SAFETY: This no-op trick ensure that `ptr` has a provenance:
-  // This will result in a compile-error if `ptr` is a dangling pointer (has no provenance).
-  #[cfg(not(miri))] // Disable for Miri as it throw out-of-bounds pointer arithmetic error.
-  let _ = unsafe { core::ptr::addr_of!((*(ptr as *const (u8, ()))).1) };
-  // SAFETY: This is just an inlined `p.addr()` (which is not a `const fn` so we cannot call it).
-  // - This is safe at runtime as `ptr` point to a valid non-dangling reference, hence the pointer
-  //   has a provenance.
-  // - During const eval, it is unsound to perform this transmutation if the pointer has no
-  //   provenance; the above trick ensure just that.
-  #[allow(clippy::transmutes_expressible_as_ptr_casts)]
-  unsafe {
-    mem::transmute(ptr)
-  }
-}
-
 #[repr(C)]
 union PtrRepr<T: Pointee + ?Sized> {
   const_ptr: *const T,
@@ -113,7 +91,7 @@ const _: () = {
 
     #[inline]
     const fn empty_with(address: *const ()) -> Self {
-      Self::with_components(address, T::Metadata::DEFAULT)
+      Self::with_components(address, <T::Metadata as Default>::DEFAULT)
     }
 
     #[inline]

@@ -10,22 +10,19 @@
 /// - size field ?
 /// - tests.
 pub mod endian;
-pub mod layout;
+// pub mod layout;
+// pub mod layout2;
+// pub mod layout3;
 pub mod num;
 pub mod ptr;
 pub mod sizing;
-
-mod internal;
-#[cfg(test)]
-mod tests;
-
-pub use mutant_derive::Type;
-
+mod layout4;
+mod impls;
 // -------------------------------------------------------------------------------------------------
 // `transmute_unchecked`
 
 #[inline]
-const unsafe fn transmute_unchecked<T: Copy, U: Copy>(val: T) -> U {
+pub(crate) const unsafe fn transmute_unchecked<T: Copy, U: Copy>(val: T) -> U {
   union Transmute<T: Copy, U: Copy> {
     val: T,
     dst: U,
@@ -171,104 +168,5 @@ pub const fn bytes_mut<T: ByteArray>(val: &mut T) -> &mut [u8] {
 const _: () = {
   unsafe impl<const N: usize> ByteArray for [u8; N] {
     const LEN: usize = N;
-  }
-};
-
-// -------------------------------------------------------------------------------------------------
-// `MinimallySized` trait
-
-pub trait MinimallySized<S: sizing::Sizing> {
-  const MINSIZE: usize;
-}
-
-// impl `MinimallySized`
-const _: () = {
-  impl<T> MinimallySized<sizing::Sized> for T {
-    const MINSIZE: usize = size_of::<T>();
-  }
-
-  impl<T> MinimallySized<sizing::Unsized> for [T] {
-    const MINSIZE: usize = 0;
-  }
-};
-
-// -------------------------------------------------------------------------------------------------
-// `Type` trait
-
-pub trait Type: MinimallySized<Self::Sizing> {
-  type Sizing: sizing::Sizing;
-  type Layout: layout::Layout;
-}
-
-#[inline]
-pub const fn min_size_of<T: Type + ?Sized>() -> usize {
-  <T as MinimallySized<T::Sizing>>::MINSIZE
-}
-
-#[inline]
-pub const fn is_sized<T: Type + ?Sized>() -> bool {
-  T::Sizing::LITERAL.is_sized()
-}
-
-#[inline]
-pub const fn is_unsized<T: Type + ?Sized>() -> bool {
-  T::Sizing::LITERAL.is_unsized()
-}
-
-#[inline]
-pub const fn default<T: Type + Copy>() -> T {
-  const {
-    let mut uninit = core::mem::MaybeUninit::<T>::uninit();
-    unsafe {
-      layout::initialize_to_default::<T::Layout>(core::ptr::from_mut(&mut uninit).cast());
-      transmute_unchecked(uninit)
-    }
-  }
-}
-
-#[inline]
-const unsafe fn validate<T: Type + ?Sized>(ptr: *const (), metadata: usize) -> bool {
-  layout::satisfy::<T::Layout>(ptr.cast(), metadata)
-}
-
-// impl `Type`
-const _: () = {
-  use core::marker::PhantomData;
-
-  impl<T: Type + Copy> Default for T {
-    const DEFAULT: Self = default::<T>();
-  }
-
-  impl<T: layout::Raw> Type for T {
-    type Sizing = sizing::Sized;
-    type Layout = T;
-  }
-
-  pub struct ArrayLayout<T, const N: usize>(PhantomData<T>);
-
-  impl<T: Type, const N: usize> layout::Layout for ArrayLayout<T, N> {
-    type Lhs = T::Layout;
-    type Rhs = ();
-    type Raw = ();
-    const KIND: layout::LayoutKind = layout::LayoutKind::Repeat(N, size_of::<T>());
-  }
-
-  impl<T: Type, const N: usize> Type for [T; N] {
-    type Sizing = sizing::Sized;
-    type Layout = ArrayLayout<T, N>;
-  }
-
-  pub struct SliceLayout<T>(PhantomData<T>);
-
-  impl<T: Type> layout::Layout for SliceLayout<T> {
-    type Lhs = T::Layout;
-    type Rhs = ();
-    type Raw = ();
-    const KIND: layout::LayoutKind = layout::LayoutKind::Wildcard(size_of::<T>());
-  }
-
-  impl<T: Type> Type for [T] {
-    type Sizing = sizing::Unsized;
-    type Layout = SliceLayout<T>;
   }
 };

@@ -8,7 +8,18 @@ use core::ops::Add;
 pub use types::*;
 
 // -----------------------------------------------------------------------------------------------
-// UnsignedLiteral
+// PhantomUint
+
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct PhantomUint<const VALUE: u128>;
+
+impl<T: Numeric, const VALUE: u128> Literal<T> for PhantomUint<VALUE> {
+  const LITERAL: T = cast(VALUE);
+}
+
+// -----------------------------------------------------------------------------------------------
+// LiteralUint
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -49,7 +60,7 @@ const _: () = {
 
 pub type NativeOf<T> = <T as Numeric>::Native;
 
-pub unsafe trait Numeric: Zero + Ones + Minimum + Maximum + Copy + 'static {
+pub unsafe trait Numeric: Zero + Ones + Minimum + Maximum + Copy + 'static + Debug {
   type Bytes: ByteArray;
   type Native: Native<Endian = endian::Ne, Bytes = Self::Bytes>;
   type Endian: Endianness;
@@ -66,6 +77,10 @@ pub trait Maximum: Sized {
 pub trait Native: Numeric<Endian = endian::Ne, Native = Self> {}
 
 impl<T: Numeric<Endian = endian::Ne, Native = T>> Native for T {}
+
+impl<T: Numeric> Default for T {
+  const DEFAULT: Self = Self::ZERO;
+}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
