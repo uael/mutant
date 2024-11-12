@@ -61,6 +61,7 @@ pub trait Dfa {
   const START: Option<u16>;
   const BRANCH: bool;
   const WILDCARD: bool = false;
+  const SEQUENCE: bool = false;
   const ANY: bool;
   const LEN: usize;
 }
@@ -210,6 +211,7 @@ impl<T: Dfa, N: Len> Dfa for Array<T, N> {
 
   const START: Option<u16> = if N::USIZE == 0 { None } else { T::START };
   const BRANCH: bool = N::USIZE != 0 && T::BRANCH;
+  const SEQUENCE: bool = true;
   const ANY: bool = N::USIZE == 0 || T::ANY;
   const LEN: usize = N::USIZE * T::LEN;
 }
@@ -241,6 +243,7 @@ where
 
   const START: Option<u16> = if LEN == 0 { None } else { T::START };
   const BRANCH: bool = LEN != 0 && T::BRANCH;
+  const SEQUENCE: bool = true;
   const ANY: bool = LEN == 0 || T::ANY;
   const LEN: usize = LEN * T::LEN;
 }
@@ -272,6 +275,7 @@ impl<T: Dfa, const WILDCARD: bool> Dfa for Slice<T, WILDCARD> {
   const START: Option<u16> = T::START;
   const BRANCH: bool = T::BRANCH;
   const WILDCARD: bool = WILDCARD;
+  const SEQUENCE: bool = true;
   const ANY: bool = T::ANY;
   const LEN: usize = 0;
 }
@@ -305,6 +309,7 @@ macro_rules! impl_seq {
 
       const START: Option<u16> = match $T::START { Some(a) => Some(a), _ => <($( $R ),+)>::START  };
       const BRANCH: bool = $T::BRANCH;
+      const SEQUENCE: bool = true;
       const ANY: bool = $T::ANY && <($( $R ),+)>::ANY;
       const LEN: usize = $T::LEN + <($( $R ),+)>::LEN;
     }
@@ -327,12 +332,13 @@ const fn or(a: u8, b: u8) -> u8 {
   (a & b) | (a != 0) as u8 | (b != 0) as u8
 }
 
+#[inline(always)]
 pub const fn intersect<A: Dfa, B: Dfa>() -> u8 {
   const {
-    // early optimization when target is any.
+    // early optimization when target is any, or slices are catching up.
     if B::ANY || (A::WILDCARD && B::WILDCARD) { 0b11 }
     // non-overlapping states.
-    else if A::Tail::LEN > 0 && A::Head::LEN == B::Head::LEN {
+    else if A::SEQUENCE && B::SEQUENCE && A::Head::LEN == B::Head::LEN {
       intersect::<A::Head, B::Head>() & intersect::<A::Tail, B::Tail>()
     } else {
       match (A::START, B::START) {
