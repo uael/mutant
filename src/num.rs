@@ -1,5 +1,5 @@
 use crate::{
-  endian, endian::Endianness, transmute_unchecked, ByteArray, Default, Literal, Ones, Zero,
+  ByteArray, Default, Literal, Ones, Zero, endian, endian::Endianness, transmute_unchecked,
 };
 use core::cmp::Ordering;
 use core::fmt::{self, Binary, Debug, Display, Formatter, LowerHex, Octal, UpperHex};
@@ -142,85 +142,49 @@ pub const fn to_bytes<T: Numeric>(n: T) -> T::Bytes {
 #[inline]
 pub const fn from_ne_bytes<T: Numeric>(bytes: T::Bytes) -> T {
   let n = from_bytes(bytes);
-  if const { !T::Endian::LITERAL.is_native() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_native() } { swap_bytes(n) } else { n }
 }
 
 #[inline]
 pub const fn from_le_bytes<T: Numeric>(bytes: T::Bytes) -> T {
   let n = from_bytes(bytes);
-  if const { !T::Endian::LITERAL.is_little() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_little() } { swap_bytes(n) } else { n }
 }
 
 #[inline]
 pub const fn from_be_bytes<T: Numeric>(bytes: T::Bytes) -> T {
   let n = from_bytes(bytes);
-  if const { !T::Endian::LITERAL.is_big() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_big() } { swap_bytes(n) } else { n }
 }
 
 #[inline]
 pub const fn to_ne_bytes<T: Numeric>(n: T) -> T::Bytes {
-  if const { !T::Endian::LITERAL.is_native() } {
-    to_bytes(swap_bytes(n))
-  } else {
-    to_bytes(n)
-  }
+  if const { !T::Endian::LITERAL.is_native() } { to_bytes(swap_bytes(n)) } else { to_bytes(n) }
 }
 
 #[inline]
 pub const fn to_le_bytes<T: Numeric>(n: T) -> T::Bytes {
-  if const { !T::Endian::LITERAL.is_little() } {
-    to_bytes(swap_bytes(n))
-  } else {
-    to_bytes(n)
-  }
+  if const { !T::Endian::LITERAL.is_little() } { to_bytes(swap_bytes(n)) } else { to_bytes(n) }
 }
 
 #[inline]
 pub const fn to_be_bytes<T: Numeric>(n: T) -> T::Bytes {
-  if const { !T::Endian::LITERAL.is_big() } {
-    to_bytes(swap_bytes(n))
-  } else {
-    to_bytes(n)
-  }
+  if const { !T::Endian::LITERAL.is_big() } { to_bytes(swap_bytes(n)) } else { to_bytes(n) }
 }
 
 #[inline]
 pub const fn to_ne<T: Numeric>(n: T) -> T {
-  if const { !T::Endian::LITERAL.is_native() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_native() } { swap_bytes(n) } else { n }
 }
 
 #[inline]
 pub const fn to_be<T: Numeric>(n: T) -> T {
-  if const { !T::Endian::LITERAL.is_big() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_big() } { swap_bytes(n) } else { n }
 }
 
 #[inline]
 pub const fn to_le<T: Numeric>(n: T) -> T {
-  if const { !T::Endian::LITERAL.is_little() } {
-    swap_bytes(n)
-  } else {
-    n
-  }
+  if const { !T::Endian::LITERAL.is_little() } { swap_bytes(n) } else { n }
 }
 
 #[inline]

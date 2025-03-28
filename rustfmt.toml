@@ -1,5 +1,6 @@
+style_edition = "2024"
 max_width = 100
 tab_spaces = 2
 use_small_heuristics = "Max"
-format_strings = true
+#format_strings = true
 fn_params_layout = "Compressed"

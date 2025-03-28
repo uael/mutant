@@ -231,11 +231,7 @@ impl Dfa {
       .iter()
       .filter_map(|(k, v)| if byte.intersect(k) { Some(*v) } else { None })
       .collect::<Vec<usize>>();
-    if res.is_empty() {
-      None
-    } else {
-      Some(res)
-    }
+    if res.is_empty() { None } else { Some(res) }
   }
 }
 

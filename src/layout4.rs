@@ -5,11 +5,8 @@ macro_rules! inline {
   }
 }
 
-pub trait Len {
-  type Inc: Len;
-  type Dec: Len;
-  type Peek<T: Dfa, E: Dfa>: Dfa;
-  type IfZero<Then: Len, Else: Len>: Len;
+pub trait Count {
+  type Inc: Count;
   const USIZE: usize;
 }
 
@@ -17,36 +14,26 @@ pub struct B0;
 pub struct B1;
 
 const _: () = {
-  impl Len for () {
-    type Inc = ((), B1);
-    type Dec = ();
-    type Peek<T: Dfa, E: Dfa> = E;
-    type IfZero<Then: Len, Else: Len> = Then;
+  impl Count for B0 {
+    type Inc = B1;
     const USIZE: usize = 0;
   }
+  
+  impl Count for B1 {
+    type Inc = (B1, B0);
+    const USIZE: usize = 1;
+  }
 
-  impl<U: Len> Len for (U, B0) {
+  impl<U: Count> Count for (U, B0) {
     type Inc = (U, B1);
-    type Dec = (U::Dec, B1);
-    type Peek<T: Dfa, E: Dfa> = T;
-    type IfZero<Then: Len, Else: Len> = Else;
     const USIZE: usize = 0 | (U::USIZE << 1);
   }
 
-  impl<U: Len> Len for (U, B1) {
+  impl<U: Count> Count for (U, B1) {
     type Inc = (U::Inc, B0);
-    type Dec = U::IfZero<(), (U, B0)>;
-    type Peek<T: Dfa, E: Dfa> = T;
-    type IfZero<Then: Len, Else: Len> = Else;
     const USIZE: usize = 1 | (U::USIZE << 1);
   }
 };
-
-pub trait IntoLen {
-  type Output: Len;
-}
-
-pub struct PhantomUsize<const USIZE: usize>;
 
 pub trait Dfa {
   type J0: Dfa; type J1: Dfa; type J2: Dfa; type J3: Dfa;
@@ -56,7 +43,6 @@ pub trait Dfa {
 
   type Head: Dfa;
   type Tail: Dfa;
-  type IfZero<Then: Dfa, Else: Dfa>: Dfa;
 
   const START: Option<u16>;
   const BRANCH: bool;
@@ -72,6 +58,8 @@ pub struct NonZero8;
 pub struct NonZero4;
 pub struct Zero;
 pub struct Bool;
+pub struct Equ4<const VAL: u8>;
+pub struct Equ8<const VAL: u8, I: Count = B0>(I);
 
 impl Dfa for () {
   type J0 = (); type J1 = (); type J2 = (); type J3 = ();
@@ -81,7 +69,6 @@ impl Dfa for () {
 
   type Head = ();
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Then;
 
   const START: Option<u16> = None; // leaf state, no continuation.
   const BRANCH: bool = false; // no continuation, hence no branching.
@@ -97,7 +84,6 @@ impl Dfa for Any8 {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(0xffff); // any half-byte.
   const BRANCH: bool = false; // accept any half-byte, hence no branching.
@@ -113,12 +99,41 @@ impl Dfa for Any4 {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(0xffff); // any half-byte.
   const BRANCH: bool = false; // accept any half-byte, hence no branching.
   const ANY: bool = true; // accept any half-byte.
   const LEN: usize = 1; // 1 half-byte.
+}
+
+impl<const VAL: u8> Dfa for Equ4<VAL> {
+  type J0 = (); type J1 = (); type J2 = (); type J3 = ();
+  type J4 = (); type J5 = (); type J6 = (); type J7 = ();
+  type J8 = (); type J9 = (); type Ja = (); type Jb = ();
+  type Jc = (); type Jd = (); type Je = (); type Jf = ();
+
+  type Head = Self;
+  type Tail = ();
+
+  const START: Option<u16> = Some(1 << (VAL & 0xf));
+  const BRANCH: bool = false;
+  const ANY: bool = false;
+  const LEN: usize = 1;
+}
+
+impl<const VAL: u8, I: Count> Dfa for Equ8<VAL, I> {
+  type J0 = Equ8<VAL, I::Inc>; type J1 = Equ8<VAL, I::Inc>; type J2 = Equ8<VAL, I::Inc>; type J3 = Equ8<VAL, I::Inc>;
+  type J4 = Equ8<VAL, I::Inc>; type J5 = Equ8<VAL, I::Inc>; type J6 = Equ8<VAL, I::Inc>; type J7 = Equ8<VAL, I::Inc>;
+  type J8 = Equ8<VAL, I::Inc>; type J9 = Equ8<VAL, I::Inc>; type Ja = Equ8<VAL, I::Inc>; type Jb = Equ8<VAL, I::Inc>;
+  type Jc = Equ8<VAL, I::Inc>; type Jd = Equ8<VAL, I::Inc>; type Je = Equ8<VAL, I::Inc>; type Jf = Equ8<VAL, I::Inc>;
+
+  type Head = Self;
+  type Tail = ();
+
+  const START: Option<u16> = if I::USIZE >= 2 { None } else { Some(1u16 << ((VAL >> (4 * I::USIZE)) & 0xf)) };
+  const BRANCH: bool = false;
+  const ANY: bool = false;
+  const LEN: usize = 2 - I::USIZE;
 }
 
 impl Dfa for NonZero8 {
@@ -129,7 +144,6 @@ impl Dfa for NonZero8 {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(0xffff); // any half-byte.
   const BRANCH: bool = true; // jump to `0` is different from others, hence branching.
@@ -145,7 +159,6 @@ impl Dfa for NonZero4 {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(!1); // any half-byte except `0`.
   const BRANCH: bool = false; // accept any half-byte except `0`, hence no branching.
@@ -161,7 +174,6 @@ impl Dfa for Zero {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(1); // only `0`.
   const BRANCH: bool = false; // only `0`, hence no branching.
@@ -177,7 +189,6 @@ impl Dfa for Bool {
 
   type Head = Self;
   type Tail = ();
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = Some(0b11);
   const BRANCH: bool = false;
@@ -185,61 +196,56 @@ impl Dfa for Bool {
   const LEN: usize = 2;
 }
 
-pub struct Array<T, N>(T, N);
+pub struct ArrayIter<T, I, const LEN: usize>(T, I);
 
-impl<T: Dfa, N: Len> Dfa for Array<T, N> {
-  type J0 = N::Peek<(T::J0, Array<T, N::Dec>), ()>;
-  type J1 = N::Peek<(T::J1, Array<T, N::Dec>), ()>;
-  type J2 = N::Peek<(T::J2, Array<T, N::Dec>), ()>;
-  type J3 = N::Peek<(T::J3, Array<T, N::Dec>), ()>;
-  type J4 = N::Peek<(T::J4, Array<T, N::Dec>), ()>;
-  type J5 = N::Peek<(T::J5, Array<T, N::Dec>), ()>;
-  type J6 = N::Peek<(T::J6, Array<T, N::Dec>), ()>;
-  type J7 = N::Peek<(T::J7, Array<T, N::Dec>), ()>;
-  type J8 = N::Peek<(T::J8, Array<T, N::Dec>), ()>;
-  type J9 = N::Peek<(T::J9, Array<T, N::Dec>), ()>;
-  type Ja = N::Peek<(T::Ja, Array<T, N::Dec>), ()>;
-  type Jb = N::Peek<(T::Jb, Array<T, N::Dec>), ()>;
-  type Jc = N::Peek<(T::Jc, Array<T, N::Dec>), ()>;
-  type Jd = N::Peek<(T::Jd, Array<T, N::Dec>), ()>;
-  type Je = N::Peek<(T::Je, Array<T, N::Dec>), ()>;
-  type Jf = N::Peek<(T::Jf, Array<T, N::Dec>), ()>;
+impl<T: Dfa, I: Count, const LEN: usize> Dfa for ArrayIter<T, I, LEN> {
+  type J0 = (T::J0, ArrayIter<T, I::Inc, LEN>);
+  type J1 = (T::J1, ArrayIter<T, I::Inc, LEN>);
+  type J2 = (T::J2, ArrayIter<T, I::Inc, LEN>);
+  type J3 = (T::J3, ArrayIter<T, I::Inc, LEN>);
+  type J4 = (T::J4, ArrayIter<T, I::Inc, LEN>);
+  type J5 = (T::J5, ArrayIter<T, I::Inc, LEN>);
+  type J6 = (T::J6, ArrayIter<T, I::Inc, LEN>);
+  type J7 = (T::J7, ArrayIter<T, I::Inc, LEN>);
+  type J8 = (T::J8, ArrayIter<T, I::Inc, LEN>);
+  type J9 = (T::J9, ArrayIter<T, I::Inc, LEN>);
+  type Ja = (T::Ja, ArrayIter<T, I::Inc, LEN>);
+  type Jb = (T::Jb, ArrayIter<T, I::Inc, LEN>);
+  type Jc = (T::Jc, ArrayIter<T, I::Inc, LEN>);
+  type Jd = (T::Jd, ArrayIter<T, I::Inc, LEN>);
+  type Je = (T::Je, ArrayIter<T, I::Inc, LEN>);
+  type Jf = (T::Jf, ArrayIter<T, I::Inc, LEN>);
 
-  type Head = N::Peek<T, ()>;
-  type Tail = N::Peek<Array<T, N::Dec>, ()>;
-  type IfZero<Then: Dfa, Else: Dfa> = N::Peek<Else, Then>;
+  type Head = T;
+  type Tail = ArrayIter<T, I::Inc, LEN>;
 
-  const START: Option<u16> = if N::USIZE == 0 { None } else { T::START };
-  const BRANCH: bool = N::USIZE != 0 && T::BRANCH;
+  const START: Option<u16> = if I::USIZE == LEN { None } else { T::START };
+  const BRANCH: bool = (LEN - I::USIZE) != 0 && T::BRANCH;
   const SEQUENCE: bool = true;
-  const ANY: bool = N::USIZE == 0 || T::ANY;
-  const LEN: usize = N::USIZE * T::LEN;
+  const ANY: bool = (LEN - I::USIZE) == 0 || T::ANY;
+  const LEN: usize = (LEN - I::USIZE) * T::LEN;
 }
 
-impl<T: Dfa, N: Len, const LEN: usize> Dfa for [T; LEN]
-where
-  PhantomUsize<LEN>: IntoLen<Output = N>
-{
-  type J0 = N::Peek<(T::J0, Array<T, N::Dec>), ()>;
-  type J1 = N::Peek<(T::J1, Array<T, N::Dec>), ()>;
-  type J2 = N::Peek<(T::J2, Array<T, N::Dec>), ()>;
-  type J3 = N::Peek<(T::J3, Array<T, N::Dec>), ()>;
-  type J4 = N::Peek<(T::J4, Array<T, N::Dec>), ()>;
-  type J5 = N::Peek<(T::J5, Array<T, N::Dec>), ()>;
-  type J6 = N::Peek<(T::J6, Array<T, N::Dec>), ()>;
-  type J7 = N::Peek<(T::J7, Array<T, N::Dec>), ()>;
-  type J8 = N::Peek<(T::J8, Array<T, N::Dec>), ()>;
-  type J9 = N::Peek<(T::J9, Array<T, N::Dec>), ()>;
-  type Ja = N::Peek<(T::Ja, Array<T, N::Dec>), ()>;
-  type Jb = N::Peek<(T::Jb, Array<T, N::Dec>), ()>;
-  type Jc = N::Peek<(T::Jc, Array<T, N::Dec>), ()>;
-  type Jd = N::Peek<(T::Jd, Array<T, N::Dec>), ()>;
-  type Je = N::Peek<(T::Je, Array<T, N::Dec>), ()>;
-  type Jf = N::Peek<(T::Jf, Array<T, N::Dec>), ()>;
+impl<T: Dfa, const LEN: usize> Dfa for [T; LEN] {
+  type J0 = (T::J0, ArrayIter<T, B1, LEN>);
+  type J1 = (T::J1, ArrayIter<T, B1, LEN>);
+  type J2 = (T::J2, ArrayIter<T, B1, LEN>);
+  type J3 = (T::J3, ArrayIter<T, B1, LEN>);
+  type J4 = (T::J4, ArrayIter<T, B1, LEN>);
+  type J5 = (T::J5, ArrayIter<T, B1, LEN>);
+  type J6 = (T::J6, ArrayIter<T, B1, LEN>);
+  type J7 = (T::J7, ArrayIter<T, B1, LEN>);
+  type J8 = (T::J8, ArrayIter<T, B1, LEN>);
+  type J9 = (T::J9, ArrayIter<T, B1, LEN>);
+  type Ja = (T::Ja, ArrayIter<T, B1, LEN>);
+  type Jb = (T::Jb, ArrayIter<T, B1, LEN>);
+  type Jc = (T::Jc, ArrayIter<T, B1, LEN>);
+  type Jd = (T::Jd, ArrayIter<T, B1, LEN>);
+  type Je = (T::Je, ArrayIter<T, B1, LEN>);
+  type Jf = (T::Jf, ArrayIter<T, B1, LEN>);
 
-  type Head = N::Peek<T, ()>;
-  type Tail = N::Peek<Array<T, N::Dec>, ()>;
-  type IfZero<Then: Dfa, Else: Dfa> = N::Peek<Else, Then>;
+  type Head = T;
+  type Tail = ArrayIter<T, B1, LEN>;
 
   const START: Option<u16> = if LEN == 0 { None } else { T::START };
   const BRANCH: bool = LEN != 0 && T::BRANCH;
@@ -270,7 +276,6 @@ impl<T: Dfa, const WILDCARD: bool> Dfa for Slice<T, WILDCARD> {
 
   type Head = T;
   type Tail = Slice<T, true>;
-  type IfZero<Then: Dfa, Else: Dfa> = Else;
 
   const START: Option<u16> = T::START;
   const BRANCH: bool = T::BRANCH;
@@ -286,29 +291,28 @@ macro_rules! impl_seq {
     impl_seq! { $( $R )+ }
     #[allow(unused_parens)]
     impl<$T: Dfa, $( $R: Dfa ),*> Dfa for ($T, $( $R, )+) {
-      type J0 = <$T::J0 as Dfa>::IfZero<($( $R ),+), ($T::J0, $( $R, )+)>;
-      type J1 = <$T::J1 as Dfa>::IfZero<($( $R ),+), ($T::J1, $( $R, )+)>;
-      type J2 = <$T::J2 as Dfa>::IfZero<($( $R ),+), ($T::J2, $( $R, )+)>;
-      type J3 = <$T::J3 as Dfa>::IfZero<($( $R ),+), ($T::J3, $( $R, )+)>;
-      type J4 = <$T::J4 as Dfa>::IfZero<($( $R ),+), ($T::J4, $( $R, )+)>;
-      type J5 = <$T::J5 as Dfa>::IfZero<($( $R ),+), ($T::J5, $( $R, )+)>;
-      type J6 = <$T::J6 as Dfa>::IfZero<($( $R ),+), ($T::J6, $( $R, )+)>;
-      type J7 = <$T::J7 as Dfa>::IfZero<($( $R ),+), ($T::J7, $( $R, )+)>;
-      type J8 = <$T::J8 as Dfa>::IfZero<($( $R ),+), ($T::J8, $( $R, )+)>;
-      type J9 = <$T::J9 as Dfa>::IfZero<($( $R ),+), ($T::J9, $( $R, )+)>;
-      type Ja = <$T::Ja as Dfa>::IfZero<($( $R ),+), ($T::Ja, $( $R, )+)>;
-      type Jb = <$T::Jb as Dfa>::IfZero<($( $R ),+), ($T::Jb, $( $R, )+)>;
-      type Jc = <$T::Jc as Dfa>::IfZero<($( $R ),+), ($T::Jc, $( $R, )+)>;
-      type Jd = <$T::Jd as Dfa>::IfZero<($( $R ),+), ($T::Jd, $( $R, )+)>;
-      type Je = <$T::Je as Dfa>::IfZero<($( $R ),+), ($T::Je, $( $R, )+)>;
-      type Jf = <$T::Jf as Dfa>::IfZero<($( $R ),+), ($T::Jf, $( $R, )+)>;
+      type J0 = ($T::J0, $( $R, )+);
+      type J1 = ($T::J1, $( $R, )+);
+      type J2 = ($T::J2, $( $R, )+);
+      type J3 = ($T::J3, $( $R, )+);
+      type J4 = ($T::J4, $( $R, )+);
+      type J5 = ($T::J5, $( $R, )+);
+      type J6 = ($T::J6, $( $R, )+);
+      type J7 = ($T::J7, $( $R, )+);
+      type J8 = ($T::J8, $( $R, )+);
+      type J9 = ($T::J9, $( $R, )+);
+      type Ja = ($T::Ja, $( $R, )+);
+      type Jb = ($T::Jb, $( $R, )+);
+      type Jc = ($T::Jc, $( $R, )+);
+      type Jd = ($T::Jd, $( $R, )+);
+      type Je = ($T::Je, $( $R, )+);
+      type Jf = ($T::Jf, $( $R, )+);
 
       type Head = $T;
       type Tail = ($( $R ),+);
-      type IfZero<Then: Dfa, Else: Dfa> = Else;
 
       const START: Option<u16> = match $T::START { Some(a) => Some(a), _ => <($( $R ),+)>::START  };
-      const BRANCH: bool = $T::BRANCH;
+      const BRANCH: bool = $T::BRANCH || <($( $R ),+)>::BRANCH;
       const SEQUENCE: bool = true;
       const ANY: bool = $T::ANY && <($( $R ),+)>::ANY;
       const LEN: usize = $T::LEN + <($( $R ),+)>::LEN;
@@ -342,6 +346,7 @@ pub const fn intersect<A: Dfa, B: Dfa>() -> u8 {
       intersect::<A::Head, B::Head>() & intersect::<A::Tail, B::Tail>()
     } else {
       match (A::START, B::START) {
+        // (None, _) if A::SEQUENCE && A::Head::LEN == 0 
         (None, _) | (_, None) => 0b11,
         (Some(a), Some(b)) => loop {
           let i = a & b;
@@ -375,13 +380,13 @@ mod tests {
 
   #[test]
   fn test_intersect() {
-    type Bool8 = (Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool);
-    type Bool8x8 = (Bool8, Bool8, Bool8, Bool8, Bool8, Bool8, Bool8, Bool8);
+    type Boolx8 = (Bool, (Bool, (Bool, (Bool, Bool, Bool, Bool, Bool))));
+    type Bool8x8 = (Boolx8, Boolx8, Boolx8, Boolx8, Boolx8, Boolx8, Boolx8, Boolx8);
     type Bool8x8x8 = (Bool8x8, Bool8x8, Bool8x8, Bool8x8, Bool8x8, Bool8x8, Bool8x8, Bool8x8);
     type Bool8x8x8x8 = (Bool8x8x8, Bool8x8x8, Bool8x8x8, Bool8x8x8, Bool8x8x8, Bool8x8x8, Bool8x8x8, Bool8x8x8);
 
-    type U88 = (U8, (U8, (U8, (U8, (U8, (U8, (U8, U8)))))));
-    type U88x8 = (U88, (U88, (U88, (U88, (U88, (U88, (U88, U88)))))));
+    type U8x8 = (U8, (U8, (U8, (U8, (U8, (U8, (U8, U8)))))));
+    type U88x8 = (U8x8, (U8x8, (U8x8, (U8x8, (U8x8, (U8x8, (U8x8, U8x8)))))));
     type U88x8x8 = (U88x8, (U88x8, (U88x8, (U88x8, (U88x8, (U88x8, (U88x8, U88x8)))))));
     type U88x8x8x8 = (U88x8x8, (U88x8x8, (U88x8x8, (U88x8x8, (U88x8x8, (U88x8x8, (U88x8x8, U88x8x8)))))));
 
@@ -410,7 +415,7 @@ mod tests {
     assert_eq!(0b11, intersect::<([(Bool, Bool, Bool, Bool); 2048], Bool), ([(U8, U8, U8, U8); 2048], U8)>());
     assert_eq!(0b11, intersect::<([(Bool, Bool, Bool, [Bool; 1024]); 2048], Bool), ([(U8, U8, U8, [U8; 1024]); 2048], U8)>());
     assert_eq!(0b11, intersect::<([(Bool, Bool, Bool, [Bool; 2048]); 2048], Bool), ([(U8, U8, U8, [U8; 2048]); 2048], U8)>());
-    assert_eq!(0b01, intersect::<([(Bool, Bool, Bool, [Bool; 128]); 2048], U8), ([(U8, U8, U8, [U8; 128]); 2048], Bool)>());
+    assert_eq!(0b01, intersect::<([[(Bool, Bool, Bool, [Bool; 2048]); 2048]; 4048], U8), ([[(U8, U8, U8, [U8; 2048]); 2048]; 4048], Bool)>());
 
     assert_eq!(0b11, intersect::<Bool8x8x8, Bool8x8x8>());
     assert_eq!(0b11, intersect::<U88x8x8x8, U88x8x8x8>());
@@ -428,9 +433,18 @@ mod tests {
     assert_eq!(0b11, intersect::<(Bool, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8))), (U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8)))>());
     assert_eq!(0b11, intersect::<(U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8))), (U8, (Bool8x8x8x8, (U88x8x8x8, U88x8x8x8)))>());
 
+    assert_eq!(0xa, (0xaa >> (4 * 0)) & 0xf);
+    assert_eq!(0xa, (0xaa >> (4 * 1)) & 0xf);
+    
+    assert_eq!(0b11, intersect::<Equ8<0xab>, Equ8<0xab>>());
+    assert_eq!(0b11, intersect::<(Equ4<0xb>, Equ4<0xa>), Equ8<0xab>>());
+    assert_eq!(0b11, intersect::<(Bool, [(Bool, NonZero8); 1024], Equ8<0xab>, Bool), (Bool, [(Bool, NonZero8); 1024], Equ8<0xab>, Bool)>());
     assert_eq!(0b01, intersect::<(Bool, Bool, Slice<U8>), (Bool, Bool, Bool, Slice<Bool>)>());
     assert_eq!(0b01, intersect::<(Bool, Bool, Slice<U8>), (Bool, Bool, Slice<Bool>)>());
-
+    assert_eq!(0b01, intersect::<(Bool, Bool, [(Bool, U8, NonZero8); 20480], Equ4<0xa>, Slice<Bool>), (Bool, Bool, [(Bool, Bool, NonZero8); 20480], Equ4<0xa>, Slice<Bool>)>());
+    // assert_eq!(0b01, intersect::<(Bool, Bool, [(Bool, U8, NonZero8); 20480], Equ4<0xa>, Equ4<0xa>, Slice<Bool>), (Bool, Bool, [(Bool, Bool, NonZero8); 20480], Equ8<0xaa>, Slice<Bool>)>());
+    assert_eq!(0b00, intersect::<(Bool, Bool, [(Bool, U8, NonZero8); 20480], Equ4<0xa>, Slice<Bool>), (Bool, Bool, [(Bool, Bool, NonZero8); 20480], Equ4<0xb>, Slice<Bool>)>());
+    
     // assert_eq!(0b11, intersect::<(NonZero, NonZero8x8x8), (NonZero, NonZero8x8x8)>());
     // assert_eq!(0b11, intersect::<(NonZero, U88x8x8x8), (NonZero, U88x8x8x8)>());
     // assert_eq!(0b11, intersect::<(NonZero8x8x8, NonZero), (NonZero8x8x8, NonZero)>());

@@ -1,10 +1,11 @@
 [package]
 name = "mutant"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 mutant-derive = { path = "derive" }
+crabtime = "1.1.1"
 
 [features]
 doctest = []

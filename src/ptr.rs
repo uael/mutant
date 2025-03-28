@@ -1,5 +1,5 @@
-use crate::num::Numeric;
 use crate::Default;
+use crate::num::Numeric;
 
 /// Provides the pointer metadata type of any pointed-to type.
 ///

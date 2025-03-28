@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+// #![cfg_attr(not(test), no_std)]
 /// # mutant
 ///
 /// ## TODO:
@@ -14,8 +14,9 @@ pub mod endian;
 pub mod num;
 pub mod ptr;
 pub mod sizing;
-mod layout4;
-mod impls;
+// mod layout4;
+mod bits;
+// mod dfa2;
 // -------------------------------------------------------------------------------------------------
 // `transmute_unchecked`
 
@@ -25,7 +26,7 @@ pub(crate) const unsafe fn transmute_unchecked<T: Copy, U: Copy>(val: T) -> U {
     val: T,
     dst: U,
   }
-  Transmute { val }.dst
+  unsafe { Transmute { val }.dst }
 }
 
 // -------------------------------------------------------------------------------------------------
