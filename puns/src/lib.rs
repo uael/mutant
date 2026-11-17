@@ -689,11 +689,14 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
   if let Some(offset) = relation.uninit {
     return Some(
       Message::new("a byte that the target requires to be initialized is padding in the source")
-        .at(offset - shift),
+        .at(offset.saturating_sub(shift)),
     );
   }
   if let Some(offset) = relation.disjoint {
-    return Some(Message::new("no value of the source is valid for the target").at(offset - shift));
+    return Some(
+      Message::new("no value of the source is valid for the target")
+        .at(offset.saturating_sub(shift)),
+    );
   }
   if let (Some(offset), false) = (relation.partial, need.fallible) {
     return Some(
@@ -701,7 +704,7 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
         "some values of the source are not valid for the target, or do not prove one of its \
          rules.\nUse a `try_*` function to check them at run time",
       )
-      .at(offset - shift),
+      .at(offset.saturating_sub(shift)),
     );
   }
   if need.reference && !aligned && !need.fallible {

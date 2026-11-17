@@ -6,6 +6,14 @@
 //! values of a type are found by enumeration ([`values`]), and every verdict of the library on a
 //! pair of types is compared with what they imply ([`check_pair`]).
 //!
+//! The parts of a value are checked the same way ([`check_part`]), for targets of any size not
+//! greater than the source: the first bytes (`head`, `head_ref`) and the last (`tail`,
+//! `tail_ref`) against the oracle of the target at that offset, the bytes and the address that
+//! the functions give at run time, and a `&mut` to a part (`head_mut`, `tail_mut`) by writing
+//! every value of the target into every value of the source: what results must be a valid
+//! source, and must still meet the requirements of the source if it did and if what was written
+//! meets those of the target.
+//!
 //! What a value of a struct is known to be does not include what `#[pun(valid(..))]` or a rule
 //! requires: safe code can write anything to a plain field. The oracle has two modes for that.
 
@@ -236,7 +244,13 @@ pub fn alphabet(size: usize) -> Vec<Option<u8>> {
 /// Every pattern of `size` bytes over the alphabet.
 #[must_use]
 pub fn patterns(size: usize) -> Vec<Vec<Option<u8>>> {
-  let alphabet = alphabet(size);
+  patterns_over(size, size)
+}
+
+/// Every pattern of `size` bytes over the alphabet of values of `of` bytes.
+#[must_use]
+pub fn patterns_over(size: usize, of: usize) -> Vec<Vec<Option<u8>>> {
+  let alphabet = alphabet(of);
   let mut out = vec![vec![]];
   for _ in 0..size {
     let mut next = Vec::with_capacity(out.len() * alphabet.len());
@@ -256,8 +270,14 @@ pub fn patterns(size: usize) -> Vec<Vec<Option<u8>>> {
 /// are valid and that are uninitialized wherever they are not looked at (padding).
 #[must_use]
 pub fn values<T: Oracle>() -> Vec<Vec<Option<u8>>> {
+  values_over::<T>(size_of::<T>())
+}
+
+/// The values of `T` over the alphabet of values of `of` bytes.
+#[must_use]
+pub fn values_over<T: Oracle>(of: usize) -> Vec<Vec<Option<u8>>> {
   let size = size_of::<T>();
-  patterns(size)
+  patterns_over(size, of)
     .into_iter()
     .filter(|p| {
       let mut reads = vec![false; size];
@@ -308,6 +328,8 @@ pub fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
 #[derive(Default)]
 pub struct Report {
   pub pairs: usize,
+  /// Pairs whose parts (`head`, `tail` and their `_ref` and `_mut` forms) were checked.
+  pub parts: usize,
   pub values: usize,
   pub conversions: usize,
   /// Soundness: a verdict that lets an invalid value through.
@@ -362,7 +384,12 @@ struct Truth {
 }
 
 fn truth<D: Oracle>(p: &Bytes) -> Truth {
-  let p = &p[..size_of::<D>()];
+  truth_at::<D>(p, 0)
+}
+
+/// What `p[off..off + size_of::<D>()]` is for `D`.
+fn truth_at<D: Oracle>(p: &Bytes, off: usize) -> Truth {
+  let p = &p[off..off + size_of::<D>()];
   let mut reads = vec![false; p.len()];
   let hard = D::check(p, 0, &mut reads, false);
   let soft = D::check(p, 0, &mut reads, true);
@@ -561,6 +588,197 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
   });
 }
 
+/// What may go wrong when anything is written through a `&mut D` to the bytes `off..` of a
+/// source: a source that is not valid any more (`hard`), or one that met its requirements and
+/// does not any more although what was written meets those of `D` (`soft`: a rule or a
+/// `valid(..)` of the source that depends on the bytes), with an example of each.
+struct Writes {
+  hard: Option<String>,
+  soft: Option<String>,
+}
+
+/// Write every value of `D` (over the alphabet of the source) into the bytes `off..` of every
+/// value of `S` (what is outside of those bytes, once each), and judge the result with the
+/// oracle of `S`.
+fn writes<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Writes {
+  let (ss, ds) = (size_of::<S>(), size_of::<D>());
+  // What a source is outside of the bytes, and whatever one of those sources meets its
+  // requirements.
+  let mut outsides: BTreeMap<Vec<Option<u8>>, bool> = BTreeMap::new();
+  for p in source {
+    let mut outside = p.clone();
+    outside[off..off + ds].fill(None);
+    *outsides.entry(outside).or_default() |= truth::<S>(p).soft == Ok(true);
+  }
+  let (mut hard, mut soft) = (None, None);
+  // With whatever the target meets its own requirements: one that does not breaks those of the
+  // source as surely as a `&mut` to the source itself does.
+  let targets: Vec<(Vec<Option<u8>>, bool)> = values_over::<D>(ss)
+    .into_iter()
+    .map(|q| (q.clone(), truth::<D>(&q).soft == Ok(true)))
+    .collect();
+  for (outside, requirements) in &outsides {
+    for (q, met) in &targets {
+      let mut r = outside.clone();
+      r[off..off + ds].copy_from_slice(q);
+      let mut reads = vec![false; ss];
+      let valid = S::check(&r, 0, &mut reads, false);
+      if valid != Ok(true) && hard.is_none() {
+        hard = Some(format!("{} written at {off} leaves {} ({valid:?})", show(q), show(&r)));
+      }
+      let required = S::check(&r, 0, &mut reads, true);
+      if *requirements && *met && required != Ok(true) && soft.is_none() {
+        soft = Some(format!("{} written at {off} leaves {} ({required:?})", show(q), show(&r)));
+      }
+    }
+    if hard.is_some() && soft.is_some() {
+      break;
+    }
+  }
+  Writes { hard, soft }
+}
+
+/// The offset of `part` in `whole`.
+fn offset_in<S, D: ?Sized>(whole: &S, part: &D) -> usize {
+  std::ptr::from_ref(part).cast::<u8>().addr() - std::ptr::from_ref(whole).cast::<u8>().addr()
+}
+
+/// Compare what the library says of the parts of `S` as a `D` with the truth.
+///
+/// The parts are its first bytes (`head`, `head_ref`, `head_mut`) and its last (`tail`,
+/// `tail_ref`, `tail_mut`). `limit` bounds the number of values of the source that are converted
+/// at run time.
+///
+/// A part is proven if every source holds a valid `D` there. A `&mut` to it is sound if every
+/// `D` written there leaves a valid source, and, on top of what `pun_mut` requires, if it leaves
+/// a source that met its requirements (rules, `valid(..)`) meeting them: nothing of the source
+/// outside the part may depend on it.
+///
+/// # Panics
+/// If a conversion that the verdict says compiles does not, or if the report is poisoned.
+pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
+  let v: Verdict = const { hook::verdict::<S, D>() };
+  let pair = format!("{} -> {}", name::<S>(), name::<D>());
+  let (ss, ds) = (size_of::<S>(), size_of::<D>());
+  let (mut unsound, mut incorrect, mut imprecise) = (vec![], vec![], vec![]);
+  let mut conversions = 0;
+  let parts = [
+    ("head", 0, v.head, v.head_ref, v.head_mut),
+    ("tail", ss.saturating_sub(ds), v.tail, v.tail_ref, v.tail_mut),
+  ];
+  let source = if ds <= ss { values::<S>() } else { vec![] };
+  let same = std::any::TypeId::of::<S>() == std::any::TypeId::of::<D>();
+  // What the source requires of itself, which proves the same requirement of the target.
+  let claims: Vec<bool> = source.iter().map(|p| same || truth::<S>(p).soft == Ok(true)).collect();
+  for (part, off, by_value, by_ref, by_mut) in parts {
+    if ds > ss {
+      if by_value || by_ref || by_mut {
+        unsound.push(format!("{pair}: {part} of a larger type"));
+      }
+      continue;
+    }
+    if (by_ref || by_mut) && (align_of::<D>() > align_of::<S>() || off % align_of::<D>() != 0) {
+      unsound.push(format!("{pair}: {part}_ref to a misaligned target"));
+    }
+    if (by_ref && !by_value) || (by_mut && !by_ref) {
+      incorrect.push(format!("{pair}: {part}: {by_value}, by reference {by_ref}, mut {by_mut}"));
+    }
+    // The bytes of the part.
+    let truths: Vec<Truth> = source.iter().map(|p| truth_at::<D>(p, off)).collect();
+    let example = |pred: &dyn Fn(&Truth) -> bool| {
+      source
+        .iter()
+        .zip(&truths)
+        .find(|(_, t)| pred(t))
+        .map_or_default(|(p, t)| format!("{} ({t:?})", show(p)))
+    };
+    let all_hard = truths.iter().all(|t| t.hard == Ok(true));
+    let all_valid = truths.iter().all(|t| t.soft == Ok(true));
+    if by_value && !all_hard {
+      unsound.push(format!("{pair}: {part} compiles, but {}", example(&|t| t.hard != Ok(true))));
+    } else if by_value && !all_valid {
+      let unproven =
+        source.iter().zip(&truths).zip(&claims).any(|((_, t), c)| t.soft != Ok(true) && !c);
+      if unproven {
+        incorrect.push(format!(
+          "{pair}: {part}: a requirement is not checked: {}",
+          example(&|t| t.soft != Ok(true))
+        ));
+      }
+    }
+    if !by_value && all_valid && !source.is_empty() {
+      imprecise.push((format!("{part} refused, but every part is a target"), pair.clone()));
+    }
+    // At run time: the very bytes, at the very place.
+    let want = |p: &Bytes, got: &[Option<u8>]| -> Vec<Option<u8>> {
+      (0..ds).map(|i| if got[i].is_some() { p[off + i] } else { None }).collect()
+    };
+    for p in source.iter().take(limit) {
+      let value = make::<S>(p);
+      let got = if part == "head" { hook::head::<S, D>(value) } else { hook::tail::<S, D>(value) };
+      if let Some(d) = got {
+        conversions += 1;
+        let got = bytes_of(&d);
+        if got != want(p, &got) {
+          unsound.push(format!("{pair}: {part} of {} is {}", show(p), show(&got)));
+          break;
+        }
+      }
+      let got = if part == "head" {
+        hook::head_ref::<S, D>(&value)
+      } else {
+        hook::tail_ref::<S, D>(&value)
+      };
+      if let Some(d) = got {
+        conversions += 1;
+        let (at, got) = (offset_in(&value, d), bytes_of(d));
+        if at != off || got != want(p, &got) {
+          unsound.push(format!("{pair}: {part}_ref of {} is {} at {at}", show(p), show(&got)));
+          break;
+        }
+      }
+      let mut value = value;
+      let base = std::ptr::from_ref(&value).cast::<u8>().addr();
+      let got = if part == "head" {
+        hook::head_mut::<S, D>(&mut value)
+      } else {
+        hook::tail_mut::<S, D>(&mut value)
+      };
+      if let Some(d) = got {
+        conversions += 1;
+        let at = std::ptr::from_mut(d).cast::<u8>().addr() - base;
+        if at != off {
+          unsound.push(format!("{pair}: {part}_mut of {} is at {at}", show(p)));
+          break;
+        }
+      }
+    }
+    // What can be written through a `&mut` to the part.
+    if by_ref && !source.is_empty() {
+      let writes = writes::<S, D>(&source, off);
+      match (&writes.hard, &writes.soft) {
+        (Some(why), _) if by_mut => unsound.push(format!("{pair}: {part}_mut, but {why}")),
+        (None, Some(why)) if by_mut => {
+          unsound.push(format!("{pair}: {part}_mut, but a requirement breaks: {why}"));
+        }
+        (None, None) if !by_mut => {
+          imprecise.push((format!("{part}_mut refused, but every write is valid"), pair.clone()));
+        }
+        _ => {}
+      }
+    }
+  }
+  record(|report| {
+    report.parts += 1;
+    report.conversions += conversions;
+    report.unsound.extend(unsound);
+    report.incorrect.extend(incorrect);
+    for (cause, pair) in imprecise {
+      report.imprecise.entry(cause).or_default().push(pair);
+    }
+  });
+}
+
 /// Print the report, and fail if anything is unsound or incorrect.
 ///
 /// # Panics
@@ -568,8 +786,8 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
 pub fn finish(title: &str) {
   let report = REPORT.lock().unwrap().take().unwrap_or_default();
   println!(
-    "== {title}: {} pairs, {} source values, {} conversions at run time",
-    report.pairs, report.values, report.conversions
+    "== {title}: {} pairs, {} pairs of parts, {} source values, {} conversions at run time",
+    report.pairs, report.parts, report.values, report.conversions
   );
   for (class, count) in &report.classes {
     println!("   {count:5} {class}");
@@ -604,6 +822,18 @@ macro_rules! all_pairs {
     $( $crate::all_pairs!(@inner $limit; $s; $all); )+
   };
   (@inner $limit:expr; $s:ty; [$($d:ty),+]) => {
-    $( $crate::check_pair::<$s, $d>($limit); )+
+    $( $crate::check_pair::<$s, $d>($limit); $crate::check_part::<$s, $d>($limit); )+
+  };
+}
+
+/// Every pair of a source of the first list and a target of the second, through `check_part`:
+/// for targets smaller than their sources.
+#[macro_export]
+macro_rules! part_pairs {
+  ($limit:expr; [$($s:ty),+ $(,)?]; $targets:tt) => {
+    $( $crate::part_pairs!(@inner $limit; $s; $targets); )+
+  };
+  (@inner $limit:expr; $s:ty; [$($d:ty),+ $(,)?]) => {
+    $( $crate::check_part::<$s, $d>($limit); )+
   };
 }
