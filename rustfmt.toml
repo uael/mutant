@@ -1,5 +1,9 @@
+edition = "2024"
+style_edition = "2024"
 max_width = 100
-tab_spaces = 2
 use_small_heuristics = "Max"
-format_strings = true
-fn_params_layout = "Compressed"
+tab_spaces = 2
+reorder_imports = true
+reorder_modules = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Crate"

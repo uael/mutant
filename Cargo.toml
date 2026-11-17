@@ -1,5 +1,5 @@
 [workspace]
-members = ["transmutant", "transmutant-derive"]
+members = ["transmutant", "transmutant-derive", "xtask"]
 resolver = "3"
 
 [workspace.package]
