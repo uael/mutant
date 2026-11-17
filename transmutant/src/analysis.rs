@@ -184,7 +184,11 @@ impl Cursor {
   ///
   /// With `aligned`, only repetitions of which `pos` is the start of an element are returned.
   const fn repeats(
-    &self, pos: usize, run: &Run, aligned: bool, out: &mut [Repeat; MAX_DEPTH + 1],
+    &self,
+    pos: usize,
+    run: &Run,
+    aligned: bool,
+    out: &mut [Repeat; MAX_DEPTH + 1],
   ) -> usize {
     let (mut len, mut i) = (0, 0);
     while i + 1 < self.depth {
@@ -309,7 +313,11 @@ pub(crate) const fn relate(a: &'static Layout, b: &'static Layout, end: usize) -
 
 /// Returns `true` when the analysis is over because what follows repeats forever.
 const fn relate_range(
-  a: &mut Cursor, b: &mut Cursor, mut pos: usize, end: usize, out: &mut Relation,
+  a: &mut Cursor,
+  b: &mut Cursor,
+  mut pos: usize,
+  end: usize,
+  out: &mut Relation,
 ) -> bool {
   while pos < end {
     let (run_a, run_b) = (a.run_at(pos), b.run_at(pos));
@@ -392,7 +400,11 @@ const fn relate_range(
 ///
 /// Returns `false`, having done nothing, if their tags are not at the same place.
 const fn relate_enums(
-  a: &'static Layout, b: &'static Layout, pos: usize, leaf: usize, out: &mut Relation,
+  a: &'static Layout,
+  b: &'static Layout,
+  pos: usize,
+  leaf: usize,
+  out: &mut Relation,
 ) -> bool {
   if a.equals(b) {
     return true;
@@ -444,9 +456,14 @@ const NO: Repeat = Repeat { stride: 0, end: 0, run: false, id: (0, 0) };
 enum Skip {
   No,
   /// What happens for the next `period` bytes repeats until `next`.
-  To { period: usize, next: usize },
+  To {
+    period: usize,
+    next: usize,
+  },
   /// What happens for the next `period` bytes repeats forever.
-  Forever { period: usize },
+  Forever {
+    period: usize,
+  },
 }
 
 /// Look for a period of both layouts at `pos`.
@@ -455,7 +472,12 @@ enum Skip {
 /// to each run of `b`, so a period must not cut one. `a` only has to be inside a repetition: what
 /// lies under a run of `b` a period later is the same, even if runs of `a` are cut by the period.
 const fn find_skip(
-  a: &Cursor, b: &Cursor, pos: usize, end: usize, run_a: &Run, run_b: &Run,
+  a: &Cursor,
+  b: &Cursor,
+  pos: usize,
+  end: usize,
+  run_a: &Run,
+  run_b: &Run,
 ) -> Skip {
   let (mut repeats_a, mut repeats_b) = ([NO; MAX_DEPTH + 1], [NO; MAX_DEPTH + 1]);
   let len_b = b.repeats(pos, run_b, true, &mut repeats_b);
@@ -579,7 +601,8 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
     }
   }
   // The general case.
-  let mut boxes = Boxes { pieces, len, spec, ranges, escapes: false, meets: false, budget: 1 << 14 };
+  let mut boxes =
+    Boxes { pieces, len, spec, ranges, escapes: false, meets: false, budget: 1 << 14 };
   boxes.explore(0, &mut [0; 16], &mut [0xff; 16]);
   Some(match (boxes.escapes, boxes.meets) {
     (false, _) => Rel::Subset,
@@ -695,8 +718,7 @@ impl Boxes<'_> {
       i += 1;
     }
     if let Some(gap) = gap {
-      self.escapes =
-        self.escapes || box_meets(&digits_lo, &digits_hi, size, gap, max_value(size));
+      self.escapes = self.escapes || box_meets(&digits_lo, &digits_hi, size, gap, max_value(size));
     }
   }
 }
@@ -826,7 +848,12 @@ const fn box_meets(lo: &[u8; 16], hi: &[u8; 16], size: usize, start: u128, end: 
 /// Arrays and slices of `a` are skipped as soon as an element leaves the set of states as it
 /// found it.
 const fn pattern_target(
-  a: &mut Cursor, dfa: &'static Dfa, leaf: usize, mut pos: usize, end: usize, out: &mut Relation,
+  a: &mut Cursor,
+  dfa: &'static Dfa,
+  leaf: usize,
+  mut pos: usize,
+  end: usize,
+  out: &mut Relation,
 ) {
   // The automaton is in one of the states of `set`.
   let mut set = 1u64;
@@ -978,7 +1005,11 @@ const fn pattern_product(a: &Dfa, from_a: u64, b: &Dfa, from_b: u64) -> bool {
 /// A rule is not a property of bytes: it is only proven by the same rule, in the same struct, at
 /// the same place of the source.
 const fn mark_rules(
-  source: &'static Layout, target: &'static Layout, base: usize, leaf: usize, out: &mut Relation,
+  source: &'static Layout,
+  target: &'static Layout,
+  base: usize,
+  leaf: usize,
+  out: &mut Relation,
 ) {
   if !target.has_rules || covered(source, base, target) {
     return;

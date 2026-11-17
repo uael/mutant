@@ -1,7 +1,10 @@
 //! `str` is `Data`: bytes that the UTF-8 automaton accepts.
 
-use transmutant::num::{u8c, u32be};
-use transmutant::{Data, Error, transmute_mut, transmute_ref, try_transmute_mut, try_transmute_ref, unpack};
+use transmutant::{
+  Data, Error,
+  num::{u8c, u32be},
+  transmute_mut, transmute_ref, try_transmute_mut, try_transmute_ref, unpack,
+};
 
 /// An ASCII character: a type that only holds what it says.
 type Ascii = transmutant::num::u8in<0, 0x7f>;
@@ -84,7 +87,10 @@ fn proven_at_compile_time() {
   // ... but proves nothing of a value that safe code made: this is checked.
   let unchecked = [Unchecked(0xff)];
   assert_eq!(try_transmute_ref::<[Unchecked], str>(&unchecked[..]), Err(Error::Validity));
-  assert_eq!(try_transmute_ref::<[Unchecked], [Ascii]>(&unchecked[..]).err(), Some(Error::Validity));
+  assert_eq!(
+    try_transmute_ref::<[Unchecked], [Ascii]>(&unchecked[..]).err(),
+    Some(Error::Validity)
+  );
   // A `str` is a `str`, even behind a `&mut`.
   let mut text = String::from("abc");
   transmute_mut::<str, str>(&mut text).make_ascii_uppercase();
@@ -104,13 +110,16 @@ fn checked_at_run_time() {
   // From an array, from a struct.
   assert_eq!(try_transmute_ref::<[u8; 2], str>(&[0xc3, 0xa9]), Ok("é"));
   assert_eq!(try_transmute_ref::<[u8; 2], str>(&[0xc3, 0x29]), Err(Error::Validity));
-  assert_eq!(try_transmute_ref::<Get<[u8]>, str>(&Get::<[u8; 2]> {
-    method: Default::default(),
-    e: Default::default(),
-    t: Default::default(),
-    space: Default::default(),
-    path: [b'/', 0xff],
-  } as &Get<[u8]>), Err(Error::Validity));
+  assert_eq!(
+    try_transmute_ref::<Get<[u8]>, str>(&Get::<[u8; 2]> {
+      method: Default::default(),
+      e: Default::default(),
+      t: Default::default(),
+      space: Default::default(),
+      path: [b'/', 0xff],
+    } as &Get<[u8]>),
+    Err(Error::Validity)
+  );
   // In a struct.
   assert!(try_transmute_ref::<[u8], Named>(b"\0\0\0\x07\xff").is_err());
   assert!(try_transmute_ref::<[u8], Named>(b"\0\0").is_err());

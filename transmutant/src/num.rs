@@ -5,9 +5,12 @@
 //! - `u8c<V>`, `u16lec<V>`, `u32bec<V>`...: integers whose only valid value is `V`: magic numbers,
 //!   type tags and the like.
 
-use crate::Scalar;
-use crate::layout::{Endian, Spec};
 use core::fmt;
+
+use crate::{
+  Scalar,
+  layout::{Endian, Spec},
+};
 
 macro_rules! endian {
   (Little, $le:expr, $be:expr) => {

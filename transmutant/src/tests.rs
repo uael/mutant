@@ -1,7 +1,10 @@
-use crate::analysis::{Exact, analyze, mutable};
-use crate::layout::{Endian, Spec};
-use crate::{Data, Scalar};
 use core::num::NonZero;
+
+use crate::{
+  Data, Scalar,
+  analysis::{Exact, analyze, mutable},
+  layout::{Endian, Spec},
+};
 
 /// What the analysis says of a transmutation from `S` to `D`.
 fn verdict<S: ?Sized + Data, D: ?Sized + Data>() -> String {
@@ -39,14 +42,14 @@ macro_rules! scalar {
   };
 }
 
-scalar!(Ascii(u8) = Little [(0, 0x7f)]);
-scalar!(NzLe(u16) = Little [(1, 0xffff)]);
-scalar!(NzBe(u16) = Big [(1, 0xffff)]);
-scalar!(Le1234(u16) = Little [(0x1234, 0x1234)]);
-scalar!(Be3412(u16) = Big [(0x3412, 0x3412)]);
-scalar!(Be1234(u16) = Big [(0x1234, 0x1234)]);
-scalar!(GeLe(u32) = Little [(0x100, 0xffff_ffff)]);
-scalar!(GeBe(u32) = Big [(0x100, 0xffff_ffff)]);
+scalar!(Ascii(u8) = Little[(0, 0x7f)]);
+scalar!(NzLe(u16) = Little[(1, 0xffff)]);
+scalar!(NzBe(u16) = Big[(1, 0xffff)]);
+scalar!(Le1234(u16) = Little[(0x1234, 0x1234)]);
+scalar!(Be3412(u16) = Big[(0x3412, 0x3412)]);
+scalar!(Be1234(u16) = Big[(0x1234, 0x1234)]);
+scalar!(GeLe(u32) = Little[(0x100, 0xffff_ffff)]);
+scalar!(GeBe(u32) = Big[(0x100, 0xffff_ffff)]);
 scalar!(Enum3(u32) = Little [(0x01010101, 0x01010101), (0x02020202, 0x02020202), (0x03030303, 0x03030303)]);
 
 #[derive(Data)]
@@ -119,7 +122,10 @@ fn huge_arrays_cost_nothing() {
   assert_eq!(verdict::<[[bool; 4]; N], [u32; N]>(), "infallible");
   assert_eq!(verdict::<[Pair<u8, u16>; N], [u32; N]>(), "uninit at 1");
   assert_eq!(verdict::<[Pair<bool, [u8; 3]>; N], [Pair<u8, [bool; 3]>; N]>(), "fallible at 1");
-  assert_eq!(verdict::<[[u8; 3]; N], [[bool; 5]; N]>(), "never: the source is smaller than the target");
+  assert_eq!(
+    verdict::<[[u8; 3]; N], [[bool; 5]; N]>(),
+    "never: the source is smaller than the target"
+  );
   assert_eq!(verdict::<[[Ascii; 5]; 3 * N], [[bool; 3]; 5 * N]>(), "fallible at 0, mutable");
   // Out of phase: 2 bytes elements against 2 bytes elements, one byte later.
   assert_eq!(verdict::<[NzLe; N], Packed<u8, Packed<[NzLe; N - 1], u8>>>(), "fallible at 1");
@@ -135,12 +141,18 @@ fn unsized_types() {
   assert_eq!(verdict::<[u8], [u32]>(), "infallible, mutable (some lengths)");
   assert_eq!(verdict::<[[u8; 3]], [[u8; 2]]>(), "infallible, mutable (some lengths)");
   assert_eq!(verdict::<[u8; 8], [u16]>(), "infallible, mutable");
-  assert_eq!(verdict::<[u8; 7], [u16]>(), "infallible (truncated: the size of the source cannot be reached with elements of the tail slice of the target)");
+  assert_eq!(
+    verdict::<[u8; 7], [u16]>(),
+    "infallible (truncated: the size of the source cannot be reached with elements of the tail slice of the target)"
+  );
   assert_eq!(verdict::<[u8], u32>(), "infallible, mutable (some lengths)");
   assert_eq!(verdict::<Pair<u16, [u16]>, [u8]>(), "infallible, mutable");
   assert_eq!(verdict::<Pair<u16, [Pair<u8, bool>]>, Pair<u8, [bool]>>(), "fallible at 1, mutable");
   // A source without any element is too small.
-  assert_eq!(verdict::<Pair<bool, [Pair<bool, bool>]>, Pair<[bool; 3], [u8]>>(), "infallible (some lengths)");
+  assert_eq!(
+    verdict::<Pair<bool, [Pair<bool, bool>]>, Pair<[bool; 3], [u8]>>(),
+    "infallible (some lengths)"
+  );
   // `Pair<u32, [u8]>` has trailing padding, but none in what a `[u8]` can see of it.
   assert_eq!(verdict::<Pair<u32, [u8]>, [u8]>(), "infallible, mutable");
   assert_eq!(<Pair<u32, [u8]> as Data>::LAYOUT.size_of_val(1), Some(8));

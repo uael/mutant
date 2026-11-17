@@ -7,8 +7,9 @@
 //! The whole static analysis of the crate is ordinary `const fn` code running over those values
 //! (see [`analysis`](crate::analysis)); nothing is encoded in the type system.
 
-use crate::ptr;
 use core::mem;
+
+use crate::ptr;
 
 // -------------------------------------------------------------------------------------------------
 // `Endian`
@@ -90,8 +91,7 @@ impl Spec {
   /// `ranges` are inclusive and must be sorted, disjoint and non-adjacent; this is checked at
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
-    Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }
-      .with_ranges(ranges)
+    Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }.with_ranges(ranges)
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
@@ -285,8 +285,11 @@ impl Enum {
   /// shadows (`fields`) plus their offset in the shadow of the variant. Without, the tag is the
   /// first field of each shadow.
   pub const fn new(
-    tag: &'static Layout, outside: bool, shadows: &[(usize, usize)],
-    fields: usize, variants: &'static [Variant],
+    tag: &'static Layout,
+    outside: bool,
+    shadows: &[(usize, usize)],
+    fields: usize,
+    variants: &'static [Variant],
   ) -> Self {
     let (mut size, mut align, mut i) = (0, 1, 0);
     while i < shadows.len() {
@@ -582,7 +585,9 @@ impl Layout {
   /// If `T` is unsized, its tail must be a slice, and the slice length of `probe` must be
   /// `PROBE_LEN` (see `Data::PROBE`).
   pub const unsafe fn structure<T: ?Sized>(
-    probe: *const T, fields: &'static [Field], rules: &'static [Rule],
+    probe: *const T,
+    fields: &'static [Field],
+    rules: &'static [Rule],
   ) -> Self {
     let (mut i, mut end, mut leaves) = (0, 0, (!rules.is_empty()) as usize);
     let mut has_rules = !rules.is_empty();
@@ -1340,11 +1345,18 @@ pub enum Op {
   /// Push a constant.
   Lit(u128),
   /// Push the unsigned integer of `size` bytes at `offset` in the struct.
-  Load { offset: usize, size: u8, big: bool },
+  Load {
+    offset: usize,
+    size: u8,
+    big: bool,
+  },
   /// Push the size in bytes of the struct (not in `size` and `len` rules, which define it).
   Size,
   /// Replace an offset by the unsigned integer of `size` bytes that is there in the value.
-  At { size: u8, big: bool },
+  At {
+    size: u8,
+    big: bool,
+  },
   /// Replace two offsets by the CRC-32 (the one of Ethernet) of the bytes between them.
   Crc32,
   /// Replace two offsets by the ones' complement sum of the big-endian 16 bits words between
@@ -1384,7 +1396,11 @@ pub enum Op {
   ///
   /// This is how what is at an offset that depends on what is before is reached: options, a
   /// chain of headers. A value takes at most as many steps as it has bytes.
-  Walk { var: u8, cond: &'static [Op], next: &'static [Op] },
+  Walk {
+    var: u8,
+    cond: &'static [Op],
+    next: &'static [Op],
+  },
 }
 
 impl Op {
@@ -1406,10 +1422,14 @@ impl Op {
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
       }
-      (Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. }, _)
-      | (_, Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. }) => {
-        false
-      }
+      (
+        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+        _,
+      )
+      | (
+        _,
+        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+      ) => false,
       // Other operations hold no data.
       (a, b) => a.code() == b.code(),
     }
@@ -1629,8 +1649,13 @@ pub(crate) struct Machine {
 }
 
 impl Machine {
-  pub(crate) const NEW: Self =
-    Self { stack: (0, 0, 0, 0, 0, 0, 0, 0), variables: (0, 0, 0, 0), depth: 0, failed: 0, unknown: 0 };
+  pub(crate) const NEW: Self = Self {
+    stack: (0, 0, 0, 0, 0, 0, 0, 0),
+    variables: (0, 0, 0, 0),
+    depth: 0,
+    failed: 0,
+    unknown: 0,
+  };
 
   #[inline(always)]
   const fn get(&self, slot: usize) -> u128 {
@@ -1770,7 +1795,8 @@ impl Machine {
         }
       }
       Op::At { size: width, big } => {
-        let (offset, endian) = (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
+        let (offset, endian) =
+          (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
         let inside = offset <= size as u128 && size - offset as usize >= width as usize;
         if inside && !self.has_failed(depth - 1) {
           // SAFETY: in the bounds of the value.
@@ -1790,7 +1816,8 @@ impl Machine {
           let bytes = unsafe {
             core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
           };
-          let value = if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
+          let value =
+            if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
           self.set(depth - 2, Some(value));
         } else {
           self.set(depth - 2, None);
@@ -1802,7 +1829,8 @@ impl Machine {
         let (failed_a, failed_b) = (self.has_failed(depth - 2), self.has_failed(depth - 1));
         let decides = matches!(op, Op::Either) as u128;
         self.depth -= 1;
-        if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides) {
+        if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides)
+        {
           self.set(depth - 2, Some(decides));
         } else if failed_a || failed_b {
           self.set(depth - 2, None);
@@ -1875,8 +1903,20 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     Op::And => Some(a & b),
     Op::Or => Some(a | b),
     Op::Xor => Some(a ^ b),
-    Op::Shl => if b < 128 { Some(a << b) } else { None },
-    Op::Shr => if b < 128 { Some(a >> b) } else { None },
+    Op::Shl => {
+      if b < 128 {
+        Some(a << b)
+      } else {
+        None
+      }
+    }
+    Op::Shr => {
+      if b < 128 {
+        Some(a >> b)
+      } else {
+        None
+      }
+    }
     Op::Eq => Some((a == b) as u128),
     Op::Ne => Some((a != b) as u128),
     Op::Lt => Some((a < b) as u128),

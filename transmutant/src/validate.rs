@@ -4,9 +4,12 @@
 //! layout of the type and the marks of the analysis are constants. A check that is not marked is
 //! not compiled, and one that is comes down to a load and a comparison.
 
-use crate::analysis::Marks;
-use crate::layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load};
-use crate::{Count, Data, Fields, Path, Root, Variants, Walks, ptr};
+use crate::{
+  Count, Data, Fields, Path, Root, Variants, Walks,
+  analysis::Marks,
+  layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load},
+  ptr,
+};
 
 /// The things of a target that have to be checked.
 pub(crate) trait Checks {
@@ -183,15 +186,16 @@ const unsafe fn check_walks<T: ?Sized + Data, W: Walks>(base: *const u8, size: u
   // SAFETY: guaranteed by the caller.
   unsafe {
     steps::<T, W, W::Ops>(&mut machine, base, size);
-    matches!(machine.result(), Some(value) if value != 0)
-      && check_walks::<T, W::Next>(base, size)
+    matches!(machine.result(), Some(value) if value != 0) && check_walks::<T, W::Next>(base, size)
   }
 }
 
 /// Apply the `N` first operations of the expression of the rule `W` of `T`.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn steps<T: ?Sized + Data, W: Walks, N: Count>(
-  machine: &mut Machine, base: *const u8, size: usize,
+  machine: &mut Machine,
+  base: *const u8,
+  size: usize,
 ) {
   if const { N::VALUE == 0 } {
     return;
@@ -210,9 +214,12 @@ const unsafe fn steps<T: ?Sized + Data, W: Walks, N: Count>(
 /// Apply the [`Op::Walk`] of the expression of the rule `W` of `T`.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn walk<T: ?Sized + Data, W: Walks>(
-  machine: &mut Machine, base: *const u8, size: usize,
+  machine: &mut Machine,
+  base: *const u8,
+  size: usize,
 ) {
-  let Some(Op::Walk { var, .. }) = (const { T::LAYOUT.rule_op(W::RULE, T::LAYOUT.walk_at(W::RULE)) })
+  let Some(Op::Walk { var, .. }) =
+    (const { T::LAYOUT.rule_op(W::RULE, T::LAYOUT.walk_at(W::RULE)) })
   else {
     return;
   };
@@ -246,7 +253,9 @@ const unsafe fn walk<T: ?Sized + Data, W: Walks>(
 /// condition, or with `NEXT` what follows.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn walk_steps<T: ?Sized + Data, W: Walks, const NEXT: bool, N: Count>(
-  machine: &mut Machine, base: *const u8, size: usize,
+  machine: &mut Machine,
+  base: *const u8,
+  size: usize,
 ) {
   if const { N::VALUE == 0 } {
     return;
@@ -284,7 +293,12 @@ pub(crate) const fn tail_of<T: ?Sized + Data>(ptr: *const T) -> (usize, usize, u
 /// `base` must be valid for reads of the `size` bytes of a struct that has the rule.
 #[inline(always)]
 const unsafe fn check_rule(
-  rule: &Rule, base: *const u8, size: usize, tail: usize, len: usize, regions: usize,
+  rule: &Rule,
+  base: *const u8,
+  size: usize,
+  tail: usize,
+  len: usize,
+  regions: usize,
 ) -> Option<usize> {
   // SAFETY: guaranteed by the caller.
   let value = unsafe {

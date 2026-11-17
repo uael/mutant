@@ -1,10 +1,12 @@
 //! The functions of the crate, on types of all sorts.
 
 use core::num::NonZero;
-use transmutant::num::{u8c, u16be, u16le, u32bec};
+
 use transmutant::{
-  Data, Error, as_bytes, transmute, transmute_mut, transmute_ref, truncate, truncate_ref,
-  try_transmute, try_transmute_mut, try_transmute_ref, unpack,
+  Data, Error, as_bytes,
+  num::{u8c, u16be, u16le, u32bec},
+  transmute, transmute_mut, transmute_ref, truncate, truncate_ref, try_transmute,
+  try_transmute_mut, try_transmute_ref, unpack,
 };
 
 /// An enum of the default representation: the compiler chooses its size and its values.
@@ -67,7 +69,10 @@ fn by_value() {
   assert_eq!(transmute::<[bool; 2], [u8; 2]>([true, false]), [1, 0]);
   assert_eq!(transmute::<Sign, i8>(Sign::Minus), -1);
   assert_eq!(transmute::<u32bec<0xcafe>, [u8; 4]>(Default::default()), [0, 0, 0xca, 0xfe]);
-  assert_eq!(transmute::<NonZero<u8>, Option<NonZero<u8>>>(NonZero::new(3).unwrap()), NonZero::new(3));
+  assert_eq!(
+    transmute::<NonZero<u8>, Option<NonZero<u8>>>(NonZero::new(3).unwrap()),
+    NonZero::new(3)
+  );
   assert_eq!(truncate::<u32, [u8; 2]>(u32::from_ne_bytes([1, 2, 3, 4])), [1, 2]);
 
   assert_eq!(try_transmute::<u8, Level>(1), Ok(Level::Mid));
@@ -129,7 +134,10 @@ fn by_reference() {
   assert_eq!((padded.tail.len(), rest.len()), (0, 3));
 
   // Enums, in slices.
-  assert_eq!(try_transmute_ref::<[u8], [Level]>(&[0, 1, 2]), Ok(&[Level::Low, Level::Mid, Level::High][..]));
+  assert_eq!(
+    try_transmute_ref::<[u8], [Level]>(&[0, 1, 2]),
+    Ok(&[Level::Low, Level::Mid, Level::High][..])
+  );
   assert_eq!(try_transmute_ref::<[u8], [Level]>(&[0, 1, 3]), Err(Error::Validity));
   assert_eq!(transmute_ref::<[Level], [u8]>(&[Level::High]), &[2]);
 }
@@ -145,9 +153,11 @@ fn rules() {
   assert_eq!(try_transmute_ref::<[u8], List>(&[4, 1, 0, 2]).err(), Some(Error::Size));
 
   // An assertion over two fields.
-  let checked = |bytes: [u8; 4]| try_transmute::<_, [u8; 4]>(bytes).and_then(|bytes| {
-    try_transmute_ref::<[u8; 4], Checked>(&bytes).map(|checked| checked.value.get())
-  });
+  let checked = |bytes: [u8; 4]| {
+    try_transmute::<_, [u8; 4]>(bytes).and_then(|bytes| {
+      try_transmute_ref::<[u8; 4], Checked>(&bytes).map(|checked| checked.value.get())
+    })
+  };
   assert_eq!(checked([1, 0, 0, 5]), Ok(5));
   assert_eq!(checked([2, 0, 1, 0]), Ok(0x100));
   assert_eq!(checked([2, 0, 0, 5]), Err(Error::Validity));
@@ -232,8 +242,10 @@ fn what_is_not_needed_is_not_read() {
 
 /// Messages that tell what they carry, and views of "one or the other".
 mod views {
-  use transmutant::num::{u8c, u16be};
-  use transmutant::{Data, Error, Tag};
+  use transmutant::{
+    Data, Error, Tag,
+    num::{u8c, u16be},
+  };
 
   /// The kind of a message, when what it carries is not known.
   #[derive(Data, Debug, Copy, Clone, PartialEq)]

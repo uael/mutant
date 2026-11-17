@@ -35,8 +35,11 @@
 //! | a frame is one thing or another                      | an enum of references ([`AnyFrame`])   |
 #![deny(unsafe_code)]
 
-use transmutant::num::{u8c, u16be, u16bec, u32be, u48be};
-use transmutant::{Data, Error, Tag, transmute_ref, try_transmute_ref, unpack};
+use transmutant::{
+  Data, Error, Tag,
+  num::{u8c, u16be, u16bec, u32be, u48be},
+  transmute_ref, try_transmute_ref, unpack,
+};
 
 // -------------------------------------------------------------------------------------------------
 // Ethernet
@@ -509,9 +512,8 @@ const A: Mac = Mac(u48be::new(0x0200_0000_000a));
 const B: Mac = Mac(u48be::new(0x0200_0000_000b));
 
 /// An ARP request, as bytes.
-const ARP: [u8; 28] = [
-  0, 1, 0x08, 0, 6, 4, 0, 1, 0x02, 0, 0, 0, 0, 0x0a, 10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0, 2,
-];
+const ARP: [u8; 28] =
+  [0, 1, 0x08, 0, 6, 4, 0, 1, 0x02, 0, 0, 0, 0, 0x0a, 10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0, 2];
 
 /// An IPv4 packet, as bytes: an option that has a length, two that do not, a UDP datagram.
 const UDP: [u8; 41] = [
@@ -584,9 +586,8 @@ const FRAGMENT6: [u8; 56] = [
 ];
 
 /// LLDP, as bytes: a chassis, a port, a time to live, the end.
-const LLDP: [u8; 19] = [
-  0x02, 0x07, 4, 0x02, 0, 0, 0, 0, 0x0a, 0x04, 0x02, 5, b'1', 0x06, 0x02, 0, 120, 0x00, 0x00,
-];
+const LLDP: [u8; 19] =
+  [0x02, 0x07, 4, 0x02, 0, 0, 0, 0, 0x0a, 0x04, 0x02, 5, b'1', 0x06, 0x02, 0, 120, 0x00, 0x00];
 
 /// A frame from `A` to `B`, as bytes: an EtherType or a length, then a payload.
 fn frame(ether_type: u16, payload: &[u8]) -> Vec<u8> {
@@ -627,7 +628,10 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Arp>>(&bytes[..]).err(), Some(Error::Size));
   assert_eq!(try_transmute_ref::<_, Frame<Vlan>>(&bytes[..]).err(), Some(Error::Validity));
   // Not an EtherType.
-  assert_eq!(try_transmute_ref::<_, Frame>(&frame(100, &[0; 100])[..]).err(), Some(Error::Validity));
+  assert_eq!(
+    try_transmute_ref::<_, Frame>(&frame(100, &[0; 100])[..]).err(),
+    Some(Error::Validity)
+  );
   // Version 6, a header of 16 bytes, a total length that is not the one of the packet, and a
   // time to live that the checksum does not agree with.
   for (at, value) in [(14, 0x67), (14, 0x44), (17, 40), (22, 63)] {
@@ -656,7 +660,10 @@ pub fn main() {
   let ip: &Frame<Ipv4<Tcp>> = try_transmute_ref(&segment[..]).unwrap();
   let tcp = ip.payload.payload().unwrap();
   assert_eq!((tcp.header_length(), tcp.syn(), tcp.ack()), (24, true, false));
-  assert_eq!((tcp.destination_port.get(), tcp.options(), tcp.payload()), (80, &[2, 4, 5, 0xb4][..], &b"hi"[..]));
+  assert_eq!(
+    (tcp.destination_port.get(), tcp.options(), tcp.payload()),
+    (80, &[2, 4, 5, 0xb4][..], &b"hi"[..])
+  );
   let mut corrupted = segment.clone();
   corrupted[14 + 45] ^= 1;
   assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&corrupted[..]).err(), Some(Error::Validity));
@@ -723,10 +730,14 @@ pub fn main() {
   assert!(try_transmute_ref::<_, Frame8023>(&frame(9, &[0; 7])[..]).is_err());
   assert!(try_transmute_ref::<_, Frame8023>(&bytes[..]).is_err());
   // LLC and SNAP headers, then what the EtherType of the SNAP header tells.
-  let snap = frame(8 + 28, &[&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0x06][..], &ARP[..], &[0; 10]].concat());
+  let snap =
+    frame(8 + 28, &[&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0x06][..], &ARP[..], &[0; 10]].concat());
   let frame8023: &Frame8023 = try_transmute_ref(&snap[..]).unwrap();
   let (arp, rest) = unpack::<Snap<Arp>>(frame8023.payload()).unwrap();
-  assert_eq!((arp.payload.operation, rest.len(), frame8023.padding().len()), (Operation::Request, 0, 10));
+  assert_eq!(
+    (arp.payload.operation, rest.len(), frame8023.padding().len()),
+    (Operation::Request, 0, 10)
+  );
   assert!(unpack::<Snap<Ipv4>>(frame8023.payload()).is_err());
 
   // ---- ARP: a payload of a fixed size, made in safe Rust.
@@ -867,7 +878,10 @@ pub fn main() {
   pppoe.resize(60, 0);
   assert_eq!(try_transmute_ref::<_, Frame<Pppoe>>(&pppoe[..]).err(), Some(Error::Validity));
   let (session, padding) = unpack::<Frame<Pppoe>>(&pppoe).unwrap();
-  assert_eq!((session.payload.session.get(), &session.payload.payload), (7, &[0xc0, 0x21, 9, 1][..]));
+  assert_eq!(
+    (session.payload.session.get(), &session.payload.payload),
+    (7, &[0xc0, 0x21, 9, 1][..])
+  );
   assert_eq!(padding.len(), 36);
   let eapol = frame(0x888e, &[2, 1, 0, 0]);
   let start: &Frame<Eapol> = try_transmute_ref(&eapol[..]).unwrap();
@@ -948,7 +962,10 @@ pub fn main() {
   assert_eq!(describe(&service), "service VLAN 1");
   assert_eq!(describe(&snap), "802.3, 36 bytes");
   assert_eq!(describe(&frame(0x88f7, &[0; 46])), "EtherType 0x88f7");
-  assert_eq!(describe(&frame(1501, &[0; 46])), "not a frame: value is not valid for the target type");
+  assert_eq!(
+    describe(&frame(1501, &[0; 46])),
+    "not a frame: value is not valid for the target type"
+  );
   assert_eq!(describe(&[0; 13]), "not a frame: value is not valid for the target type");
   // A frame that does not hold what its EtherType tells is still a frame, of that EtherType.
   assert_eq!(describe(&corrupted), "EtherType 0x86dd");

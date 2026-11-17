@@ -92,7 +92,8 @@ pub(crate) const fn from_raw_parts<T: ?Sized + Data>(addr: *const u8, len: usize
 /// `offset`.
 #[inline(always)]
 pub(crate) const unsafe fn field<T: ?Sized + Data, F: ?Sized + Data>(
-  ptr: *const T, offset: usize,
+  ptr: *const T,
+  offset: usize,
 ) -> *const F {
   // An unsized field is the last one: it shares the slice length of its parent.
   let len = if const { F::LAYOUT.unsized_ } { metadata(ptr) } else { 0 };

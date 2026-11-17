@@ -142,13 +142,12 @@ mod ptr;
 mod tests;
 mod validate;
 
-pub use layout::{crc32, sum16};
-pub use transmutant_derive::Data;
+use core::{marker::PhantomData, mem::ManuallyDrop};
 
 use analysis::{Analysis, Exact, Marks, analyze, mutable};
-use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
 use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
+pub use layout::{crc32, sum16};
+pub use transmutant_derive::Data;
 use validate::{Checks, validate};
 
 // -------------------------------------------------------------------------------------------------
@@ -604,8 +603,7 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
     }
   };
   const TRUNCATE: () = Self::require(Need { truncate: true, fallible: false, reference: false });
-  const TRUNCATE_REF: () =
-    Self::require(Need { truncate: true, fallible: false, reference: true });
+  const TRUNCATE_REF: () = Self::require(Need { truncate: true, fallible: false, reference: true });
   const TRY: () = Self::require(Need { truncate: false, fallible: true, reference: false });
   const TRY_REF: () = Self::require(Need { truncate: false, fallible: true, reference: true });
   const TRY_MUT: () = {
@@ -1004,8 +1002,7 @@ pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error
 pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
   // The bytes of the value can be read: it has no padding.
   const { Plan::<S, [u8]>::BY_REF };
-  let (head, rules): (usize, &[Rule]) =
-    const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
+  let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
   let base = (value as *const S).cast::<u8>();
   let (_, tail, size) = validate::tail_of::<S>(value);
   // Where the region starts in the tail, and how many regions are before it.

@@ -2,13 +2,13 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
-use syn::parse::{Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn::spanned::Spanned;
 use syn::{
   Attribute, BinOp, Data, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprLit, ExprRange,
   Fields, Ident, Index, Lit, Member, Path, RangeLimits, Result, Token, Type, UnOp, Visibility,
+  parse::{Parse, ParseStream},
   parse_macro_input, parse_quote,
+  punctuated::Punctuated,
+  spanned::Spanned,
 };
 
 /// Derive `Data`: tell the layout and the valid values of a type, so that it can be transmuted.
@@ -280,7 +280,10 @@ impl Scope {
 
 /// `{ let name = EXPR; .. EXPR }`
 fn compile_block(
-  block: &syn::Block, fields: &[FieldInfo], root: &TokenStream, ops: &mut Vec<TokenStream>,
+  block: &syn::Block,
+  fields: &[FieldInfo],
+  root: &TokenStream,
+  ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
 ) -> Result<()> {
   let (op, visible) = (quote!(#root::layout::Op), scope.names.len());
@@ -315,7 +318,10 @@ fn compile_block(
 }
 
 fn compile(
-  expr: &Expr, fields: &[FieldInfo], root: &TokenStream, ops: &mut Vec<TokenStream>,
+  expr: &Expr,
+  fields: &[FieldInfo],
+  root: &TokenStream,
+  ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
 ) -> Result<()> {
   let op = quote!(#root::layout::Op);
@@ -350,12 +356,13 @@ fn compile(
       let index = path.path.get_ident().and_then(|ident| scope.get(ident));
       ops.push(quote!(#op::Get(#index)));
     }
-    Expr::Path(path) if path.path.get_ident().is_some_and(|ident| {
-      load(&Member::Named(ident.clone()), ops).is_some()
-    }) => {}
+    Expr::Path(path)
+      if path
+        .path
+        .get_ident()
+        .is_some_and(|ident| load(&Member::Named(ident.clone()), ops).is_some()) => {}
     Expr::Field(field) if matches!(&*field.base, Expr::Path(path) if path.path.is_ident("self")) => {
-      load(&field.member, ops)
-        .ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
+      load(&field.member, ops).ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
     }
     Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_)) => {
       compile(&unary.expr, fields, root, ops, scope)?;
@@ -398,7 +405,9 @@ fn compile(
       ops.push(quote!(#op::Size));
     }
     // `crc32(start, end)`, `sum16(start, end)`: over the bytes of the value.
-    Expr::Call(call) if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) => {
+    Expr::Call(call)
+      if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) =>
+    {
       compile(&call.args[0], fields, root, ops, scope)?;
       compile(&call.args[1], fields, root, ops, scope)?;
       ops.push(if is_call(call, "crc32") { quote!(#op::Crc32) } else { quote!(#op::Sum16) });
@@ -458,7 +467,10 @@ fn is_call(call: &syn::ExprCall, name: &str) -> bool {
 /// Turn the expression of a getter into Rust, where a field is its value as an `u128`.
 fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
   let field = |member: &Member| {
-    fields.iter().any(|field| &field.member == member).then(|| quote!(#root::int(&{ self.#member })))
+    fields
+      .iter()
+      .any(|field| &field.member == member)
+      .then(|| quote!(#root::int(&{ self.#member })))
   };
   match expr {
     Expr::Paren(expr) => {
@@ -470,10 +482,12 @@ fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
       let (inner, ty) = (rust(&cast.expr, fields, root), &cast.ty);
       quote!((#inner as #ty))
     }
-    Expr::Path(path) => match path.path.get_ident().and_then(|ident| field(&Member::Named(ident.clone()))) {
-      Some(field) => field,
-      None => quote!(#path),
-    },
+    Expr::Path(path) => {
+      match path.path.get_ident().and_then(|ident| field(&Member::Named(ident.clone()))) {
+        Some(field) => field,
+        None => quote!(#path),
+      }
+    }
     Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
       match field(&access.member) {
         Some(field) => field,
@@ -537,7 +551,9 @@ fn count_type(count: usize, root: &TokenStream) -> TokenStream {
 
 /// The ranges of `#[data(valid(..))]`, as `&'static [(u128, u128)]`.
 fn valid_ranges(
-  ranges: &Punctuated<Expr, Token![,]>, ty: &Type, root: &TokenStream,
+  ranges: &Punctuated<Expr, Token![,]>,
+  ty: &Type,
+  root: &TokenStream,
 ) -> TokenStream {
   let option = |expr: &Option<Box<Expr>>| match expr {
     Some(expr) => quote!(::core::option::Option::Some((#expr) as u128)),
@@ -779,7 +795,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     None => quote!(()),
   };
   let walk_lists = walks.iter().enumerate().map(|(i, (index, len, inner))| {
-    let (marker, ops, inner) = (&walk_markers[i], count_type(*len, &root), count_type(*inner, &root));
+    let (marker, ops, inner) =
+      (&walk_markers[i], count_type(*len, &root), count_type(*inner, &root));
     let next = match walk_markers.get(i + 1) {
       Some(marker) => quote!(#marker #ty_generics),
       None => quote!(()),
@@ -864,8 +881,12 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
     .collect::<Vec<_>>();
   if references.len() == data.variants.len() {
     let lifetime = &references[0].1.lifetime;
-    if lifetime.is_none() || references.iter().any(|(_, reference)| &reference.lifetime != lifetime) {
-      return Err(Error::new(Span::call_site(), "the references of the variants must have the same lifetime"));
+    if lifetime.is_none() || references.iter().any(|(_, reference)| &reference.lifetime != lifetime)
+    {
+      return Err(Error::new(
+        Span::call_site(),
+        "the references of the variants must have the same lifetime",
+      ));
     }
     let (vis, bytes) = (&input.vis, quote!(&#lifetime [::core::primitive::u8]));
     let result = quote!(::core::result::Result);
@@ -957,7 +978,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
     None => quote!(C),
   };
   let tags = data.variants.iter().map(|variant| {
-    let (name, discriminant) = (&variant.ident, variant.discriminant.as_ref().map(|(_, expr)| expr));
+    let (name, discriminant) =
+      (&variant.ident, variant.discriminant.as_ref().map(|(_, expr)| expr));
     let discriminant = discriminant.map(|expr| quote!(= #expr));
     quote!(#name #discriminant)
   });
@@ -1005,10 +1027,13 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         }
         None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
       });
-      let (marker, next) = (&markers[j], match markers.get(j + 1) {
-        Some(marker) => quote!(#marker #ty_generics),
-        None => quote!(()),
-      });
+      let (marker, next) = (
+        &markers[j],
+        match markers.get(j + 1) {
+          Some(marker) => quote!(#marker #ty_generics),
+          None => quote!(()),
+        },
+      );
       items.push(quote! {
         #[allow(non_camel_case_types)]
         #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;

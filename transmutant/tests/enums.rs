@@ -1,7 +1,9 @@
 //! Enums with fields.
 
-use transmutant::num::{u8in, u16le};
-use transmutant::{Data, Error};
+use transmutant::{
+  Data, Error,
+  num::{u8in, u16le},
+};
 
 #[derive(Data, Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
@@ -121,7 +123,10 @@ fn offsets_and_alignments() {
   assert_eq!((size_of::<Wide>(), align_of::<Wide>()), (16, 8));
   let mut raw = [0u64; 2];
   raw[1] = 0x0123_4567_89ab_cdef;
-  assert_eq!(transmutant::try_transmute::<[u64; 2], Wide>(raw), Ok(Wide::Long(0x0123_4567_89ab_cdef)));
+  assert_eq!(
+    transmutant::try_transmute::<[u64; 2], Wide>(raw),
+    Ok(Wide::Long(0x0123_4567_89ab_cdef))
+  );
   let mut bytes = [0u8; 16];
   bytes[..4].copy_from_slice(&1u32.to_ne_bytes());
   bytes[8] = 7;
@@ -187,7 +192,10 @@ fn what_is_not_a_variant_is_refused() {
 #[test]
 fn an_enum_is_itself() {
   // The same enum at the same place needs no check, whatever its padding.
-  let tiles = [Tile { x: u16le::new(1), shape: Shape::Empty }, Tile { x: u16le::new(2), shape: Shape::Rect(3, false) }];
+  let tiles = [
+    Tile { x: u16le::new(1), shape: Shape::Empty },
+    Tile { x: u16le::new(2), shape: Shape::Rect(3, false) },
+  ];
   let same: [Tile; 2] = transmutant::transmute(tiles);
   assert_eq!(same, tiles);
   let shape: &Shape = transmutant::transmute_ref(&tiles[1].shape);
@@ -206,7 +214,10 @@ fn what_is_known_of_an_enum() {
   let bytes: &[u8; 2] = transmutant::transmute_ref(&Bit::Zero(9));
   assert_eq!(bytes, &[0, 9]);
   // The other way, the tag is checked, and nothing else.
-  assert_eq!(transmutant::try_transmute::<Raw, Bit>(Raw(u8in::new(0).unwrap(), 3)), Ok(Bit::Zero(3)));
+  assert_eq!(
+    transmutant::try_transmute::<Raw, Bit>(Raw(u8in::new(0).unwrap(), 3)),
+    Ok(Bit::Zero(3))
+  );
 }
 
 #[test]
@@ -219,7 +230,10 @@ fn variant_by_variant() {
   // The other way, a variant may not be one, or may hold what the other does not.
   let back = transmutant::try_transmute_ref::<[Drawing], [Shape]>(drawings);
   assert_eq!(back, Ok(&shapes[..]));
-  assert_eq!(transmutant::try_transmute::<Drawing, Shape>(Drawing::Rect(0, 2)), Err(Error::Validity));
+  assert_eq!(
+    transmutant::try_transmute::<Drawing, Shape>(Drawing::Rect(0, 2)),
+    Err(Error::Validity)
+  );
   let line = Drawing::Line { to: (1, 1) };
   assert_eq!(transmutant::try_transmute::<Drawing, Shape>(line), Err(Error::Validity));
   let drawings = [Drawing::Empty, line];
@@ -255,7 +269,10 @@ fn zeroed() {
 
 // All of this is known at compile time.
 const _: () = {
-  assert!(matches!(transmutant::try_transmute::<[u8; 4], Shape>([1, 7, 1, 0]), Ok(Shape::Rect(7, true))));
+  assert!(matches!(
+    transmutant::try_transmute::<[u8; 4], Shape>([1, 7, 1, 0]),
+    Ok(Shape::Rect(7, true))
+  ));
   assert!(transmutant::try_transmute::<[u8; 4], Shape>([1, 7, 2, 0]).is_err());
   assert!(matches!(transmutant::transmute::<Bit, Raw>(Bit::One(7)), Raw(_, 7)));
 };
