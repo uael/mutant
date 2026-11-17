@@ -119,7 +119,8 @@ fn misaligned_and_mixed_endian() {
 
 #[test]
 fn huge_arrays_cost_nothing() {
-  const N: usize = 1 << 40;
+  // As large as the target allows (the largest array is `15 * N` bytes).
+  const N: usize = if usize::BITS >= 64 { 1 << 40 } else { 1 << 24 };
   assert_eq!(verdict::<[u8; N], [u8; N]>(), "infallible, mutable");
   assert_eq!(verdict::<[bool; N], [u8; N]>(), "infallible");
   assert_eq!(verdict::<[u8; N], [bool; N]>(), "fallible at 0, mutable");

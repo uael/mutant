@@ -120,26 +120,29 @@ fn layouts_are_the_ones_of_the_compiler() {
 #[test]
 fn offsets_and_alignments() {
   // A tag of the size of an `int`, then the fields of the variants where the largest alignment
-  // of all of them puts them.
-  assert_eq!((size_of::<Wide>(), align_of::<Wide>()), (16, 8));
-  let mut raw = [0u64; 2];
-  raw[1] = 0x0123_4567_89ab_cdef;
+  // of all of them puts them: that of a `u64`, which is 4 on some targets (i686), 8 on others.
+  const SIZE: usize = size_of::<Wide>();
+  let at = align_of::<u64>().max(4);
+  assert_eq!((SIZE, align_of::<Wide>()), (at + 8, at));
+  let mut bytes = [0u8; SIZE];
+  bytes[at..at + 8].copy_from_slice(&0x0123_4567_89ab_cdefu64.to_ne_bytes());
   assert_eq!(
-    transmutant::try_transmute::<[u64; 2], Wide>(raw),
+    transmutant::try_transmute::<[u8; SIZE], Wide>(bytes),
     Ok(Wide::Long(0x0123_4567_89ab_cdef))
   );
-  let mut bytes = [0u8; 16];
+  let mut bytes = [0u8; SIZE];
   bytes[..4].copy_from_slice(&1u32.to_ne_bytes());
-  bytes[8] = 7;
-  bytes[10..12].copy_from_slice(&0x1234u16.to_ne_bytes());
-  let raw: [u64; 2] = transmutant::transmute(bytes);
-  assert_eq!(transmutant::try_transmute::<[u64; 2], Wide>(raw), Ok(Wide::Short(7, 0x1234)));
+  bytes[at] = 7;
+  bytes[at + 2..at + 4].copy_from_slice(&0x1234u16.to_ne_bytes());
+  assert_eq!(transmutant::try_transmute::<[u8; SIZE], Wide>(bytes), Ok(Wide::Short(7, 0x1234)));
   bytes[..4].copy_from_slice(&2u32.to_ne_bytes());
-  let raw: [u64; 2] = transmutant::transmute(bytes);
-  assert_eq!(transmutant::try_transmute::<[u64; 2], Wide>(raw), Ok(Wide::Unit));
+  assert_eq!(transmutant::try_transmute::<[u8; SIZE], Wide>(bytes), Ok(Wide::Unit));
   bytes[..4].copy_from_slice(&0x0100_0000u32.to_ne_bytes());
-  let raw: [u64; 2] = transmutant::transmute(bytes);
-  assert_eq!(transmutant::try_transmute::<[u64; 2], Wide>(raw), Err(Error::Validity));
+  assert_eq!(transmutant::try_transmute::<[u8; SIZE], Wide>(bytes), Err(Error::Validity));
+  // From words, where they are aligned as the enum is.
+  let words = [Wide::Long(5); 2];
+  let back = transmutant::try_transmute_ref::<[Wide; 2], [Wide; 2]>(&words);
+  assert_eq!(back, Ok(&words));
 
   // An alignment that the enum asks for: its size follows.
   assert_eq!((size_of::<Aligned<2>>(), align_of::<Aligned<2>>()), (4, 4));
