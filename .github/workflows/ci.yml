@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+      # Unit, integration, compile-fail (trybuild) and doc tests.
+      - run: cargo test --all
+      # The example asserts its results.
+      - run: cargo run --example ethernet
+      # The functions whose machine code `DESIGN.md` measures: they must at least build.
+      - run: cargo build --release --example codegen
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
+
+  no_std:
+    name: No std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      # A target without `std`: nothing may need it.
+      - run: cargo build -p transmutant --target thumbv7em-none-eabihf
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `rustfmt.toml` uses unstable options.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-17
+          components: rustfmt
+      - run: cargo +nightly-2026-11-17 fmt --all -- --check
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-17
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      # Tree borrows, then the default stacked borrows; the trybuild test is ignored under Miri.
+      - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+      - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm rust-toolchain
+      - uses: EmbarkStudios/cargo-deny-action@v2
