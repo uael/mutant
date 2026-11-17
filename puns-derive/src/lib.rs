@@ -39,8 +39,8 @@ use syn::{
 ///
 /// An `EXPR` is an expression over the integer fields of the struct (by name, or `self.0` for
 /// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
-/// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
-/// arithmetic costs, and fails (as a rule that does not hold) on overflow.
+/// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, and costs what the
+/// arithmetic costs.
 ///
 /// It means what the same Rust expression means where every integer is a `u128`, and is typed as
 /// Rust types it: arithmetic is on integers, `&&`, `||` and the condition of an `if` are `bool`s,
@@ -54,6 +54,11 @@ use syn::{
 ///   `offset_of!(Self, field)`, `self::f(3)` for a `const fn f`) is computed by Rust, and must be
 ///   of an unsigned integer type. Floating-point numbers, negative numbers, signed integers and
 ///   `char`s are refused, since they would mean something else.
+///
+/// Where Rust would panic, the rule fails (does not hold): an overflow of `+`, `-` or `*`, a
+/// division or a remainder by zero, a shift by 128 or more (which Rust also panics on, with debug
+/// assertions), and a read out of the value. `<<` drops the bits that it shifts out, as in Rust:
+/// `(1 << 127) << 1` is `0`.
 ///
 /// A rule names the integer fields of its struct, not the fields of a field or the elements of
 /// an array, which `le` and `be` read; it calls no method and no function but the ones below.

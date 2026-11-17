@@ -1555,9 +1555,10 @@ impl Dfa {
 /// An operation of a postfix expression over the scalar fields of a struct, see [`Rule`].
 ///
 /// Expressions are evaluated on `u128`. What cannot be computed (an overflow, an underflow, a
-/// division by zero, a read out of the value) makes the rule that holds the expression fail,
-/// unless it is the side of a `&&` or of a `||` that the other side decides without:
-/// `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short.
+/// division by zero, a shift by 128 or more, a read out of the value) makes the rule that holds
+/// the expression fail, unless it is the side of a `&&` or of a `||` that the other side decides
+/// without: `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short.
+/// `<<` drops the bits that it shifts out, as in Rust.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
   /// Push a constant.

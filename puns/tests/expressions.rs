@@ -58,3 +58,23 @@ fn constants_are_unsigned_integers() {
   assert!(puns::from_bytes::<Constants>(b"!").is_err());
   assert!(puns::from_bytes::<Constants>(&[0xff]).is_err());
 }
+
+/// `<<` drops the bits shifted out, as Rust does; a shift by 128 or more fails, where Rust would
+/// panic (or, without debug assertions, shift by the amount modulo 128).
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert((x << 127) << 1 == 0 && x << y > 0 && x >> y < 0x100))]
+struct Shifts {
+  x: u8,
+  y: u8,
+}
+
+#[test]
+fn shifts_drop_bits_and_fail_beyond_the_width() {
+  assert!(puns::from_bytes::<Shifts>(&[1, 0]).is_ok());
+  assert!(puns::from_bytes::<Shifts>(&[1, 127]).is_ok());
+  // `2 << 127` is `0`.
+  assert!(puns::from_bytes::<Shifts>(&[2, 127]).is_err());
+  assert!(puns::from_bytes::<Shifts>(&[1, 128]).is_err());
+  assert!(puns::from_bytes::<Shifts>(&[0xff, 200]).is_err());
+}
