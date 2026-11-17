@@ -562,13 +562,13 @@ fn valid_ranges(
     Expr::Range(ExprRange { start, end, limits, .. }) => {
       let (start, end) = (option(start), option(end));
       let inclusive = matches!(limits, RangeLimits::Closed(_));
-      quote!(#root::layout::range::<#ty>(#start, #end, #inclusive))
+      quote!(#root::layout::Spec::range::<#ty>(#start, #end, #inclusive))
     }
     value => quote!(((#value) as u128, (#value) as u128)),
   });
   quote!({
     let merged: &'static ([(u128, u128); #count], usize) =
-      const { &#root::layout::merge_ranges([#(#ranges),*]) };
+      const { &#root::layout::Spec::merge_ranges([#(#ranges),*]) };
     merged.0.split_at(merged.1).0
   })
 }
@@ -625,7 +625,6 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let where_clause = &generics.where_clause;
 
   // Layout of the fields.
-  let pack = repr.packed.unwrap_or_else(|| quote!(::core::primitive::usize::MAX));
   let mut layouts = vec![];
   for (i, field) in fields.iter().enumerate() {
     let (member, ty) = (&field.member, field.ty);
@@ -634,11 +633,15 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       _ if sized || i + 1 < count => quote!(::core::mem::offset_of!(Self, #member)),
       Some(previous) if repr.c => {
         let (previous_member, previous_ty) = (&previous.member, previous.ty);
-        quote!(#root::layout::tail_offset(
-          ::core::mem::offset_of!(Self, #previous_member) + ::core::mem::size_of::<#previous_ty>(),
-          <#ty as #root::Data>::LAYOUT.align(),
-          #pack,
-        ))
+        let end = quote!(
+          ::core::mem::offset_of!(Self, #previous_member)
+            + #root::layout::Layout::size_align::<#previous_ty>().0
+        );
+        let align = quote!(<#ty as #root::Data>::LAYOUT.align());
+        repr.packed.as_ref().map_or_else(
+          || quote!(#root::layout::Layout::tail_offset(#end, #align)),
+          |pack| quote!(#root::layout::Layout::tail_offset_packed(#end, #align, #pack)),
+        )
       }
       _ => quote!(0),
     };
@@ -814,6 +817,15 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
   Ok(quote! {
     const _: () = {
+      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      const _: (
+        fn(#root::layout::Rule),
+        fn(#root::layout::Op),
+        fn(#root::layout::Field),
+        fn(#root::layout::Enum),
+        fn(#root::layout::Variant),
+      ) = #root::layout::Layout::PIN;
+
       #(#lists)*
 
       #(#walk_lists)*
@@ -918,21 +930,18 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   for variant in &data.variants {
     let variant = &variant.ident;
     // SAFETY (of the generated code): an enum without fields has no padding.
-    variants.push(quote!(unsafe { #root::layout::bits_of(&Self::#variant) }));
+    variants.push(quote!(unsafe { #root::layout::Spec::bits_of(&Self::#variant) }));
   }
   let count = variants.len();
   Ok(quote! {
     // SAFETY: the valid values are the ones of the variants, read from the compiler.
     unsafe impl #impl_generics #root::Scalar for #ident #ty_generics #where_clause {
-      const SPEC: #root::layout::Spec = if ::core::mem::size_of::<Self>() == 0 {
+      const SPEC: #root::layout::Spec = if #root::layout::Spec::is_zero_sized::<Self>() {
         #root::layout::Spec::any::<Self>()
       } else {
         let merged: &'static ([(u128, u128); #count], usize) =
-          const { &#root::layout::sorted_ranges([#(#variants),*]) };
-        #root::layout::Spec::ranges::<Self>(
-          #root::layout::Endian::NATIVE,
-          merged.0.split_at(merged.1).0,
-        )
+          const { &#root::layout::Spec::sorted_ranges([#(#variants),*]) };
+        #root::layout::Spec::native_ranges::<Self>(merged.0.split_at(merged.1).0)
       };
     }
   })
@@ -977,8 +986,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let first = usize::from(!repr.c);
   let sizes = shadows.iter().map(|shadow| {
     quote!((
-      ::core::mem::size_of::<#shadow #ty_generics>(),
-      ::core::mem::align_of::<#shadow #ty_generics>(),
+      #root::layout::Layout::size_align::<#shadow #ty_generics>().0,
+      #root::layout::Layout::size_align::<#shadow #ty_generics>().1,
     ))
   });
   let sizes = quote!([#(#sizes),*]);
@@ -1051,7 +1060,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
     });
     variants.push(quote!(#root::layout::Variant::new(
       // SAFETY (of the generated code): an enum without fields has no padding.
-      unsafe { #root::layout::bits_of(&#tag::#name) },
+      unsafe { #root::layout::Spec::bits_of(&#tag::#name) },
       const {
         &#root::layout::Layout::variant::<Self>(
           const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
@@ -1063,6 +1072,15 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
 
   Ok(quote! {
     const _: () = {
+      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      const _: (
+        fn(#root::layout::Rule),
+        fn(#root::layout::Op),
+        fn(#root::layout::Field),
+        fn(#root::layout::Enum),
+        fn(#root::layout::Variant),
+      ) = #root::layout::Layout::PIN;
+
       #[repr(#tag_repr)]
       #[derive(Clone, Copy)]
       #[allow(dead_code, non_camel_case_types, clippy::enum_variant_names)]
@@ -1073,12 +1091,11 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         const SPEC: #root::layout::Spec = {
           let merged: &'static ([(u128, u128); #count], usize) = const {
             // SAFETY: an enum without fields has no padding.
-            &#root::layout::sorted_ranges([#(unsafe { #root::layout::bits_of(&#tag::#names) }),*])
+            &#root::layout::Spec::sorted_ranges([
+              #(unsafe { #root::layout::Spec::bits_of(&#tag::#names) }),*
+            ])
           };
-          #root::layout::Spec::ranges::<Self>(
-            #root::layout::Endian::NATIVE,
-            merged.0.split_at(merged.1).0,
-          )
+          #root::layout::Spec::native_ranges::<Self>(merged.0.split_at(merged.1).0)
         };
       }
 

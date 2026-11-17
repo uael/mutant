@@ -107,3 +107,55 @@ fn an_unsized_target_fits_in_the_source_with_its_trailing_padding() {
   let four: &[u8] = &bytes[4..8];
   assert_eq!(transmutant::try_transmute_ref::<[u8], Aligned>(four).err(), Some(Error::Size));
 }
+
+/// `#[data(crate = ..)]` names the crate, and nothing else: the functions that the generated
+/// code calls are the ones of the types that the traits name, whatever else the path leads to.
+#[expect(
+  dead_code,
+  unused_imports,
+  reason = "what the derive used to call through the path: it no longer does"
+)]
+mod fake {
+  pub use transmutant::Scalar;
+  pub mod layout {
+    pub use transmutant::layout::{Endian, Enum, Field, Layout, Op, Rule, Spec, Variant};
+    /// Every value of the enum would be "one of its variants".
+    pub const fn sorted_ranges<const N: usize>(_: [u128; N]) -> ([(u128, u128); N], usize) {
+      ([(0, 0xff); N], 1)
+    }
+    pub const fn bits_of<T>(_: &T) -> u128 {
+      0
+    }
+    /// The last field of a `repr(C)` struct would be one byte later than it is.
+    pub const fn tail_offset(end: usize, _: usize, _: usize) -> usize {
+      end + 1
+    }
+  }
+  pub use transmutant::{At, Data, Fields, Path};
+}
+
+#[derive(Data, Debug)]
+#[data(crate = fake)]
+#[repr(C)]
+struct Late {
+  x: u16,
+  on: bool,
+}
+
+#[derive(Data, Clone, Copy, Debug, PartialEq, Eq)]
+#[data(crate = fake)]
+#[repr(u8)]
+enum Toggle {
+  Off,
+  On,
+}
+
+#[test]
+fn the_crate_path_does_not_choose_the_functions() {
+  assert_eq!(transmutant::try_transmute::<u8, Toggle>(1), Ok(Toggle::On));
+  assert_eq!(transmutant::try_transmute::<u8, Toggle>(7), Err(Error::Validity));
+  let bytes = [0u16, u16::from_ne_bytes([7, 1])];
+  assert_eq!(transmutant::try_transmute_ref::<[u16; 2], Late>(&bytes).err(), Some(Error::Validity));
+  let bytes = [0u16, u16::from_ne_bytes([1, 7])];
+  assert!(transmutant::try_transmute_ref::<[u16; 2], Late>(&bytes).unwrap().on);
+}

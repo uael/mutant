@@ -296,8 +296,10 @@ unsafe impl Walks for () {
 }
 
 /// A number, as a type: what a recursion over the operations of an expression goes down.
+///
+/// Sealed: the code that validates a value trusts it.
 #[doc(hidden)]
-pub trait Count {
+pub trait Count: sealed::Sealed {
   const VALUE: usize;
   type Less: Count;
 }
@@ -307,6 +309,11 @@ pub struct Zero;
 
 #[doc(hidden)]
 pub struct More<N>(PhantomData<N>);
+
+impl sealed::Sealed for Zero {}
+impl<N: Count> sealed::Sealed for More<N> {}
+impl sealed::Sealed for Root {}
+impl<P: Path, F: ?Sized + Fields> sealed::Sealed for At<P, F> {}
 
 impl Count for Zero {
   const VALUE: usize = 0;
@@ -318,9 +325,16 @@ impl<N: Count> Count for More<N> {
   type Less = N;
 }
 
+/// Implemented by this crate only: what implements [`Path`] and [`Count`] is trusted.
+mod sealed {
+  pub trait Sealed {}
+}
+
 /// Where something is in a target, for validation.
+///
+/// Sealed: the code that validates a value trusts it.
 #[doc(hidden)]
-pub trait Path {
+pub trait Path: sealed::Sealed {
   /// Index of its first leaf.
   const LEAF: usize;
 }

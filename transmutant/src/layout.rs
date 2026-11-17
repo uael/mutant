@@ -123,6 +123,54 @@ impl Spec {
     Self { size, endian, valid, known: valid }
   }
 
+  /// Whatever `T` has no size, for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn is_zero_sized<T>() -> bool {
+    size_of::<T>() == 0
+  }
+
+  /// [`Spec::ranges`], in the byte order of the target.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn native_ranges<T>(ranges: &'static [(u128, u128)]) -> Self {
+    Self::ranges::<T>(Endian::NATIVE, ranges)
+  }
+
+  /// [`sorted_ranges`], for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn sorted_ranges<const N: usize>(values: [u128; N]) -> ([(u128, u128); N], usize) {
+    sorted_ranges(values)
+  }
+
+  /// [`range`], for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -> (u128, u128) {
+    range::<T>(start, end, inclusive)
+  }
+
+  /// [`merge_ranges`], for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn merge_ranges<const N: usize>(
+    ranges: [(u128, u128); N],
+  ) -> ([(u128, u128); N], usize) {
+    merge_ranges(ranges)
+  }
+
+  /// [`bits_of`], for `#[derive(Data)]`.
+  ///
+  /// # Safety
+  /// Every byte of `value` must be initialized.
+  #[doc(hidden)]
+  #[must_use]
+  pub const unsafe fn bits_of<T>(value: &T) -> u128 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { bits_of(value) }
+  }
+
   /// Whatever the scalar is only restricted by a `#[data(valid(..))]` that the type system does
   /// not enforce: it is then proven by restrictions of the same kind.
   #[inline]
@@ -476,7 +524,44 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
   }
 }
 
+/// What [`Layout::PIN`] is made of.
+fn pin<T>(_: T) {}
+
 impl Layout {
+  /// The types that the code that `#[derive(Data)]` generates names by their path in the crate
+  /// it is told of (`#[data(crate = ..)]`), as they must be: the functions that it calls are
+  /// associated functions of these types, or of `Layout` and `Spec`, which the traits that it
+  /// implements name. A path that leads to other types, with functions of the same name, does
+  /// not compile (`fn` types are not paths, nothing can stand for them).
+  #[doc(hidden)]
+  #[expect(
+    clippy::type_complexity,
+    reason = "the derive writes this tuple of `fn` types out, with the paths it is told"
+  )]
+  pub const PIN: (fn(Rule), fn(Op), fn(Field), fn(Enum), fn(Variant)) =
+    (pin::<Rule>, pin::<Op>, pin::<Field>, pin::<Enum>, pin::<Variant>);
+
+  /// Size and alignment of `T`, for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn size_align<T>() -> (usize, usize) {
+    (size_of::<T>(), align_of::<T>())
+  }
+
+  /// [`tail_offset`] in a struct that is not packed, for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn tail_offset(end: usize, align: usize) -> usize {
+    tail_offset(end, align, usize::MAX)
+  }
+
+  /// [`tail_offset`] in a `repr(packed(pack))` struct, for `#[derive(Data)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn tail_offset_packed(end: usize, align: usize, pack: usize) -> usize {
+    tail_offset(end, align, pack)
+  }
+
   /// Layout of a scalar.
   ///
   /// # Panics
