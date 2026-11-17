@@ -33,7 +33,8 @@ use syn::{
 /// - `#[pun(crate = path)]`: path of the `puns` crate.
 ///
 /// Options of a field:
-/// - `#[pun(valid(0x45..=0x4f, 0x60))]`: the field, an integer, only takes these values;
+/// - `#[pun(valid(0x45..=0x4f, 0x60))]`: the field, an integer, only takes these values, which
+///   are unsigned integers (literals or constants, as in an `EXPR` below);
 /// - `#[pun(len = EXPR)]`, on the last field: its slice has `EXPR` elements;
 /// - `#[pun(regions(first = EXPR, second = EXPR, last))]`, on the last field: it is made of
 ///   consecutive regions of `EXPR` bytes, the last one may take what remains. A method that
@@ -639,7 +640,8 @@ fn compile(
       Ty::Bool
     }
     Expr::Lit(ExprLit { lit, .. }) => {
-      ops.push(literal(lit, &op)?);
+      let value = literal(lit)?;
+      ops.push(quote!(#op::Lit(#value)));
       Ty::Int
     }
     Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => {
@@ -804,20 +806,20 @@ fn compile(
 /// The functions that a rule can call.
 const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `crc32`, `sum16` and `walk`";
 
-/// The operation that pushes an integer literal. Its type is the one of a suffix, if any, which
+/// The value of an integer literal, as a `u128`. Its type is the one of a suffix, if any, which
 /// must be an unsigned integer type.
-fn literal(lit: &Lit, op: &TokenStream) -> Result<TokenStream> {
-  let unsigned = "a rule computes on unsigned integers";
+fn literal(lit: &Lit) -> Result<TokenStream> {
+  let unsigned = "`#[pun(..)]` computes on unsigned integers";
   match lit {
     Lit::Int(int) => match int.suffix() {
       "" => {
         let value = int.base10_parse::<u128>()?;
-        Ok(quote!(#op::Lit(#value)))
+        Ok(quote!(#value))
       }
-      "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => Ok(quote!(#op::Lit(#int as u128))),
+      "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => Ok(quote!((#int as u128))),
       suffix => Err(Error::new(lit.span(), format!("{unsigned}: `{suffix}` is not one"))),
     },
-    Lit::Byte(byte) => Ok(quote!(#op::Lit(#byte as u128))),
+    Lit::Byte(byte) => Ok(quote!((#byte as u128))),
     Lit::Float(_) => Err(Error::new(
       lit.span(),
       format!("{unsigned}: a floating-point number is not one (scale both sides instead)"),
@@ -1074,27 +1076,47 @@ fn valid_ranges(
   ranges: &Punctuated<Expr, Token![,]>,
   ty: &Type,
   root: &TokenStream,
-) -> TokenStream {
-  let option = |expr: &Option<Box<Expr>>| {
-    expr.as_ref().map_or_else(
-      || quote!(::core::option::Option::None),
-      |expr| quote!(::core::option::Option::Some((#expr) as u128)),
-    )
+) -> Result<TokenStream> {
+  // A bound: an unsigned integer, as the values of rules are.
+  let value = |expr: &Expr| match expr {
+    Expr::Lit(ExprLit { lit, .. }) => literal(lit),
+    Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => Err(Error::new_spanned(
+      unary,
+      "the values of a field are told as unsigned integers: there is no negative number",
+    )),
+    expr => Ok(quote_spanned!(expr.span()=> #root::layout::Op::constant(&(#expr)))),
+  };
+  let option = |expr: &Option<Box<Expr>>| -> Result<TokenStream> {
+    Ok(match expr {
+      None => quote!(::core::option::Option::None),
+      Some(expr) => {
+        let value = value(expr)?;
+        quote!(::core::option::Option::Some(#value))
+      }
+    })
   };
   let count = ranges.len();
-  let ranges = ranges.iter().map(|range| match range {
-    Expr::Range(ExprRange { start, end, limits, .. }) => {
-      let (start, end) = (option(start), option(end));
-      let inclusive = matches!(limits, RangeLimits::Closed(_));
-      quote!(#root::layout::Spec::range::<#ty>(#start, #end, #inclusive))
-    }
-    value => quote!(((#value) as u128, (#value) as u128)),
-  });
-  quote!({
+  let ranges = ranges
+    .iter()
+    .map(|range| {
+      Ok(match range {
+        Expr::Range(ExprRange { start, end, limits, .. }) => {
+          let (start, end) = (option(start)?, option(end)?);
+          let inclusive = matches!(limits, RangeLimits::Closed(_));
+          quote!(#root::layout::Spec::range::<#ty>(#start, #end, #inclusive))
+        }
+        expr => {
+          let value = value(expr)?;
+          quote!((#value, #value))
+        }
+      })
+    })
+    .collect::<Result<Vec<_>>>()?;
+  Ok(quote!({
     let merged: &'static ([(u128, u128); #count], usize) =
       const { &#root::layout::Spec::merge_ranges([#(#ranges),*]) };
     merged.0.split_at(merged.1).0
-  })
+  }))
 }
 
 /// Require `ty: Pun` of `generics`, unless they do already: a bound written twice is one that
@@ -1226,16 +1248,16 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let mut layouts = vec![];
   for field in &fields {
     let (offset, ty) = (&field.offset, field.ty);
-    layouts.push(field.options.valid.as_ref().map_or_else(
-      || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Pun>::LAYOUT)),
-      |ranges| {
-        let ranges = valid_ranges(ranges, ty, &root);
+    layouts.push(match &field.options.valid {
+      None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Pun>::LAYOUT)),
+      Some(ranges) => {
+        let ranges = valid_ranges(ranges, ty, &root)?;
         quote!(#root::layout::Field::restricted(
           #offset,
           const { &<#ty as #root::Pun>::LAYOUT.restricted(#ranges) },
         ))
-      },
-    ));
+      }
+    });
   }
 
   // Rules.
@@ -1611,16 +1633,16 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       }
       let ty = &field.ty;
       let offset = quote!(#fields + <Self as __PunShapes>::#shape.0[#j]);
-      layouts.push(options.valid.as_ref().map_or_else(
-        || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Pun>::LAYOUT)),
-        |ranges| {
-          let ranges = valid_ranges(ranges, ty, root);
+      layouts.push(match &options.valid {
+        None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Pun>::LAYOUT)),
+        Some(ranges) => {
+          let ranges = valid_ranges(ranges, ty, root)?;
           quote!(#root::layout::Field::restricted(
             #offset,
             const { &<#ty as #root::Pun>::LAYOUT.restricted(#ranges) },
           ))
-        },
-      ));
+        }
+      });
       let (marker, next) = (
         &markers[j],
         markers.get(j + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics)),

@@ -1632,8 +1632,8 @@ pub enum Op {
 /// The types of the constants of rules: unsigned integers, which they compute on.
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
-  message = "a constant of a rule is an unsigned integer: `{Self}` is not one",
-  label = "a rule computes on unsigned integers",
+  message = "a constant of `#[pun(..)]` is an unsigned integer: `{Self}` is not one",
+  label = "`#[pun(..)]` computes on unsigned integers",
   note = "an expression of `#[pun(..)]` means what it means in Rust, where every integer is a `u128`"
 )]
 pub trait Unsigned: Copy + seal::Unsigned {}
