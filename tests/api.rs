@@ -196,3 +196,26 @@ fn rules_on_sized_and_unsized() {
   assert_eq!(mutant::crc32(b"123456789"), 0xcbf43926);
   assert_eq!(mutant::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
 }
+
+/// What `&&` and `||` do not need may be out of the value.
+#[derive(Data)]
+#[repr(C)]
+#[data(assert(self.0 != 7 || be(3, 2) == 0xcafe))]
+#[data(assert(self.0 == 7 && be(3, 2) == 0xcafe || 10 - self.0 >= 3))]
+struct Lazy(u8, [u8]);
+
+#[test]
+fn what_is_not_needed_is_not_read() {
+  let lazy = |bytes: &'static [u8]| try_transmute_ref::<[u8], Lazy>(bytes).is_ok();
+  // Not of kind 7: nothing is read at 3, where there is nothing.
+  assert!(lazy(&[1]));
+  assert!(lazy(&[1, 0, 0, 0xff, 0xff]));
+  // Of kind 7: it is.
+  assert!(lazy(&[7, 0, 0, 0xca, 0xfe]));
+  assert!(!lazy(&[7, 0, 0, 0xca, 0xff]));
+  assert!(!lazy(&[7, 0, 0, 0xca]));
+  assert!(!lazy(&[7]));
+  // `10 - 11` cannot be computed, and nothing else decides.
+  assert!(!lazy(&[11]));
+  assert!(!lazy(&[8]));
+}

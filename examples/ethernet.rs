@@ -21,10 +21,12 @@
 //! | the size of an IPv4 packet is in its header          | `size = total_length`                  |
 //! | IPv4 options, whose size is in the header too        | `regions(options = .., payload)`       |
 //! | the checksum of the IPv4 header                      | `assert(sum16(..) == 0xffff)`          |
+//! | the checksums of UDP and TCP, over the IP addresses  | `assert(.. sum16(12, 20) + ..)`        |
+//! | the bits of a MAC address (group, local)             | `get(multicast: bool = ..)`            |
 //! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains          |
 #![deny(unsafe_code)]
 
-use mutant::num::{u8c, u16be, u16bec};
+use mutant::num::{u8c, u16be, u16bec, u32be, u48be};
 use mutant::{Data, Error, Tag, as_bytes, transmute_ref, try_transmute_ref, unpack};
 
 // -------------------------------------------------------------------------------------------------
@@ -33,7 +35,12 @@ use mutant::{Data, Error, Tag, as_bytes, transmute_ref, try_transmute_ref, unpac
 /// A MAC address.
 #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Mac(pub [u8; 6]);
+#[data(get(
+  broadcast: bool = self.0 == 0xffff_ffff_ffff,
+  multicast: bool = self.0 & 0x0100_0000_0000 != 0,
+  local: bool = self.0 & 0x0200_0000_0000 != 0,
+))]
+pub struct Mac(pub u48be);
 
 /// An EtherType, when what it tells is not known: values up to 1500 are not one, but a length
 /// (see [`Frame8023`]).
@@ -126,6 +133,17 @@ pub struct Vlan<P: ?Sized + Tag<EtherType> = [u8]> {
   pub payload: P,
 }
 
+/// An IEEE 802.1ad service tag: the outer tag of "Q-in-Q".
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x88a8>))]
+#[data(get(id: u16 = tci & 0x0fff))]
+pub struct ServiceVlan<P: ?Sized + Tag<EtherType> = [u8]> {
+  pub tci: u16be,
+  pub ether_type: P::Tag,
+  pub payload: P,
+}
+
 // -------------------------------------------------------------------------------------------------
 // ARP
 
@@ -161,9 +179,20 @@ pub struct Arp {
 #[data(size = total_length)]
 #[data(assert(total_length >= (version_ihl & 0x0f) * 4))]
 #[data(assert(sum16(0, (version_ihl & 0x0f) * 4) == 0xffff))]
+// The checksum of UDP (protocol 17, where 0 is "none") and of TCP (protocol 6), unless the packet
+// is a fragment: over the addresses, the protocol and the size of what is carried, then over what
+// is carried.
+#[data(assert(
+  (protocol != 17 && protocol != 6)
+    || flags_fragment_offset & 0x3fff != 0
+    || (protocol == 17 && be((version_ihl & 0x0f) * 4 + 6, 2) == 0)
+    || (sum16(12, 20) + protocol + (total_length - (version_ihl & 0x0f) * 4)
+      + sum16((version_ihl & 0x0f) * 4, total_length)) % 0xffff == 0
+))]
 #[data(get(
   version: u8 = version_ihl >> 4,
   header_length: usize = (version_ihl & 0x0f) * 4,
+  dont_fragment: bool = flags_fragment_offset & 0x4000 != 0,
   more_fragments: bool = flags_fragment_offset & 0x2000 != 0,
   fragment_offset: u16 = flags_fragment_offset & 0x1fff,
 ))]
@@ -207,36 +236,66 @@ pub struct Udp {
   pub payload: [u8],
 }
 
+/// A TCP segment: the size of its header, options included, is in its header.
+#[derive(Data)]
+#[repr(C)]
+#[data(assert(offset_flags >> 12 >= 5))]
+#[data(get(
+  header_length: usize = (offset_flags >> 12) * 4,
+  syn: bool = offset_flags & 0x002 != 0,
+  ack: bool = offset_flags & 0x010 != 0,
+))]
+pub struct Tcp {
+  pub source_port: u16be,
+  pub destination_port: u16be,
+  pub sequence: u32be,
+  pub acknowledgment: u32be,
+  /// The size of the header in 32 bits words (4 bits), reserved (3 bits), flags (9 bits).
+  pub offset_flags: u16be,
+  pub window: u16be,
+  pub checksum: u16be,
+  pub urgent: u16be,
+  #[data(regions(options = (offset_flags >> 12) * 4 - 20, payload))]
+  pub data: [u8],
+}
+
 // -------------------------------------------------------------------------------------------------
 // Use
 
-const A: Mac = Mac([0x02, 0, 0, 0, 0, 0x0a]);
-const B: Mac = Mac([0x02, 0, 0, 0, 0, 0x0b]);
+const A: Mac = Mac(u48be::new(0x0200_0000_000a));
+const B: Mac = Mac(u48be::new(0x0200_0000_000b));
 
 /// An ARP request, as bytes.
 const ARP: [u8; 28] = [
   0, 1, 0x08, 0, 6, 4, 0, 1, 0x02, 0, 0, 0, 0, 0x0a, 10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0, 2,
 ];
 
+/// An IPv4 packet, as bytes: an option that has a length, two that do not, a UDP datagram.
+const UDP: [u8; 41] = [
+  0x47, 0x00, 0x00, 0x29, 0x00, 0x01, 0x40, 0x00, 0x40, 0x11, 0x18, 0xb0, 0x0a, 0x00, 0x00, 0x01,
+  0x0a, 0x00, 0x00, 0x02, 0x07, 0x06, 0x04, 0x0a, 0x00, 0x00, 0x01, 0x01, 0x30, 0x39, 0x00, 0x35,
+  0x00, 0x0d, 0x77, 0x91, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+];
+
+/// An IPv4 packet, as bytes: a TCP segment with an option.
+const TCP: [u8; 46] = [
+  0x45, 0x00, 0x00, 0x2e, 0x00, 0x02, 0x40, 0x00, 0x40, 0x06, 0x26, 0xc6, 0x0a, 0x00, 0x00, 0x01,
+  0x0a, 0x00, 0x00, 0x02, 0x30, 0x39, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+  0x60, 0x02, 0x10, 0x00, 0xdb, 0x2e, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x68, 0x69,
+];
+
 /// A frame from `A` to `B`, as bytes: an EtherType or a length, then a payload.
 fn frame(ether_type: u16, payload: &[u8]) -> Vec<u8> {
-  [&B.0[..], &A.0[..], &ether_type.to_be_bytes()[..], payload].concat()
-}
-
-/// An IPv4 packet, as bytes: an option that has a length, two that do not, a UDP datagram.
-fn ipv4() -> Vec<u8> {
-  let mut header = vec![0x47, 0, 0, 28 + 13, 0, 1, 0x20, 0x07, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2];
-  header.extend([7, 6, 4, 10, 0, 0, 1, 1]);
-  let checksum = !mutant::sum16(&header);
-  header[10..12].copy_from_slice(&checksum.to_be_bytes());
-  [&header[..], &[0x30, 0x39, 0, 53, 0, 8 + 5, 0, 0][..], b"hello"].concat()
+  [&B.0.to_bytes()[..], &A.0.to_bytes()[..], &ether_type.to_be_bytes()[..], payload].concat()
 }
 
 pub fn main() {
   // ---- A frame, of any payload, then of the payload that its EtherType tells.
-  let bytes = frame(0x0800, &ipv4());
+  let bytes = frame(0x0800, &UDP);
   let any: &Frame = try_transmute_ref(&bytes[..]).unwrap();
   assert_eq!((any.destination, any.source, any.ether_type.0.get()), (B, A, 0x0800));
+  assert_eq!((A.local(), A.multicast(), A.broadcast()), (true, false, false));
+  assert!(Mac(u48be::MAX).broadcast() && Mac(u48be::MAX).multicast());
   assert_eq!(any.payload.len(), 41);
 
   let ip: &Frame<Ipv4> = try_transmute_ref(&bytes[..]).unwrap();
@@ -244,7 +303,8 @@ pub fn main() {
   assert_eq!(ip.payload.protocol, 17);
   // Bit fields.
   assert_eq!((ip.payload.version(), ip.payload.header_length()), (4, 28));
-  assert_eq!((ip.payload.more_fragments(), ip.payload.fragment_offset()), (true, 7));
+  assert_eq!((ip.payload.dont_fragment(), ip.payload.more_fragments()), (true, false));
+  assert_eq!(ip.payload.fragment_offset(), 0);
   // The regions of the packet: their sizes come from the header.
   assert_eq!(ip.payload.options(), [7, 6, 4, 10, 0, 0, 1, 1]);
   let (udp, rest) = unpack::<Udp>(ip.payload.payload()).unwrap();
@@ -268,8 +328,30 @@ pub fn main() {
     assert!(try_transmute_ref::<_, Frame>(&bytes[..]).is_ok());
     assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&bytes[..]).err(), Some(Error::Validity));
   }
+  // The checksum of UDP covers the addresses of the packet and what the datagram carries.
+  for at in [14 + 12, 14 + 28 + 8] {
+    let mut bytes = bytes.clone();
+    bytes[at] ^= 1;
+    if at == 14 + 12 {
+      // An address changed: `0x0a00` is now `0x0b00`, so is the checksum of the header.
+      bytes[14 + 10] = 0x17;
+    }
+    assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&bytes[..]).err(), Some(Error::Validity));
+    // A UDP checksum of 0 is no checksum.
+    bytes[14 + 28 + 6..][..2].copy_from_slice(&[0, 0]);
+    assert!(try_transmute_ref::<_, Frame<Ipv4>>(&bytes[..]).is_ok());
+  }
+  // TCP: the same checksum, a header whose size is in the header, options.
+  let segment = frame(0x0800, &TCP);
+  let ip: &Frame<Ipv4> = try_transmute_ref(&segment[..]).unwrap();
+  let (tcp, _) = unpack::<Tcp>(ip.payload.payload()).unwrap();
+  assert_eq!((tcp.header_length(), tcp.syn(), tcp.ack()), (24, true, false));
+  assert_eq!((tcp.destination_port.get(), tcp.options(), tcp.payload()), (80, &[2, 4, 5, 0xb4][..], &b"hi"[..]));
+  let mut corrupted = segment.clone();
+  corrupted[14 + 45] ^= 1;
+  assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&corrupted[..]).err(), Some(Error::Validity));
   // Options that are longer than the packet.
-  let mut short = frame(0x0800, &ipv4()[..24]);
+  let mut short = frame(0x0800, &UDP[..24]);
   short[17] = 24;
   assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&short[..]).err(), Some(Error::Validity));
   // Too short for the header.
@@ -305,18 +387,23 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Packet>(&medium[..]).err(), Some(Error::Validity));
 
   // ---- 802.1Q: a tag, then a frame; twice for "Q-in-Q".
-  let tagged = frame(0x8100, &[&[0xb0, 0x2a, 0x08, 0x00][..], &ipv4()].concat());
+  let tagged = frame(0x8100, &[&[0xb0, 0x2a, 0x08, 0x00][..], &UDP].concat());
   let vlan: &Frame<Vlan<Ipv4>> = try_transmute_ref(&tagged[..]).unwrap();
   let tag = &vlan.payload;
   assert_eq!((tag.priority(), tag.drop_eligible(), tag.id()), (5, true, 42));
   assert_eq!(tag.payload.time_to_live, 64);
   assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&tagged[..]).err(), Some(Error::Validity));
-  let reserved = frame(0x8100, &[&[0x2f, 0xff, 0x08, 0x00][..], &ipv4()].concat());
+  let reserved = frame(0x8100, &[&[0x2f, 0xff, 0x08, 0x00][..], &UDP].concat());
   assert_eq!(try_transmute_ref::<_, Frame<Vlan<Ipv4>>>(&reserved[..]).err(), Some(Error::Validity));
   let double = frame(0x8100, &[&[0, 1, 0x81, 0x00, 0, 2, 0x08, 0x06][..], &ARP[..]].concat());
   let qinq: &Frame<Vlan<Vlan<Arp>>> = try_transmute_ref(&double[..]).unwrap();
   assert_eq!((qinq.payload.id(), qinq.payload.payload.id()), (1, 2));
   assert!(try_transmute_ref::<_, Frame<Vlan<Vlan<Ipv4>>>>(&double[..]).is_err());
+  // With a service tag (802.1ad) as the outer one.
+  let service = frame(0x88a8, &[&[0, 1, 0x81, 0x00, 0, 2, 0x08, 0x06][..], &ARP[..]].concat());
+  let qinq: &Frame<ServiceVlan<Vlan<Arp>>> = try_transmute_ref(&service[..]).unwrap();
+  assert_eq!((qinq.payload.id(), qinq.payload.payload.id()), (1, 2));
+  assert!(try_transmute_ref::<_, Frame<Vlan<Vlan<Arp>>>>(&service[..]).is_err());
 
   // ---- 802.3: a length instead of an EtherType, and padding after the payload.
   let llc = frame(3, &[0xaa, 0xaa, 0x03, 0, 0, 0, 0]);
@@ -334,7 +421,7 @@ pub fn main() {
 
   // ---- ARP: a payload of a fixed size, made in safe Rust.
   let request = Frame {
-    destination: Mac([0xff; 6]),
+    destination: Mac(u48be::MAX),
     source: A,
     ether_type: Default::default(),
     payload: Arp {
@@ -344,7 +431,7 @@ pub fn main() {
       protocol_length: Default::default(),
       operation: Operation::Request,
       sender: (A, [10, 0, 0, 1]),
-      target: (Mac([0; 6]), [10, 0, 0, 2]),
+      target: (Mac(u48be::new(0)), [10, 0, 0, 2]),
     },
   };
   // Nothing to check to see it as bytes, or as a frame of any payload: this is all proven.
@@ -365,7 +452,7 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Arp>>(&reply).err(), Some(Error::Validity));
 
   // ---- A packet made in safe Rust, of a payload whose size is known...
-  let mut packet = Ipv4 {
+  let packet = Ipv4 {
     version_ihl: 0x45,
     type_of_service: 0,
     total_length: u16be::new(20 + 4),
@@ -373,12 +460,11 @@ pub fn main() {
     flags_fragment_offset: u16be::new(0),
     time_to_live: 64,
     protocol: 253,
-    checksum: u16be::new(0),
+    checksum: u16be::new(0x65e6),
     source: [10, 0, 0, 1],
     destination: [10, 0, 0, 2],
     data: *b"ping",
   };
-  packet.checksum = u16be::new(!mutant::sum16(&as_bytes(&packet)[..20]));
   // ... is a packet of any payload.
   let packet: &Ipv4 = &packet;
   assert_eq!((packet.options(), packet.payload()), (&[][..], &b"ping"[..]));

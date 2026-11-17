@@ -965,8 +965,10 @@ impl Dfa {
 
 /// An operation of a postfix expression over the scalar fields of a struct, see [`Rule`].
 ///
-/// Expressions are evaluated on `u128`; an overflow, an underflow or a division by zero makes the
-/// rule that holds the expression fail.
+/// Expressions are evaluated on `u128`. What cannot be computed (an overflow, an underflow, a
+/// division by zero, a read out of the value) makes the rule that holds the expression fail,
+/// unless it is the side of a `&&` or of a `||` that the other side decides without:
+/// `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
   /// Push a constant.
@@ -1189,8 +1191,8 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
   let (mut s0, mut s1, mut s2, mut s3) = (0u128, 0u128, 0u128, 0u128);
   let (mut s4, mut s5, mut s6, mut s7) = (0u128, 0u128, 0u128, 0u128);
-  // `valid`: no overflow so far.
-  let (mut depth, mut valid) = (0usize, true);
+  // A bit for each slot whose value could not be computed (an overflow, a read out of bounds).
+  let (mut depth, mut failed) = (0usize, 0u8);
   macro_rules! get {
     ($slot:expr) => {
       match $slot {
@@ -1205,68 +1207,101 @@ pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Opt
       }
     };
   }
+  // Set a slot to a value, or mark it as failed.
   macro_rules! set {
     ($slot:expr, $value:expr) => {{
-      let value: u128 = $value;
-      match $slot {
-        0 => s0 = value,
-        1 => s1 = value,
-        2 => s2 = value,
-        3 => s3 = value,
-        4 => s4 = value,
-        5 => s5 = value,
-        6 => s6 = value,
-        _ => s7 = value,
+      let (slot, value): (usize, Option<u128>) = ($slot, $value);
+      match value {
+        Some(value) => {
+          failed &= !(1 << slot);
+          match slot {
+            0 => s0 = value,
+            1 => s1 = value,
+            2 => s2 = value,
+            3 => s3 = value,
+            4 => s4 = value,
+            5 => s5 = value,
+            6 => s6 = value,
+            _ => s7 = value,
+          }
+        }
+        None => failed |= 1 << slot,
       }
     }};
+  }
+  macro_rules! has_failed {
+    ($slot:expr) => {
+      failed & (1 << $slot) != 0
+    };
   }
   macro_rules! step {
     ($op:expr) => {
       match $op {
         Op::Lit(value) => {
-          set!(depth, value);
+          set!(depth, Some(value));
           depth += 1;
         }
         Op::Load { offset, size, big } => {
           let endian = if big { Endian::Big } else { Endian::Little };
           // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
-          set!(depth, unsafe { load(base.add(offset), size as usize, endian) });
+          set!(depth, Some(unsafe { load(base.add(offset), size as usize, endian) }));
           depth += 1;
         }
         Op::Size => {
-          set!(depth, size as u128);
+          set!(depth, Some(size as u128));
           depth += 1;
         }
-        Op::Not => set!(depth - 1, (get!(depth - 1) == 0) as u128),
+        Op::Not => {
+          if !has_failed!(depth - 1) {
+            set!(depth - 1, Some((get!(depth - 1) == 0) as u128));
+          }
+        }
         Op::At { size: width, big } => {
           let (offset, endian) = (get!(depth - 1), if big { Endian::Big } else { Endian::Little });
-          if offset <= size as u128 && size - offset as usize >= width as usize {
+          let inside = offset <= size as u128 && size - offset as usize >= width as usize;
+          if inside && !has_failed!(depth - 1) {
             // SAFETY: in the bounds of the value.
-            set!(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
+            let value = unsafe { load(base.add(offset as usize), width as usize, endian) };
+            set!(depth - 1, Some(value));
           } else {
-            valid = false;
+            set!(depth - 1, None);
           }
         }
         op @ (Op::Crc32 | Op::Sum16) => {
           let (start, end) = (get!(depth - 2), get!(depth - 1));
+          let inside = start <= end && end <= size as u128;
+          let computed = inside && !has_failed!(depth - 2) && !has_failed!(depth - 1);
           depth -= 1;
-          if start <= end && end <= size as u128 {
+          if computed {
             // SAFETY: in the bounds of the value.
             let bytes = unsafe {
               core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
             };
-            set!(depth - 1, if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 });
+            let value = if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
+            set!(depth - 1, Some(value));
           } else {
-            valid = false;
+            set!(depth - 1, None);
+          }
+        }
+        // What decides of `&&` and `||` is enough: the other side may have failed.
+        op @ (Op::Both | Op::Either) => {
+          let (a, b) = (get!(depth - 2), get!(depth - 1));
+          let (failed_a, failed_b) = (has_failed!(depth - 2), has_failed!(depth - 1));
+          let decides = matches!(op, Op::Either) as u128;
+          depth -= 1;
+          if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides) {
+            set!(depth - 1, Some(decides));
+          } else if failed_a || failed_b {
+            set!(depth - 1, None);
+          } else {
+            set!(depth - 1, Some(1 - decides));
           }
         }
         op => {
+          let computed = !has_failed!(depth - 2) && !has_failed!(depth - 1);
           let value = binary(op, get!(depth - 2), get!(depth - 1));
           depth -= 1;
-          match value {
-            Some(value) => set!(depth - 1, value),
-            None => valid = false,
-          }
+          set!(depth - 1, if computed { value } else { None });
         }
       }
     };
@@ -1285,7 +1320,7 @@ pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Opt
     i += 1;
   }
   let _ = (s1, s2, s3, s4, s5, s6, s7, depth);
-  if valid { Some(s0) } else { None }
+  if failed & 1 == 0 { Some(s0) } else { None }
 }
 
 #[inline(always)]
@@ -1307,10 +1342,8 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     Op::Le => Some((a <= b) as u128),
     Op::Gt => Some((a > b) as u128),
     Op::Ge => Some((a >= b) as u128),
-    Op::Both => Some((a != 0 && b != 0) as u128),
-    Op::Either => Some((a != 0 || b != 0) as u128),
     Op::Lit(_) | Op::Load { .. } | Op::Size | Op::Not => None,
-    Op::At { .. } | Op::Crc32 | Op::Sum16 => None,
+    Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Both | Op::Either => None,
   }
 }
 

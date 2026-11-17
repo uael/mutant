@@ -109,7 +109,13 @@ fields to a constant postfix program (`layout::Op`):
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
 (the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
-last bytes are the CRC of what is before" is an assertion.
+last bytes are the CRC of what is before" is an assertion. A checksum that covers several layers
+(the one of UDP and TCP covers the addresses of the IP header) is an assertion of the struct that
+holds them all: the IPv4 packet.
+
+What cannot be computed (an overflow, a read out of the value) makes a rule fail, unless it is
+the side of a `&&` or `||` that the other side decides without: `protocol != 17 || be(..) == 0`
+holds for a packet that is not UDP, however short.
 
 Two more options are not rules, but save the code that would otherwise be written by hand:
 
