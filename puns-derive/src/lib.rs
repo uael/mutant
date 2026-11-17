@@ -142,7 +142,49 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     Data::Enum(data) => derive_enum(&input, data),
     Data::Union(_) => Err(Error::new(Span::call_site(), "`Pun` cannot be derived for unions")),
   };
-  expanded.unwrap_or_else(Error::into_compile_error).into()
+  expanded
+    .unwrap_or_else(|error| {
+      let mut tokens = error.into_compile_error();
+      tokens.extend(fallback(&input));
+      tokens
+    })
+    .into()
+}
+
+/// What stands for the implementations of the derive when it fails, so that its error is the only
+/// one, rather than one at each use of the type. Never used: the crate does not compile.
+fn fallback(input: &DeriveInput) -> TokenStream {
+  let Ok(options) = parse_options(&input.attrs) else { return TokenStream::new() };
+  let views = matches!(&input.data, Data::Enum(data) if data.variants.iter().all(|variant| {
+    matches!(&variant.fields, Fields::Unnamed(fields) if fields.unnamed.len() == 1
+      && matches!(fields.unnamed[0].ty, Type::Reference(_)))
+  }));
+  if views || matches!(input.data, Data::Union(_)) {
+    return TokenStream::new();
+  }
+  let root = options.root.unwrap_or_else(|| quote!(::puns));
+  let ident = &input.ident;
+  let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+  let tags = options.tags.iter().map(|TagOption { key, tag }| {
+    quote! {
+      impl #impl_generics #root::Tag<#key> for #ident #ty_generics #where_clause {
+        type Tag = #tag;
+      }
+    }
+  });
+  quote! {
+    // SAFETY: never used, as the crate does not compile.
+    unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
+      type Elem = ();
+      type Fields = ();
+      type Variants = ();
+      type Walks = ();
+      const PROBE: *const Self = ::core::panic!("`#[derive(Pun)]` failed");
+      const LAYOUT: #root::layout::Layout = ::core::panic!("`#[derive(Pun)]` failed");
+    }
+
+    #(#tags)*
+  }
 }
 
 /// The first identifier of `tokens` that starts with `__Pun`, if any.
