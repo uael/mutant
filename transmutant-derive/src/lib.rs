@@ -74,13 +74,71 @@ use syn::{
 /// it with what remains; `parse(bytes)` returns the first variant that `bytes` are, whole.
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-  let input = parse_macro_input!(input as DeriveInput);
+  let tokens = TokenStream::from(input.clone());
+  let mut input = parse_macro_input!(input as DeriveInput);
+  // The generated items are named `__Data..`: a type of the input of that name would be one of
+  // them where the generated code names it, not what the input means.
+  if let Some(ident) = find_reserved(tokens) {
+    return Error::new(
+      ident.span(),
+      "names that start with `__Data` are reserved by `#[derive(Data)]`",
+    )
+    .into_compile_error()
+    .into();
+  }
+  // `Self` in the type of a field is the type, wherever the generated code names that type.
+  let this = {
+    let (ident, (_, ty_generics, _)) = (&input.ident, input.generics.split_for_impl());
+    quote!(#ident #ty_generics)
+  };
+  let types: Vec<&mut Type> = match &mut input.data {
+    Data::Struct(data) => data.fields.iter_mut().map(|field| &mut field.ty).collect(),
+    Data::Enum(data) => data
+      .variants
+      .iter_mut()
+      .flat_map(|variant| variant.fields.iter_mut())
+      .map(|field| &mut field.ty)
+      .collect(),
+    Data::Union(_) => vec![],
+  };
+  for ty in types {
+    match syn::parse2(replace_self(ty.to_token_stream(), &this)) {
+      Ok(replaced) => *ty = replaced,
+      Err(error) => return error.into_compile_error().into(),
+    }
+  }
   let expanded = match &input.data {
     Data::Struct(data) => derive_struct(&input, data),
     Data::Enum(data) => derive_enum(&input, data),
     Data::Union(_) => Err(Error::new(Span::call_site(), "`Data` cannot be derived for unions")),
   };
   expanded.unwrap_or_else(Error::into_compile_error).into()
+}
+
+/// The first identifier of `tokens` that starts with `__Data`, if any.
+fn find_reserved(tokens: TokenStream) -> Option<Ident> {
+  tokens.into_iter().find_map(|token| match token {
+    proc_macro2::TokenTree::Ident(ident) if ident.to_string().starts_with("__Data") => Some(ident),
+    proc_macro2::TokenTree::Group(group) => find_reserved(group.stream()),
+    _ => None,
+  })
+}
+
+/// `tokens`, with `Self` replaced by `this`.
+fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
+  tokens
+    .into_iter()
+    .flat_map(|token| match token {
+      proc_macro2::TokenTree::Ident(ident) if ident == "Self" => this.clone(),
+      proc_macro2::TokenTree::Group(group) => {
+        let mut replaced =
+          proc_macro2::Group::new(group.delimiter(), replace_self(group.stream(), this));
+        replaced.set_span(group.span());
+        proc_macro2::TokenTree::Group(replaced).into()
+      }
+      token => token.into(),
+    })
+    .collect()
 }
 
 // -------------------------------------------------------------------------------------------------

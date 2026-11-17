@@ -159,3 +159,26 @@ fn the_crate_path_does_not_choose_the_functions() {
   let bytes = [0u16, u16::from_ne_bytes([1, 7])];
   assert!(transmutant::try_transmute_ref::<[u16; 2], Late>(&bytes).unwrap().on);
 }
+
+/// `Self` in the type of a field is the type that derives `Data`, wherever the generated code
+/// writes the type of the field.
+#[test]
+fn self_in_a_field_is_the_type() {
+  use core::marker::PhantomData;
+  #[derive(Data, Debug)]
+  #[repr(C)]
+  struct Node {
+    on: bool,
+    marker: PhantomData<Self>,
+  }
+  #[derive(Data, Debug, Clone, Copy)]
+  #[repr(u8)]
+  enum Choice {
+    A(bool, PhantomData<Self>),
+  }
+  assert!(transmutant::try_transmute_ref::<[u8; 1], Node>(&[1]).unwrap().on);
+  assert_eq!(transmutant::try_transmute_ref::<[u8; 1], Node>(&[2]).err(), Some(Error::Validity));
+  assert!(matches!(transmutant::try_transmute::<[u8; 2], Choice>([0, 1]), Ok(Choice::A(true, _))));
+  assert_eq!(transmutant::try_transmute::<[u8; 2], Choice>([0, 2]).err(), Some(Error::Validity));
+  assert_eq!(transmutant::transmute::<Choice, [u8; 2]>(Choice::A(true, PhantomData)), [0, 1]);
+}
