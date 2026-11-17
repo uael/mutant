@@ -1,0 +1,86 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Development Commands
+
+```sh
+cargo build                          # Build all crates
+cargo build --all-targets            # Also tests and examples: rejections are only reported by a build
+cargo test --all                     # All tests: unit, integration, compile-fail, doc tests (README included)
+cargo test --test api                # Run only one integration test file (also: enums, ethernet, str)
+cargo test --test api TESTNAME       # Run a single test
+cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
+cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`
+cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, tree borrows
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, stacked borrows
+cargo build -p transmutant --target thumbv7em-none-eabihf  # A target without std
+cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
+cargo xtask fmt --check              # Check formatting
+cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings) + format check
+cargo xtask lint --fix               # Auto-fix clippy + formatting
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
+cargo deny check                     # License/advisory/ban auditing
+```
+
+The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rust-version` is
+1.100). CI also builds for `thumbv7em-none-eabihf`, a target without `std`. A pinned nightly
+(`nightly-2026-11-17`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by
+Miri, under which the trybuild test is ignored. Generate trybuild `.stderr` files with the pinned
+stable.
+
+Most rejections are panics of `const { .. }` blocks in generic functions, evaluated at
+monomorphization: `cargo check` does not report them, `cargo build` does. The trybuild test has a
+passing case (`tests/compile-pass/`) so that trybuild builds instead of checking.
+
+Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
+functions are in `transmutant/DESIGN.md`; compare before and after a change of the library.
+
+## Architecture
+
+**transmutant** is safe transmutation checked at compile time: the layout and the valid values of
+a type are a `const` value (`Data::LAYOUT`), compared by ordinary `const fn` code, and only what
+could not be proven is checked at run time. **`transmutant/DESIGN.md` is the design** (goal,
+what stable Rust gives, architecture, soundness, what is not done yet): read it before changing
+the library, and keep it, the crate docs and `README.md` in step with the code.
+
+- **`transmutant/`** — the library (`#![no_std]`)
+- **`transmutant-derive/`** — `#[derive(Data)]`, re-exported as `transmutant::Data`
+- **`xtask/`** — dev automation (fmt, lint)
+
+## Releasing
+
+Releases are automated with [release-plz](https://release-plz.dev/). On every push to `main`, the GitHub Action opens (or updates) a release PR that bumps versions and updates `CHANGELOG.md`. Merging that PR publishes to crates.io and creates a GitHub release with a `v<version>` tag.
+
+- Config: `release-plz.toml`
+- Workflow: `.github/workflows/release-plz.yml`
+- Only `transmutant` and `transmutant-derive` are published; `xtask` is excluded
+- `transmutant` owns the changelog and git tags (`v{{ version }}`); `transmutant-derive` has no changelog or tags of its own
+- Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
+- `release_always = false`: nothing is published by an ordinary push, only by merging a release PR (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the first release PR
+
+### Commit Message Format
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) — release-plz uses them to determine version bumps and generate changelog entries.
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+```
+
+| Type | Bump | Example |
+|------|------|---------|
+| `fix:` | patch | `fix: reject packed structs whose tail is aligned` |
+| `feat:` | minor | `feat: patterns other than str from the derive` |
+| `feat!:` / `BREAKING CHANGE:` | major | `feat!: rename unpack to parse` |
+| `docs:`, `ci:`, `chore:`, `refactor:`, `test:`, `style:` | none | `ci: pin the Miri nightly` |
+
+## Code Style
+
+- 2-space indentation, max 100 columns
+- Imports: reordered, grouped by `StdExternalCrate`, granularity `Crate`
+- Clippy: `pedantic` + `nursery` at warn; `dbg_macro`, `allow_attributes`, `missing_safety_doc`, `undocumented_unsafe_blocks` denied; `#[expect(lint, reason = "..")]` where a lint is wrong for the code
+- Every `unsafe` block has a `// SAFETY:` comment, every `unsafe fn` and trait a `# Safety` section
+- Dual-licensed: Apache-2.0 OR MIT

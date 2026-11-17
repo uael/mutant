@@ -142,6 +142,11 @@ mod ptr;
 mod tests;
 mod validate;
 
+/// The example of `README.md`, run with the doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct ReadmeDoctests;
+
 use core::{marker::PhantomData, mem::ManuallyDrop};
 
 use analysis::{Analysis, Exact, Marks, analyze, mutable};
