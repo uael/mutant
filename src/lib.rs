@@ -79,6 +79,7 @@ mod ptr;
 mod tests;
 mod validate;
 
+pub use layout::{crc32, sum16};
 pub use mutant_derive::Data;
 
 use analysis::{Analysis, Exact, Marks, analyze, mutable};
@@ -117,6 +118,51 @@ pub unsafe trait Data {
   const PROBE: *const Self;
   #[doc(hidden)]
   const LAYOUT: Layout;
+}
+
+/// A type that goes with a tag, in what carries it: a payload and the value of the field that
+/// tells its type, a variant and its discriminant...
+///
+/// `K` tells of which tag: a type can be carried by several things. It is, by convention, the type
+/// of the tag when nothing is known of what is carried: bytes go with any `K`.
+///
+/// This is implemented by `#[data(tag(K = T))]`, see [`macro@Data`]:
+///
+/// ```
+/// use mutant::num::{u8c, u16be};
+/// use mutant::{Data, Tag};
+///
+/// /// The kind of a message, when its payload is not known.
+/// #[derive(Data, Copy, Clone)]
+/// #[repr(transparent)]
+/// struct Kind(u8);
+///
+/// #[derive(Data)]
+/// #[repr(C)]
+/// struct Message<P: ?Sized + Tag<Kind> = [u8]> {
+///   kind: P::Tag,
+///   payload: P,
+/// }
+///
+/// #[derive(Data)]
+/// #[repr(C)]
+/// #[data(tag(Kind = u8c<7>))]
+/// struct Ping {
+///   sequence: u16be,
+/// }
+///
+/// // A message of any kind, and a message that must be a ping.
+/// assert_eq!(mutant::try_transmute_ref::<_, Message>(&[9u8, 0, 1]).unwrap().kind.0, 9);
+/// assert!(mutant::try_transmute_ref::<_, Message<Ping>>(&[9u8, 0, 1]).is_err());
+/// assert!(mutant::try_transmute_ref::<_, Message<Ping>>(&[7u8, 0, 1]).is_ok());
+/// ```
+pub trait Tag<K: ?Sized>: Data {
+  type Tag: Data + Copy;
+}
+
+/// Bytes are carried with any tag.
+impl<K: Data + Copy> Tag<K> for [u8] {
+  type Tag = K;
 }
 
 /// A field of a struct, and the ones after it: a list at the type level, for validation.
@@ -701,6 +747,19 @@ pub const fn zeroed<T: Data + Copy>() -> T {
   unsafe { core::mem::zeroed() }
 }
 
+/// The value of an integer field, as `#[data(get(..))]` expressions see it.
+#[doc(hidden)]
+#[inline(always)]
+pub const fn int<T: Scalar>(value: &T) -> u128 {
+  let spec = const {
+    let spec = T::SPEC;
+    assert!(spec.is_integer(), "not an integer field");
+    spec
+  };
+  // SAFETY: a scalar that is not allowed to be uninitialized is initialized.
+  unsafe { spec.load((value as *const T).cast()) }
+}
+
 /// The bytes of a value that has no padding.
 #[inline(always)]
 pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
@@ -792,11 +851,10 @@ pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error
 pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
   // The bytes of the value can be read: it has no padding.
   const { Plan::<S, [u8]>::BY_REF };
-  let (head, stride, rules): (usize, usize, &[Rule]) =
-    const { (S::LAYOUT.head(), S::LAYOUT.stride(), S::LAYOUT.rules()) };
+  let (head, rules): (usize, &[Rule]) =
+    const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
   let base = (value as *const S).cast::<u8>();
-  // The value exists: its size does not overflow.
-  let tail = ptr::metadata(value) * stride;
+  let (_, tail, size) = validate::tail_of::<S>(value);
   // Where the region starts in the tail, and how many regions are before it.
   let (mut start, mut count) = (0, 0);
   macro_rules! rule {
@@ -805,7 +863,7 @@ pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
         let rest = tail - start;
         let size = match ops {
           // SAFETY: `base` is a struct of this layout.
-          Some(ops) => match unsafe { eval(ops, base, head + tail) } {
+          Some(ops) => match unsafe { eval(ops, base, size) } {
             Some(size) if size <= rest as u128 => size as usize,
             _ => rest,
           },

@@ -1,29 +1,30 @@
 //! Ethernet, in safe Rust, with nothing but `#[derive(Data)]` and its options.
 //!
-//! Everything below is declarative: there is no `unsafe`, no parsing code and no size
-//! computation. Frames are read in place, from bytes, by `unpack` and `try_transmute_ref`.
+//! The first half of this file is all there is to Ethernet here: type declarations. There is no
+//! `unsafe`, no `impl`, no parsing code and no size computation. The second half uses them:
+//! frames are read in place, from bytes, by `unpack` and `try_transmute_ref`.
 //!
-//! What is specific to Ethernet, and where it is told:
+//! What is specific to Ethernet, and what tells it:
 //!
-//! | Specificity                                          | Told by                              |
-//! |------------------------------------------------------|--------------------------------------|
-//! | big-endian fields                                    | `u16be`                              |
-//! | the EtherType tells the type of the payload          | `u16bec<0x0800>`, by the payload     |
-//! | an EtherType is at least `0x0600`                    | `valid(0x0600..)`                    |
-//! | below `1500`, it is the length of the payload        | `valid(..=1500)`, `regions(..)`      |
-//! | frames are 60 to 1514 bytes, padded if needed        | `assert(size_of_val(self) >= 60 ..)` |
-//! | the frame check sequence is the 4 last bytes         | `regions(payload = .. - 18, fcs)`    |
-//! | LLC and SNAP headers                                 | `u8c<0xaa>`                          |
-//! | 802.1Q tags, nested or not                           | a payload that has a payload         |
-//! | bit fields (VLAN identifier, IPv4 header length)     | `assert(..)`, `valid(0x45..=0x4f)`   |
-//! | the size of an IPv4 packet is in its header          | `size = total_length`                |
-//! | IPv4 options, whose size is in the header too        | `regions(options = .., payload)`     |
-//! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains        |
-#![forbid(unsafe_op_in_unsafe_fn)]
+//! | Specificity                                          | Told by                                |
+//! |------------------------------------------------------|----------------------------------------|
+//! | big-endian fields                                    | `u16be`                                |
+//! | the EtherType tells the type of the payload          | `tag(EtherType = u16bec<0x0800>)`      |
+//! | an EtherType is at least `0x0600`                    | `valid(0x0600..)`                      |
+//! | below `1500`, it is the length of the payload        | `valid(..=1500)`, `regions(..)`        |
+//! | frames are 60 to 1514 bytes, padded if needed        | `assert(size_of_val(self) >= 60 ..)`   |
+//! | the frame check sequence: 4 last bytes, a CRC-32     | `regions(..)`, `assert(crc32(..) ..)`  |
+//! | LLC and SNAP headers                                 | `u8c<0xaa>`                            |
+//! | 802.1Q tags, nested or not                           | a payload that has a payload           |
+//! | bit fields (VLAN identifier, IPv4 header length)     | `get(..)`, `assert(..)`, `valid(..)`   |
+//! | the size of an IPv4 packet is in its header          | `size = total_length`                  |
+//! | IPv4 options, whose size is in the header too        | `regions(options = .., payload)`       |
+//! | the checksum of the IPv4 header                      | `assert(sum16(..) == 0xffff)`          |
+//! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains          |
 #![deny(unsafe_code)]
 
 use mutant::num::{u8c, u16be, u16bec};
-use mutant::{Data, Error, as_bytes, transmute_ref, try_transmute_ref, unpack};
+use mutant::{Data, Error, Tag, as_bytes, transmute_ref, try_transmute_ref, unpack};
 
 // -------------------------------------------------------------------------------------------------
 // Ethernet
@@ -33,29 +34,23 @@ use mutant::{Data, Error, as_bytes, transmute_ref, try_transmute_ref, unpack};
 #[repr(transparent)]
 pub struct Mac(pub [u8; 6]);
 
-/// What a frame carries, which tells the EtherType it comes with.
-pub trait Payload: Data {
-  type EtherType: Data + Copy;
-}
-
-/// An Ethernet II frame, without preamble nor frame check sequence.
-#[derive(Data)]
-#[repr(C)]
-pub struct Frame<P: ?Sized + Payload = [u8]> {
-  pub destination: Mac,
-  pub source: Mac,
-  pub ether_type: P::EtherType,
-  pub payload: P,
-}
-
-/// Any EtherType: values up to 1500 are not one, but a length (see [`Frame8023`]).
+/// An EtherType, when what it tells is not known: values up to 1500 are not one, but a length
+/// (see [`Frame8023`]).
+///
+/// A payload tells the EtherType it comes with by `#[data(tag(EtherType = ..))]`.
 #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct EtherType(#[data(valid(0x0600..))] pub u16be);
 
-/// Bytes are a payload of any EtherType.
-impl Payload for [u8] {
-  type EtherType = EtherType;
+/// An Ethernet II frame, without preamble nor frame check sequence. Its payload is bytes, of any
+/// EtherType, unless told: a `Frame<Ipv4>` is a frame whose EtherType is the one of IPv4.
+#[derive(Data)]
+#[repr(C)]
+pub struct Frame<P: ?Sized + Tag<EtherType> = [u8]> {
+  pub destination: Mac,
+  pub source: Mac,
+  pub ether_type: P::Tag,
+  pub payload: P,
 }
 
 /// A frame as it is on the wire: 60 to 1514 bytes, padded if needed.
@@ -69,30 +64,18 @@ pub struct WireFrame {
   pub payload: [u8],
 }
 
-/// A frame with its frame check sequence: its 4 last bytes, whatever the size of the payload.
-///
-/// (That the sequence is the CRC of the frame is a computation, not something a layout tells.)
+/// A frame with its frame check sequence: its 4 last bytes, which are the CRC-32 of what is
+/// before them, least significant byte first.
 #[derive(Data)]
 #[repr(C)]
 #[data(assert(size_of_val(self) >= 64 && size_of_val(self) <= 1518))]
+#[data(assert(crc32(0, size_of_val(self) - 4) == le(size_of_val(self) - 4, 4)))]
 pub struct CheckedFrame {
   pub destination: Mac,
   pub source: Mac,
   pub ether_type: EtherType,
   #[data(regions(payload = size_of_val(self) - 18, fcs))]
   pub data: [u8],
-}
-
-/// LLC and SNAP headers: an EtherType in an 802.3 frame.
-#[derive(Data)]
-#[repr(C)]
-pub struct Snap<P: ?Sized + Payload = [u8]> {
-  pub dsap: u8c<0xaa>,
-  pub ssap: u8c<0xaa>,
-  pub control: u8c<0x03>,
-  pub organization: [u8; 3],
-  pub ether_type: P::EtherType,
-  pub payload: P,
 }
 
 /// An IEEE 802.3 frame: no EtherType, but the length of the payload, which is then padded.
@@ -107,25 +90,29 @@ pub struct Frame8023 {
   pub data: [u8],
 }
 
-/// An IEEE 802.1Q tag, and what follows it: a payload that has a payload.
+/// LLC and SNAP headers: an EtherType in an 802.3 frame.
 #[derive(Data)]
 #[repr(C)]
-#[data(assert((tci & 0x0fff) != 0x0fff))]
-pub struct Vlan<P: ?Sized + Payload = [u8]> {
-  /// Priority (3 bits), drop eligible (1 bit), VLAN identifier (12 bits, `0xfff` is reserved).
-  pub tci: u16be,
-  pub ether_type: P::EtherType,
+pub struct Snap<P: ?Sized + Tag<EtherType> = [u8]> {
+  pub dsap: u8c<0xaa>,
+  pub ssap: u8c<0xaa>,
+  pub control: u8c<0x03>,
+  pub organization: [u8; 3],
+  pub ether_type: P::Tag,
   pub payload: P,
 }
 
-impl<P: ?Sized + Payload> Payload for Vlan<P> {
-  type EtherType = u16bec<0x8100>;
-}
-
-impl<P: ?Sized + Payload> Vlan<P> {
-  pub fn id(&self) -> u16 {
-    self.tci.get() & 0x0fff
-  }
+/// An IEEE 802.1Q tag, and what follows it: a payload that has a payload.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x8100>))]
+#[data(get(priority: u8 = tci >> 13, drop_eligible: bool = tci & 0x1000 != 0, id: u16 = tci & 0x0fff))]
+#[data(assert((tci & 0x0fff) != 0x0fff))]
+pub struct Vlan<P: ?Sized + Tag<EtherType> = [u8]> {
+  /// Priority (3 bits), drop eligible (1 bit), VLAN identifier (12 bits, `0xfff` is reserved).
+  pub tci: u16be,
+  pub ether_type: P::Tag,
+  pub payload: P,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -142,6 +129,7 @@ pub enum Operation {
 /// ARP, for IPv4 over Ethernet.
 #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(C, packed)]
+#[data(tag(EtherType = u16bec<0x0806>))]
 pub struct Arp {
   pub hardware_type: u16bec<1>,
   pub protocol_type: u16bec<0x0800>,
@@ -152,18 +140,22 @@ pub struct Arp {
   pub target: (Mac, [u8; 4]),
 }
 
-impl Payload for Arp {
-  type EtherType = u16bec<0x0806>;
-}
-
 // -------------------------------------------------------------------------------------------------
 // IPv4
 
 /// An IPv4 packet: its size is in its header, and so is the size of its options.
 #[derive(Data)]
 #[repr(C)]
+#[data(tag(EtherType = u16bec<0x0800>))]
 #[data(size = total_length)]
 #[data(assert(total_length >= (version_ihl & 0x0f) * 4))]
+#[data(assert(sum16(0, (version_ihl & 0x0f) * 4) == 0xffff))]
+#[data(get(
+  version: u8 = version_ihl >> 4,
+  header_length: usize = (version_ihl & 0x0f) * 4,
+  more_fragments: bool = flags_fragment_offset & 0x2000 != 0,
+  fragment_offset: u16 = flags_fragment_offset & 0x1fff,
+))]
 pub struct Ipv4<P: ?Sized + Data = [u8]> {
   /// Version (4 bits, 4), then the length of the header in 32 bits words (4 bits, at least 5).
   #[data(valid(0x45..=0x4f))]
@@ -179,10 +171,6 @@ pub struct Ipv4<P: ?Sized + Data = [u8]> {
   pub destination: [u8; 4],
   #[data(regions(options = (version_ihl & 0x0f) * 4 - 20, payload))]
   pub data: P,
-}
-
-impl<P: ?Sized + Data> Payload for Ipv4<P> {
-  type EtherType = u16bec<0x0800>;
 }
 
 /// An IPv4 option that has a length (all but "end of options" and "no operation").
@@ -209,31 +197,28 @@ pub struct Udp {
 }
 
 // -------------------------------------------------------------------------------------------------
+// Use
+
+const A: Mac = Mac([0x02, 0, 0, 0, 0, 0x0a]);
+const B: Mac = Mac([0x02, 0, 0, 0, 0, 0x0b]);
 
 /// An ARP request, as bytes.
 const ARP: [u8; 28] = [
   0, 1, 0x08, 0, 6, 4, 0, 1, 0x02, 0, 0, 0, 0, 0x0a, 10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0, 2,
 ];
 
-const A: Mac = Mac([0x02, 0, 0, 0, 0, 0x0a]);
-const B: Mac = Mac([0x02, 0, 0, 0, 0, 0x0b]);
-
-/// A frame from `A` to `B`: an EtherType or a length, then a payload.
+/// A frame from `A` to `B`, as bytes: an EtherType or a length, then a payload.
 fn frame(ether_type: u16, payload: &[u8]) -> Vec<u8> {
   [&B.0[..], &A.0[..], &ether_type.to_be_bytes()[..], payload].concat()
 }
 
-/// An IPv4 packet with a "record route" option, two "no operation" and a UDP datagram.
+/// An IPv4 packet, as bytes: an option that has a length, two that do not, a UDP datagram.
 fn ipv4() -> Vec<u8> {
-  let udp = [&[0x30, 0x39, 0, 53, 0, 8 + 5, 0, 0][..], b"hello"].concat();
-  let options = [7, 6, 4, 10, 0, 0, 1, 1];
-  [
-    &[0x47, 0, 0, 28 + 13, 0, 1, 0, 0, 64, 17, 0, 0][..],
-    &[10, 0, 0, 1, 10, 0, 0, 2][..],
-    &options[..],
-    &udp[..],
-  ]
-  .concat()
+  let mut header = vec![0x47, 0, 0, 28 + 13, 0, 1, 0x20, 0x07, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2];
+  header.extend([7, 6, 4, 10, 0, 0, 1, 1]);
+  let checksum = !mutant::sum16(&header);
+  header[10..12].copy_from_slice(&checksum.to_be_bytes());
+  [&header[..], &[0x30, 0x39, 0, 53, 0, 8 + 5, 0, 0][..], b"hello"].concat()
 }
 
 pub fn main() {
@@ -246,6 +231,9 @@ pub fn main() {
   let ip: &Frame<Ipv4> = try_transmute_ref(&bytes[..]).unwrap();
   assert_eq!(ip.payload.total_length.get(), 41);
   assert_eq!(ip.payload.protocol, 17);
+  // Bit fields.
+  assert_eq!((ip.payload.version(), ip.payload.header_length()), (4, 28));
+  assert_eq!((ip.payload.more_fragments(), ip.payload.fragment_offset()), (true, 7));
   // The regions of the packet: their sizes come from the header.
   assert_eq!(ip.payload.options(), [7, 6, 4, 10, 0, 0, 1, 1]);
   let (udp, rest) = unpack::<Udp>(ip.payload.payload()).unwrap();
@@ -261,8 +249,9 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Vlan>>(&bytes[..]).err(), Some(Error::Validity));
   // Not an EtherType.
   assert_eq!(try_transmute_ref::<_, Frame>(&frame(100, &[0; 100])[..]).err(), Some(Error::Validity));
-  // Version 6, a header of 16 bytes, a total length that is not the one of the packet.
-  for (at, value) in [(14, 0x65), (14, 0x44), (17, 40)] {
+  // Version 6, a header of 16 bytes, a total length that is not the one of the packet, and a
+  // time to live that the checksum does not agree with.
+  for (at, value) in [(14, 0x67), (14, 0x44), (17, 40), (22, 63)] {
     let mut bytes = bytes.clone();
     bytes[at] = value;
     assert!(try_transmute_ref::<_, Frame>(&bytes[..]).is_ok());
@@ -283,24 +272,34 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&wire[..]).err(), Some(Error::Validity));
   let (ip, padding) = unpack::<Frame<Ipv4>>(&wire).unwrap();
   assert_eq!((size_of_val(ip), padding), (55, &[0; 5][..]));
-
-  // The frame check sequence, when it is there.
-  wire.extend([0xde, 0xad, 0xbe, 0xef]);
-  let checked: &CheckedFrame = try_transmute_ref(&wire[..]).unwrap();
-  assert_eq!((checked.payload().len(), checked.fcs()), (46, &[0xde, 0xad, 0xbe, 0xef][..]));
-  assert!(try_transmute_ref::<_, CheckedFrame>(&wire[..63]).is_err());
   assert!(try_transmute_ref::<_, WireFrame>(&[0xff; 1515][..]).is_err());
 
+  // ---- The frame check sequence, when it is there: the CRC-32 of the frame.
+  wire.extend(mutant::crc32(&wire).to_le_bytes());
+  let checked: &CheckedFrame = try_transmute_ref(&wire[..]).unwrap();
+  assert_eq!((checked.payload().len(), checked.fcs().len()), (46, 4));
+  // As anyone would check it: the CRC of a frame with its sequence is a constant.
+  assert_eq!(mutant::crc32(&wire), 0x2144df1c);
+  for at in [0, 30, 59, 60, 63] {
+    let mut wire = wire.clone();
+    wire[at] ^= 1;
+    assert_eq!(try_transmute_ref::<_, CheckedFrame>(&wire[..]).err(), Some(Error::Validity));
+  }
+  assert!(try_transmute_ref::<_, CheckedFrame>(&wire[..63]).is_err());
+
   // ---- 802.1Q: a tag, then a frame; twice for "Q-in-Q".
-  let tagged = frame(0x8100, &[&[0x20, 0x2a, 0x08, 0x00][..], &ipv4()].concat());
+  let tagged = frame(0x8100, &[&[0xb0, 0x2a, 0x08, 0x00][..], &ipv4()].concat());
   let vlan: &Frame<Vlan<Ipv4>> = try_transmute_ref(&tagged[..]).unwrap();
-  assert_eq!((vlan.payload.id(), vlan.payload.payload.time_to_live), (42, 64));
+  let tag = &vlan.payload;
+  assert_eq!((tag.priority(), tag.drop_eligible(), tag.id()), (5, true, 42));
+  assert_eq!(tag.payload.time_to_live, 64);
   assert_eq!(try_transmute_ref::<_, Frame<Ipv4>>(&tagged[..]).err(), Some(Error::Validity));
   let reserved = frame(0x8100, &[&[0x2f, 0xff, 0x08, 0x00][..], &ipv4()].concat());
   assert_eq!(try_transmute_ref::<_, Frame<Vlan<Ipv4>>>(&reserved[..]).err(), Some(Error::Validity));
-  let double = frame(0x8100, &[&[0, 1, 0x81, 0x00, 0, 2, 0x08, 0x06][..], &[0; 28]].concat());
-  let qinq: &Frame<Vlan<Vlan>> = try_transmute_ref(&double[..]).unwrap();
+  let double = frame(0x8100, &[&[0, 1, 0x81, 0x00, 0, 2, 0x08, 0x06][..], &ARP[..]].concat());
+  let qinq: &Frame<Vlan<Vlan<Arp>>> = try_transmute_ref(&double[..]).unwrap();
   assert_eq!((qinq.payload.id(), qinq.payload.payload.id()), (1, 2));
+  assert!(try_transmute_ref::<_, Frame<Vlan<Vlan<Ipv4>>>>(&double[..]).is_err());
 
   // ---- 802.3: a length instead of an EtherType, and padding after the payload.
   let llc = frame(3, &[0xaa, 0xaa, 0x03, 0, 0, 0, 0]);
@@ -349,7 +348,7 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Arp>>(&reply).err(), Some(Error::Validity));
 
   // ---- A packet made in safe Rust, of a payload whose size is known...
-  let packet = Ipv4 {
+  let mut packet = Ipv4 {
     version_ihl: 0x45,
     type_of_service: 0,
     total_length: u16be::new(20 + 4),
@@ -362,11 +361,12 @@ pub fn main() {
     destination: [10, 0, 0, 2],
     data: *b"ping",
   };
+  packet.checksum = u16be::new(!mutant::sum16(&as_bytes(&packet)[..20]));
   // ... is a packet of any payload.
   let packet: &Ipv4 = &packet;
   assert_eq!((packet.options(), packet.payload()), (&[][..], &b"ping"[..]));
   let (parsed, rest) = unpack::<Ipv4>(as_bytes(packet)).unwrap();
-  assert_eq!((parsed.payload(), rest.len()), (&b"ping"[..], 0));
+  assert_eq!((parsed.payload(), parsed.header_length(), rest.len()), (&b"ping"[..], 20, 0));
 
   println!("ok");
 }

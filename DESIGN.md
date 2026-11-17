@@ -106,6 +106,20 @@ fields to a constant postfix program (`layout::Op`):
 - `#[data(assert(EXPR))]`: anything else (bit fields, relations between fields, a minimum size);
 - `#[data(regions(a = EXPR, b))]`: consecutive regions of the tail, with an accessor for each.
 
+An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
+`be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
+(the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
+last bytes are the CRC of what is before" is an assertion.
+
+Two more options are not rules, but save the code that would otherwise be written by hand:
+
+- `#[data(tag(Key = Type))]` implements `Tag<Key>`: "when carried by something that tells what
+  it carries with a `Key`, this type comes with a `Type`". A frame is then
+  `struct Frame<P: ?Sized + Tag<EtherType> = [u8]> { .., ether_type: P::Tag, payload: P }`, and
+  `Frame<Ipv4>` requires the EtherType of IPv4 while `Frame` takes any (bytes go with any tag);
+- `#[data(get(name: Type = EXPR))]` generates a `const fn` getter, for bit fields. Here `EXPR`
+  is plain Rust, in which integer fields are `u128`: any function can be called.
+
 Rules are checked when a value comes from something else, tell `unpack` how long a value is, and
 are proven only by the same rule, in the same struct, at the same place of the source. The
 evaluator (`layout::eval`) is written so that a constant program compiles to its arithmetic: no
@@ -151,8 +165,8 @@ The tests pass under Miri, with strict provenance and with tree borrows.
 - Patterns other than `str`: the engine takes any DFA of at most 64 states, but there is no way
   to declare one from the derive.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
-- An arbitrary function in a rule: it could only be called through a trait, hence not in `const`
-  contexts on stable.
+- An arbitrary function in a rule (getters take any): it could only be called through a trait,
+  hence not in `const` contexts on stable. `crc32` and `sum16` are built in for that reason.
 - The crate needs a new name (`mutant` is taken on crates.io).
 
 ## Limits

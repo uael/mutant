@@ -159,3 +159,40 @@ fn in_const() {
   assert_eq!(CHECKED.map(|checked| checked.kind), Ok(2));
   assert_eq!(LIST.map(|(list, rest)| (list.1[0].get(), rest.len())), Ok((7, 1)));
 }
+
+/// A header, a body, and the sum of both: for a tail that is a slice or an array.
+#[derive(Data)]
+#[repr(C)]
+#[data(assert(sum16(0, size_of_val(self) - 2) == be(size_of_val(self) - 2, 2)))]
+#[data(get(kind: u8 = self.0 >> 4, flag: bool = self.0 & 1 == 1, twice: u32 = self.0 * 2))]
+struct Summed<T: ?Sized>(u8, #[data(regions(body = size_of_val(self) - 3, sum))] T);
+
+#[derive(Data)]
+#[repr(C)]
+struct Counted<T: ?Sized>(u8, #[data(len = self.0)] T);
+
+#[test]
+fn rules_on_sized_and_unsized() {
+  // `0x51`, `0x02 0x03`: the words `0x5102` and `0x0300` sum to `0x5402`.
+  let bytes: [u8; 5] = [0x51, 0x02, 0x03, 0x54, 0x02];
+  let summed: &Summed<[u8]> = try_transmute_ref(&bytes[..]).unwrap();
+  assert_eq!((summed.kind(), summed.flag(), summed.twice()), (5, true, 0xa2));
+  assert_eq!((summed.body(), summed.sum()), (&[2, 3][..], &[0x54, 2][..]));
+  assert!(try_transmute_ref::<_, Summed<[u8]>>(&[0x51u8, 0x02, 0x03, 0x54, 0x03][..]).is_err());
+  assert!(try_transmute_ref::<_, Summed<[u8]>>(&[0x51u8][..]).is_err());
+  // The same, of a known size.
+  let summed: &Summed<[u8; 4]> = try_transmute_ref(&bytes).unwrap();
+  assert_eq!((summed.body(), summed.sum(), summed.kind()), (&[2, 3][..], &[0x54, 2][..], 5));
+  assert!(try_transmute_ref::<_, Summed<[u8; 4]>>(&[0x51u8, 0x02, 0x03, 0x54, 0x03]).is_err());
+
+  // A count of elements, of a slice or of an array.
+  assert!(try_transmute_ref::<_, Counted<[u8]>>(&[2u8, 7, 8][..]).is_ok());
+  assert!(try_transmute_ref::<_, Counted<[u8]>>(&[3u8, 7, 8][..]).is_err());
+  assert!(try_transmute_ref::<_, Counted<[u8; 2]>>(&[2u8, 7, 8]).is_ok());
+  assert!(try_transmute_ref::<_, Counted<[u8; 2]>>(&[1u8, 7, 8]).is_err());
+  let (counted, rest) = unpack::<Counted<[u8]>>(&[1, 7, 8]).unwrap();
+  assert_eq!((&counted.1, rest), (&[7][..], &[8][..]));
+
+  assert_eq!(mutant::crc32(b"123456789"), 0xcbf43926);
+  assert_eq!(mutant::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
+}

@@ -22,6 +22,10 @@ use syn::{
 /// Options of the struct:
 /// - `#[data(size = EXPR)]`: the size in bytes of a value is `EXPR`;
 /// - `#[data(assert(EXPR))]`: `EXPR` is true;
+/// - `#[data(get(name: Type = EXPR, ..))]`: a method `name` that returns `EXPR`, for bit fields
+///   and the like. Here `EXPR` is any Rust expression, in which the integer fields are `u128`;
+/// - `#[data(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
+///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
 /// - `#[data(crate = path)]`: path of the `mutant` crate.
 ///
 /// Options of a field:
@@ -35,6 +39,13 @@ use syn::{
 /// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
 /// arithmetic costs, and fails (as a rule that does not hold) on overflow.
+///
+/// It can also read the value beyond its fields, where `start`, `end` and `offset` are
+/// expressions that count bytes from the start of the value:
+/// - `le(offset, N)`, `be(offset, N)`: the integer of `N` bytes at `offset`;
+/// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
+/// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
+///   (`0xffff` over data that holds its own IP checksum).
 ///
 /// # Enums
 ///
@@ -108,9 +119,42 @@ impl Parse for Region {
   }
 }
 
+/// `Key = Type`
+struct TagOption {
+  key: Type,
+  tag: Type,
+}
+
+impl Parse for TagOption {
+  fn parse(input: ParseStream) -> Result<Self> {
+    let key = input.parse()?;
+    input.parse::<Token![=]>()?;
+    Ok(Self { key, tag: input.parse()? })
+  }
+}
+
+/// `name: Type = EXPR`
+struct Getter {
+  name: Ident,
+  ty: Type,
+  expr: Expr,
+}
+
+impl Parse for Getter {
+  fn parse(input: ParseStream) -> Result<Self> {
+    let name = input.parse()?;
+    input.parse::<Token![:]>()?;
+    let ty = input.parse()?;
+    input.parse::<Token![=]>()?;
+    Ok(Self { name, ty, expr: input.parse()? })
+  }
+}
+
 #[derive(Default)]
 struct Options {
   root: Option<TokenStream>,
+  tags: Vec<TagOption>,
+  getters: Vec<Getter>,
   size: Option<Expr>,
   asserts: Vec<Expr>,
   valid: Option<Punctuated<Expr, Token![,]>>,
@@ -136,6 +180,14 @@ fn parse_options(attrs: &[Attribute]) -> Result<Options> {
         let content;
         syn::parenthesized!(content in meta.input);
         options.asserts.push(content.parse()?);
+      } else if meta.path.is_ident("tag") {
+        let content;
+        syn::parenthesized!(content in meta.input);
+        options.tags.extend(Punctuated::<TagOption, Token![,]>::parse_terminated(&content)?);
+      } else if meta.path.is_ident("get") {
+        let content;
+        syn::parenthesized!(content in meta.input);
+        options.getters.extend(Punctuated::<Getter, Token![,]>::parse_terminated(&content)?);
       } else if meta.path.is_ident("valid") {
         let content;
         syn::parenthesized!(content in meta.input);
@@ -230,10 +282,73 @@ fn compile(
     {
       ops.push(quote!(#op::Size));
     }
+    // `crc32(start, end)`, `sum16(start, end)`: over the bytes of the value.
+    Expr::Call(call) if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) => {
+      compile(&call.args[0], fields, root, ops)?;
+      compile(&call.args[1], fields, root, ops)?;
+      ops.push(if is_call(call, "crc32") { quote!(#op::Crc32) } else { quote!(#op::Sum16) });
+    }
+    // `le(offset, size)`, `be(offset, size)`: an integer, anywhere in the value.
+    Expr::Call(call) if call.args.len() == 2 && (is_call(call, "le") || is_call(call, "be")) => {
+      compile(&call.args[0], fields, root, ops)?;
+      let (size, big) = (&call.args[1], is_call(call, "be"));
+      ops.push(quote!(#op::At { size: #size, big: #big }));
+    }
     // Anything else must be a constant.
     expr => ops.push(quote!(#op::Lit((#expr) as u128))),
   }
   Ok(())
+}
+
+/// Whatever `call` is a call of the function `name`.
+fn is_call(call: &syn::ExprCall, name: &str) -> bool {
+  matches!(&*call.func, Expr::Path(path) if path.path.is_ident(name))
+}
+
+/// Turn the expression of a getter into Rust, where a field is its value as an `u128`.
+fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
+  let field = |member: &Member| {
+    fields.iter().any(|field| &field.member == member).then(|| quote!(#root::int(&{ self.#member })))
+  };
+  match expr {
+    Expr::Paren(expr) => {
+      let inner = rust(&expr.expr, fields, root);
+      quote!((#inner))
+    }
+    Expr::Group(expr) => rust(&expr.expr, fields, root),
+    Expr::Cast(cast) => {
+      let (inner, ty) = (rust(&cast.expr, fields, root), &cast.ty);
+      quote!((#inner as #ty))
+    }
+    Expr::Path(path) => match path.path.get_ident().and_then(|ident| field(&Member::Named(ident.clone()))) {
+      Some(field) => field,
+      None => quote!(#path),
+    },
+    Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
+      match field(&access.member) {
+        Some(field) => field,
+        None => quote!(#access),
+      }
+    }
+    Expr::Unary(unary) => {
+      let (op, inner) = (&unary.op, rust(&unary.expr, fields, root));
+      quote!((#op #inner))
+    }
+    Expr::Binary(binary) => {
+      let (left, right) = (rust(&binary.left, fields, root), rust(&binary.right, fields, root));
+      let op = &binary.op;
+      quote!((#left #op #right))
+    }
+    Expr::Call(call)
+      if call.args.len() == 1
+        && matches!(&*call.func, Expr::Path(path)
+          if path.path.segments.last().is_some_and(|segment| segment.ident == "size_of_val"))
+        && matches!(&call.args[0], Expr::Path(path) if path.path.is_ident("self")) =>
+    {
+      quote!((::core::mem::size_of_val(self) as u128))
+    }
+    expr => quote!(#expr),
+  }
 }
 
 /// `&[Op, ...]`
@@ -392,6 +507,30 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     }
   }
 
+  // Getters.
+  for getter in &options.getters {
+    let (name, ty, vis) = (&getter.name, &getter.ty, &input.vis);
+    let expr = rust(&getter.expr, &fields, &root);
+    let doc = format!("`{}`", getter.expr.to_token_stream());
+    accessors.push(quote! {
+      #[doc = #doc]
+      #[inline]
+      #[allow(unused_parens, clippy::all)]
+      #vis const fn #name(&self) -> #ty {
+        #expr as #ty
+      }
+    });
+  }
+
+  // The tags the type goes with.
+  let tags = options.tags.iter().map(|TagOption { key, tag }| {
+    quote! {
+      impl #impl_generics #root::Tag<#key> for #this #where_clause {
+        type Tag = #tag;
+      }
+    }
+  });
+
   // The probe: a null pointer with the slice length of the probe of the last field, if any.
   let probe = match fields.last() {
     Some(last) if !sized => {
@@ -455,6 +594,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       }
 
       #accessors
+
+      #(#tags)*
     };
   })
 }

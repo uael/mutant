@@ -80,10 +80,8 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Data>() -> bool {
 /// Same as [`validate`].
 #[inline(always)]
 pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &[Rule]) -> bool {
-  let (head, stride) = const { (T::LAYOUT.head(), T::LAYOUT.stride()) };
-  let (base, len) = (ptr.cast::<u8>(), ptr::metadata(ptr));
-  // The value exists: its size does not overflow.
-  let tail = len * stride;
+  let base = ptr.cast::<u8>();
+  let (len, tail, size) = tail_of(ptr);
   // What the regions before take of the tail.
   let mut regions = 0;
   // Not a loop, for the first rules: see `layout::eval`.
@@ -91,7 +89,7 @@ pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &
     ($($index:literal)+) => {$(
       if $index < rules.len() {
         // SAFETY: the sized fields of the struct are readable.
-        match unsafe { check_rule(&rules[$index], base, head, tail, len, regions) } {
+        match unsafe { check_rule(&rules[$index], base, size, tail, len, regions) } {
           Some(size) => regions += size,
           None => return false,
         }
@@ -102,7 +100,7 @@ pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &
   let mut i = 8;
   while i < rules.len() {
     // SAFETY: the sized fields of the struct are readable.
-    match unsafe { check_rule(&rules[i], base, head, tail, len, regions) } {
+    match unsafe { check_rule(&rules[i], base, size, tail, len, regions) } {
       Some(size) => regions += size,
       None => return false,
     }
@@ -111,27 +109,41 @@ pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &
   true
 }
 
+/// The number of elements of the tail of the struct at `ptr`, the size of that tail, and the size
+/// of the struct. The tail of a `Sized` struct is its last field.
+#[inline(always)]
+pub(crate) const fn tail_of<T: ?Sized + Data>(ptr: *const T) -> (usize, usize, usize) {
+  let (layout, shape) = const { (T::LAYOUT, T::LAYOUT.tail_shape()) };
+  if const { T::LAYOUT.is_unsized() } {
+    // The value exists: its size does not overflow.
+    let len = ptr::metadata(ptr);
+    (len, len * layout.stride(), layout.head() + len * layout.stride())
+  } else {
+    (shape.len, shape.bytes, layout.size())
+  }
+}
+
 /// `None` if the rule does not hold, else the size of the region if the rule is one (`0` if
 /// not).
 ///
 /// # Safety
-/// `base` must be valid for reads of the `head` first bytes of a struct that has the rule.
+/// `base` must be valid for reads of the `size` bytes of a struct that has the rule.
 #[inline(always)]
 const unsafe fn check_rule(
-  rule: &Rule, base: *const u8, head: usize, tail: usize, len: usize, regions: usize,
+  rule: &Rule, base: *const u8, size: usize, tail: usize, len: usize, regions: usize,
 ) -> Option<usize> {
   // SAFETY: guaranteed by the caller.
   let value = unsafe {
     match *rule {
       Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => {
-        eval(ops, base, head + tail)
+        eval(ops, base, size)
       }
       Rule::Region(None) => return Some(0),
     }
   };
   let Some(value) = value else { return None };
   match *rule {
-    Rule::Size(_) if value == (head + tail) as u128 => Some(0),
+    Rule::Size(_) if value == size as u128 => Some(0),
     Rule::Len(_) if value == len as u128 => Some(0),
     Rule::Assert(_) if value != 0 => Some(0),
     Rule::Region(_) if value <= (tail - regions) as u128 => Some(value as usize),

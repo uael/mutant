@@ -128,6 +128,23 @@ impl Spec {
     Self { endian, ..self }
   }
 
+  /// Whatever the scalar is an initialized integer of at most 16 bytes.
+  #[doc(hidden)]
+  pub const fn is_integer(&self) -> bool {
+    self.size <= 16 && !matches!(self.known, Valid::Uninit) && !matches!(self.valid, Valid::Uninit)
+  }
+
+  /// The scalar at `ptr`, as an unsigned integer.
+  ///
+  /// # Safety
+  /// `self` must be [an integer](Self::is_integer), and `ptr` must be valid for reads of one.
+  #[doc(hidden)]
+  #[inline(always)]
+  pub const unsafe fn load(&self, ptr: *const u8) -> u128 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { load(ptr, self.size, self.endian) }
+  }
+
   /// Whatever the scalar restricts the values it accepts.
   #[inline]
   pub(crate) const fn is_constrained(&self) -> bool {
@@ -504,7 +521,7 @@ impl Layout {
           _ => Uniform::No,
         };
         check_rules(rules, end, false);
-        Self {
+        let this = Self {
           kind: Kind::Struct(fields, rules),
           size,
           align,
@@ -513,7 +530,16 @@ impl Layout {
           leaves,
           uniform,
           has_rules,
+        };
+        let mut i = 0;
+        while i < rules.len() {
+          assert!(
+            !matches!(rules[i], Rule::Len(_)) || this.tail_shape().array,
+            "`len` is about a last field that is a slice, or an array"
+          );
+          i += 1;
         }
+        this
       }
       Some(field) => {
         // SAFETY: the tail of `T` is a slice (the tail of its last field is).
@@ -579,6 +605,11 @@ impl Layout {
   #[inline]
   pub const fn size(&self) -> usize {
     self.size
+  }
+
+  #[inline]
+  pub(crate) const fn is_unsized(&self) -> bool {
+    self.unsized_
   }
 
   /// Whatever the size of values of the type depends on a slice length.
@@ -672,6 +703,36 @@ impl Layout {
       }
       let last = &fields[fields.len() - 1];
       (layout, base) = (last.layout, base + last.offset);
+    }
+  }
+
+  /// The tail of a struct, as rules see it: its slice if it is unsized, else its last field.
+  pub(crate) const fn tail_shape(&self) -> TailShape {
+    let mut shape = TailShape { start: self.size, bytes: 0, len: 0, array: false };
+    let Kind::Struct(fields, _) = self.kind else { return shape };
+    if self.unsized_ || fields.is_empty() {
+      return shape;
+    }
+    // The last field, as declared.
+    let (mut last, mut i) = (&fields[0], 1);
+    while i < fields.len() {
+      if fields[i].index > last.index {
+        last = &fields[i];
+      }
+      i += 1;
+    }
+    (shape.start, shape.bytes) = (last.offset, last.layout.size);
+    // The array it ends with, if any.
+    let mut layout = last.layout;
+    loop {
+      match layout.kind {
+        Kind::Array(_, len) => {
+          (shape.len, shape.array) = (len, true);
+          return shape;
+        }
+        Kind::Struct(fields, _) if !fields.is_empty() => layout = fields[fields.len() - 1].layout,
+        _ => return shape,
+      }
     }
   }
 
@@ -914,6 +975,13 @@ pub enum Op {
   Load { offset: usize, size: u8, big: bool },
   /// Push the size in bytes of the struct (not in `size` and `len` rules, which define it).
   Size,
+  /// Replace an offset by the unsigned integer of `size` bytes that is there in the value.
+  At { size: u8, big: bool },
+  /// Replace two offsets by the CRC-32 (the one of Ethernet) of the bytes between them.
+  Crc32,
+  /// Replace two offsets by the ones' complement sum of the big-endian 16 bits words between
+  /// them (the checksum of IP, before it is complemented).
+  Sum16,
   Add,
   Sub,
   Mul,
@@ -952,7 +1020,9 @@ impl Op {
       (Op::Load { offset: a, size: b, big: c }, Op::Load { offset: x, size: y, big: z }) => {
         a == x && b == y && c == z
       }
-      (Op::Lit(_) | Op::Load { .. }, _) | (_, Op::Lit(_) | Op::Load { .. }) => false,
+      (Op::At { size: a, big: b }, Op::At { size: x, big: y }) => a == x && b == y,
+      (Op::Lit(_) | Op::Load { .. } | Op::At { .. }, _)
+      | (_, Op::Lit(_) | Op::Load { .. } | Op::At { .. }) => false,
       // Other operations hold no data.
       (a, b) => a.code() == b.code(),
     }
@@ -983,6 +1053,9 @@ impl Op {
       Op::Either => 19,
       Op::Not => 20,
       Op::Size => 21,
+      Op::At { .. } => 22,
+      Op::Crc32 => 23,
+      Op::Sum16 => 24,
     }
   }
 }
@@ -1003,6 +1076,11 @@ pub enum Rule {
   /// The tail of the value starts with a region of as many bytes as the result of the
   /// expression (`None`: what remains). Regions follow each other, in the order of the rules.
   Region(Option<&'static [Op]>),
+}
+
+/// The operations of an expression can read the whole value, not only its sized fields.
+const fn reads_value(op: &Op) -> bool {
+  matches!(op, Op::Size | Op::At { .. } | Op::Crc32 | Op::Sum16)
 }
 
 impl Rule {
@@ -1035,6 +1113,18 @@ impl Rule {
   }
 }
 
+/// See [`Layout::tail_shape`].
+#[derive(Copy, Clone)]
+pub(crate) struct TailShape {
+  /// Offset of the tail.
+  pub(crate) start: usize,
+  /// Size of the tail, if the struct is `Sized`.
+  pub(crate) bytes: usize,
+  /// Number of elements of the array that the tail ends with, if the struct is `Sized`.
+  pub(crate) len: usize,
+  pub(crate) array: bool,
+}
+
 /// See [`Layout::length_rule`].
 #[derive(Copy, Clone)]
 pub(crate) struct LengthRule {
@@ -1053,22 +1143,17 @@ const STACK: usize = 8;
 const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
   let mut i = 0;
   while i < rules.len() {
-    assert!(
-      unsized_ || !matches!(rules[i], Rule::Len(_) | Rule::Region(_)),
-      "this rule is about the tail of an unsized struct"
-    );
+    let _ = unsized_;
     if let Some(ops) = rules[i].ops() {
       let (mut depth, mut j) = (0usize, 0);
       while j < ops.len() {
+        assert!(
+          !(reads_value(&ops[j]) && matches!(rules[i], Rule::Size(_) | Rule::Len(_))),
+          "the size of a value cannot be defined from the value itself"
+        );
         match ops[j] {
-          Op::Lit(_) => depth += 1,
-          Op::Size => {
-            assert!(
-              !matches!(rules[i], Rule::Size(_) | Rule::Len(_)),
-              "the size of a value cannot be defined from itself"
-            );
-            depth += 1;
-          }
+          Op::Lit(_) | Op::Size => depth += 1,
+          Op::At { size, .. } => assert!(size >= 1 && size <= 16 && depth >= 1, "malformed expression"),
           Op::Load { offset, size, .. } => {
             assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
             depth += 1;
@@ -1097,7 +1182,9 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
 ///
 /// # Safety
 /// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
-/// reads of the sized fields of such a struct, initialized. `size` is the size of the struct.
+/// reads of the sized fields of such a struct, initialized. `size` is the size of the struct:
+/// unless the expression is the one of a `size` or `len` rule, `base` must be valid for reads of
+/// that many initialized bytes.
 #[inline(always)]
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
   let (mut s0, mut s1, mut s2, mut s3) = (0u128, 0u128, 0u128, 0u128);
@@ -1151,6 +1238,28 @@ pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Opt
           depth += 1;
         }
         Op::Not => set!(depth - 1, (get!(depth - 1) == 0) as u128),
+        Op::At { size: width, big } => {
+          let (offset, endian) = (get!(depth - 1), if big { Endian::Big } else { Endian::Little });
+          if offset <= size as u128 && size - offset as usize >= width as usize {
+            // SAFETY: in the bounds of the value.
+            set!(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
+          } else {
+            valid = false;
+          }
+        }
+        op @ (Op::Crc32 | Op::Sum16) => {
+          let (start, end) = (get!(depth - 2), get!(depth - 1));
+          depth -= 1;
+          if start <= end && end <= size as u128 {
+            // SAFETY: in the bounds of the value.
+            let bytes = unsafe {
+              core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
+            };
+            set!(depth - 1, if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 });
+          } else {
+            valid = false;
+          }
+        }
         op => {
           let value = binary(op, get!(depth - 2), get!(depth - 1));
           depth -= 1;
@@ -1201,7 +1310,55 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     Op::Both => Some((a != 0 && b != 0) as u128),
     Op::Either => Some((a != 0 || b != 0) as u128),
     Op::Lit(_) | Op::Load { .. } | Op::Size | Op::Not => None,
+    Op::At { .. } | Op::Crc32 | Op::Sum16 => None,
   }
+}
+
+/// The CRC-32 of Ethernet (and zlib, PNG...): the frame check sequence of a frame is the CRC of
+/// what is before it, least significant byte first.
+///
+/// ```
+/// assert_eq!(mutant::crc32(b"123456789"), 0xcbf43926);
+/// ```
+pub const fn crc32(bytes: &[u8]) -> u32 {
+  const TABLE: [u32; 256] = {
+    let (mut table, mut i) = ([0u32; 256], 0);
+    while i < 256 {
+      let (mut value, mut bit) = (i as u32, 0);
+      while bit < 8 {
+        value = if value & 1 != 0 { (value >> 1) ^ 0xedb8_8320 } else { value >> 1 };
+        bit += 1;
+      }
+      table[i] = value;
+      i += 1;
+    }
+    table
+  };
+  let (mut crc, mut i) = (!0u32, 0);
+  while i < bytes.len() {
+    crc = TABLE[((crc ^ bytes[i] as u32) & 0xff) as usize] ^ (crc >> 8);
+    i += 1;
+  }
+  !crc
+}
+
+/// The ones' complement sum of the big-endian 16 bits words of `bytes` (a last byte alone is the
+/// high byte of a word): what the checksums of IP, UDP and TCP are the complement of. Over data
+/// that holds its own checksum, the sum is `0xffff`.
+///
+/// ```
+/// assert_eq!(mutant::sum16(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]), 0xddf2);
+/// ```
+pub const fn sum16(bytes: &[u8]) -> u16 {
+  let (mut sum, mut i) = (0u64, 0);
+  while i < bytes.len() {
+    let low = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+    sum += ((bytes[i] as u64) << 8) | low as u64;
+    // No overflow: the carries are folded as they come.
+    sum = (sum & 0xffff) + (sum >> 16);
+    i += 2;
+  }
+  sum as u16
 }
 
 /// Bounds of a range of valid values of an integer of the size of `T`, for `#[data(valid(..))]`.
