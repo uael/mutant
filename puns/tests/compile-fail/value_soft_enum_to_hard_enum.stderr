@@ -5,8 +5,8 @@ error[E0080]: evaluation panicked:
 
    --> src/lib.rs
     |
-    |   const BY_VALUE: () = Self::require(Need { head: false, fallible: false, reference: false });
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Soft, Hard>::BY_VALUE` failed inside this call
+    |   const BY_VALUE: () = Self::require(Self::check(Need::VALUE));
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Soft, Hard>::BY_VALUE` failed inside this call
     |
 note: inside `puns::Plan::<Soft, Hard>::require`
  --> src/lib.rs

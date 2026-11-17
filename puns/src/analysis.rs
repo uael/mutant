@@ -108,8 +108,15 @@ pub enum Checked {
 }
 
 impl Cursor {
-  pub(crate) const fn new(root: &'static Layout, target: bool, checked: Checked) -> Self {
-    let frame = Frame { layout: root, base: 0, leaf: 0, field: 0 };
+  /// A cursor over `root`, whose first byte is at `base`: positions are offsets from the start of
+  /// the source, wherever the target is in it.
+  pub(crate) const fn new(
+    root: &'static Layout,
+    base: usize,
+    target: bool,
+    checked: Checked,
+  ) -> Self {
+    let frame = Frame { layout: root, base, leaf: 0, field: 0 };
     Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked }
   }
 
@@ -353,9 +360,36 @@ pub const fn relate(
   end: usize,
   checked: Checked,
 ) -> Relation {
+  relate_at(a, 0, b, 0, 0, end, checked)
+}
+
+/// Relate the bytes `start..end` (`end` may be `usize::MAX`) of `a`, which starts at `base_a`, and
+/// of `b`, which starts at `base_b`: offsets are counted from wherever the outermost of the two
+/// starts, and so are the offsets of the [`Relation`].
+///
+/// This is how a target is related to the end of a source (`b` at `size(a) - size(b)`), and the
+/// part of a source that a `&mut` covers to that target (`a` there). Nothing else changes with
+/// where they are: the analysis is made of what each run of `b` has under it, periods are found
+/// from the strides of both (what lies under a run of `b` a period later is the same, whatever
+/// the phase of the repetitions of `a` and `b`), and an enum is proven only by an enum at the
+/// very same offset.
+///
+/// With `checked` other than [`Checked::No`], `a` must start at `0`: [`Cursor::padding_is_read`]
+/// looks for what `a` has at the offsets of `b`.
+pub const fn relate_at(
+  a: &'static Layout,
+  base_a: usize,
+  b: &'static Layout,
+  base_b: usize,
+  start: usize,
+  end: usize,
+  checked: Checked,
+) -> Relation {
+  assert!(base_a == 0 || matches!(checked, Checked::No), "internal error: shifted source");
   let mut relation = Relation::NEW;
-  let (mut a, mut b) = (Cursor::new(a, false, Checked::No), Cursor::new(b, true, checked));
-  relate_range(&mut a, &mut b, 0, end, &mut relation);
+  let mut a = Cursor::new(a, base_a, false, Checked::No);
+  let mut b = Cursor::new(b, base_b, true, checked);
+  relate_range(&mut a, &mut b, start, end, &mut relation);
   relation
 }
 
@@ -428,9 +462,13 @@ const fn relate_range(
         }
         pos = min(run_a.end, stop);
       }
+      // Only some bytes of the scalar are related, and what the others hold is not known: `b` is
+      // the source of a `&mut` that covers a part of it.
+      RunKind::Atom(_) if run_b.start != pos || run_b.end > end => {
+        out.mark(run_b.leaf, pos);
+        pos = stop;
+      }
       RunKind::Atom(spec) => {
-        // Ranges of the analysis start and end between two elements of `b`.
-        assert!(run_b.start == pos && run_b.end <= end);
         let (pieces, len) = gather(a, run_b.start, run_b.end);
         match atom_relation(&pieces, len, &spec) {
           None => out.uninit(pos),
@@ -1230,8 +1268,13 @@ pub const fn fit(a: &Layout, b: &Layout) -> Fit {
 #[derive(Copy, Clone)]
 pub struct Analysis {
   pub(crate) fit: Fit,
+  /// Its offsets are from the start of the source: the target is at `shift`.
   pub(crate) relation: Relation,
+  /// The target is aligned wherever the source is.
   pub(crate) aligned: bool,
+  /// Offset of the target in the source: `0`, or for the last bytes of the source (`tail`), the
+  /// size of the source minus the size of the target.
+  pub(crate) shift: usize,
 }
 
 pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
@@ -1242,7 +1285,42 @@ pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
   if !hopeless {
     mark_rules(a, b, 0, 0, &mut relation);
   }
-  Analysis { fit, relation, aligned: b.align <= a.align }
+  Analysis { fit, relation, aligned: b.align <= a.align, shift: 0 }
+}
+
+/// The source is unsized: where its last bytes start depends on its length.
+pub const TAIL_UNSIZED_SOURCE: &str = "the source is unsized: where its last bytes start depends \
+                                       on its length, which is only known at run time.\nUse \
+                                       `from_tail` to take a value from the end of bytes";
+/// The target is unsized: how many bytes it takes from the end cannot be told.
+pub const TAIL_UNSIZED_TARGET: &str =
+  "the target is unsized: its extent cannot be found from the end of the source";
+
+/// Relate the last bytes of `a` with `b`: the target at `shift = size(a) - size(b)` in the
+/// source. Both must be sized (else the analysis says so, with nothing to relate).
+///
+/// What is checked is what [`analyze`] checks of the first bytes: padding under a byte that the
+/// target needs, scalars, patterns, enums (an enum only proves an enum at the same offset), and
+/// rules (only proven by the same rule at the same offset: [`mark_rules`] from `shift`).
+pub const fn analyze_tail(a: &'static Layout, b: &'static Layout) -> Analysis {
+  if a.is_unsized() || b.is_unsized() || a.size < b.size {
+    let exact = Exact::Never(match () {
+      () if a.is_unsized() => TAIL_UNSIZED_SOURCE,
+      () if b.is_unsized() => TAIL_UNSIZED_TARGET,
+      () => TOO_SMALL,
+    });
+    let fit = Fit { exact, shrink: false, end: 0 };
+    return Analysis { fit, relation: Relation::NEW, aligned: false, shift: 0 };
+  }
+  let shift = a.size - b.size;
+  let exact = if shift == 0 { Exact::Always } else { Exact::Never(TOO_LARGE) };
+  let fit = Fit { exact, shrink: true, end: b.size };
+  let mut relation = relate_at(a, 0, b, shift, shift, a.size, Checked::Marked);
+  mark_rules(a, b, shift, 0, &mut relation);
+  // The source is at a multiple of its alignment: the target is at a multiple of its own if both
+  // the alignment of the source and the shift are.
+  let aligned = b.align <= a.align && shift.is_multiple_of(b.align);
+  Analysis { fit, relation, aligned, shift }
 }
 
 /// Whatever any value written through a `&mut` to the target `b` leaves a valid source `a`.

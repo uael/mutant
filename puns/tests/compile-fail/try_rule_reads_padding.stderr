@@ -4,8 +4,8 @@ error[E0080]: evaluation panicked:
 
    --> src/lib.rs
     |
-    |   const TRY_REF: () = Self::require(Need { head: false, fallible: true, reference: true });
-    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, ReadsPadding>::TRY_REF` failed inside this call
+    |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, ReadsPadding>::TRY_REF` failed inside this call
     |
 note: inside `puns::Plan::<Plain, ReadsPadding>::require`
  --> src/lib.rs

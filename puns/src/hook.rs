@@ -17,6 +17,8 @@ pub struct Verdict {
   pub try_pun: bool,
   pub pun_ref: bool,
   pub head_ref: bool,
+  pub tail: bool,
+  pub tail_ref: bool,
   pub try_pun_ref: bool,
   pub pun_mut: bool,
   pub try_pun_mut: bool,
@@ -40,26 +42,22 @@ const fn ok<S: ?Sized + Pun, D: ?Sized + Pun>(need: Need) -> bool {
 /// What the analysis says of a pun from `S` to `D`.
 #[must_use]
 pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
-  const VALUE: Need = Need { head: false, fallible: false, reference: false };
-  const REF: Need = Need { reference: true, ..VALUE };
-  const HEAD: Need = Need { head: true, ..VALUE };
-  const TRY: Need = Need { fallible: true, ..VALUE };
-  const TRY_REF: Need = Need { fallible: true, ..REF };
-  const HEAD_REF: Need = Need { head: true, ..REF };
   let mutable = Plan::<S, D>::MUTABLE;
-  let why = match Plan::<S, D>::check(TRY_REF) {
+  let why = match Plan::<S, D>::check(Need::TRY_REF) {
     None => ([0; 512], 0),
     Some(message) => (message.bytes, message.len),
   };
   Verdict {
-    pun: ok::<S, D>(VALUE),
-    head: ok::<S, D>(HEAD),
-    try_pun: ok::<S, D>(TRY),
-    pun_ref: ok::<S, D>(REF),
-    head_ref: ok::<S, D>(HEAD_REF),
-    try_pun_ref: ok::<S, D>(TRY_REF),
-    pun_mut: ok::<S, D>(REF) && mutable,
-    try_pun_mut: ok::<S, D>(TRY_REF) && mutable,
+    pun: ok::<S, D>(Need::VALUE),
+    head: ok::<S, D>(Need::PART),
+    try_pun: ok::<S, D>(Need::TRY),
+    pun_ref: ok::<S, D>(Need::REF),
+    head_ref: ok::<S, D>(Need::PART_REF),
+    tail: Plan::<S, D>::check_tail(Need::PART).is_none(),
+    tail_ref: Plan::<S, D>::check_tail(Need::PART_REF).is_none(),
+    try_pun_ref: ok::<S, D>(Need::TRY_REF),
+    pun_mut: ok::<S, D>(Need::REF) && mutable,
+    try_pun_mut: ok::<S, D>(Need::TRY_REF) && mutable,
     why,
   }
 }
@@ -96,6 +94,27 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   }
   // SAFETY: as in `head`, which would compile.
   Some(unsafe { pun_unchecked(value) })
+}
+
+/// [`tail`](crate::tail), if it compiles.
+#[must_use]
+pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
+  if const { !verdict::<S, D>().tail } {
+    return None;
+  }
+  let shift = const { Plan::<S, D>::TAIL_ANALYSIS.shift };
+  // SAFETY: as in `tail`, which would compile.
+  Some(unsafe { (&raw const value).cast::<u8>().add(shift).cast::<D>().read_unaligned() })
+}
+
+/// [`tail_ref`](crate::tail_ref), if it compiles.
+#[must_use]
+pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> {
+  if const { !verdict::<S, D>().tail_ref } {
+    return None;
+  }
+  // SAFETY: as in `tail_ref`, which would compile.
+  Some(unsafe { &*Plan::<S, D>::tail_cast(value) })
 }
 
 /// [`try_pun_ref`](crate::try_pun_ref), if it compiles.

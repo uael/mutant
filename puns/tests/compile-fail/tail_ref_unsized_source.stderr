@@ -1,0 +1,41 @@
+error[E0080]: evaluation panicked:
+              cannot pun: the source is unsized: where its last bytes start depends on its length, which is only known at run time.
+              Use `from_tail` to take a value from the end of bytes.
+
+   --> src/lib.rs
+    |
+    |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], u8>::TAIL_REF` failed inside this call
+    |
+note: inside `puns::Plan::<[u8], u8>::require`
+ --> src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TAIL_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TAIL_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn tail_ref::<[u8], u8>`
+ --> tests/compile-fail/tail_ref_unsized_source.rs:4:16
+  |
+4 |   let _: &u8 = puns::tail_ref::<[u8], u8>(bytes);
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -4,8 +4,8 @@ error[E0080]: evaluation panicked:
 
    --> src/lib.rs
     |
-    |   const BY_REF: () = Self::require(Need { head: false, fallible: false, reference: true });
-    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), [u8; 4]>::BY_REF` failed inside this call
+    |   const BY_REF: () = Self::require(Self::check(Need::REF));
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), [u8; 4]>::BY_REF` failed inside this call
     |
 note: inside `puns::Plan::<(u8, u16), [u8; 4]>::require`
  --> src/lib.rs

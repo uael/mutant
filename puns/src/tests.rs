@@ -2,7 +2,7 @@ use core::num::NonZero;
 
 use crate::{
   Pun, Scalar,
-  analysis::{Exact, analyze, mutable},
+  analysis::{Exact, analyze, analyze_tail, mutable},
   layout::{Endian, Spec},
 };
 
@@ -162,4 +162,76 @@ fn unsized_types() {
   assert_eq!(verdict::<Pair<u32, [u8]>, [u8]>(), "infallible, mutable");
   assert_eq!(<Pair<u32, [u8]> as Pun>::LAYOUT.size_of_val(1), Some(8));
   assert_eq!(<Pair<u32, [u8]> as Pun>::LAYOUT.size_of_val(5), Some(12));
+}
+
+/// What the analysis says of the last bytes of `S` as a `D`.
+fn tail<S: ?Sized + Pun, D: ?Sized + Pun>() -> String {
+  let a = const { analyze_tail(&S::LAYOUT, &D::LAYOUT) };
+  let shift = a.shift;
+  if let (Exact::Never(why), false) = (a.fit.exact, a.fit.shrink) {
+    return format!("never: {why}");
+  }
+  let relation = match () {
+    () if a.relation.uninit.is_some() => {
+      format!("uninit at {}", a.relation.uninit.unwrap() - shift)
+    }
+    () if a.relation.disjoint.is_some() => {
+      format!("unreachable at {}", a.relation.disjoint.unwrap() - shift)
+    }
+    () if a.relation.infallible() => "infallible".to_string(),
+    () => format!("fallible at {}", a.relation.partial.unwrap() - shift),
+  };
+  let aligned = if a.aligned { "" } else { ", misaligned" };
+  format!("{relation} from {shift}{aligned}")
+}
+
+#[test]
+fn tails() {
+  assert_eq!(tail::<[u8; 4], [u8; 2]>(), "infallible from 2");
+  assert_eq!(tail::<[u8; 4], [u8; 4]>(), "infallible from 0");
+  assert_eq!(tail::<[bool; 3], u16>(), "infallible from 1, misaligned");
+  assert_eq!(tail::<[u8; 3], [bool; 2]>(), "fallible at 0 from 1");
+  assert_eq!(tail::<Pair<bool, u8>, bool>(), "fallible at 0 from 1");
+  assert_eq!(tail::<Pair<u8, bool>, bool>(), "infallible from 1");
+  // `Pair<u8, u16>` has a padding byte at 1, `Pair<u16, u8>` at 3.
+  assert_eq!(tail::<Pair<u8, u16>, u16>(), "infallible from 2");
+  assert_eq!(tail::<Pair<u8, u16>, [u8; 3]>(), "uninit at 0 from 1");
+  assert_eq!(tail::<Pair<u16, u8>, u8>(), "uninit at 0 from 3");
+  assert_eq!(tail::<Pair<u16, u8>, Pair<u16, u8>>(), "infallible from 0");
+  // Scalars cut by the shift: the first byte of a little-endian `u32 >= 0x100` can be anything,
+  // the others cannot be all 0, but the last two can.
+  assert_eq!(tail::<GeLe, [u8; 3]>(), "infallible from 1");
+  assert_eq!(tail::<GeLe, Packed<u8, NzLe>>(), "fallible at 1 from 1");
+  assert_eq!(tail::<GeLe, Packed<u8, [u8; 2]>>(), "infallible from 1");
+  assert_eq!(tail::<Pair<u8, GeBe>, GeBe>(), "infallible from 4");
+  assert_eq!(tail::<[Le1234; 2], Packed<Be3412, u8>>(), "unreachable at 0 from 1");
+  assert_eq!(tail::<[Le1234; 2], Packed<Be1234, u8>>(), "infallible from 1");
+  // Sizes.
+  assert_eq!(tail::<u8, u16>(), "never: the source is smaller than the target");
+  assert_eq!(
+    tail::<[u8], u8>(),
+    "never: the source is unsized: where its last bytes start depends on its length, which is \
+     only known at run time.\nUse `from_tail` to take a value from the end of bytes"
+  );
+  assert_eq!(
+    tail::<[u8; 4], [u8]>(),
+    "never: the target is unsized: its extent cannot be found from the end of the source"
+  );
+}
+
+#[test]
+fn huge_tails_cost_nothing() {
+  const N: usize = if usize::BITS >= 64 { 1 << 40 } else { 1 << 24 };
+  assert_eq!(tail::<[u8; N], [u8; N]>(), "infallible from 0");
+  assert_eq!(tail::<[u8; N], [bool; 7]>(), format!("fallible at 0 from {}", N - 7));
+  assert_eq!(tail::<[bool; N], [u16; 3]>(), format!("infallible from {}, misaligned", N - 6));
+  // In memory, `34 12 34 12 ..`; from 1, `12 34 12 34 .. 12`: out of phase, every period.
+  assert_eq!(tail::<[Le1234; N], Packed<[Be1234; N - 1], u8>>(), "infallible from 1");
+  assert_eq!(tail::<[Le1234; N], Packed<[Le1234; N - 1], u8>>(), "unreachable at 0 from 1");
+  assert_eq!(tail::<[NzLe; N], [NzLe; N - 1]>(), "infallible from 2");
+  assert_eq!(tail::<[NzLe; N], Packed<u8, [NzLe; N - 1]>>(), "infallible from 1");
+  assert_eq!(tail::<[NzLe; N], Packed<[NzLe; N - 1], u8>>(), "fallible at 0 from 1");
+  // A padding byte every 4, from 1.
+  assert_eq!(tail::<[Pair<u8, u16>; N], [u16; 2 * N - 1]>(), "uninit at 3 from 2");
+  assert_eq!(tail::<[Pair<u8, u16>; N], Pair<u16, [Pair<u8, u16>; N - 1]>>(), "infallible from 2");
 }

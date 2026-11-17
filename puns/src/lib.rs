@@ -238,7 +238,9 @@ struct ReadmeDoctests;
 
 use core::{marker::PhantomData, mem::ManuallyDrop};
 
-use analysis::{Analysis, Exact, Marks, analyze, mutable};
+use analysis::{
+  Analysis, Exact, Marks, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze, analyze_tail, mutable,
+};
 use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
 pub use layout::{crc32, sum16};
 pub use puns_derive::Pun;
@@ -640,93 +642,131 @@ struct Plan<S: ?Sized, D: ?Sized>(PhantomData<S>, PhantomData<D>);
 /// What a function requires of a pun.
 #[derive(Copy, Clone)]
 struct Need {
-  /// The target may be smaller than the source.
-  head: bool,
+  /// The target may be a part of the source: its first bytes, or with `Plan::TAIL` its last.
+  part: bool,
   /// What is not proven is checked at run time.
   fallible: bool,
   /// The target is behind a reference.
   reference: bool,
 }
 
+impl Need {
+  const VALUE: Need = Need { part: false, fallible: false, reference: false };
+  const REF: Need = Need { reference: true, ..Need::VALUE };
+  const PART: Need = Need { part: true, ..Need::VALUE };
+  const PART_REF: Need = Need { part: true, ..Need::REF };
+  const TRY: Need = Need { fallible: true, ..Need::VALUE };
+  const TRY_REF: Need = Need { fallible: true, ..Need::REF };
+}
+
 const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
                        where the source is not), and could be written through the `&mut`";
+
+/// Why a pun of which `analysis` is the analysis does not meet the `need`, if it does not.
+const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
+  let Analysis { fit, relation, aligned, shift } = *analysis;
+  match fit.exact {
+    _ if need.part && fit.shrink => {}
+    _ if need.part => {
+      return Some(Message::new(
+        "the source can be smaller than the target (if it has a slice, it may be empty)",
+      ));
+    }
+    Exact::Always => {}
+    Exact::Sometimes if need.fallible => {}
+    Exact::Sometimes => {
+      return Some(Message::new(
+        "the size of the source may not be a size of the target, depending on the length of \
+         its slice.\nUse `try_pun_ref` or `try_pun_mut` to check it at run time",
+      ));
+    }
+    Exact::Never(why) if fit.shrink => {
+      return Some(Message::new(why).str(
+        ".\nUse `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source",
+      ));
+    }
+    Exact::Never(why) => return Some(Message::new(why)),
+  }
+  // Offsets of the target.
+  if let Some(offset) = relation.uninit {
+    return Some(
+      Message::new("a byte that the target requires to be initialized is padding in the source")
+        .at(offset - shift),
+    );
+  }
+  if let Some(offset) = relation.disjoint {
+    return Some(Message::new("no value of the source is valid for the target").at(offset - shift));
+  }
+  if let (Some(offset), false) = (relation.partial, need.fallible) {
+    return Some(
+      Message::new(
+        "some values of the source are not valid for the target, or do not prove one of its \
+         rules.\nUse a `try_*` function to check them at run time",
+      )
+      .at(offset - shift),
+    );
+  }
+  if need.reference && !aligned && !need.fallible {
+    return Some(Message::new(
+      "the target has a greater alignment than the source.\nUse `try_pun_ref` or \
+       `try_pun_mut` to check the address at run time",
+    ));
+  }
+  None
+}
 
 impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const ANALYSIS: Analysis = analyze(&S::LAYOUT, &D::LAYOUT);
 
+  /// The analysis of the last bytes of the source as the target.
+  const TAIL_ANALYSIS: Analysis = analyze_tail(&S::LAYOUT, &D::LAYOUT);
+
   const MUTABLE: bool = mutable(&S::LAYOUT, &D::LAYOUT, &Self::ANALYSIS.fit);
 
-  /// Fail to compile if the pun does not meet the `need`.
-  const fn require(need: Need) {
-    if let Some(message) = Self::check(need) {
+  /// Fail to compile if `message` says why.
+  const fn require(message: Option<Message>) {
+    if let Some(message) = message {
       message.panic();
     }
   }
 
   /// Why the pun does not meet the `need`, if it does not.
   const fn check(need: Need) -> Option<Message> {
-    let Analysis { fit, relation, aligned } = Self::ANALYSIS;
-    match fit.exact {
-      _ if need.head && fit.shrink => {}
-      _ if need.head => {
-        return Some(Message::new(
-          "the source can be smaller than the target (if it has a slice, it may be empty)",
-        ));
-      }
-      Exact::Always => {}
-      Exact::Sometimes if need.fallible => {}
-      Exact::Sometimes => {
-        return Some(Message::new(
-          "the size of the source may not be a size of the target, depending on the length of \
-           its slice.\nUse `try_pun_ref` or `try_pun_mut` to check it at run time",
-        ));
-      }
-      Exact::Never(why) if fit.shrink => {
-        return Some(
-          Message::new(why).str(".\nUse `head` or `head_ref` to ignore the end of the source"),
-        );
-      }
-      Exact::Never(why) => return Some(Message::new(why)),
-    }
-    if let Some(offset) = relation.uninit {
-      return Some(
-        Message::new("a byte that the target requires to be initialized is padding in the source")
-          .at(offset),
-      );
-    }
-    if let Some(offset) = relation.disjoint {
-      return Some(Message::new("no value of the source is valid for the target").at(offset));
-    }
-    if let (Some(offset), false) = (relation.partial, need.fallible) {
-      return Some(
-        Message::new(
-          "some values of the source are not valid for the target, or do not prove one of its \
-           rules.\nUse a `try_*` function to check them at run time",
-        )
-        .at(offset),
-      );
-    }
-    if need.reference && !aligned && !need.fallible {
-      return Some(Message::new(
-        "the target has a greater alignment than the source.\nUse `try_pun_ref` or \
-         `try_pun_mut` to check the address at run time",
-      ));
-    }
-    None
+    check(&Self::ANALYSIS, need)
   }
 
-  const BY_VALUE: () = Self::require(Need { head: false, fallible: false, reference: false });
-  const BY_REF: () = Self::require(Need { head: false, fallible: false, reference: true });
+  /// Why the pun of the last bytes of the source does not meet the `need` (a part), if it does
+  /// not.
+  const fn check_tail(need: Need) -> Option<Message> {
+    if S::LAYOUT.is_unsized() {
+      return Some(Message::new(TAIL_UNSIZED_SOURCE));
+    }
+    if D::LAYOUT.is_unsized() {
+      return Some(Message::new(TAIL_UNSIZED_TARGET));
+    }
+    match check(&Self::TAIL_ANALYSIS, Need { reference: false, ..need }) {
+      None if need.reference && !Self::TAIL_ANALYSIS.aligned => Some(Message::new(
+        "the target has a greater alignment than the source.\nUse `tail` to copy it, or \
+         `from_tail` to take it from bytes, whose address is checked at run time",
+      )),
+      verdict => verdict,
+    }
+  }
+
+  const BY_VALUE: () = Self::require(Self::check(Need::VALUE));
+  const BY_REF: () = Self::require(Self::check(Need::REF));
   const BY_MUT: () = {
     let () = Self::BY_REF;
     if !Self::MUTABLE {
       Message::new(MUTABLE).panic();
     }
   };
-  const HEAD: () = Self::require(Need { head: true, fallible: false, reference: false });
-  const HEAD_REF: () = Self::require(Need { head: true, fallible: false, reference: true });
-  const TRY: () = Self::require(Need { head: false, fallible: true, reference: false });
-  const TRY_REF: () = Self::require(Need { head: false, fallible: true, reference: true });
+  const HEAD: () = Self::require(Self::check(Need::PART));
+  const HEAD_REF: () = Self::require(Self::check(Need::PART_REF));
+  const TAIL: () = Self::require(Self::check_tail(Need::PART));
+  const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+  const TRY: () = Self::require(Self::check(Need::TRY));
+  const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
   const TRY_MUT: () = {
     let () = Self::TRY_REF;
     if !Self::MUTABLE {
@@ -755,6 +795,15 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
       (extent - target.head()) / target.stride()
     };
     ptr::from_raw_parts::<D>(source.cast(), len)
+  }
+
+  /// Pointer to the target at the end of `source`, when there is nothing to check (`TAIL_REF`:
+  /// both are sized).
+  #[inline(always)]
+  const fn tail_cast(source: *const S) -> *const D {
+    let shift = const { Self::TAIL_ANALYSIS.shift };
+    // SAFETY: `shift` is at most the size of the source, at the end of which the target ends.
+    ptr::from_raw_parts::<D>(unsafe { source.cast::<u8>().add(shift) }, 0)
   }
 
   /// Pointer to the target at `source`, with every check that could not be made at compile
@@ -864,16 +913,60 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
   unsafe { pun_unchecked(value) }
 }
 
-/// Reinterpret the first bytes of a value as a value of a smaller type.
+/// Reinterpret the first bytes of a value as a value of a type that is not larger.
+///
+/// This compiles if the first `size_of::<D>()` bytes of every `S` are a valid `D`, and then costs
+/// nothing.
 ///
 /// ```
 /// assert_eq!(puns::head::<[u8; 4], [u8; 2]>([1, 2, 3, 4]), [1, 2]);
+/// ```
+///
+/// ```compile_fail
+/// // The second byte is padding.
+/// let _: [u8; 2] = puns::head((0u8, 0u16));
 /// ```
 #[inline(always)]
 pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
   const { Plan::<S, D>::HEAD };
   // SAFETY: checked at compile time.
   unsafe { pun_unchecked(value) }
+}
+
+/// Reinterpret the last bytes of a value as a value of a type that is not larger.
+///
+/// This compiles if the last `size_of::<D>()` bytes of every `S` are a valid `D`, and then costs
+/// nothing.
+///
+/// ```
+/// assert_eq!(puns::tail::<[u8; 4], [u8; 2]>([1, 2, 3, 4]), [3, 4]);
+/// // Two `bool`s are two initialized bytes.
+/// assert_eq!(puns::tail::<[bool; 3], u16>([false, true, true]), 0x0101);
+/// ```
+///
+/// ```compile_fail
+/// // Not every `u8` is a `bool`.
+/// let _: bool = puns::tail::<[u8; 2], bool>([1, 7]);
+/// ```
+///
+/// ```compile_fail
+/// #[derive(puns::Pun, Clone, Copy)]
+/// #[repr(C)]
+/// struct Padded {
+///   a: u16,
+///   b: u8,
+/// }
+///
+/// // The last byte is padding.
+/// let _: u8 = puns::tail(Padded { a: 0, b: 0 });
+/// ```
+#[inline(always)]
+pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
+  const { Plan::<S, D>::TAIL };
+  let shift = const { Plan::<S, D>::TAIL_ANALYSIS.shift };
+  // SAFETY: checked at compile time: `shift + size_of::<D>() == size_of::<S>()`, and the bytes of
+  // `value` from `shift` are a valid `D` (which may not be aligned there).
+  unsafe { (&raw const value).cast::<u8>().add(shift).cast::<D>().read_unaligned() }
 }
 
 /// Reinterpret a value as a value of another type of the same size, if it is a valid one.
@@ -951,7 +1044,8 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 
 /// Reinterpret a reference as a reference to a type that covers the start of the value.
 ///
-/// If the target has a slice, it takes as many elements as fit.
+/// If the target has a slice, it takes as many elements as fit. This compiles if those first
+/// bytes of every `S` are a valid `D`, and if `D` has no greater alignment. It then costs nothing.
 ///
 /// ```
 /// let head: &[u8; 2] = puns::head_ref(&[1u8, 2, 3]);
@@ -959,11 +1053,47 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// let pairs: &[[u8; 2]] = puns::head_ref(&[1u8, 2, 3, 4, 5]);
 /// assert_eq!(pairs, &[[1, 2], [3, 4]]);
 /// ```
+///
+/// ```compile_fail
+/// // An empty slice has no first byte.
+/// let _: &u8 = puns::head_ref::<[u8], u8>(&[1, 2]);
+/// ```
 #[inline(always)]
 pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
   const { Plan::<S, D>::HEAD_REF };
   // SAFETY: checked at compile time.
   unsafe { &*Plan::<S, D>::cast(value) }
+}
+
+/// Reinterpret a reference as a reference to a type that covers the end of the value.
+///
+/// The target is the last `size_of::<D>()` bytes of the source, which must be `Sized`: this
+/// compiles if those bytes of every `S` are a valid `D`, and if `D` has no greater alignment (its
+/// offset in `S` is then a multiple of its alignment, as sizes are multiples of alignments). It
+/// then costs an addition.
+///
+/// ```
+/// let tail: &[u8; 2] = puns::tail_ref(&[1u8, 2, 3]);
+/// assert_eq!(tail, &[2, 3]);
+/// let last: &u16 = puns::tail_ref(&[1u16, 2, 3]);
+/// assert_eq!(*last, 3);
+/// ```
+///
+/// Where the last bytes of an unsized value start is only known at run time: see [`from_tail`].
+///
+/// ```compile_fail
+/// let _: &u8 = puns::tail_ref::<[u8], u8>(&[1, 2]);
+/// ```
+///
+/// ```compile_fail
+/// // A greater alignment.
+/// let _: &u16 = puns::tail_ref(&[0u8; 4]);
+/// ```
+#[inline(always)]
+pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
+  const { Plan::<S, D>::TAIL_REF };
+  // SAFETY: checked at compile time.
+  unsafe { &*Plan::<S, D>::tail_cast(value) }
 }
 
 /// Reinterpret a reference as a reference to another type, if the value is a valid one.
