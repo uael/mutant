@@ -184,6 +184,18 @@ fields to a constant postfix program (`layout::Op`):
 - `#[pun(assert(EXPR))]`: anything else (bit fields, relations between fields, a minimum size);
 - `#[pun(regions(a = EXPR, b))]`: consecutive regions of the tail, with an accessor for each.
 
+An expression means what the same Rust expression means where every integer (a field, a
+constant, a literal) is a `u128`, or is refused at compile time: never something else. The derive
+types it as Rust does (an integer or a `bool`: `!` is bitwise on one and logical on the other, an
+integer is not a condition), reads literals itself (no float, no negative number, no signed
+suffix), converts constants through a trait that only unsigned integer types implement, and makes
+`as uN` keep the low bits. Where Rust would panic (an overflow, a division by zero, a shift by
+128 or more), the rule fails; what Rust does not compute (the right side of a `&&` that the left
+side decides, the branch of an `if` that is not taken) cannot make it fail, and what it does (a
+`let`, used or not) can. The derive also counts what the evaluator has room for (the depth of its
+stack, the operations of a walk, the variables) and reports an excess at the expression, with the
+numbers; the evaluator checks it again.
+
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
 (the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
