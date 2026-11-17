@@ -1,5 +1,5 @@
 [workspace]
-members = ["transmutant", "transmutant-derive", "xtask"]
+members = ["transmutant", "transmutant-derive", "transmutant-model", "transmutant-model/fakecore", "xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -8,6 +8,14 @@ edition = "2024"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# The full model check (`cargo test --profile model -p transmutant-model -- --ignored`): optimized,
+# without what makes the release profile take long to build its thousands of monomorphizations.
+[profile.model]
+inherits = "release"
+lto = false
+codegen-units = 256
+opt-level = 1
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -15,6 +15,9 @@ cargo run --example ethernet         # The Ethernet example; it asserts its resu
 cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, tree borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, stacked borrows
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests --target i686-unknown-linux-gnu  # 32 bits
+cargo test --profile model -p transmutant-model -- --ignored  # The full model check; `cargo test` runs a sample
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant-model  # The model check that Miri affords
 cargo build -p transmutant --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
@@ -47,6 +50,9 @@ the library, and keep it, the crate docs and `README.md` in step with the code.
 
 - **`transmutant/`** — the library (`#![no_std]`)
 - **`transmutant-derive/`** — `#[derive(Data)]`, re-exported as `transmutant::Data`
+- **`transmutant-model/`** — model check of the analysis against oracles that do not use it (not
+  published; uses the test-only `verdict` feature of `transmutant`), with `fakecore/`, a `core`
+  that lies, for what the derive must not trust
 - **`xtask/`** — dev automation (fmt, lint)
 
 ## Releasing
@@ -55,7 +61,7 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 
 - Config: `release-plz.toml`
 - Workflow: `.github/workflows/release-plz.yml`
-- Only `transmutant` and `transmutant-derive` are published; `xtask` is excluded
+- Only `transmutant` and `transmutant-derive` are published; `xtask`, `transmutant-model` and `fakecore` are excluded
 - `transmutant` owns the changelog and git tags (`v{{ version }}`); `transmutant-derive` has no changelog or tags of its own
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
 - `release_always = false`: nothing is published by an ordinary push, only by merging a release PR (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the first release PR

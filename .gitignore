@@ -43,6 +43,16 @@
 !transmutant-derive/src/
 !transmutant-derive/**/*.rs
 
+# Rust (model check, not published)
+!transmutant-model/
+!transmutant-model/Cargo.toml
+!transmutant-model/src/
+!transmutant-model/tests/
+!transmutant-model/fakecore/
+!transmutant-model/fakecore/Cargo.toml
+!transmutant-model/fakecore/src/
+!transmutant-model/**/*.rs
+
 # Rust (xtask)
 !xtask/
 !xtask/Cargo.toml
