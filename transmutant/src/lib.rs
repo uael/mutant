@@ -661,8 +661,9 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
       stride if stride != 0 && rest.is_multiple_of(stride) => rest / stride,
       _ => return Err(Error::Size),
     };
-    // A target of greater alignment may end with more padding than the source has room for.
-    if const { D::LAYOUT.is_dynamic() && D::LAYOUT.align() > S::LAYOUT.align() } {
+    // An unsized target of greater alignment may end with more padding than the source has room
+    // for, even if its slice has no size (`[()]`).
+    if const { D::LAYOUT.is_unsized() && D::LAYOUT.align() > S::LAYOUT.align() } {
       match (target.size_of_val(len), layout.size_of_val(ptr::metadata(source))) {
         (Some(needed), Some(available)) if needed <= available => {}
         _ => return Err(Error::Size),
