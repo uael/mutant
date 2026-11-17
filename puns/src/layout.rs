@@ -1621,10 +1621,45 @@ pub enum Op {
   },
 }
 
+/// The types of the constants of rules: unsigned integers, which they compute on.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+  message = "a constant of a rule is an unsigned integer: `{Self}` is not one",
+  label = "a rule computes on unsigned integers",
+  note = "an expression of `#[pun(..)]` means what it means in Rust, where every integer is a `u128`"
+)]
+pub trait Unsigned: Copy + seal::Unsigned {}
+
+/// Implemented by this crate only.
+mod seal {
+  pub trait Unsigned {}
+}
+
+impl seal::Unsigned for u8 {}
+impl seal::Unsigned for u16 {}
+impl seal::Unsigned for u32 {}
+impl seal::Unsigned for u64 {}
+impl seal::Unsigned for u128 {}
+impl seal::Unsigned for usize {}
+impl Unsigned for u8 {}
+impl Unsigned for u16 {}
+impl Unsigned for u32 {}
+impl Unsigned for u64 {}
+impl Unsigned for u128 {}
+impl Unsigned for usize {}
+
 impl Op {
   /// What `as usize` keeps of a value.
   #[doc(hidden)]
   pub const USIZE_MAX: u128 = usize::MAX as u128;
+
+  /// The value of a constant of a rule.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn constant<T: Unsigned>(value: &T) -> u128 {
+    // SAFETY: an unsigned integer is initialized, and has no padding.
+    unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
+  }
 
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.

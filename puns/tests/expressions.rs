@@ -37,3 +37,24 @@ fn not_of_an_integer_is_bitwise() {
   let (padded, rest) = puns::from_head::<Padded>(&[0, 1, 0, 5, 1, 2, 3, 4, 5, 0, 0, 0, 9]).unwrap();
   assert_eq!((padded.kind.get(), padded.data.len(), rest), (1, 8, &[9][..]));
 }
+
+/// Constants are unsigned integers, of any type, read as `u128`s; `b'a'` is one.
+const SMALL: u8 = 0xff;
+const WIDE: u64 = 0x1_0000_0000;
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(x + SMALL as u128 > 0xff && x + SMALL > 0xff || x == 0))]
+#[pun(assert(x < u8::MAX && (x as u64 + WIDE) as u32 == x as u32 && x != b'!' as u128))]
+#[pun(assert(1u8 + x > 0 && 0x1_0000 * x != 1))]
+struct Constants {
+  x: u8,
+}
+
+#[test]
+fn constants_are_unsigned_integers() {
+  assert!(puns::from_bytes::<Constants>(&[1]).is_ok());
+  assert!(puns::from_bytes::<Constants>(&[0]).is_ok());
+  assert!(puns::from_bytes::<Constants>(b"!").is_err());
+  assert!(puns::from_bytes::<Constants>(&[0xff]).is_err());
+}

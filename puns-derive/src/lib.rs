@@ -1,7 +1,7 @@
 //! `#[derive(Pun)]`, see the documentation of the `puns` crate.
 
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{
   Attribute, BinOp, Data, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprLit, ExprRange,
   Fields, Ident, Index, Lit, Member, Path, RangeLimits, Result, Token, Type, UnOp, Visibility,
@@ -48,7 +48,15 @@ use syn::{
 /// truthiness: `flags & 1` is not an assertion, `flags & 1 != 0` is. So:
 /// - `!` is a bitwise not on an integer (`!3` is `0xffff..fffc`), a logical one on a `bool`;
 /// - `as u8` (or `u16`, `u32`, `u64`, `usize`) keeps the low bits, `as u128` keeps everything,
-///   `true as u8` is `1`, and a cast to any other type is refused.
+///   `true as u8` is `1`, and a cast to any other type is refused;
+/// - an integer literal has no suffix or the one of an unsigned type (`1u8`), `b'a'` is one; a
+///   constant (`MAX_LEN`, `u16::MAX`, a const parameter `N`, `size_of::<Header>()`,
+///   `offset_of!(Self, field)`, `self::f(3)` for a `const fn f`) is computed by Rust, and must be
+///   of an unsigned integer type. Floating-point numbers, negative numbers, signed integers and
+///   `char`s are refused, since they would mean something else.
+///
+/// A rule names the integer fields of its struct, not the fields of a field or the elements of
+/// an array, which `le` and `be` read; it calls no method and no function but the ones below.
 ///
 /// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
 /// once), `if EXPR { EXPR } else { EXPR }`.
@@ -446,6 +454,11 @@ fn compile(
     // `as` to an unsigned integer: the bits that it has, as in Rust.
     Expr::Cast(cast) => {
       let mask = cast_mask(&cast.ty, &op)?;
+      // Of a constant: what Rust makes of it, `-1i8 as u8` or `'a' as u32`.
+      if !mentions(cast.expr.to_token_stream(), fields, scope) {
+        ops.push(quote_spanned!(expr.span()=> #op::Lit(#op::constant(&(#expr)))));
+        return Ok(Ty::Int);
+      }
       let ty = compile(&cast.expr, fields, root, ops, scope)?;
       if let (Some(mask), Ty::Int) = (mask, ty) {
         ops.push(quote!(#op::Lit(#mask)));
@@ -457,6 +470,16 @@ fn compile(
       let value = u128::from(lit.value);
       ops.push(quote!(#op::Lit(#value)));
       Ty::Bool
+    }
+    Expr::Lit(ExprLit { lit, .. }) => {
+      ops.push(literal(lit, &op)?);
+      Ty::Int
+    }
+    Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => {
+      return Err(Error::new_spanned(
+        unary,
+        "a rule computes on unsigned integers: there is no negative number",
+      ));
     }
     Expr::Block(block) => compile_block(&block.block, fields, root, ops, scope)?,
     // `if COND { EXPR } else { EXPR }`
@@ -600,12 +623,110 @@ fn compile(
       }));
       Ty::Int
     }
-    // Anything else must be a constant.
+    // Anything else must be a constant, which Rust computes.
     expr => {
-      ops.push(quote!(#op::Lit((#expr) as u128)));
+      constant(expr, fields, scope)?;
+      ops.push(quote_spanned!(expr.span()=> #op::Lit(#op::constant(&(#expr)))));
       Ty::Int
     }
   })
+}
+
+/// The functions that a rule can call.
+const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `crc32`, `sum16` and `walk`";
+
+/// The operation that pushes an integer literal. Its type is the one of a suffix, if any, which
+/// must be an unsigned integer type.
+fn literal(lit: &Lit, op: &TokenStream) -> Result<TokenStream> {
+  let unsigned = "a rule computes on unsigned integers";
+  match lit {
+    Lit::Int(int) => match int.suffix() {
+      "" => {
+        let value = int.base10_parse::<u128>()?;
+        Ok(quote!(#op::Lit(#value)))
+      }
+      "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => Ok(quote!(#op::Lit(#int as u128))),
+      suffix => Err(Error::new(lit.span(), format!("{unsigned}: `{suffix}` is not one"))),
+    },
+    Lit::Byte(byte) => Ok(quote!(#op::Lit(#byte as u128))),
+    Lit::Float(_) => Err(Error::new(
+      lit.span(),
+      format!("{unsigned}: a floating-point number is not one (scale both sides instead)"),
+    )),
+    Lit::Char(_) => Err(Error::new(
+      lit.span(),
+      format!("{unsigned}: a `char` is not one (write `b'a'`, or `'a' as u32`)"),
+    )),
+    _ => Err(Error::new(lit.span(), format!("{unsigned}: this literal is not one"))),
+  }
+}
+
+/// Whatever `tokens` name a field or a variable of the expression, or `self`: what a constant
+/// cannot name.
+fn mentions(tokens: TokenStream, fields: &[FieldInfo], scope: &Scope) -> bool {
+  // After `.` or `::`, a name is a field or an item of something else.
+  let mut qualified = false;
+  for token in tokens {
+    match token {
+      proc_macro2::TokenTree::Ident(ident) => {
+        let named = ident == "self"
+          || scope.get(&ident).is_some()
+          || fields.iter().any(|field| field.member == Member::Named(ident.clone()));
+        if named && !qualified {
+          return true;
+        }
+        qualified = false;
+      }
+      proc_macro2::TokenTree::Punct(punct) => {
+        qualified = matches!(punct.as_char(), '.' | ':');
+      }
+      proc_macro2::TokenTree::Group(group) => {
+        if mentions(group.stream(), fields, scope) {
+          return true;
+        }
+        qualified = false;
+      }
+      proc_macro2::TokenTree::Literal(_) => qualified = false,
+    }
+  }
+  false
+}
+
+/// Check that `expr`, which is not something that a rule computes, is a constant: Rust
+/// computes it, and it must be an unsigned integer. A macro (`offset_of!(Self, field)`) is one.
+fn constant(expr: &Expr, fields: &[FieldInfo], scope: &Scope) -> Result<()> {
+  let error = |message: String| Err(Error::new_spanned(expr, message));
+  let bytes = "read its bytes with `le(offset, size)` or `be(offset, size)`";
+  match expr {
+    Expr::Macro(_) => Ok(()),
+    // A function of rules is called by its name alone.
+    Expr::Call(call) if matches!(&*call.func, Expr::Path(path) if path.path.get_ident().is_some()) =>
+    {
+      let name = call.func.to_token_stream();
+      error(format!(
+        "`{name}` is not a function of rules, which are {FUNCTIONS}; a constant can be computed \
+         by a `const fn` named by its path (`self::{name}(..)`)"
+      ))
+    }
+    _ if !mentions(expr.to_token_stream(), fields, scope) => Ok(()),
+    Expr::Path(_) => error("`self` is only `size_of_val(self)` in a rule".into()),
+    Expr::Index(_) => error(format!(
+      "a rule reads the integer fields of its struct, not the elements of an array: {bytes}"
+    )),
+    Expr::Field(_) => error(format!(
+      "a rule reads the integer fields of its struct, not the fields of a field: {bytes}"
+    )),
+    Expr::MethodCall(_) => error(format!(
+      "a rule cannot call methods: it computes with operators, `if`, `let`, and {FUNCTIONS}"
+    )),
+    Expr::Call(_) => error(format!(
+      "a rule cannot call this function: it computes with operators, `if`, `let`, and {FUNCTIONS}"
+    )),
+    _ => error(format!(
+      "not something that a rule computes: it computes with operators, `if`, `let`, and \
+       {FUNCTIONS}"
+    )),
+  }
 }
 
 /// What `as TYPE` keeps of a `u128`: `None` for `u128`, the mask of the bits of another unsigned
