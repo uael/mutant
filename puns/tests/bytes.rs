@@ -2,7 +2,7 @@
 //! (`from_tail`), by reference and by mutable reference.
 
 use puns::{
-  Error, Pun, from_bytes, from_bytes_mut, from_head, from_tail,
+  Error, Pun, from_bytes, from_bytes_mut, from_head, from_head_mut, from_tail, from_tail_mut,
   num::{u16be, u16bec},
   try_pun_mut, try_pun_ref,
 };
@@ -113,4 +113,52 @@ fn back() {
   let (rest, magic) = from_tail::<Magic>(&bytes).unwrap();
   let (chunk, rest) = from_head::<Chunk>(rest).unwrap();
   assert_eq!((&chunk.data, rest.len(), magic.flag), (&b"hi"[..], 0, true));
+}
+
+#[test]
+fn front_and_back_mut() {
+  let mut bytes = [7u8, 0, 5, b'h', b'i', 0xca, 0xfe, 1];
+  let (chunk, rest) = from_head_mut::<Chunk>(&mut bytes).unwrap();
+  chunk.data.make_ascii_uppercase();
+  chunk.kind = 8;
+  rest[2] = 0;
+  let (rest, position) = from_tail_mut::<Position>(&mut bytes).unwrap();
+  position.x = 0xff;
+  rest[0] = 9;
+  assert_eq!(bytes, [9, 0, 5, b'H', b'I', 0xca, 0xff, 0]);
+  // The same checks as by shared reference.
+  assert_eq!(from_head_mut::<Chunk>(&mut [1, 0, 9, 0]).err(), Some(Error::Size));
+  assert_eq!(from_head_mut::<Position>(&mut [1, 2]).err(), Some(Error::Validity));
+  assert_eq!(from_tail_mut::<Position>(&mut [1, 2]).err(), Some(Error::Validity));
+  assert_eq!(from_tail_mut::<Position>(&mut [1]).err(), Some(Error::Size));
+  let mut words = Aligned([0u8, 0, 0, 1, 0, 0, 0, 2]);
+  assert_eq!(from_tail_mut::<Word>(&mut words.0[..7]).err(), Some(Error::Alignment));
+  assert_eq!(from_head_mut::<Word>(&mut words.0[1..]).err(), Some(Error::Alignment));
+  let (rest, word) = from_tail_mut::<Word>(&mut words.0).unwrap();
+  word.value = 0;
+  let (word, _) = from_head_mut::<Word>(rest).unwrap();
+  word.value = u32::MAX;
+  assert_eq!(words.0, [0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+  // A slice takes what there is, a string checks it all.
+  let mut text = *b"abc";
+  let (all, rest) = from_head_mut::<str>(&mut text).unwrap();
+  all.make_ascii_uppercase();
+  assert_eq!(rest.len(), 0);
+  assert_eq!(&text, b"ABC");
+  assert!(from_head_mut::<str>(&mut [0xff]).is_err());
+}
+
+#[test]
+fn mut_in_const() {
+  const BYTES: [u8; 4] = {
+    let mut bytes = [1u8, 0, 0, 1];
+    if let Ok((flags, _)) = from_head_mut::<[bool; 1]>(&mut bytes) {
+      flags[0] = false;
+    }
+    if let Ok((_, flags)) = from_tail_mut::<[bool; 1]>(&mut bytes) {
+      flags[0] = false;
+    }
+    bytes
+  };
+  assert_eq!(BYTES, [0, 0, 0, 0]);
 }

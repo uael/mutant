@@ -1,0 +1,35 @@
+error[E0080]: evaluation panicked:
+              cannot pun: some values of the target are not valid for the source (or are padding where the source is not), and could be written through the `&mut`.
+
+   --> src/lib.rs
+    |
+    |       Message::new(MUTABLE).panic();
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], (u8, u16)>::TRY_MUT` failed inside this call
+    |
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<[u8], D>::TRY_MUT };
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<[u8], D>::TRY_MUT };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn from_head_mut::<(u8, u16)>`
+ --> tests/compile-fail/from_head_mut_padding.rs:3:11
+  |
+3 |   let _ = puns::from_head_mut::<(u8, u16)>(&mut [0; 4]);
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

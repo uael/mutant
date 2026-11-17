@@ -768,6 +768,12 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const TRY: () = Self::require(Self::check(Need::TRY));
   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
   const FROM_TAIL: () = Self::require(Self::check_from_tail());
+  const FROM_TAIL_MUT: () = {
+    let () = Self::FROM_TAIL;
+    if !Self::MUTABLE {
+      Message::new(MUTABLE).panic();
+    }
+  };
 
   /// Why the target cannot be taken from the end of the source (bytes) at run time, if it
   /// cannot.
@@ -1523,6 +1529,81 @@ pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&[u8], &D), Err
   match unsafe { Plan::<[u8], D>::back(bytes.as_ptr(), bytes.len()) } {
     // SAFETY: validated.
     Ok((start, target)) => Ok((bytes.split_at(start).0, unsafe { &*target })),
+    Err(error) => Err(error),
+  }
+}
+
+/// Take a `D` from the start of mutable `bytes`: returns it and what remains, both mutable.
+///
+/// As [`from_head`]; as anything can be written through the result, `D` must not have padding
+/// (bytes would be de-initialized), as [`from_bytes_mut`] requires.
+///
+/// ```
+/// let mut bytes = [1u8, 0, 7, 7];
+/// let (flags, rest) = puns::from_head_mut::<[bool; 2]>(&mut bytes).unwrap();
+/// flags[1] = true;
+/// rest[0] = 9;
+/// assert_eq!(bytes, [1, 1, 9, 7]);
+/// assert!(puns::from_head_mut::<[bool; 2]>(&mut [1, 2, 0]).is_err());
+/// ```
+///
+/// ```compile_fail
+/// let _ = puns::from_head_mut::<(u8, u16)>(&mut [0; 4]);
+/// ```
+///
+/// # Errors
+/// As [`from_head`].
+#[inline]
+pub const fn from_head_mut<D: ?Sized + Pun>(
+  bytes: &mut [u8],
+) -> Result<(&mut D, &mut [u8]), Error> {
+  const { Plan::<[u8], D>::TRY_MUT };
+  // SAFETY: bytes.
+  match unsafe { Plan::<[u8], D>::front(bytes.as_mut_ptr().cast_const(), bytes.len()) } {
+    Ok((target, size)) => {
+      let len = ptr::metadata(target);
+      let (front, rest) = bytes.split_at_mut(size);
+      let target = ptr::from_raw_parts::<D>(front.as_mut_ptr().cast_const(), len).cast_mut();
+      // SAFETY: the bytes of `front` were validated.
+      Ok((unsafe { &mut *target }, rest))
+    }
+    Err(error) => Err(error),
+  }
+}
+
+/// Take a `D` from the end of mutable `bytes`: returns what precedes it, and it, both mutable.
+///
+/// As [`from_tail`]; as anything can be written through the result, `D` must not have padding,
+/// as [`from_bytes_mut`] requires.
+///
+/// ```
+/// let mut bytes = [7u8, 7, 0, 1];
+/// let (rest, flags) = puns::from_tail_mut::<[bool; 2]>(&mut bytes).unwrap();
+/// flags[0] = true;
+/// rest[0] = 9;
+/// assert_eq!(bytes, [9, 7, 1, 1]);
+/// assert!(puns::from_tail_mut::<[bool; 2]>(&mut [1, 2]).is_err());
+/// ```
+///
+/// ```compile_fail
+/// let _ = puns::from_tail_mut::<(u8, u16)>(&mut [0; 4]);
+/// ```
+///
+/// # Errors
+/// As [`from_tail`].
+#[inline]
+pub const fn from_tail_mut<D: ?Sized + Pun>(
+  bytes: &mut [u8],
+) -> Result<(&mut [u8], &mut D), Error> {
+  const { Plan::<[u8], D>::FROM_TAIL_MUT };
+  // SAFETY: bytes.
+  match unsafe { Plan::<[u8], D>::back(bytes.as_mut_ptr().cast_const(), bytes.len()) } {
+    Ok((start, _)) => {
+      let (rest, back) = bytes.split_at_mut(start);
+      let target = ptr::from_raw_parts::<D>(back.as_mut_ptr().cast_const(), 0).cast_mut();
+      // SAFETY: the bytes of `back` were validated.
+      Ok((rest, unsafe { &mut *target }))
+    }
     Err(error) => Err(error),
   }
 }
