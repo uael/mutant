@@ -11,7 +11,9 @@ tuples, arrays, slices and slice-tailed structs, `str`, with
 - **only the checks that could not be proven** when it is valid for some values (`try_*`),
 - sizes, lengths and assertions that are in the data itself, told by `#[derive(Data)]`.
 
-`tests/` and `examples/ethernet.rs` are the reference for what works.
+`tests/` and `examples/` (Ethernet, then services over IP, transports, routing, links, images,
+media, archives, executables, storage and encodings) are the reference for what works; each
+example says what it does not cover, and why.
 
 ## What stable Rust (1.100) gives us
 

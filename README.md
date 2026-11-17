@@ -40,8 +40,34 @@ assert_eq!(
 Rejections are errors of the monomorphization of the generic functions: `cargo build` reports
 them, `cargo check` does not.
 
-`transmutant/examples/ethernet.rs` parses Ethernet, IPv4, IPv6, ARP, UDP, TCP and ICMP with the
-derive only. `transmutant/DESIGN.md` tells how it works.
+## Examples
+
+Each example in `transmutant/examples/` declares formats with the derive only (no `impl`, no
+`unsafe`), then reads them from bytes and checks that corrupted ones are rejected. Each tells
+what is specific to its formats and the option that tells it, and what is not covered and why.
+They run as tests (`cargo test --test ethernet`...), or one by one
+(`cargo run --example ethernet`).
+
+- `ethernet.rs`: Ethernet II and 802.3, VLANs, ARP, IPv4, IPv6 and its extension headers, UDP,
+  TCP, ICMP, MPLS, PPPoE, 802.1X, LLDP.
+- `ip_services.rs`: DNS, DHCP, NTP, RADIUS, NetFlow v5, STUN, RTP and RTCP.
+- `transport.rs`: TLS records and handshakes, QUIC long headers, HTTP/2 frames, WebSocket, SSH
+  binary packets, MQTT, CoAP, SCTP.
+- `routing.rs`: BGP-4, OSPFv2 (and the Fletcher checksum of its LSAs), GRE, VXLAN, Geneve, IGMP
+  v2 and v3, ICMPv6 neighbor discovery.
+- `link.rs`: IEEE 802.11, Bluetooth HCI and L2CAP, CAN and CAN FD (SocketCAN), Modbus RTU (and
+  its CRC-16) and TCP, SLIP, PPP in HDLC-like framing.
+- `images.rs`: PNG, BMP, the table directory of TrueType and OpenType fonts.
+- `media.rs`: RIFF and WAVE, MP4 (ISO-BMFF) boxes.
+- `archives.rs`: ZIP, tar (ustar), gzip.
+- `executables.rs`: ELF (32 and 64 bits, either byte order), PE/COFF, Mach-O, Java class files,
+  WebAssembly modules.
+- `storage.rs`: the SQLite header, FAT boot sectors, GPT partition tables, USB descriptors.
+- `encodings.rs`: ASN.1 DER (SNMP, Kerberos), Protocol Buffers, MessagePack, CBOR, and text: UTF-8
+  fields, C strings, an HTTP/1.1 request line.
+- `codegen.rs`: the functions whose machine code `transmutant/DESIGN.md` measures.
+
+`transmutant/DESIGN.md` tells how it works.
 
 ## Status
 

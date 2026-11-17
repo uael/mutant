@@ -27,7 +27,24 @@
 //! - Enums with fields (`repr(C)`, `repr(u8)`...): their tag, and what each variant is made of.
 //! - `str`: bytes that are UTF-8.
 //! - What `#[derive(Data)]` is told: values that a field can take, sizes and lengths that are in
-//!   a field, assertions over fields. See [`macro@Data`], and `examples/ethernet.rs`.
+//!   a field, assertions over fields. See [`macro@Data`], and the examples.
+//!
+//! # Examples
+//!
+//! The files of `examples/` declare formats with the derive only, then read them from bytes and
+//! check that corrupted ones are rejected; each tells what it does not cover, and why:
+//!
+//! - `ethernet.rs`: Ethernet, VLANs, ARP, IPv4, IPv6 and its extension headers, UDP, TCP, ICMP.
+//! - `ip_services.rs`: DNS, DHCP, NTP, RADIUS, NetFlow v5, STUN, RTP and RTCP.
+//! - `transport.rs`: TLS, QUIC, HTTP/2, WebSocket, SSH, MQTT, CoAP, SCTP.
+//! - `routing.rs`: BGP, OSPF, GRE, VXLAN, Geneve, IGMP, ICMPv6 neighbor discovery.
+//! - `link.rs`: 802.11, Bluetooth HCI and L2CAP, CAN, Modbus, SLIP, PPP.
+//! - `images.rs`: PNG, BMP, TrueType and OpenType font directories.
+//! - `media.rs`: RIFF and WAVE, MP4 boxes.
+//! - `archives.rs`: ZIP, tar, gzip.
+//! - `executables.rs`: ELF, PE/COFF, Mach-O, Java class files, WebAssembly.
+//! - `storage.rs`: SQLite, FAT, GPT, USB descriptors.
+//! - `encodings.rs`: DER (SNMP, Kerberos), Protocol Buffers, MessagePack, CBOR, text fields.
 //!
 //! # What does not compile
 //!
