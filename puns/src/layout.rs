@@ -1669,6 +1669,71 @@ impl Op {
     unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
   }
 
+  /// Whatever the expression `ops` may fail to be computed, from the values that what it reads
+  /// can take: the sizes of the fields, the bounds of the operands. For the `let`s of a block,
+  /// which [`Op::Let`] checks only if they may fail. Conservative: an expression that reads a
+  /// variable or the bytes of the value, or that walks, may fail.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn fallible(ops: &[Op]) -> bool {
+    // The least and the greatest value of each slot of the stack.
+    let (mut slots, mut depth, mut at) = ([(0u128, 0u128); STACK], 0usize, 0);
+    while at < ops.len() {
+      let (pops, value) = match ops[at] {
+        Op::Lit(value) => (0, (value, value)),
+        Op::Load { size, .. } => (0, (0, max_value(size as usize))),
+        Op::Size => (0, (0, usize::MAX as u128)),
+        Op::Let(_) => (1, slots[depth - 1]),
+        Op::Not | Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Both | Op::Either => {
+          (if matches!(ops[at], Op::Not) { 1 } else { 2 }, (0, 1))
+        }
+        Op::Select => {
+          let ((a, b), (c, d)) = (slots[depth - 2], slots[depth - 1]);
+          (3, (if a < c { a } else { c }, if b > d { b } else { d }))
+        }
+        op @ (Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Rem
+        | Op::And
+        | Op::Or
+        | Op::Xor
+        | Op::Shl
+        | Op::Shr) => {
+          let ((a, b), (c, d)) = (slots[depth - 2], slots[depth - 1]);
+          let value = match op {
+            Op::Add => match b.checked_add(d) {
+              Some(most) => (a + c, most),
+              None => return true,
+            },
+            Op::Sub if a >= d => (a - d, b - c),
+            Op::Mul => match b.checked_mul(d) {
+              Some(most) => (a * c, most),
+              None => return true,
+            },
+            Op::Div if c > 0 => (a / d, b / c),
+            Op::Rem if c > 0 => (0, if b < d { b } else { d - 1 }),
+            Op::And => (0, if b < d { b } else { d }),
+            Op::Or | Op::Xor => (0, u128::MAX >> (b | d).leading_zeros()),
+            Op::Shl if d < 128 => (0, u128::MAX),
+            Op::Shr if d < 128 => (a >> d, b >> c),
+            _ => return true,
+          };
+          (2, value)
+        }
+        Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Set(_) | Op::Get(_) | Op::Walk { .. } => {
+          return true;
+        }
+      };
+      depth -= pops;
+      slots[depth] = value;
+      depth += 1;
+      at += 1;
+    }
+    false
+  }
+
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.
   ///
@@ -1918,7 +1983,7 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
       }
       Op::Let(mask) => {
         assert!(depth >= 1, "malformed expression");
-        assert!(mask != 0 && defined & mask == mask, "no such variable");
+        assert!(defined & mask == mask, "no such variable");
       }
       Op::Walk { var, cond, next } => {
         assert!(depth >= 1, "malformed expression");

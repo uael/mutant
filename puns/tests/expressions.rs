@@ -121,8 +121,21 @@ struct Branch {
   rest: [u8],
 }
 
+/// `let`s that the value does not need, which may or may not fail: `x - 1` and `x / y` may, `x +
+/// 40` cannot (`x` is a byte).
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert({ let less = x - 1; let ratio = x / y; let more = x + 40; x == 0 || less + ratio + more > 0 }))]
+struct Unused {
+  x: u8,
+  y: u8,
+}
+
 #[test]
 fn what_a_let_binds_is_computed() {
+  assert!(puns::from_bytes::<Unused>(&[1, 1]).is_ok());
+  assert!(puns::from_bytes::<Unused>(&[0, 1]).is_err());
+  assert!(puns::from_bytes::<Unused>(&[1, 0]).is_err());
   assert!(puns::from_bytes::<Named>(&[0, b'a', 0]).is_ok());
   assert!(puns::from_bytes::<Named>(&[2, b'a', 0]).is_ok());
   // No end: the walk fails, whatever the flags.

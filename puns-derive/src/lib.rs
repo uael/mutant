@@ -562,6 +562,7 @@ fn compile_block(
     let Some(syn::LocalInit { expr, diverge: None, .. }) = &local.init else {
       return Err(Error::new(local.span(), "expected `let name = EXPR;`"));
     };
+    let start = ops.len();
     let ty = compile(expr, fields, root, ops, scope)?;
     if let Some(annotation) = annotation {
       let named = match annotation {
@@ -580,19 +581,115 @@ fn compile_block(
       }
     }
     let index = scope.declare(name, ty)?;
+    lets.push((index, name, expr, ops[start..].to_vec()));
     ops.push(quote!(#op::Set(#index)));
-    lets.push(index);
   }
   let syn::Stmt::Expr(value, None) = last else {
     return Err(Error::new(last.span(), "a block ends with its value"));
   };
   let ty = compile(value, fields, root, ops, scope)?;
-  // What the `let`s bind is computed, as in Rust: the block fails if one of them does.
-  if let Some(mask) = lets.iter().map(|index| 1u8 << index).reduce(|a, b| a | b) {
-    ops.push(quote!(#op::Let(#mask)));
+  // What the `let`s bind is computed, as in Rust: the block fails if one of them does. A
+  // variable that the value cannot be computed without fails it already, and so does one that
+  // can only fail if one of those does; the others are checked.
+  let mut needed = propagated(value);
+  for (_, name, expr, _) in lets.iter().rev() {
+    if needed.contains(&name.to_string()) {
+      needed.extend(propagated(expr));
+    }
+  }
+  // Of the others, the ones that may fail, which const evaluation tells from the sizes of what
+  // they read.
+  let checked = lets
+    .iter()
+    .filter(|(_, name, expr, _)| !needed.contains(&name.to_string()) && may_fail(expr, &needed))
+    .map(|(index, _, _, init)| {
+      let bit = 1u8 << index;
+      quote!(if #op::fallible(&[#(#init),*]) { #bit } else { 0 })
+    })
+    .collect::<Vec<_>>();
+  if !checked.is_empty() {
+    ops.push(quote!(#op::Let(const { 0 #(| #checked)* })));
   }
   scope.names.truncate(visible);
   Ok(ty)
+}
+
+/// The variables without which `expr` cannot be computed: if one of them could not be, neither
+/// can `expr`. The right side of `&&` and `||` and the branches of an `if` may not be computed.
+fn propagated(expr: &Expr) -> std::collections::HashSet<String> {
+  let mut names = std::collections::HashSet::new();
+  match expr {
+    Expr::Paren(expr) => return propagated(&expr.expr),
+    Expr::Group(expr) => return propagated(&expr.expr),
+    Expr::Cast(cast) => return propagated(&cast.expr),
+    Expr::Unary(unary) => return propagated(&unary.expr),
+    Expr::Path(path) => names.extend(path.path.get_ident().map(ToString::to_string)),
+    Expr::Binary(binary) if matches!(binary.op, BinOp::And(_) | BinOp::Or(_)) => {
+      return propagated(&binary.left);
+    }
+    Expr::Binary(binary) => {
+      names = propagated(&binary.left);
+      names.extend(propagated(&binary.right));
+    }
+    Expr::If(branch) => return propagated(&branch.cond),
+    // Every `let` of a block is computed, and the block fails if one of them does.
+    Expr::Block(block) => {
+      let Some((syn::Stmt::Expr(value, None), statements)) = block.block.stmts.split_last() else {
+        return names;
+      };
+      names = propagated(value);
+      for statement in statements.iter().rev() {
+        if let syn::Stmt::Local(local) = statement {
+          let mut declared_names = vec![];
+          declared(&local.pat, &mut declared_names);
+          for name in declared_names {
+            names.remove(&name.to_string());
+          }
+          if let Some(init) = &local.init {
+            names.extend(propagated(&init.expr));
+          }
+        }
+      }
+    }
+    // `le`, `be`, `crc32`, `sum16` need their arguments, `walk` where it starts.
+    Expr::Call(call) if ["le", "be", "crc32", "sum16", "walk"].iter().any(|f| is_call(call, f)) => {
+      let count = if is_call(call, "crc32") || is_call(call, "sum16") { 2 } else { 1 };
+      for arg in call.args.iter().take(count) {
+        names.extend(propagated(arg));
+      }
+    }
+    _ => {}
+  }
+  names
+}
+
+/// Whatever `expr` may fail to be computed, where the variables of `safe` are known to be.
+fn may_fail(expr: &Expr, safe: &std::collections::HashSet<String>) -> bool {
+  match expr {
+    Expr::Paren(expr) => may_fail(&expr.expr, safe),
+    Expr::Group(expr) => may_fail(&expr.expr, safe),
+    Expr::Cast(cast) => may_fail(&cast.expr, safe),
+    Expr::Unary(unary) => may_fail(&unary.expr, safe),
+    Expr::Lit(_) => false,
+    // A variable may not be known; a field or a constant is.
+    Expr::Path(path) => path
+      .path
+      .get_ident()
+      .is_some_and(|ident| !safe.contains(&ident.to_string()) && ident != "self"),
+    Expr::Binary(binary) => {
+      let fails = match binary.op {
+        BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_) => true,
+        // By less than 128.
+        BinOp::Shl(_) | BinOp::Shr(_) => {
+          !matches!(&*binary.right, Expr::Lit(ExprLit { lit: Lit::Int(int), .. })
+          if int.base10_parse::<u128>().is_ok_and(|shift| shift < 128))
+        }
+        _ => false,
+      };
+      fails || may_fail(&binary.left, safe) || may_fail(&binary.right, safe)
+    }
+    _ => true,
+  }
 }
 
 /// Compile `expr` to the operations of a postfix expression: returns its type.

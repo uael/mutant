@@ -255,7 +255,8 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
   };
   let Some(mut state) = machine.top() else { return };
   // So that a walk ends: a step for each bit of the value, and for each bit of a `u128`.
-  let (mut steps, limit) = (0, size.saturating_mul(8).saturating_add(128));
+  // (`size` is at most `isize::MAX`: adding 16 does not overflow.)
+  let (mut steps, limit) = (0, (size + 16).saturating_mul(8));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.

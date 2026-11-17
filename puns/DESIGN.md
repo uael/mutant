@@ -168,7 +168,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 362 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 365 instructions, two loops, no call       |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -192,7 +192,10 @@ suffix), converts constants through a trait that only unsigned integer types imp
 `as uN` keep the low bits. Where Rust would panic (an overflow, a division by zero, a shift by
 128 or more), the rule fails; what Rust does not compute (the right side of a `&&` that the left
 side decides, the branch of an `if` that is not taken) cannot make it fail, and what it does (a
-`let`, used or not) can. The derive also counts what the evaluator has room for (the depth of its
+`let`, used or not) can: a block ends with `Op::Let`, which fails it if one of its `let`s did,
+for the ones that its value may be computed without and that may fail, which const evaluation
+tells from the widths of what they read (`Op::fallible`), so that it usually costs nothing. The
+derive also counts what the evaluator has room for (the depth of its
 stack, the operations of a walk, the variables) and reports an excess at the expression, with the
 numbers; the evaluator checks it again.
 
