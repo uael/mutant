@@ -78,33 +78,63 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Data>() -> bool {
 ///
 /// # Safety
 /// Same as [`validate`].
+#[inline(always)]
 pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &[Rule]) -> bool {
   let (head, stride) = const { (T::LAYOUT.head(), T::LAYOUT.stride()) };
   let (base, len) = (ptr.cast::<u8>(), ptr::metadata(ptr));
   // The value exists: its size does not overflow.
   let tail = len * stride;
-  let (mut regions, mut i) = (0, 0);
+  // What the regions before take of the tail.
+  let mut regions = 0;
+  // Not a loop, for the first rules: see `layout::eval`.
+  macro_rules! unrolled {
+    ($($index:literal)+) => {$(
+      if $index < rules.len() {
+        // SAFETY: the sized fields of the struct are readable.
+        match unsafe { check_rule(&rules[$index], base, head, tail, len, regions) } {
+          Some(size) => regions += size,
+          None => return false,
+        }
+      }
+    )+};
+  }
+  unrolled!(0 1 2 3 4 5 6 7);
+  let mut i = 8;
   while i < rules.len() {
     // SAFETY: the sized fields of the struct are readable.
-    let valid = unsafe {
-      match rules[i] {
-        Rule::Size(ops) => matches!(eval(ops, base), Some(size) if size == (head + tail) as u128),
-        Rule::Len(ops) => matches!(eval(ops, base), Some(count) if count == len as u128),
-        Rule::Assert(ops) => matches!(eval(ops, base), Some(value) if value != 0),
-        Rule::Region(Some(ops)) => match eval(ops, base) {
-          Some(size) if size <= (tail - regions) as u128 => {
-            regions += size as usize;
-            true
-          }
-          _ => false,
-        },
-        Rule::Region(None) => true,
-      }
-    };
-    if !valid {
-      return false;
+    match unsafe { check_rule(&rules[i], base, head, tail, len, regions) } {
+      Some(size) => regions += size,
+      None => return false,
     }
     i += 1;
   }
   true
+}
+
+/// `None` if the rule does not hold, else the size of the region if the rule is one (`0` if
+/// not).
+///
+/// # Safety
+/// `base` must be valid for reads of the `head` first bytes of a struct that has the rule.
+#[inline(always)]
+const unsafe fn check_rule(
+  rule: &Rule, base: *const u8, head: usize, tail: usize, len: usize, regions: usize,
+) -> Option<usize> {
+  // SAFETY: guaranteed by the caller.
+  let value = unsafe {
+    match *rule {
+      Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => {
+        eval(ops, base, head + tail)
+      }
+      Rule::Region(None) => return Some(0),
+    }
+  };
+  let Some(value) = value else { return None };
+  match *rule {
+    Rule::Size(_) if value == (head + tail) as u128 => Some(0),
+    Rule::Len(_) if value == len as u128 => Some(0),
+    Rule::Assert(_) if value != 0 => Some(0),
+    Rule::Region(_) if value <= (tail - regions) as u128 => Some(value as usize),
+    _ => None,
+  }
 }

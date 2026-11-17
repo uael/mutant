@@ -18,12 +18,55 @@
 //! assert_eq!(mutant::try_transmute_ref::<_, Position>(&[7u8, 2]), Err(mutant::Error::Validity));
 //! ```
 //!
-//! What cannot be valid does not compile:
+//! # What it knows
+//!
+//! - Integers, `bool`, `char`, `NonZero`, enums without fields: scalars with a set of valid
+//!   values. See [`num`] for integers of a given byte order (`u16be`) or value (`u16bec<V>`).
+//! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
+//!   padding, and what each of their bytes can be.
+//! - `str`: bytes that are UTF-8.
+//! - What `#[derive(Data)]` is told: values that a field can take, sizes and lengths that are in
+//!   a field, assertions over fields. See [`macro@Data`], and `examples/ethernet.rs`.
+//!
+//! # What does not compile
+//!
+//! Reading padding:
 //!
 //! ```compile_fail
-//! // A `&mut u8` would let anything be written to the `bool`.
+//! let _: &[u8; 4] = mutant::transmute_ref(&(0u8, 0u16));
+//! ```
+//!
+//! Making a value that may not be valid, without a check:
+//!
+//! ```compile_fail
+//! let _: &str = mutant::transmute_ref(&[0u8; 4]);
+//! ```
+//!
+//! A check that can never succeed:
+//!
+//! ```compile_fail
+//! let _ = mutant::try_transmute::<mutant::num::u8c<2>, bool>(Default::default());
+//! ```
+//!
+//! A `&mut` through which an invalid value could be written back:
+//!
+//! ```compile_fail
 //! let _: &mut u8 = mutant::transmute_mut(&mut true);
 //! ```
+//!
+//! ```compile_fail
+//! let mut text = String::from("text");
+//! let _: &mut [u8] = mutant::transmute_mut(text.as_mut_str());
+//! ```
+//!
+//! Sizes or alignments that do not match:
+//!
+//! ```compile_fail
+//! let _: &u32 = mutant::transmute_ref(&[0u8; 4]);
+//! ```
+//!
+//! These are errors of the monomorphization of the functions: `cargo build` reports them,
+//! `cargo check` does not.
 //!
 //! See `DESIGN.md` for how it works.
 #![cfg_attr(not(test), no_std)]
@@ -163,6 +206,57 @@ unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
   const LAYOUT: Layout = T::LAYOUT;
 }
 
+/// The `I`th field of the tuple `T`.
+#[doc(hidden)]
+pub struct TupleField<T, const I: usize>(PhantomData<T>);
+
+macro_rules! tuple_field {
+  ([$($all:ident)+] $index:tt $ty:ident $next:ty) => {
+    // SAFETY: the field of the layout of the tuple.
+    unsafe impl<$($all: Data),+> Fields for TupleField<($($all,)+), $index> {
+      type Type = $ty;
+      type Next = $next;
+      type Path<P: Path> = At<P, Self>;
+      const FIELD: Option<Field> = Some(*<($($all,)+) as Data>::LAYOUT.field($index));
+    }
+  };
+}
+
+macro_rules! tuple {
+  ([$($all:ident)+] $($index:tt)+) => {
+    // SAFETY: the offsets come from the compiler.
+    unsafe impl<$($all: Data),+> Data for ($($all,)+) {
+      type Elem = ();
+      type Fields = TupleField<Self, 0>;
+      const PROBE: *const Self = core::ptr::null();
+      const LAYOUT: Layout = Layout::structure::<Self>(
+        Self::PROBE,
+        const {
+          &Layout::sort_fields([
+            $(Field::new(core::mem::offset_of!(Self, $index), &$all::LAYOUT)),+
+          ])
+        },
+        &[],
+      );
+    }
+  };
+}
+
+tuple!([A] 0);
+tuple_field!([A] 0 A ());
+tuple!([A B] 0 1);
+tuple_field!([A B] 0 A TupleField<(A, B), 1>);
+tuple_field!([A B] 1 B ());
+tuple!([A B C] 0 1 2);
+tuple_field!([A B C] 0 A TupleField<(A, B, C), 1>);
+tuple_field!([A B C] 1 B TupleField<(A, B, C), 2>);
+tuple_field!([A B C] 2 C ());
+tuple!([A B C D] 0 1 2 3);
+tuple_field!([A B C D] 0 A TupleField<(A, B, C, D), 1>);
+tuple_field!([A B C D] 1 B TupleField<(A, B, C, D), 2>);
+tuple_field!([A B C D] 2 C TupleField<(A, B, C, D), 3>);
+tuple_field!([A B C D] 3 D ());
+
 macro_rules! impl_any {
   ($($ty:ty)+) => {$(
     // SAFETY: every bit pattern is valid.
@@ -261,6 +355,11 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
   const fn require(need: Need) {
     let Analysis { fit, relation, aligned } = Self::ANALYSIS;
     match fit.exact {
+      _ if need.truncate && fit.shrink => {}
+      _ if need.truncate => Message::new(
+        "the source can be smaller than the target (if it has a slice, it may be empty)",
+      )
+      .panic(),
       Exact::Always => {}
       Exact::Sometimes if need.fallible => {}
       Exact::Sometimes => Message::new(
@@ -268,8 +367,7 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
          its slice.\nUse `try_transmute_ref` or `try_transmute_mut` to check it at run time",
       )
       .panic(),
-      Exact::Never(_) if need.truncate && fit.shrink => {}
-      Exact::Never(why) if fit.shrink && !need.fallible => Message::new(why)
+      Exact::Never(why) if fit.shrink => Message::new(why)
         .str(".\nUse `truncate` or `truncate_ref` to ignore the end of the source")
         .panic(),
       Exact::Never(why) => Message::new(why).panic(),
@@ -302,7 +400,7 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
   const BY_VALUE: () = Self::require(Need { truncate: false, fallible: false, reference: false });
   const BY_REF: () = Self::require(Need { truncate: false, fallible: false, reference: true });
   const BY_MUT: () = {
-    Self::BY_REF;
+    let () = Self::BY_REF;
     if !Self::MUTABLE {
       Message::new(MUTABLE).panic();
     }
@@ -313,13 +411,11 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
   const TRY: () = Self::require(Need { truncate: false, fallible: true, reference: false });
   const TRY_REF: () = Self::require(Need { truncate: false, fallible: true, reference: true });
   const TRY_MUT: () = {
-    Self::TRY_REF;
+    let () = Self::TRY_REF;
     if !Self::MUTABLE {
       Message::new(MUTABLE).panic();
     }
   };
-  /// `S` is `[u8]`, of which a prefix is taken.
-  const UNPACK: () = Self::require(Need { truncate: true, fallible: true, reference: true });
 
   /// Pointer to the target at `source`, when there is nothing to check (`BY_REF`,
   /// `TRUNCATE_REF`).
@@ -589,6 +685,22 @@ pub const fn try_transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(
   }
 }
 
+/// A value whose bytes are all `0`.
+///
+/// ```
+/// assert_eq!(mutant::zeroed::<(u32, [bool; 2])>(), (0, [false; 2]));
+/// ```
+///
+/// ```compile_fail
+/// let _ = mutant::zeroed::<core::num::NonZero<u8>>();
+/// ```
+#[inline(always)]
+pub const fn zeroed<T: Data + Copy>() -> T {
+  const { assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type") };
+  // SAFETY: checked at compile time.
+  unsafe { core::mem::zeroed() }
+}
+
 /// The bytes of a value that has no padding.
 #[inline(always)]
 pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
@@ -621,7 +733,7 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 /// ```
 #[inline]
 pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
-  const { Plan::<[u8], D>::UNPACK };
+  const { Plan::<[u8], D>::TRY_REF };
   let (layout, rule) = const { (D::LAYOUT, D::LAYOUT.length_rule()) };
   let (head, stride) = (layout.head(), layout.stride());
   if bytes.len() < head {
@@ -632,10 +744,14 @@ pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error
   }
   let len = match rule {
     _ if stride == 0 => 0,
-    None => (bytes.len() - head) / stride,
+    // As many elements as fit, trailing padding included.
+    None => match bytes.len() & !(layout.align() - 1) {
+      room if room >= head => (room - head) / stride,
+      _ => return Err(Error::Size),
+    },
     Some(rule) => {
       // SAFETY: the sized fields of the target are in the first `head` bytes.
-      let Some(value) = (unsafe { eval(rule.ops, bytes.as_ptr().add(rule.base)) }) else {
+      let Some(value) = (unsafe { eval(rule.ops, bytes.as_ptr().add(rule.base), 0) }) else {
         return Err(Error::Validity);
       };
       // From the size of the struct that has the rule, down to a number of elements.
@@ -672,28 +788,49 @@ pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error
 /// Regions are not something that the type system knows of: if the fields of `value` tell of
 /// regions that do not fit in its tail, they are cut short.
 #[doc(hidden)]
-#[inline]
+#[inline(always)]
 pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
-  let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.head(), S::LAYOUT.rules()) };
-  let bytes = as_bytes(value);
-  let tail = bytes.split_at(head).1;
-  let (mut start, mut count, mut i) = (0, 0, 0);
-  while i < rules.len() {
-    if let Rule::Region(ops) = rules[i] {
-      let rest = tail.len() - start;
-      let size = match ops {
-        // SAFETY: `bytes` are the bytes of a struct of this layout.
-        Some(ops) => match unsafe { eval(ops, bytes.as_ptr()) } {
-          Some(size) if size <= rest as u128 => size as usize,
-          _ => rest,
-        },
-        None => rest,
-      };
-      if count == index {
-        return tail.split_at(start).1.split_at(size).0;
+  // The bytes of the value can be read: it has no padding.
+  const { Plan::<S, [u8]>::BY_REF };
+  let (head, stride, rules): (usize, usize, &[Rule]) =
+    const { (S::LAYOUT.head(), S::LAYOUT.stride(), S::LAYOUT.rules()) };
+  let base = (value as *const S).cast::<u8>();
+  // The value exists: its size does not overflow.
+  let tail = ptr::metadata(value) * stride;
+  // Where the region starts in the tail, and how many regions are before it.
+  let (mut start, mut count) = (0, 0);
+  macro_rules! rule {
+    ($index:expr) => {
+      if let Rule::Region(ops) = rules[$index] {
+        let rest = tail - start;
+        let size = match ops {
+          // SAFETY: `base` is a struct of this layout.
+          Some(ops) => match unsafe { eval(ops, base, head + tail) } {
+            Some(size) if size <= rest as u128 => size as usize,
+            _ => rest,
+          },
+          None => rest,
+        };
+        if count == index {
+          // SAFETY: `start + size <= tail`, the size of what follows the `head` first bytes.
+          return unsafe { core::slice::from_raw_parts(base.add(head + start), size) };
+        }
+        (start, count) = (start + size, count + 1);
       }
-      (start, count) = (start + size, count + 1);
-    }
+    };
+  }
+  // Not a loop, for the first rules: see `layout::eval`.
+  macro_rules! unrolled {
+    ($($index:literal)+) => {$(
+      if $index < rules.len() {
+        rule!($index);
+      }
+    )+};
+  }
+  unrolled!(0 1 2 3 4 5 6 7);
+  let mut i = 8;
+  while i < rules.len() {
+    rule!(i);
     i += 1;
   }
   panic!("no such region")

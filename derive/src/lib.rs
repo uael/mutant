@@ -16,7 +16,8 @@ use syn::{
 /// # Structs
 ///
 /// Every field must be `Data`. Any `repr` will do, but a struct whose last field is unsized must
-/// be `repr(C)` or `repr(transparent)`.
+/// be `repr(C)` or `repr(transparent)`. The types of the fields must be at least as visible as
+/// the struct (`pub` types for a `pub` struct, wherever they are declared).
 ///
 /// Options of the struct:
 /// - `#[data(size = EXPR)]`: the size in bytes of a value is `EXPR`;
@@ -31,7 +32,7 @@ use syn::{
 ///   returns the bytes of the region is generated for each name.
 ///
 /// An `EXPR` is an expression over the integer fields of the struct (by name, or `self.0` for
-/// tuple structs), integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
+/// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
 /// arithmetic costs, and fails (as a rule that does not hold) on overflow.
 ///
@@ -220,6 +221,15 @@ fn compile(
       let name = Ident::new(name, binary.op.span());
       ops.push(quote!(#op::#name));
     }
+    // `size_of_val(self)`
+    Expr::Call(call)
+      if call.args.len() == 1
+        && matches!(&*call.func, Expr::Path(path)
+          if path.path.segments.last().is_some_and(|segment| segment.ident == "size_of_val"))
+        && matches!(&call.args[0], Expr::Path(path) if path.path.is_ident("self")) =>
+    {
+      ops.push(quote!(#op::Size));
+    }
     // Anything else must be a constant.
     expr => ops.push(quote!(#op::Lit((#expr) as u128))),
   }
@@ -397,6 +407,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     Some(marker) => quote!(#marker #ty_generics),
     None => quote!(()),
   };
+  let vis = &input.vis;
   let lists = fields.iter().enumerate().map(|(i, field)| {
     let (marker, ty) = (&markers[i], field.ty);
     let next = match markers.get(i + 1) {
@@ -404,8 +415,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       None => quote!(()),
     };
     quote! {
+      // As visible as the struct, so that it can be named by its implementation of `Data`.
       #[allow(non_camel_case_types)]
-      pub struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+      #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
       // SAFETY: the field of the layout of the struct.
       unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {

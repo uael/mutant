@@ -453,23 +453,33 @@ const fn gather(a: &mut Cursor, start: usize, end: usize) -> ([Piece; 16], usize
 /// computation budget that is never reached in practice, past which it answers `Overlap`).
 const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<Rel> {
   let Valid::In(ranges) = spec.valid else { panic!("not an atom") };
+  // What is known of the pieces: a restriction that the type system does not enforce only
+  // proves a restriction of the same kind.
+  let (mut known, soft) = (*pieces, spec.is_soft());
   let (mut i, mut all_any) = (0, true);
   while i < len {
-    match pieces[i].kind {
+    match known[i].kind {
       RunKind::Pad => return None,
       // Whatever a pattern accepts is initialized, and that is all that is made of it here.
       RunKind::Any | RunKind::Pattern(_) => {}
-      RunKind::Atom(_) => all_any = false,
+      RunKind::Atom(from) => match if soft { from.valid } else { from.known } {
+        valid @ Valid::In(_) => {
+          known[i].kind = RunKind::Atom(Spec { valid, ..from });
+          all_any = false;
+        }
+        _ => known[i].kind = RunKind::Any,
+      },
     }
     i += 1;
   }
+  let pieces = &known;
   // The scalar is not full, and everything may come.
   if all_any {
     return Some(Rel::Overlap);
   }
   // The usual case: a scalar over a scalar of the same size and byte order.
   if len == 1 {
-    if let RunKind::Atom(Spec { size, endian, valid: Valid::In(from) }) = pieces[0].kind {
+    if let RunKind::Atom(Spec { size, endian, valid: Valid::In(from), .. }) = pieces[0].kind {
       if pieces[0].skip == 0 && size == spec.size && (size == 1 || endian.equals(spec.endian)) {
         return Some(relate_ranges(from, ranges));
       }
@@ -533,7 +543,7 @@ impl Boxes<'_> {
       return self.check(lo, hi);
     }
     let piece = self.pieces[index];
-    let RunKind::Atom(Spec { size, endian, valid: Valid::In(ranges) }) = piece.kind else {
+    let RunKind::Atom(Spec { size, endian, valid: Valid::In(ranges), .. }) = piece.kind else {
       // Unconstrained bytes.
       let mut i = piece.from;
       while i < piece.to {
@@ -755,10 +765,7 @@ const fn pattern_target(
       }
       if j < memo_len && memo[j].1 == set {
         // An element changes nothing: neither will the next ones.
-        if repeat.end >= end {
-          return;
-        }
-        pos = repeat.end;
+        pos = min(repeat.end, end);
         continue 'runs;
       }
       memo[j] = (repeat.id, set);
@@ -785,8 +792,12 @@ const fn pattern_target(
         }
       }
       RunKind::Atom(spec) => {
-        // Each box of the scalar goes through the automaton on its own.
-        let Valid::In(ranges) = spec.valid else { panic!("not an atom") };
+        // Each box of the scalar goes through the automaton on its own. Only what the type
+        // system enforces is known of it.
+        let ranges: &[(u128, u128)] = match spec.known {
+          Valid::In(ranges) => ranges,
+          _ => &[(0, max_value(spec.size))],
+        };
         let (mut result, mut r) = (0, 0);
         while r < ranges.len() {
           let (mut t, count) = (0, box_count(ranges[r].0, ranges[r].1, spec.size));

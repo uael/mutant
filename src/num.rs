@@ -224,3 +224,35 @@ impl<const V: u8> fmt::Debug for u8c<V> {
     fmt::Debug::fmt(&V, f)
   }
 }
+
+/// A `u8` from `MIN` to `MAX`: `u8in<0, 0x7f>` is an ASCII character.
+///
+/// Unlike a field restricted by `#[data(valid(..))]`, which safe code can write anything to, this
+/// is a guarantee: it can prove what a target requires.
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct u8in<const MIN: u8, const MAX: u8>(u8);
+
+impl<const MIN: u8, const MAX: u8> u8in<MIN, MAX> {
+  #[inline]
+  pub const fn new(value: u8) -> Option<Self> {
+    if MIN <= value && value <= MAX { Some(Self(value)) } else { None }
+  }
+
+  #[inline]
+  pub const fn get(self) -> u8 {
+    self.0
+  }
+}
+
+// SAFETY: the only values that `new` makes.
+unsafe impl<const MIN: u8, const MAX: u8> Scalar for u8in<MIN, MAX> {
+  const SPEC: Spec = Spec::ranges::<Self>(Endian::NATIVE, const { &[(MIN as u128, MAX as u128)] });
+}
+
+impl<const MIN: u8, const MAX: u8> fmt::Debug for u8in<MIN, MAX> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Debug::fmt(&self.0, f)
+  }
+}

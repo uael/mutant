@@ -55,7 +55,13 @@ pub(crate) enum Valid {
 pub struct Spec {
   pub(crate) size: usize,
   pub(crate) endian: Endian,
+  /// What a value must be to be accepted: what is required of a target.
   pub(crate) valid: Valid,
+  /// What a value is known to be, whatever safe code does: what a source guarantees.
+  ///
+  /// This is `valid`, but for fields that are restricted by `#[data(valid(..))]`: nothing
+  /// prevents safe code from writing any value of the type of the field to it.
+  pub(crate) known: Valid,
 }
 
 /// Greatest value of an unsigned integer of `size` bytes.
@@ -68,13 +74,14 @@ impl Spec {
   /// A scalar the size of `T` that accepts every initialized bit pattern.
   #[inline]
   pub const fn any<T>() -> Self {
-    Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Any }
+    Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any }
   }
 
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
   #[inline]
   pub const fn uninit<T>() -> Self {
-    Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Uninit }
+    let (size, endian) = (size_of::<T>(), Endian::NATIVE);
+    Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit }
   }
 
   /// A scalar the size of `T` whose value, read as an unsigned integer in `endian` byte order,
@@ -83,7 +90,8 @@ impl Spec {
   /// `ranges` are inclusive and must be sorted, disjoint and non-adjacent; this is checked at
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
-    Self { size: size_of::<T>(), endian, valid: Valid::Any }.with_ranges(ranges)
+    Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }
+      .with_ranges(ranges)
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
@@ -103,7 +111,15 @@ impl Spec {
       i += 1;
     }
     let full = ranges.len() == 1 && ranges[0].0 == 0 && ranges[0].1 == max;
-    Self { size, endian, valid: if full { Valid::Any } else { Valid::In(ranges) } }
+    let valid = if full { Valid::Any } else { Valid::In(ranges) };
+    Self { size, endian, valid, known: valid }
+  }
+
+  /// Whatever the scalar is only restricted by a `#[data(valid(..))]` that the type system does
+  /// not enforce: it is then proven by restrictions of the same kind.
+  #[inline]
+  pub(crate) const fn is_soft(&self) -> bool {
+    matches!(self.known, Valid::Any) && matches!(self.valid, Valid::In(_))
   }
 
   /// Same as `self`, read in another byte order.
@@ -352,7 +368,9 @@ impl Layout {
   /// all be valid for the scalar.
   pub const fn restricted(&self, ranges: &'static [(u128, u128)]) -> Self {
     let Kind::Scalar(spec) = self.kind else { panic!("only scalars can be restricted") };
-    let new = spec.with_ranges(ranges);
+    assert!(!matches!(spec.valid, Valid::Uninit), "only initialized scalars can be restricted");
+    // The restriction is not something that the type of the field enforces.
+    let new = Spec { known: spec.known, ..spec.with_ranges(ranges) };
     let mut i = 0;
     while i < ranges.len() {
       assert!(
@@ -894,6 +912,8 @@ pub enum Op {
   Lit(u128),
   /// Push the unsigned integer of `size` bytes at `offset` in the struct.
   Load { offset: usize, size: u8, big: bool },
+  /// Push the size in bytes of the struct (not in `size` and `len` rules, which define it).
+  Size,
   Add,
   Sub,
   Mul,
@@ -962,6 +982,7 @@ impl Op {
       Op::Both => 18,
       Op::Either => 19,
       Op::Not => 20,
+      Op::Size => 21,
     }
   }
 }
@@ -1026,7 +1047,7 @@ pub(crate) struct LengthRule {
 }
 
 /// Depth of the stack of [`eval`].
-const STACK: usize = 16;
+const STACK: usize = 8;
 
 /// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
 const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
@@ -1041,6 +1062,13 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
       while j < ops.len() {
         match ops[j] {
           Op::Lit(_) => depth += 1,
+          Op::Size => {
+            assert!(
+              !matches!(rules[i], Rule::Size(_) | Rule::Len(_)),
+              "the size of a value cannot be defined from itself"
+            );
+            depth += 1;
+          }
           Op::Load { offset, size, .. } => {
             assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
             depth += 1;
@@ -1062,56 +1090,118 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
 
 /// Evaluate a postfix expression over the struct at `base`.
 ///
+/// This is written so that, once inlined in a function where the expression is a constant, which
+/// is how it is used, what remains is the arithmetic of the expression, without relying on much
+/// of the optimizer: the first operations are not in a loop, and the stack is not an array but a
+/// local variable for each of its slots.
+///
 /// # Safety
 /// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
-/// reads of the sized fields of such a struct, initialized.
+/// reads of the sized fields of such a struct, initialized. `size` is the size of the struct.
 #[inline(always)]
-pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8) -> Option<u128> {
-  let (mut stack, mut depth, mut i) = ([0u128; STACK], 0, 0);
+pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
+  let (mut s0, mut s1, mut s2, mut s3) = (0u128, 0u128, 0u128, 0u128);
+  let (mut s4, mut s5, mut s6, mut s7) = (0u128, 0u128, 0u128, 0u128);
+  // `valid`: no overflow so far.
+  let (mut depth, mut valid) = (0usize, true);
+  macro_rules! get {
+    ($slot:expr) => {
+      match $slot {
+        0 => s0,
+        1 => s1,
+        2 => s2,
+        3 => s3,
+        4 => s4,
+        5 => s5,
+        6 => s6,
+        _ => s7,
+      }
+    };
+  }
+  macro_rules! set {
+    ($slot:expr, $value:expr) => {{
+      let value: u128 = $value;
+      match $slot {
+        0 => s0 = value,
+        1 => s1 = value,
+        2 => s2 = value,
+        3 => s3 = value,
+        4 => s4 = value,
+        5 => s5 = value,
+        6 => s6 = value,
+        _ => s7 = value,
+      }
+    }};
+  }
+  macro_rules! step {
+    ($op:expr) => {
+      match $op {
+        Op::Lit(value) => {
+          set!(depth, value);
+          depth += 1;
+        }
+        Op::Load { offset, size, big } => {
+          let endian = if big { Endian::Big } else { Endian::Little };
+          // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
+          set!(depth, unsafe { load(base.add(offset), size as usize, endian) });
+          depth += 1;
+        }
+        Op::Size => {
+          set!(depth, size as u128);
+          depth += 1;
+        }
+        Op::Not => set!(depth - 1, (get!(depth - 1) == 0) as u128),
+        op => {
+          let value = binary(op, get!(depth - 2), get!(depth - 1));
+          depth -= 1;
+          match value {
+            Some(value) => set!(depth - 1, value),
+            None => valid = false,
+          }
+        }
+      }
+    };
+  }
+  macro_rules! unrolled {
+    ($($index:literal)+) => {$(
+      if $index < ops.len() {
+        step!(ops[$index]);
+      }
+    )+};
+  }
+  unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
+  let mut i = 24;
   while i < ops.len() {
-    match ops[i] {
-      Op::Lit(value) => {
-        stack[depth] = value;
-        depth += 1;
-      }
-      Op::Load { offset, size, big } => {
-        let endian = if big { Endian::Big } else { Endian::Little };
-        // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
-        stack[depth] = unsafe { load(base.add(offset), size as usize, endian) };
-        depth += 1;
-      }
-      Op::Not => stack[depth - 1] = (stack[depth - 1] == 0) as u128,
-      op => {
-        let (a, b) = (stack[depth - 2], stack[depth - 1]);
-        let value = match op {
-          Op::Add => a.checked_add(b),
-          Op::Sub => a.checked_sub(b),
-          Op::Mul => a.checked_mul(b),
-          Op::Div => a.checked_div(b),
-          Op::Rem => a.checked_rem(b),
-          Op::And => Some(a & b),
-          Op::Or => Some(a | b),
-          Op::Xor => Some(a ^ b),
-          Op::Shl => if b < 128 { Some(a << b) } else { None },
-          Op::Shr => if b < 128 { Some(a >> b) } else { None },
-          Op::Eq => Some((a == b) as u128),
-          Op::Ne => Some((a != b) as u128),
-          Op::Lt => Some((a < b) as u128),
-          Op::Le => Some((a <= b) as u128),
-          Op::Gt => Some((a > b) as u128),
-          Op::Ge => Some((a >= b) as u128),
-          Op::Both => Some((a != 0 && b != 0) as u128),
-          Op::Either => Some((a != 0 || b != 0) as u128),
-          Op::Lit(_) | Op::Load { .. } | Op::Not => None,
-        };
-        let Some(value) = value else { return None };
-        depth -= 1;
-        stack[depth - 1] = value;
-      }
-    }
+    step!(ops[i]);
     i += 1;
   }
-  Some(stack[0])
+  let _ = (s1, s2, s3, s4, s5, s6, s7, depth);
+  if valid { Some(s0) } else { None }
+}
+
+#[inline(always)]
+const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
+  match op {
+    Op::Add => a.checked_add(b),
+    Op::Sub => a.checked_sub(b),
+    Op::Mul => a.checked_mul(b),
+    Op::Div => a.checked_div(b),
+    Op::Rem => a.checked_rem(b),
+    Op::And => Some(a & b),
+    Op::Or => Some(a | b),
+    Op::Xor => Some(a ^ b),
+    Op::Shl => if b < 128 { Some(a << b) } else { None },
+    Op::Shr => if b < 128 { Some(a >> b) } else { None },
+    Op::Eq => Some((a == b) as u128),
+    Op::Ne => Some((a != b) as u128),
+    Op::Lt => Some((a < b) as u128),
+    Op::Le => Some((a <= b) as u128),
+    Op::Gt => Some((a > b) as u128),
+    Op::Ge => Some((a >= b) as u128),
+    Op::Both => Some((a != 0 && b != 0) as u128),
+    Op::Either => Some((a != 0 || b != 0) as u128),
+    Op::Lit(_) | Op::Load { .. } | Op::Size | Op::Not => None,
+  }
 }
 
 /// Bounds of a range of valid values of an integer of the size of `T`, for `#[data(valid(..))]`.
