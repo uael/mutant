@@ -180,16 +180,81 @@ Soundness rests on one distinction (`Spec::valid` and `Spec::known`):
 A requirement is checked (or proven) on the way in, but it never proves what another type
 guarantees: `&[Unchecked] -> &str` needs a check even if `Unchecked` is "`valid(..=0x7f)`", while
 `&[u8in<0, 0x7f>] -> &str` does not. For the same reason, the accessors of regions cut regions
-short rather than trust the fields that size them.
+short rather than trust the fields that size them. Two layouts are only the same
+(`Layout::equals`, by which an enum proves an enum without looking into it) if they require the
+same *and* guarantee the same: `V(#[data(valid(0..=1))] u8)` is not `V(bool)`.
 
-### 6. Pointers to unsized types (`ptr.rs`)
+A rule that reads the bytes of its value (`le`, `be`, `crc32`, `sum16`, and `walk` through its
+expressions) reads its padding as well. Where such a rule may be checked (the source does not
+prove it, or it is in the variant of an enum, which is validated as a whole), the padding of its
+struct is a byte that the target needs initialized.
+
+What the type system enforces is all that a type is known by, which has two consequences that
+are by design:
+
+- `PhantomData<T>` is a scalar of no byte, `Scalar` for any `T`: two types that differ only by
+  phantom parameters or by lifetimes have the same layout, and each converts to the other freely,
+  by value and by `&mut`. A type whose parameters are a brand (an invariant lifetime that ties a
+  value to a scope, a marker that says what a value was checked against) must not derive `Data`:
+  `transmute` would turn one brand into another.
+- Deriving `Data` makes every field as accessible as if it were public: a value of the struct can
+  be made from anything whose bytes are valid for its fields and its rules (`transmute` and
+  `try_transmute` check what the derive is told, nothing that a constructor would), read as
+  anything its bytes are, and written through a `&mut` to another type. A type whose private
+  fields keep an invariant that the derive is not told of must not derive `Data`.
+
+### 6. What `#[derive(Data)]` trusts
+
+The derive writes `unsafe impl`s in the crate that uses it, where every path can be made to lead
+elsewhere by safe code: `#[data(crate = ..)]` names any module, `#[data(crate)]` the root of the
+crate, and `extern crate other as core;` makes `::core` another crate. So what the layout is made
+of does not depend on any path:
+
+- the functions that the generated code calls are associated functions of the types that the
+  implemented traits name (`Layout`, `Spec`, `Field`), or of types that `Layout::PIN` fixes with
+  `fn(T)` types (`Rule`, `Op`, `Enum`, `Variant`), which no path can stand for;
+- the offsets of the fields are not `offset_of!` (a macro, named by a path): with `repr(C)` they
+  are what `repr(C)` specifies, from the sizes and alignments of the fields; otherwise the struct
+  is `Sized`, and they are found by projecting a pointer to an uninitialized value, which costs
+  nothing in const evaluation whatever the size. The variants of enums with fields are laid out
+  as RFC 2195 specifies, from the sizes and alignments of their fields;
+- `Path` and `Count` are sealed, and the leaf that a list of fields says a field is at is checked
+  against the layout;
+- names that start with `__Data` are reserved, and `Self` in the type of a field is replaced by
+  the type it means, since the generated code writes these types where both mean something else.
+
+The rest of `::core` that the derive names (`Option`, `PhantomData`, `usize`...) is checked by the
+types of the traits it implements. The derive still trusts the compiler for what it parses
+(`repr`), and that the types of the fields are the same wherever it writes them (a procedural
+macro in the type of a field that expands to a different type each time it is expanded would break
+that).
+
+### 7. Pointers to unsized types (`ptr.rs`)
 
 Splitting and building wide pointers in generic `const fn` code is done by reinterpreting
 `*const T` as `*const [u8]`. That representation is not documented, so it is **verified at compile
 time for each unsized type** against a pointer made with a genuine `as` cast (`Data::PROBE`,
 `ptr::verify`): if it ever changes, the crate stops compiling instead of misbehaving.
 
-The tests pass under Miri, with strict provenance and with tree borrows.
+The tests, and the part of the model check that Miri affords (below), pass under Miri with strict
+provenance, with stacked and with tree borrows, on x86-64 and on i686 (a 32-bit `usize`, a `u64`
+aligned to 4). With `-Zmiri-symbolic-alignment-check`, Miri reports a misaligned reference where
+`try_transmute_ref` checked the address of bytes that happened to be aligned: the check reads the
+address as an integer (`ptr::is_aligned`), which Miri's symbolic alignment cannot follow, and the
+stable `align_offset` is not `const`.
+
+## Model check
+
+`transmutant-model/` compares every verdict of the analysis with oracles that do not use it,
+through the test-only `verdict` feature (`transmutant::hook`: what each function would do, without
+failing to compile): about a hundred types of 1 to 8 bytes, every ordered pair of the same size,
+every value of the source over an alphabet (all bytes up to 2 bytes); slices and slice-tailed
+structs from every pattern of up to 6 bytes. It tells what a type requires (`valid(..)`, rules)
+from what it guarantees, and finds unsound verdicts (a value let through that the type system
+does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time) and
+imprecise ones (counted). `cargo test` runs a sample of it, which Miri runs too; the full run is
+`cargo test --profile model -p transmutant-model -- --ignored` (optimized, without LTO). See `transmutant-model/src/lib.rs` for
+what is checked.
 
 ## Not done yet
 
@@ -222,4 +287,8 @@ The tests pass under Miri, with strict provenance and with tree borrows.
 - A struct of more than about a hundred fields may need `#![recursion_limit]` to be raised in
   the crate that validates it.
 - A packed struct whose unsized field has trailing padding of its own is rejected.
+- An enum with fields of more than about 120 variants needs `#![recursion_limit]` to be raised in
+  the crate that validates it (validation recurses over the list of the variants).
+- `PhantomData<T>` is `Scalar` for any `T`, and deriving `Data` exposes private fields: see
+  "What the type system enforces" for which types must not derive `Data`.
 - Unions are not planned.

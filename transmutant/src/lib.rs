@@ -29,6 +29,65 @@
 //! - What `#[derive(Data)]` is told: values that a field can take, sizes and lengths that are in
 //!   a field, assertions over fields. See [`macro@Data`], and `examples/ethernet.rs`.
 //!
+//! # What deriving `Data` means
+//!
+//! A type is known by its layout and by what the type system enforces of its bytes, nothing more.
+//! Two consequences are by design.
+//!
+//! `PhantomData<T>` is a scalar of no byte, for any `T`: types that differ only by phantom
+//! parameters, or by lifetimes, convert to each other freely. A type whose parameters are a brand
+//! (a unit, an invariant lifetime that ties a value to a scope, a marker of what a value was
+//! checked against) should not derive `Data`:
+//!
+//! ```
+//! use core::marker::PhantomData;
+//!
+//! #[derive(Clone, Copy)]
+//! struct Meters;
+//! #[derive(Clone, Copy)]
+//! struct Feet;
+//!
+//! #[derive(transmutant::Data, Clone, Copy)]
+//! #[repr(C)]
+//! struct Length<U> {
+//!   value: u32,
+//!   unit: PhantomData<U>,
+//! }
+//!
+//! // Not what a unit is for: 3 meters are 3 feet.
+//! let feet: Length<Feet> = transmutant::transmute(Length::<Meters> { value: 3, unit: PhantomData });
+//! assert_eq!(feet.value, 3);
+//! ```
+//!
+//! Deriving `Data` makes every field as accessible as if it were public: a value can be made from
+//! anything whose bytes are valid for its fields (and the rules the derive is told of), read as
+//! anything its bytes are, and written through a `&mut` to another type. A type whose private
+//! fields keep an invariant that the derive is not told of should not derive `Data`:
+//!
+//! ```
+//! mod even {
+//!   /// Only even numbers, says `new`.
+//!   #[derive(transmutant::Data, Clone, Copy)]
+//!   #[repr(transparent)]
+//!   pub struct Even(u32);
+//!
+//!   impl Even {
+//!     pub const fn new(value: u32) -> Option<Self> {
+//!       if value % 2 == 0 { Some(Self(value)) } else { None }
+//!     }
+//!
+//!     pub const fn get(self) -> u32 {
+//!       self.0
+//!     }
+//!   }
+//! }
+//!
+//! assert!(even::Even::new(3).is_none());
+//! // What `new` refuses, `transmute` makes.
+//! let odd: even::Even = transmutant::transmute(3u32);
+//! assert_eq!(odd.get(), 3);
+//! ```
+//!
 //! # What does not compile
 //!
 //! Reading padding:
