@@ -7,8 +7,8 @@
 //! and look for their names in `target/release/**/codegen*.s`. See `DESIGN.md` for what to expect.
 #![allow(clippy::missing_safety_doc)]
 
-use mutant::num::{u16be, u16bec, u32bec};
-use mutant::{Data, transmute, transmute_ref, try_transmute, try_transmute_ref, unpack};
+use transmutant::num::{u16be, u16bec, u32bec};
+use transmutant::{Data, transmute, transmute_ref, try_transmute, try_transmute_ref, unpack};
 
 
 #[derive(Data)] #[repr(C)]

@@ -210,7 +210,7 @@ pub(crate) const unsafe fn load(ptr: *const u8, size: usize, endian: Endian) -> 
 /// Sort `values` and merge them into inclusive ranges; returns the ranges and their count.
 ///
 /// ```
-/// use mutant::layout::sorted_ranges;
+/// use transmutant::layout::sorted_ranges;
 ///
 /// assert_eq!(sorted_ranges([7, 1, 0, 2]), ([(0, 2), (7, 7), (0, 0), (0, 0)], 2));
 /// ```
@@ -706,6 +706,33 @@ impl Layout {
     }
   }
 
+  /// The specification of the integer that the type is, if it is one: an initialized scalar of 1
+  /// to 16 bytes, or a struct whose only field (but for the ones without size) is one.
+  #[doc(hidden)]
+  pub const fn as_integer(&self) -> Option<Spec> {
+    match self.kind {
+      Kind::Scalar(spec) if spec.is_integer() && spec.size >= 1 => Some(spec),
+      Kind::Struct(fields, _) if !self.unsized_ => {
+        let (mut inner, mut i): (Option<&Layout>, usize) = (None, 0);
+        while i < fields.len() {
+          let field = &fields[i];
+          if field.layout.size > 0 {
+            if inner.is_some() || field.offset != 0 || field.layout.size != self.size {
+              return None;
+            }
+            inner = Some(field.layout);
+          }
+          i += 1;
+        }
+        match inner {
+          Some(inner) => inner.as_integer(),
+          None => None,
+        }
+      }
+      _ => None,
+    }
+  }
+
   /// The tail of a struct, as rules see it: its slice if it is unsized, else its last field.
   pub(crate) const fn tail_shape(&self) -> TailShape {
     let mut shape = TailShape { start: self.size, bytes: 0, len: 0, array: false };
@@ -1009,10 +1036,10 @@ pub enum Op {
 }
 
 impl Op {
-  /// Push the value of the field of type `T` at `offset`.
-  pub const fn load<T: crate::Scalar>(offset: usize) -> Self {
-    let spec = T::SPEC;
-    assert!(spec.size >= 1 && spec.size <= 16, "not an integer field");
+  /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
+  /// holds one.
+  pub const fn load<T: crate::Data>(offset: usize) -> Self {
+    let Some(spec) = T::LAYOUT.as_integer() else { panic!("not an integer field") };
     Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }
   }
 
@@ -1187,7 +1214,8 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
 /// reads of the sized fields of such a struct, initialized. `size` is the size of the struct:
 /// unless the expression is the one of a `size` or `len` rule, `base` must be valid for reads of
 /// that many initialized bytes.
-#[inline(always)]
+// Not in debug builds, where this would only make every struct that has rules slow to build.
+#[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
   let (mut s0, mut s1, mut s2, mut s3) = (0u128, 0u128, 0u128, 0u128);
   let (mut s4, mut s5, mut s6, mut s7) = (0u128, 0u128, 0u128, 0u128);
@@ -1351,7 +1379,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
 /// what is before it, least significant byte first.
 ///
 /// ```
-/// assert_eq!(mutant::crc32(b"123456789"), 0xcbf43926);
+/// assert_eq!(transmutant::crc32(b"123456789"), 0xcbf43926);
 /// ```
 pub const fn crc32(bytes: &[u8]) -> u32 {
   const TABLE: [u32; 256] = {
@@ -1380,7 +1408,7 @@ pub const fn crc32(bytes: &[u8]) -> u32 {
 /// that holds its own checksum, the sum is `0xffff`.
 ///
 /// ```
-/// assert_eq!(mutant::sum16(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]), 0xddf2);
+/// assert_eq!(transmutant::sum16(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]), 0xddf2);
 /// ```
 pub const fn sum16(bytes: &[u8]) -> u16 {
   let (mut sum, mut i) = (0u64, 0);

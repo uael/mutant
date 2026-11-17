@@ -1,7 +1,7 @@
 //! ***Safe transmutation, checked at compile time. Even for dynamically sized types.***
 //!
 //! ```
-//! use mutant::Data;
+//! use transmutant::Data;
 //!
 //! #[derive(Data, Debug, PartialEq)]
 //! #[repr(C)]
@@ -11,11 +11,11 @@
 //! }
 //!
 //! // Every `Position` is two initialized bytes: nothing is checked, nothing is compiled.
-//! assert_eq!(mutant::transmute_ref::<_, [u8; 2]>(&Position { x: 7, visible: true }), &[7, 1]);
+//! assert_eq!(transmutant::transmute_ref::<_, [u8; 2]>(&Position { x: 7, visible: true }), &[7, 1]);
 //!
 //! // Not every pair of bytes is a `Position`: only the `bool` is checked.
-//! assert_eq!(mutant::try_transmute_ref(&[7u8, 1]), Ok(&Position { x: 7, visible: true }));
-//! assert_eq!(mutant::try_transmute_ref::<_, Position>(&[7u8, 2]), Err(mutant::Error::Validity));
+//! assert_eq!(transmutant::try_transmute_ref(&[7u8, 1]), Ok(&Position { x: 7, visible: true }));
+//! assert_eq!(transmutant::try_transmute_ref::<_, Position>(&[7u8, 2]), Err(transmutant::Error::Validity));
 //! ```
 //!
 //! # What it knows
@@ -33,36 +33,36 @@
 //! Reading padding:
 //!
 //! ```compile_fail
-//! let _: &[u8; 4] = mutant::transmute_ref(&(0u8, 0u16));
+//! let _: &[u8; 4] = transmutant::transmute_ref(&(0u8, 0u16));
 //! ```
 //!
 //! Making a value that may not be valid, without a check:
 //!
 //! ```compile_fail
-//! let _: &str = mutant::transmute_ref(&[0u8; 4]);
+//! let _: &str = transmutant::transmute_ref(&[0u8; 4]);
 //! ```
 //!
 //! A check that can never succeed:
 //!
 //! ```compile_fail
-//! let _ = mutant::try_transmute::<mutant::num::u8c<2>, bool>(Default::default());
+//! let _ = transmutant::try_transmute::<transmutant::num::u8c<2>, bool>(Default::default());
 //! ```
 //!
 //! A `&mut` through which an invalid value could be written back:
 //!
 //! ```compile_fail
-//! let _: &mut u8 = mutant::transmute_mut(&mut true);
+//! let _: &mut u8 = transmutant::transmute_mut(&mut true);
 //! ```
 //!
 //! ```compile_fail
 //! let mut text = String::from("text");
-//! let _: &mut [u8] = mutant::transmute_mut(text.as_mut_str());
+//! let _: &mut [u8] = transmutant::transmute_mut(text.as_mut_str());
 //! ```
 //!
 //! Sizes or alignments that do not match:
 //!
 //! ```compile_fail
-//! let _: &u32 = mutant::transmute_ref(&[0u8; 4]);
+//! let _: &u32 = transmutant::transmute_ref(&[0u8; 4]);
 //! ```
 //!
 //! These are errors of the monomorphization of the functions: `cargo build` reports them,
@@ -80,7 +80,7 @@ mod tests;
 mod validate;
 
 pub use layout::{crc32, sum16};
-pub use mutant_derive::Data;
+pub use transmutant_derive::Data;
 
 use analysis::{Analysis, Exact, Marks, analyze, mutable};
 use core::marker::PhantomData;
@@ -129,8 +129,8 @@ pub unsafe trait Data {
 /// This is implemented by `#[data(tag(K = T))]`, see [`macro@Data`]:
 ///
 /// ```
-/// use mutant::num::{u8c, u16be};
-/// use mutant::{Data, Tag};
+/// use transmutant::num::{u8c, u16be};
+/// use transmutant::{Data, Tag};
 ///
 /// /// The kind of a message, when its payload is not known.
 /// #[derive(Data, Copy, Clone)]
@@ -152,9 +152,9 @@ pub unsafe trait Data {
 /// }
 ///
 /// // A message of any kind, and a message that must be a ping.
-/// assert_eq!(mutant::try_transmute_ref::<_, Message>(&[9u8, 0, 1]).unwrap().kind.0, 9);
-/// assert!(mutant::try_transmute_ref::<_, Message<Ping>>(&[9u8, 0, 1]).is_err());
-/// assert!(mutant::try_transmute_ref::<_, Message<Ping>>(&[7u8, 0, 1]).is_ok());
+/// assert_eq!(transmutant::try_transmute_ref::<_, Message>(&[9u8, 0, 1]).unwrap().kind.0, 9);
+/// assert!(transmutant::try_transmute_ref::<_, Message<Ping>>(&[9u8, 0, 1]).is_err());
+/// assert!(transmutant::try_transmute_ref::<_, Message<Ping>>(&[7u8, 0, 1]).is_ok());
 /// ```
 pub trait Tag<K: ?Sized>: Data {
   type Tag: Data + Copy;
@@ -578,12 +578,12 @@ impl Message {
 /// This compiles if every value of `S` is a valid `D`, and then costs nothing.
 ///
 /// ```
-/// assert_eq!(mutant::transmute::<[bool; 2], u16>([true, true]), 0x0101);
+/// assert_eq!(transmutant::transmute::<[bool; 2], u16>([true, true]), 0x0101);
 /// ```
 ///
 /// ```compile_fail
 /// // Not every `u8` is a `bool`.
-/// let _: bool = mutant::transmute(2u8);
+/// let _: bool = transmutant::transmute(2u8);
 /// ```
 #[inline(always)]
 pub const fn transmute<S: Data + Copy, D: Data + Copy>(value: S) -> D {
@@ -595,7 +595,7 @@ pub const fn transmute<S: Data + Copy, D: Data + Copy>(value: S) -> D {
 /// Reinterpret the first bytes of a value as a value of a smaller type.
 ///
 /// ```
-/// assert_eq!(mutant::truncate::<[u8; 4], [u8; 2]>([1, 2, 3, 4]), [1, 2]);
+/// assert_eq!(transmutant::truncate::<[u8; 4], [u8; 2]>([1, 2, 3, 4]), [1, 2]);
 /// ```
 #[inline(always)]
 pub const fn truncate<S: Data + Copy, D: Data + Copy>(value: S) -> D {
@@ -609,8 +609,8 @@ pub const fn truncate<S: Data + Copy, D: Data + Copy>(value: S) -> D {
 /// Only what could not be proven at compile time is checked.
 ///
 /// ```
-/// assert_eq!(mutant::try_transmute::<u8, bool>(1), Ok(true));
-/// assert_eq!(mutant::try_transmute::<u8, bool>(2), Err(mutant::Error::Validity));
+/// assert_eq!(transmutant::try_transmute::<u8, bool>(1), Ok(true));
+/// assert_eq!(transmutant::try_transmute::<u8, bool>(2), Err(transmutant::Error::Validity));
 /// ```
 #[inline]
 pub const fn try_transmute<S: Data + Copy, D: Data + Copy>(value: S) -> Result<D, Error> {
@@ -644,9 +644,9 @@ const unsafe fn transmute_unchecked<S: Copy, D: Copy>(value: S) -> D {
 /// its slice if it has one, and if `D` has no greater alignment. It then costs nothing.
 ///
 /// ```
-/// let bytes: &[u8] = mutant::transmute_ref(&[0x0102u16, 0x0304][..]);
+/// let bytes: &[u8] = transmutant::transmute_ref(&[0x0102u16, 0x0304][..]);
 /// assert_eq!(bytes.len(), 4);
-/// let text: &[u8] = mutant::transmute_ref("héllo");
+/// let text: &[u8] = transmutant::transmute_ref("héllo");
 /// assert_eq!(text.len(), 6);
 /// ```
 #[inline(always)]
@@ -663,7 +663,7 @@ pub const fn transmute_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> &D 
 ///
 /// ```
 /// let mut value = 0x0102u16;
-/// mutant::transmute_mut::<_, [u8; 2]>(&mut value)[0] = 0x02;
+/// transmutant::transmute_mut::<_, [u8; 2]>(&mut value)[0] = 0x02;
 /// assert!(value == 0x0202 || value == 0x0102);
 /// ```
 #[inline(always)]
@@ -679,9 +679,9 @@ pub const fn transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(value: &mut S) ->
 /// If the target has a slice, it takes as many elements as fit.
 ///
 /// ```
-/// let head: &[u8; 2] = mutant::truncate_ref(&[1u8, 2, 3]);
+/// let head: &[u8; 2] = transmutant::truncate_ref(&[1u8, 2, 3]);
 /// assert_eq!(head, &[1, 2]);
-/// let pairs: &[[u8; 2]] = mutant::truncate_ref(&[1u8, 2, 3, 4, 5]);
+/// let pairs: &[[u8; 2]] = transmutant::truncate_ref(&[1u8, 2, 3, 4, 5]);
 /// assert_eq!(pairs, &[[1, 2], [3, 4]]);
 /// ```
 #[inline(always)]
@@ -698,8 +698,8 @@ pub const fn truncate_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> &D {
 /// of the target that the source does not guarantee.
 ///
 /// ```
-/// assert_eq!(mutant::try_transmute_ref::<[u8], str>(b"caf\xc3\xa9"), Ok("café"));
-/// assert!(mutant::try_transmute_ref::<[u8], str>(b"caf\xc3").is_err());
+/// assert_eq!(transmutant::try_transmute_ref::<[u8], str>(b"caf\xc3\xa9"), Ok("café"));
+/// assert!(transmutant::try_transmute_ref::<[u8], str>(b"caf\xc3").is_err());
 /// ```
 ///
 /// This is a `const fn`, but a target of greater alignment than the source cannot be made at
@@ -734,11 +734,11 @@ pub const fn try_transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(
 /// A value whose bytes are all `0`.
 ///
 /// ```
-/// assert_eq!(mutant::zeroed::<(u32, [bool; 2])>(), (0, [false; 2]));
+/// assert_eq!(transmutant::zeroed::<(u32, [bool; 2])>(), (0, [false; 2]));
 /// ```
 ///
 /// ```compile_fail
-/// let _ = mutant::zeroed::<core::num::NonZero<u8>>();
+/// let _ = transmutant::zeroed::<core::num::NonZero<u8>>();
 /// ```
 #[inline(always)]
 pub const fn zeroed<T: Data + Copy>() -> T {
@@ -750,13 +750,14 @@ pub const fn zeroed<T: Data + Copy>() -> T {
 /// The value of an integer field, as `#[data(get(..))]` expressions see it.
 #[doc(hidden)]
 #[inline(always)]
-pub const fn int<T: Scalar>(value: &T) -> u128 {
+pub const fn int<T: Data>(value: &T) -> u128 {
   let spec = const {
-    let spec = T::SPEC;
-    assert!(spec.is_integer(), "not an integer field");
-    spec
+    match T::LAYOUT.as_integer() {
+      Some(spec) => spec,
+      None => panic!("not an integer field"),
+    }
   };
-  // SAFETY: a scalar that is not allowed to be uninitialized is initialized.
+  // SAFETY: a `T` is that integer, which is not allowed to be uninitialized.
   unsafe { spec.load((value as *const T).cast()) }
 }
 
@@ -775,8 +776,8 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 /// (see `#[derive(Data)]`), or else as many elements of its slice as there are.
 ///
 /// ```
-/// use mutant::Data;
-/// use mutant::num::u16be;
+/// use transmutant::Data;
+/// use transmutant::num::u16be;
 ///
 /// #[derive(Data)]
 /// #[repr(C)]
@@ -787,7 +788,7 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 ///   data: [u8],
 /// }
 ///
-/// let (chunk, rest) = mutant::unpack::<Chunk>(&[7, 0, 5, b'h', b'i', 1, 2, 3]).unwrap();
+/// let (chunk, rest) = transmutant::unpack::<Chunk>(&[7, 0, 5, b'h', b'i', 1, 2, 3]).unwrap();
 /// assert_eq!((chunk.kind, &chunk.data, rest), (7, &b"hi"[..], &[1, 2, 3][..]));
 /// ```
 #[inline]

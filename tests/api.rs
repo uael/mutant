@@ -1,8 +1,8 @@
 //! The functions of the crate, on types of all sorts.
 
 use core::num::NonZero;
-use mutant::num::{u8c, u16be, u16le, u32bec};
-use mutant::{
+use transmutant::num::{u8c, u16be, u16le, u32bec};
+use transmutant::{
   Data, Error, as_bytes, transmute, transmute_mut, transmute_ref, truncate, truncate_ref,
   try_transmute, try_transmute_mut, try_transmute_ref, unpack,
 };
@@ -203,8 +203,8 @@ fn rules_on_sized_and_unsized() {
   let (counted, rest) = unpack::<Counted<[u8]>>(&[1, 7, 8]).unwrap();
   assert_eq!((&counted.1, rest), (&[7][..], &[8][..]));
 
-  assert_eq!(mutant::crc32(b"123456789"), 0xcbf43926);
-  assert_eq!(mutant::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
+  assert_eq!(transmutant::crc32(b"123456789"), 0xcbf43926);
+  assert_eq!(transmutant::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
 }
 
 /// What `&&` and `||` do not need may be out of the value.
@@ -228,4 +228,67 @@ fn what_is_not_needed_is_not_read() {
   // `10 - 11` cannot be computed, and nothing else decides.
   assert!(!lazy(&[11]));
   assert!(!lazy(&[8]));
+}
+
+/// Messages that tell what they carry, and views of "one or the other".
+mod views {
+  use transmutant::num::{u8c, u16be};
+  use transmutant::{Data, Error, Tag};
+
+  /// The kind of a message, when what it carries is not known.
+  #[derive(Data, Debug, Copy, Clone, PartialEq)]
+  #[repr(transparent)]
+  pub struct Kind(pub u8);
+
+  #[derive(Data)]
+  #[repr(C)]
+  #[data(size = length)]
+  pub struct Message<P: ?Sized + Tag<Kind> = [u8]> {
+    pub kind: P::Tag,
+    pub length: u8,
+    #[data(regions(body: P))]
+    pub data: [u8],
+  }
+
+  #[derive(Data, Debug, PartialEq)]
+  #[repr(C)]
+  #[data(tag(Kind = u8c<1>))]
+  pub struct Ping(pub u16be);
+
+  #[derive(Data, Debug, PartialEq)]
+  #[repr(transparent)]
+  #[data(tag(Kind = u8c<2>))]
+  pub struct Text(pub str);
+
+  #[derive(Data)]
+  pub enum Any<'a> {
+    Ping(&'a Message<Ping>),
+    Text(&'a Message<Text>),
+    Other(&'a Message),
+  }
+
+  #[test]
+  fn one_or_the_other() {
+    let bytes = [1, 4, 0, 7, 2, 4, b'h', b'i', 9, 2, 3, 3];
+    let (first, rest) = Any::unpack(&bytes).unwrap();
+    let Any::Ping(ping) = first else { panic!() };
+    assert_eq!(ping.body(), Ok(&Ping(u16be::new(7))));
+    let (second, rest) = Any::unpack(rest).unwrap();
+    let Any::Text(text) = second else { panic!() };
+    assert_eq!(text.body().map(|text| &text.0), Ok("hi"));
+    let (third, rest) = Any::unpack(rest).unwrap();
+    let Any::Other(other) = third else { panic!() };
+    assert_eq!((other.kind, other.body(), rest), (Kind(9), Ok(&[][..]), &[3, 3][..]));
+    // A size that is not the one of the message.
+    assert_eq!(Any::unpack(rest).err(), Some(Error::Validity));
+    // The whole of the bytes, or nothing.
+    assert!(matches!(Any::parse(&bytes[..4]), Ok(Any::Ping(_))));
+    assert!(Any::parse(&bytes[..5]).is_err());
+    // What a message says it carries is checked when it is looked at.
+    let Ok(Any::Text(text)) = Any::parse(&[2, 3, 0xff]) else { panic!() };
+    assert_eq!(text.body().err(), Some(Error::Validity));
+    // In `const`.
+    const FIRST: Result<(Any<'static>, &[u8]), Error> = Any::unpack(&[1, 4, 0, 7, 0]);
+    assert!(matches!(FIRST, Ok((Any::Ping(_), [0]))));
+  }
 }

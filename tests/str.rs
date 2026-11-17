@@ -1,10 +1,10 @@
 //! `str` is `Data`: bytes that the UTF-8 automaton accepts.
 
-use mutant::num::{u8c, u32be};
-use mutant::{Data, Error, transmute_mut, transmute_ref, try_transmute_mut, try_transmute_ref, unpack};
+use transmutant::num::{u8c, u32be};
+use transmutant::{Data, Error, transmute_mut, transmute_ref, try_transmute_mut, try_transmute_ref, unpack};
 
 /// An ASCII character: a type that only holds what it says.
-type Ascii = mutant::num::u8in<0, 0x7f>;
+type Ascii = transmutant::num::u8in<0, 0x7f>;
 
 const fn ascii(byte: u8) -> Ascii {
   Ascii::new(byte).unwrap()

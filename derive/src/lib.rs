@@ -1,4 +1,4 @@
-//! `#[derive(Data)]`, see the documentation of the `mutant` crate.
+//! `#[derive(Data)]`, see the documentation of the `transmutant` crate.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -26,14 +26,16 @@ use syn::{
 ///   and the like. Here `EXPR` is any Rust expression, in which the integer fields are `u128`;
 /// - `#[data(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
 ///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
-/// - `#[data(crate = path)]`: path of the `mutant` crate.
+/// - `#[data(crate = path)]`: path of the `transmutant` crate.
 ///
 /// Options of a field:
 /// - `#[data(valid(0x45..=0x4f, 0x60))]`: the field, an integer, only takes these values;
 /// - `#[data(len = EXPR)]`, on the last field: its slice has `EXPR` elements;
 /// - `#[data(regions(first = EXPR, second = EXPR, last))]`, on the last field: it is made of
 ///   consecutive regions of `EXPR` bytes, the last one may take what remains. A method that
-///   returns the bytes of the region is generated for each name.
+///   returns the bytes of the region is generated for each name. With a type
+///   (`first: Type = EXPR`, `last: Type`), the method returns the region as a `&Type`, if it is
+///   one.
 ///
 /// An `EXPR` is an expression over the integer fields of the struct (by name, or `self.0` for
 /// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
@@ -50,6 +52,12 @@ use syn::{
 /// # Enums
 ///
 /// Enums without fields, of any `repr`: their valid values are read from the compiler.
+///
+/// Enums whose variants each hold a reference, such as
+/// `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`, are not data but *views* of
+/// data that is one thing or another. For them, two functions are generated, which try the
+/// variants in order: `unpack(bytes)` takes the first variant that `bytes` start with, and returns
+/// it with what remains; `parse(bytes)` returns the first variant that `bytes` are, whole.
 #[proc_macro_derive(Data, attributes(data))]
 pub fn derive_data(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
@@ -100,22 +108,29 @@ fn parse_repr(attrs: &[Attribute]) -> Result<Repr> {
   Ok(repr)
 }
 
-/// `name` or `name = EXPR`
+/// `name`, `name: Type`, `name = EXPR` or `name: Type = EXPR`
 struct Region {
   name: Ident,
+  ty: Option<Type>,
   size: Option<Expr>,
 }
 
 impl Parse for Region {
   fn parse(input: ParseStream) -> Result<Self> {
     let name = input.parse()?;
+    let ty = if input.peek(Token![:]) {
+      input.parse::<Token![:]>()?;
+      Some(input.parse()?)
+    } else {
+      None
+    };
     let size = if input.peek(Token![=]) {
       input.parse::<Token![=]>()?;
       Some(input.parse()?)
     } else {
       None
     };
-    Ok(Self { name, size })
+    Ok(Self { name, ty, size })
   }
 }
 
@@ -388,7 +403,7 @@ fn valid_ranges(
 fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   let options = parse_options(&input.attrs)?;
-  let root = options.root.clone().unwrap_or_else(|| quote!(::mutant));
+  let root = options.root.clone().unwrap_or_else(|| quote!(::transmutant));
   let ident = &input.ident;
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
@@ -423,6 +438,10 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   for field in &fields {
     let ty = field.ty;
     predicates.push(parse_quote!(#ty: #root::Data));
+    // What a region is read as.
+    for ty in field.options.regions.iter().flatten().filter_map(|region| region.ty.as_ref()) {
+      predicates.push(parse_quote!(#ty: #root::Data));
+    }
   }
   if sized {
     predicates.push(parse_quote!(#this: ::core::marker::Sized));
@@ -495,12 +514,26 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           None if index + 1 == regions.len() => quote!(#rule::Region(::core::option::Option::None)),
           None => return Err(Error::new(name.span(), "only the last region can be unsized")),
         });
-        let doc = format!("The bytes of the `{name}` region.");
-        accessors.push(quote! {
-          #[doc = #doc]
-          #[inline]
-          #vis const fn #name(&self) -> &[::core::primitive::u8] {
-            #root::region(self, #index)
+        accessors.push(match &region.ty {
+          None => {
+            let doc = format!("The bytes of the `{name}` region.");
+            quote! {
+              #[doc = #doc]
+              #[inline]
+              #vis const fn #name(&self) -> &[::core::primitive::u8] {
+                #root::region(self, #index)
+              }
+            }
+          }
+          Some(ty) => {
+            let doc = format!("The `{name}` region, if its bytes are what it is said to hold.");
+            quote! {
+              #[doc = #doc]
+              #[inline]
+              #vis const fn #name(&self) -> ::core::result::Result<&#ty, #root::Error> {
+                #root::try_transmute_ref::<[::core::primitive::u8], #ty>(#root::region(self, #index))
+              }
+            }
           }
         });
       }
@@ -605,11 +638,64 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
 fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let options = parse_options(&input.attrs)?;
-  let root = options.root.unwrap_or_else(|| quote!(::mutant));
+  let root = options.root.unwrap_or_else(|| quote!(::transmutant));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
   if data.variants.is_empty() {
     return Err(Error::new(Span::call_site(), "an enum without variant has no value"));
+  }
+  // An enum of references: a view of what is one thing or another.
+  let references = data
+    .variants
+    .iter()
+    .filter_map(|variant| match &variant.fields {
+      Fields::Unnamed(fields) if fields.unnamed.len() == 1 => match &fields.unnamed[0].ty {
+        Type::Reference(reference) if reference.mutability.is_none() => {
+          Some((&variant.ident, reference))
+        }
+        _ => None,
+      },
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  if references.len() == data.variants.len() {
+    let lifetime = &references[0].1.lifetime;
+    if lifetime.is_none() || references.iter().any(|(_, reference)| &reference.lifetime != lifetime) {
+      return Err(Error::new(Span::call_site(), "the references of the variants must have the same lifetime"));
+    }
+    let (vis, bytes) = (&input.vis, quote!(&#lifetime [::core::primitive::u8]));
+    let result = quote!(::core::result::Result);
+    let unpacks = references.iter().map(|(variant, reference)| {
+      let ty = &reference.elem;
+      quote! {
+        if let #result::Ok((value, rest)) = #root::unpack::<#ty>(bytes) {
+          return #result::Ok((Self::#variant(value), rest));
+        }
+      }
+    });
+    let parses = references.iter().map(|(variant, reference)| {
+      let ty = &reference.elem;
+      quote! {
+        if let #result::Ok(value) = #root::try_transmute_ref::<[::core::primitive::u8], #ty>(bytes) {
+          return #result::Ok(Self::#variant(value));
+        }
+      }
+    });
+    return Ok(quote! {
+      impl #impl_generics #ident #ty_generics #where_clause {
+        /// Take the first of the variants that `bytes` start with: returns it and what remains.
+        #vis const fn unpack(bytes: #bytes) -> #result<(Self, #bytes), #root::Error> {
+          #(#unpacks)*
+          #result::Err(#root::Error::Validity)
+        }
+
+        /// The first of the variants that `bytes` are, whole.
+        #vis const fn parse(bytes: #bytes) -> #result<Self, #root::Error> {
+          #(#parses)*
+          #result::Err(#root::Error::Validity)
+        }
+      }
+    });
   }
   let mut variants = vec![];
   for variant in &data.variants {

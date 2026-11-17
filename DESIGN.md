@@ -124,7 +124,14 @@ Two more options are not rules, but save the code that would otherwise be writte
   `struct Frame<P: ?Sized + Tag<EtherType> = [u8]> { .., ether_type: P::Tag, payload: P }`, and
   `Frame<Ipv4>` requires the EtherType of IPv4 while `Frame` takes any (bytes go with any tag);
 - `#[data(get(name: Type = EXPR))]` generates a `const fn` getter, for bit fields. Here `EXPR`
-  is plain Rust, in which integer fields are `u128`: any function can be called.
+  is plain Rust, in which integer fields are `u128`: any function can be called;
+- a region can be given a type, `regions(options = EXPR, payload: P)`: its accessor then returns
+  a `&P`, if the bytes of the region are one. This is how a packet whose header has a variable
+  size carries a typed payload;
+- on an enum whose variants each hold a reference,
+  `enum AnyFrame<'a> { Ipv4(&'a Frame<Ipv4>), Arp(&'a Frame<Arp>), Other(&'a Frame) }`, the derive
+  generates `parse` and `unpack`, which return the first variant that the bytes are: telling one
+  thing from another is a declaration too.
 
 Rules are checked when a value comes from something else, tell `unpack` how long a value is, and
 are proven only by the same rule, in the same struct, at the same place of the source. The
@@ -156,7 +163,7 @@ The tests pass under Miri, with strict provenance and with tree borrows.
 
 ## Not done yet
 
-- **Enums with fields.** In the engine: a source enum is analysed variant by variant, a target
+- **Enums with fields, as data** (enums of references are views, see above). In the engine: a source enum is analysed variant by variant, a target
   enum by relating what the source has under the tag, then each variant it can select.
   `repr(C)` and `repr(u8)`... enums have a specified layout (RFC 2195). `repr(Rust)` ones do not,
   and stable Rust cannot name it, but it can be *observed* in const evaluation from a sample of
@@ -173,7 +180,6 @@ The tests pass under Miri, with strict provenance and with tree borrows.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
 - An arbitrary function in a rule (getters take any): it could only be called through a trait,
   hence not in `const` contexts on stable. `crc32` and `sum16` are built in for that reason.
-- The crate needs a new name (`mutant` is taken on crates.io).
 
 ## Limits
 

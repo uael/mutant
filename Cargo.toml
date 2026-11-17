@@ -1,11 +1,11 @@
 [package]
-name = "mutant"
+name = "transmutant"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 
 [dependencies]
-mutant-derive = { path = "derive" }
+transmutant-derive = { path = "derive" }
 
 [workspace]
 members = ["derive"]

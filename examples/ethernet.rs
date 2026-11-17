@@ -1,8 +1,11 @@
 //! Ethernet, in safe Rust, with nothing but `#[derive(Data)]` and its options.
 //!
 //! The first half of this file is all there is to Ethernet here: type declarations. There is no
-//! `unsafe`, no `impl`, no parsing code and no size computation. The second half uses them:
-//! frames are read in place, from bytes, by `unpack` and `try_transmute_ref`.
+//! `unsafe`, no `impl`, no parsing code, no dispatch and no size computation. The second half
+//! uses them: frames are read in place, from bytes.
+//!
+//! Any other EtherType, protocol or header is one more declaration of the same kind: what it is
+//! made of, and the `tag` it comes with.
 //!
 //! What is specific to Ethernet, and what tells it:
 //!
@@ -24,10 +27,12 @@
 //! | the checksums of UDP and TCP, over the IP addresses  | `assert(.. sum16(12, 20) + ..)`        |
 //! | the bits of a MAC address (group, local)             | `get(multicast: bool = ..)`            |
 //! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains          |
+//! | the protocol of a packet tells what it carries       | `tag(Protocol = u8c<17>)`              |
+//! | a frame is one thing or another                      | an enum of references ([`AnyFrame`])   |
 #![deny(unsafe_code)]
 
-use mutant::num::{u8c, u16be, u16bec, u32be, u48be};
-use mutant::{Data, Error, Tag, as_bytes, transmute_ref, try_transmute_ref, unpack};
+use transmutant::num::{u8c, u16be, u16bec, u32be, u48be};
+use transmutant::{Data, Error, Tag, transmute_ref, try_transmute_ref, unpack};
 
 // -------------------------------------------------------------------------------------------------
 // Ethernet
@@ -196,7 +201,7 @@ pub struct Arp {
   more_fragments: bool = flags_fragment_offset & 0x2000 != 0,
   fragment_offset: u16 = flags_fragment_offset & 0x1fff,
 ))]
-pub struct Ipv4<P: ?Sized + Data = [u8]> {
+pub struct Ipv4<P: ?Sized + Tag<Protocol> = [u8]> {
   /// Version (4 bits, 4), then the length of the header in 32 bits words (4 bits, at least 5).
   #[data(valid(0x45..=0x4f))]
   pub version_ihl: u8,
@@ -205,13 +210,46 @@ pub struct Ipv4<P: ?Sized + Data = [u8]> {
   pub identification: u16be,
   pub flags_fragment_offset: u16be,
   pub time_to_live: u8,
-  pub protocol: u8,
+  pub protocol: P::Tag,
   pub checksum: u16be,
   pub source: [u8; 4],
   pub destination: [u8; 4],
-  #[data(regions(options = (version_ihl & 0x0f) * 4 - 20, payload))]
-  pub data: P,
+  #[data(regions(options = (version_ihl & 0x0f) * 4 - 20, payload: P))]
+  pub data: [u8],
 }
+
+/// An IPv6 packet. (Extension headers would be more payloads that have a payload.)
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x86dd>))]
+#[data(size = payload_length + 40)]
+#[data(assert(version_class_flow >> 28 == 6))]
+#[data(assert(
+  (next_header != 17 && next_header != 6)
+    || (sum16(8, 40) + next_header + payload_length + sum16(40, 40 + payload_length)) % 0xffff == 0
+))]
+#[data(get(
+  traffic_class: u8 = (version_class_flow >> 20) & 0xff,
+  flow_label: u32 = version_class_flow & 0x000f_ffff,
+))]
+pub struct Ipv6<P: ?Sized + Tag<Protocol> = [u8]> {
+  /// Version (4 bits, 6), traffic class (8 bits), flow label (20 bits).
+  pub version_class_flow: u32be,
+  pub payload_length: u16be,
+  pub next_header: P::Tag,
+  pub hop_limit: u8,
+  pub source: [u8; 16],
+  pub destination: [u8; 16],
+  #[data(regions(payload: P))]
+  pub data: [u8],
+}
+
+/// The protocol of what an IP packet carries, when it is not known.
+///
+/// A payload tells the protocol it comes with by `#[data(tag(Protocol = ..))]`.
+#[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Protocol(pub u8);
 
 /// An IPv4 option that has a length (all but "end of options" and "no operation").
 #[derive(Data)]
@@ -227,6 +265,7 @@ pub struct Ipv4Option {
 /// A UDP datagram.
 #[derive(Data)]
 #[repr(C)]
+#[data(tag(Protocol = u8c<17>))]
 #[data(size = length)]
 pub struct Udp {
   pub source_port: u16be,
@@ -239,6 +278,7 @@ pub struct Udp {
 /// A TCP segment: the size of its header, options included, is in its header.
 #[derive(Data)]
 #[repr(C)]
+#[data(tag(Protocol = u8c<6>))]
 #[data(assert(offset_flags >> 12 >= 5))]
 #[data(get(
   header_length: usize = (offset_flags >> 12) * 4,
@@ -257,6 +297,55 @@ pub struct Tcp {
   pub urgent: u16be,
   #[data(regions(options = (offset_flags >> 12) * 4 - 20, payload))]
   pub data: [u8],
+}
+
+// -------------------------------------------------------------------------------------------------
+// Other EtherTypes
+
+/// A MAC control frame that asks its peer to pause: an operation and a duration, padded.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x8808>))]
+pub struct Pause {
+  pub operation: u16bec<1>,
+  pub quanta: u16be,
+  pub padding: [u8c<0>; 42],
+}
+
+/// LLDP: a sequence of [`Tlv`]s.
+#[derive(Data)]
+#[repr(transparent)]
+#[data(tag(EtherType = u16bec<0x88cc>))]
+pub struct Lldp(pub [u8]);
+
+/// A type (7 bits), the length of a value (9 bits), and that value.
+#[derive(Data)]
+#[repr(C)]
+#[data(size = (type_length & 0x01ff) + 2)]
+#[data(get(kind: u8 = type_length >> 9))]
+pub struct Tlv {
+  pub type_length: u16be,
+  pub value: [u8],
+}
+
+// -------------------------------------------------------------------------------------------------
+// One thing or another
+
+/// A frame, by what it carries: the first of these that the bytes are.
+#[derive(Data)]
+pub enum AnyFrame<'a> {
+  Udp(&'a Frame<Ipv4<Udp>>),
+  Tcp(&'a Frame<Ipv4<Tcp>>),
+  Ipv4(&'a Frame<Ipv4>),
+  Udp6(&'a Frame<Ipv6<Udp>>),
+  Ipv6(&'a Frame<Ipv6>),
+  Arp(&'a Frame<Arp>),
+  Pause(&'a Frame<Pause>),
+  Lldp(&'a Frame<Lldp>),
+  Tagged(&'a Frame<Vlan>),
+  ServiceTagged(&'a Frame<ServiceVlan>),
+  Length(&'a Frame8023),
+  Other(&'a Frame),
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -284,6 +373,24 @@ const TCP: [u8; 46] = [
   0x60, 0x02, 0x10, 0x00, 0xdb, 0x2e, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x68, 0x69,
 ];
 
+/// An IPv4 packet of a protocol that is not known, as bytes.
+const PING: [u8; 24] = [
+  0x45, 0, 0, 24, 0, 1, 0, 0, 64, 253, 0x65, 0xe6, 10, 0, 0, 1, 10, 0, 0, 2, b'p', b'i', b'n', b'g',
+];
+
+/// An IPv6 packet, as bytes: a UDP datagram.
+const UDP6: [u8; 53] = [
+  0x60, 0x01, 0x23, 0x45, 0x00, 0x0d, 0x11, 0x40, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x30, 0x39, 0x00, 0x35, 0x00, 0x0d, 0x30, 0x1f,
+  0x68, 0x65, 0x6c, 0x6c, 0x6f,
+];
+
+/// LLDP, as bytes: a chassis, a port, a time to live, the end.
+const LLDP: [u8; 19] = [
+  0x02, 0x07, 4, 0x02, 0, 0, 0, 0, 0x0a, 0x04, 0x02, 5, b'1', 0x06, 0x02, 0, 120, 0x00, 0x00,
+];
+
 /// A frame from `A` to `B`, as bytes: an EtherType or a length, then a payload.
 fn frame(ether_type: u16, payload: &[u8]) -> Vec<u8> {
   [&B.0.to_bytes()[..], &A.0.to_bytes()[..], &ether_type.to_be_bytes()[..], payload].concat()
@@ -300,15 +407,19 @@ pub fn main() {
 
   let ip: &Frame<Ipv4> = try_transmute_ref(&bytes[..]).unwrap();
   assert_eq!(ip.payload.total_length.get(), 41);
-  assert_eq!(ip.payload.protocol, 17);
+  assert_eq!(ip.payload.protocol, Protocol(17));
   // Bit fields.
   assert_eq!((ip.payload.version(), ip.payload.header_length()), (4, 28));
   assert_eq!((ip.payload.dont_fragment(), ip.payload.more_fragments()), (true, false));
   assert_eq!(ip.payload.fragment_offset(), 0);
   // The regions of the packet: their sizes come from the header.
   assert_eq!(ip.payload.options(), [7, 6, 4, 10, 0, 0, 1, 1]);
-  let (udp, rest) = unpack::<Udp>(ip.payload.payload()).unwrap();
-  assert_eq!((udp.destination_port.get(), &udp.payload, rest.len()), (53, &b"hello"[..], 0));
+  assert_eq!(ip.payload.payload(), Ok(&UDP[28..]));
+  // What the packet carries, by its type: the protocol is then checked with the frame.
+  let datagram: &Frame<Ipv4<Udp>> = try_transmute_ref(&bytes[..]).unwrap();
+  let udp = datagram.payload.payload().unwrap();
+  assert_eq!((udp.destination_port.get(), &udp.payload), (53, &b"hello"[..]));
+  assert_eq!(try_transmute_ref::<_, Frame<Ipv4<Tcp>>>(&bytes[..]).err(), Some(Error::Validity));
   // The options: one that has a length, then two that are a single byte.
   let (option, rest) = unpack::<Ipv4Option>(ip.payload.options()).unwrap();
   assert_eq!((option.kind, option.length, &option.data), (7, 6, &[4, 10, 0, 0][..]));
@@ -344,7 +455,9 @@ pub fn main() {
   // TCP: the same checksum, a header whose size is in the header, options.
   let segment = frame(0x0800, &TCP);
   let ip: &Frame<Ipv4> = try_transmute_ref(&segment[..]).unwrap();
-  let (tcp, _) = unpack::<Tcp>(ip.payload.payload()).unwrap();
+  assert_eq!(ip.payload.protocol, Protocol(6));
+  let ip: &Frame<Ipv4<Tcp>> = try_transmute_ref(&segment[..]).unwrap();
+  let tcp = ip.payload.payload().unwrap();
   assert_eq!((tcp.header_length(), tcp.syn(), tcp.ack()), (24, true, false));
   assert_eq!((tcp.destination_port.get(), tcp.options(), tcp.payload()), (80, &[2, 4, 5, 0xb4][..], &b"hi"[..]));
   let mut corrupted = segment.clone();
@@ -368,11 +481,11 @@ pub fn main() {
   assert!(try_transmute_ref::<_, WireFrame>(&[0xff; 1515][..]).is_err());
 
   // ---- The frame check sequence, when it is there: the CRC-32 of the frame.
-  wire.extend(mutant::crc32(&wire).to_le_bytes());
+  wire.extend(transmutant::crc32(&wire).to_le_bytes());
   let checked: &CheckedFrame = try_transmute_ref(&wire[..]).unwrap();
   assert_eq!((checked.payload().len(), checked.fcs().len()), (46, 4));
   // As anyone would check it: the CRC of a frame with its sequence is a constant.
-  assert_eq!(mutant::crc32(&wire), 0x2144df1c);
+  assert_eq!(transmutant::crc32(&wire), 0x2144df1c);
   for at in [0, 30, 59, 60, 63] {
     let mut wire = wire.clone();
     wire[at] ^= 1;
@@ -451,25 +564,78 @@ pub fn main() {
   reply[21] = 3;
   assert_eq!(try_transmute_ref::<_, Frame<Arp>>(&reply).err(), Some(Error::Validity));
 
-  // ---- A packet made in safe Rust, of a payload whose size is known...
-  let packet = Ipv4 {
-    version_ihl: 0x45,
-    type_of_service: 0,
-    total_length: u16be::new(20 + 4),
-    identification: u16be::new(1),
-    flags_fragment_offset: u16be::new(0),
-    time_to_live: 64,
-    protocol: 253,
-    checksum: u16be::new(0x65e6),
-    source: [10, 0, 0, 1],
-    destination: [10, 0, 0, 2],
-    data: *b"ping",
+  // ---- A protocol that is not known: nothing is read where UDP or TCP have their checksum,
+  // which is out of this packet.
+  let ping = frame(0x0800, &PING);
+  let ip: &Frame<Ipv4> = try_transmute_ref(&ping[..]).unwrap();
+  assert_eq!((ip.payload.protocol, ip.payload.payload()), (Protocol(253), Ok(&b"ping"[..])));
+  assert!(try_transmute_ref::<_, Frame<Ipv4<Udp>>>(&ping[..]).is_err());
+
+  // ---- IPv6, and the same UDP over it.
+  let datagram6 = frame(0x86dd, &UDP6);
+  let ip6: &Frame<Ipv6<Udp>> = try_transmute_ref(&datagram6[..]).unwrap();
+  assert_eq!((ip6.payload.traffic_class(), ip6.payload.flow_label()), (0, 0x12345));
+  assert_eq!(ip6.payload.payload().unwrap().payload, *b"hello");
+  let mut corrupted = datagram6.clone();
+  corrupted[14 + 52] ^= 1;
+  assert!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).is_err());
+  assert!(try_transmute_ref::<_, Frame<Ipv4>>(&datagram6[..]).is_err());
+
+  // ---- MAC control, and LLDP: values that tell their type and their length.
+  let pause = frame(0x8808, &[&[0, 1, 0, 100][..], &[0; 42]].concat());
+  assert_eq!(try_transmute_ref::<_, Frame<Pause>>(&pause[..]).unwrap().payload.quanta.get(), 100);
+  let lldp = frame(0x88cc, &LLDP);
+  let discovery: &Frame<Lldp> = try_transmute_ref(&lldp[..]).unwrap();
+  let (mut rest, mut values) = (&discovery.payload.0, vec![]);
+  while let Ok((tlv, next)) = unpack::<Tlv>(rest) {
+    values.push((tlv.kind(), tlv.value.len()));
+    rest = next;
+  }
+  assert_eq!((values, rest.len()), (vec![(1, 7), (2, 2), (3, 2), (0, 0)], 0));
+
+  // ---- One thing or another: the declaration of `AnyFrame` is all there is to telling them
+  // apart. What follows is what is made of each.
+  let describe = |bytes: &[u8]| match AnyFrame::parse(bytes) {
+    Ok(AnyFrame::Udp(frame)) => match frame.payload.payload() {
+      Ok(udp) => format!("UDP to port {}", udp.destination_port),
+      Err(error) => format!("UDP, but {error}"),
+    },
+    Ok(AnyFrame::Tcp(frame)) => match frame.payload.payload() {
+      Ok(tcp) => format!("TCP to port {}", tcp.destination_port),
+      Err(error) => format!("TCP, but {error}"),
+    },
+    Ok(AnyFrame::Ipv4(frame)) => format!("IPv4, protocol {}", frame.payload.protocol.0),
+    Ok(AnyFrame::Udp6(frame)) => format!("UDP over IPv6, {} hops left", frame.payload.hop_limit),
+    Ok(AnyFrame::Ipv6(frame)) => format!("IPv6, next header {}", frame.payload.next_header.0),
+    Ok(AnyFrame::Arp(frame)) => format!("ARP {:?}", { frame.payload.operation }),
+    Ok(AnyFrame::Pause(frame)) => format!("pause for {}", frame.payload.quanta),
+    Ok(AnyFrame::Lldp(frame)) => format!("LLDP, {} bytes", frame.payload.0.len()),
+    Ok(AnyFrame::Tagged(frame)) => format!("VLAN {}", frame.payload.id()),
+    Ok(AnyFrame::ServiceTagged(frame)) => format!("service VLAN {}", frame.payload.id()),
+    Ok(AnyFrame::Length(frame)) => format!("802.3, {} bytes", frame.payload().len()),
+    Ok(AnyFrame::Other(frame)) => format!("EtherType {:#06x}", frame.ether_type.0),
+    Err(error) => format!("not a frame: {error}"),
   };
-  // ... is a packet of any payload.
-  let packet: &Ipv4 = &packet;
-  assert_eq!((packet.options(), packet.payload()), (&[][..], &b"ping"[..]));
-  let (parsed, rest) = unpack::<Ipv4>(as_bytes(packet)).unwrap();
-  assert_eq!((parsed.payload(), parsed.header_length(), rest.len()), (&b"ping"[..], 20, 0));
+  assert_eq!(describe(&frame(0x0800, &UDP)), "UDP to port 53");
+  assert_eq!(describe(&frame(0x0800, &TCP)), "TCP to port 80");
+  assert_eq!(describe(&ping), "IPv4, protocol 253");
+  assert_eq!(describe(&datagram6), "UDP over IPv6, 64 hops left");
+  assert_eq!(describe(&frame(0x0806, &ARP)), "ARP Request");
+  assert_eq!(describe(&pause), "pause for 100");
+  assert_eq!(describe(&lldp), "LLDP, 19 bytes");
+  assert_eq!(describe(&tagged), "VLAN 42");
+  assert_eq!(describe(&service), "service VLAN 1");
+  assert_eq!(describe(&snap), "802.3, 36 bytes");
+  assert_eq!(describe(&frame(0x88f7, &[0; 46])), "EtherType 0x88f7");
+  assert_eq!(describe(&frame(1501, &[0; 46])), "not a frame: value is not valid for the target type");
+  assert_eq!(describe(&[0; 13]), "not a frame: value is not valid for the target type");
+  // A frame that does not hold what its EtherType tells is still a frame, of that EtherType.
+  assert_eq!(describe(&corrupted), "EtherType 0x86dd");
+  // Padded, as on the wire: the packet tells where it ends.
+  let mut padded = frame(0x0800, &UDP);
+  padded.resize(60, 0);
+  let Ok((AnyFrame::Udp(frame), padding)) = AnyFrame::unpack(&padded) else { panic!() };
+  assert_eq!((frame.payload.total_length.get(), padding.len()), (41, 5));
 
   println!("ok");
 }
