@@ -1,0 +1,5 @@
+error: a rule computes on unsigned integers: `as` converts to `u8`, `u16`, `u32`, `u64`, `u128` or `usize`
+ --> tests/compile-fail/rule_cast_signed.rs:4:20
+  |
+4 | #[pun(assert((a as i8) < 0))]
+  |                    ^^

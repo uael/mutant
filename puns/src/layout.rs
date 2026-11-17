@@ -1622,6 +1622,10 @@ pub enum Op {
 }
 
 impl Op {
+  /// What `as usize` keeps of a value.
+  #[doc(hidden)]
+  pub const USIZE_MAX: u128 = usize::MAX as u128;
+
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.
   ///

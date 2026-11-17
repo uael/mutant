@@ -42,6 +42,10 @@ use syn::{
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
 /// arithmetic costs, and fails (as a rule that does not hold) on overflow.
 ///
+/// It means what the same Rust expression means where every integer is a `u128`: `as u8` (or
+/// `u16`, `u32`, `u64`, `usize`) keeps the low bits, `as u128` keeps everything, and a cast to
+/// any other type is refused.
+///
 /// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
 /// once), `if EXPR { EXPR } else { EXPR }`.
 ///
@@ -394,8 +398,15 @@ fn compile(
   match expr {
     Expr::Paren(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     Expr::Group(expr) => compile(&expr.expr, fields, root, ops, scope)?,
-    // Everything is an unsigned integer.
-    Expr::Cast(expr) => compile(&expr.expr, fields, root, ops, scope)?,
+    // `as` to an unsigned integer: the bits that it has, as in Rust.
+    Expr::Cast(cast) => {
+      let mask = cast_mask(&cast.ty, &op)?;
+      compile(&cast.expr, fields, root, ops, scope)?;
+      if let Some(mask) = mask {
+        ops.push(quote!(#op::Lit(#mask)));
+        ops.push(quote!(#op::And));
+      }
+    }
     Expr::Lit(ExprLit { lit: Lit::Bool(lit), .. }) => {
       let value = u128::from(lit.value);
       ops.push(quote!(#op::Lit(#value)));
@@ -517,6 +528,30 @@ fn compile(
     expr => ops.push(quote!(#op::Lit((#expr) as u128))),
   }
   Ok(())
+}
+
+/// What `as TYPE` keeps of a `u128`: `None` for `u128`, the mask of the bits of another unsigned
+/// integer type. Rules compute on unsigned integers: other types are refused.
+fn cast_mask(ty: &Type, op: &TokenStream) -> Result<Option<TokenStream>> {
+  let name = match ty {
+    Type::Path(path) if path.qself.is_none() => path.path.get_ident().map(ToString::to_string),
+    _ => None,
+  };
+  Ok(match name.as_deref() {
+    Some("u128") => None,
+    Some("u64") => Some(quote!(0xffff_ffff_ffff_ffff)),
+    Some("u32") => Some(quote!(0xffff_ffff)),
+    Some("u16") => Some(quote!(0xffff)),
+    Some("u8") => Some(quote!(0xff)),
+    Some("usize") => Some(quote!(#op::USIZE_MAX)),
+    _ => {
+      return Err(Error::new(
+        ty.span(),
+        "a rule computes on unsigned integers: `as` converts to `u8`, `u16`, `u32`, `u64`, \
+         `u128` or `usize`",
+      ));
+    }
+  })
 }
 
 /// Whatever `call` is a call of the function `name`.
