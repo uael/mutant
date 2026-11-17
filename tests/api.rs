@@ -91,15 +91,25 @@ fn by_value() {
 
 #[test]
 fn by_reference() {
-  let mut words = [0x0102u16, 0x0304];
+  // (Aligned for the `u32` it is seen as below: nothing tells where a `[u16; 2]` is otherwise,
+  // and `try_transmute_mut` would rightly answer `Error::Alignment` half of the time.)
+  #[repr(align(4))]
+  struct Aligned([u16; 2]);
+  let mut words = Aligned([0x0102u16, 0x0304]).0;
+  let mut aligned = Aligned(words);
   assert_eq!(transmute_ref::<_, [u8; 4]>(&words).len(), 4);
   assert_eq!(transmute_ref::<[u16], [u8]>(&words[..]).len(), 4);
   assert_eq!(truncate_ref::<[u16; 2], [u8; 3]>(&words).len(), 3);
   assert_eq!(truncate_ref::<[u16; 2], [[u8; 3]]>(&words).len(), 1);
   transmute_mut::<[u16], [[u8; 2]]>(&mut words[..])[1] = [0, 0];
   assert_eq!(words, [0x0102, 0]);
-  *try_transmute_mut::<[u16; 2], u32>(&mut words).unwrap() = u32::MAX;
-  assert_eq!(words, [0xffff; 2]);
+  *try_transmute_mut::<[u16; 2], u32>(&mut aligned.0).unwrap() = u32::MAX;
+  assert_eq!(aligned.0, [0xffff; 2]);
+  // The second of two `u16`s that are where a `u32` can be is not where a `u32` can be.
+  let mut pairs = Aligned([0; 2]);
+  let second = try_transmute_mut::<[u16], [u8; 2]>(&mut pairs.0[1..]).unwrap();
+  assert!(try_transmute_ref::<[u8; 2], u16>(second).is_ok());
+  assert_eq!(try_transmute_ref::<[u8], [u32]>(&second[..]).err(), Some(Error::Alignment));
 
   // A greater alignment: the address is checked.
   let bytes = transmute_ref::<_, [u8; 8]>(&[1u32, 2]);
