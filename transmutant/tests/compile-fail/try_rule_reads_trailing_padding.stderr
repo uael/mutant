@@ -1,0 +1,43 @@
+error[E0080]: evaluation panicked:
+              cannot transmute: a byte that the target requires to be initialized is padding in the source.
+              This is at byte 3 of the target.
+
+   --> src/lib.rs
+    |
+    |   const TRY_REF: () = Self::require(Need { truncate: false, fallible: true, reference: true });
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `transmutant::Plan::<Plain, Summed>::TRY_REF` failed inside this call
+    |
+note: inside `transmutant::Plan::<Plain, Summed>::require`
+ --> src/lib.rs
+  |
+  | /       Message::new("a byte that the target requires to be initialized is padding in the source")
+  | |         .at(offset)
+  | |         .panic();
+  | |________________^
+note: inside `transmutant::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_transmute_ref::<Plain, Summed>`
+  --> tests/compile-fail/try_rule_reads_trailing_padding.rs:20:11
+   |
+20 |   let _ = transmutant::try_transmute_ref::<Plain, Summed>(&Plain { a: 0, b: 0 });
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

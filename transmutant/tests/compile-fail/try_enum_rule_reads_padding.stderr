@@ -1,0 +1,47 @@
+error[E0080]: evaluation panicked:
+              cannot transmute: a byte that the target requires to be initialized is padding in the source.
+              This is at byte 3 of the target.
+
+   --> src/lib.rs
+    |
+    |   const TRY: () = Self::require(Need { truncate: false, fallible: true, reference: false });
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `transmutant::Plan::<HoldsPlain, HoldsReadsPadding>::TRY` failed inside this call
+    |
+note: inside `transmutant::Plan::<HoldsPlain, HoldsReadsPadding>::require`
+ --> src/lib.rs
+  |
+  | /       Message::new("a byte that the target requires to be initialized is padding in the source")
+  | |         .at(offset)
+  | |         .panic();
+  | |________________^
+note: inside `transmutant::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |           ^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_transmute::<HoldsPlain, HoldsReadsPadding>`
+  --> tests/compile-fail/try_enum_rule_reads_padding.rs:33:11
+   |
+33 |     let _ = transmutant::try_transmute::<HoldsPlain, HoldsReadsPadding>(HoldsPlain::A(Plain {
+   |  ___________^
+34 | |     a: 0,
+35 | |     b: 0,
+36 | |   }));
+   | |_____^

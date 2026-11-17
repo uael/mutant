@@ -91,12 +91,51 @@ pub struct Cursor {
   /// The layout is the one of the target: a byte that is only initialized in some of the
   /// variants of an enum is then to be initialized, rather than known not to be.
   target: bool,
+  /// What of the target may be checked at run time, see [`Checked`].
+  checked: Checked,
+}
+
+/// Which rules of a target may be checked at run time: the rules that read the bytes of their
+/// struct (`le`, `crc32`...) read its padding, which must then be initialized.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Checked {
+  /// None: this is not a target (the reverse relation of a `&mut`).
+  No,
+  /// The ones that [`mark_rules`] marks: the source does not prove them.
+  Marked,
+  /// All of them: the target is the variant of an enum, which is validated as a whole.
+  All,
 }
 
 impl Cursor {
-  pub(crate) const fn new(root: &'static Layout, target: bool) -> Self {
+  pub(crate) const fn new(root: &'static Layout, target: bool, checked: Checked) -> Self {
     let frame = Frame { layout: root, base: 0, leaf: 0, field: 0 };
-    Self { stack: [frame; MAX_DEPTH], depth: 1, target }
+    Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked }
+  }
+
+  /// Whatever the padding at the top of the stack is read by a rule that may be checked: one of
+  /// a struct that holds it, unless `source` proves it, as [`mark_rules`] tells.
+  const fn padding_is_read(&self, source: &'static Layout) -> bool {
+    let (mut i, mut marked) = (0, matches!(self.checked, Checked::All));
+    if matches!(self.checked, Checked::No) {
+      return false;
+    }
+    while i < self.depth {
+      let frame = &self.stack[i];
+      if !marked && covered(source, frame.base, frame.layout) {
+        // Nothing in it is checked.
+        return false;
+      }
+      if let Kind::Array(..) | Kind::Slice(_) = frame.layout.kind {
+        // The elements share their rules: proven all at once, or checked everywhere.
+        marked = true;
+      }
+      if frame.layout.rules_read_bytes() {
+        return true;
+      }
+      i += 1;
+    }
+    false
   }
 
   /// The enum that the last run is of, if any, with its offset and its leaf.
@@ -149,7 +188,8 @@ impl Cursor {
             return Run { kind, start, end, leaf: frame.leaf };
           }
           // What follows, for as long as it is known to be initialized or not.
-          let (init, stop) = layout.segment(offset, !self.target);
+          let checked = !matches!(self.checked, Checked::No);
+          let (init, stop) = layout.segment(offset, !self.target, checked);
           let kind = if init { RunKind::Any } else { RunKind::Pad };
           return Run { kind, start: pos, end: frame.base + stop, leaf: 0 };
         }
@@ -304,9 +344,17 @@ impl Relation {
 }
 
 /// Relate the first `end` bytes (`usize::MAX`: all of them, however many) of `a` and `b`.
-pub const fn relate(a: &'static Layout, b: &'static Layout, end: usize) -> Relation {
+///
+/// `checked` tells which rules of `b` may be checked at run time: the bytes that they read must
+/// be initialized.
+pub const fn relate(
+  a: &'static Layout,
+  b: &'static Layout,
+  end: usize,
+  checked: Checked,
+) -> Relation {
   let mut relation = Relation::NEW;
-  let (mut a, mut b) = (Cursor::new(a, false), Cursor::new(b, true));
+  let (mut a, mut b) = (Cursor::new(a, false, Checked::No), Cursor::new(b, true, checked));
   relate_range(&mut a, &mut b, 0, end, &mut relation);
   relation
 }
@@ -364,6 +412,13 @@ const fn relate_range(
     }
     let stop = min(run_b.end, end);
     match run_b.kind {
+      // Padding that a rule reads accepts everything but padding.
+      RunKind::Pad if b.padding_is_read(a.stack[0].layout) => {
+        if matches!(run_a.kind, RunKind::Pad) {
+          out.uninit(pos);
+        }
+        pos = min(run_a.end, stop);
+      }
       // Padding accepts everything.
       RunKind::Pad => pos = stop,
       // Unconstrained bytes accept everything but padding.
@@ -435,7 +490,7 @@ const fn relate_enums(
       continue;
     }
     let to = &enum_b.variants[j];
-    let mut relation = relate(from.layout, to.layout, b.size);
+    let mut relation = relate(from.layout, to.layout, b.size, Checked::All);
     mark_rules(from.layout, to.layout, 0, 0, &mut relation);
     if let Some(offset) = relation.uninit {
       out.uninit(pos + offset);
@@ -1183,7 +1238,7 @@ pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
   let fit = fit(a, b);
   // No source fits, even truncated: there is nothing to relate.
   let hopeless = matches!(fit.exact, Exact::Never(_)) && !fit.shrink;
-  let mut relation = if hopeless { Relation::NEW } else { relate(a, b, fit.end) };
+  let mut relation = if hopeless { Relation::NEW } else { relate(a, b, fit.end, Checked::Marked) };
   if !hopeless {
     mark_rules(a, b, 0, 0, &mut relation);
   }
@@ -1192,5 +1247,5 @@ pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
 
 /// Whatever any value written through a `&mut` to the target `b` leaves a valid source `a`.
 pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
-  !matches!(fit.exact, Exact::Never(_)) && relate(b, a, fit.end).infallible()
+  !matches!(fit.exact, Exact::Never(_)) && relate(b, a, fit.end, Checked::No).infallible()
 }

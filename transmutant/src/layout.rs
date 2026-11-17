@@ -895,7 +895,13 @@ impl Layout {
   ///
   /// This does not look into arrays whose elements are not all one or the other: their bytes
   /// are not known to be initialized (`always`), or are all required to be (not `always`).
-  pub(crate) const fn segment(&self, offset: usize, always: bool) -> (bool, usize) {
+  ///
+  /// With `checked` (and not `always`), the padding of a struct whose rules read the bytes of its
+  /// value is required to be initialized, as these rules may be checked.
+  pub(crate) const fn segment(&self, offset: usize, always: bool, checked: bool) -> (bool, usize) {
+    if checked && !always && self.rules_read_bytes() {
+      return (true, self.size);
+    }
     match self.uniform {
       Uniform::Any => return (true, self.size),
       Uniform::Pad => return (false, self.size),
@@ -914,7 +920,7 @@ impl Layout {
             return (false, field.offset);
           }
           if offset < field.offset + field.layout.size {
-            let (init, end) = field.layout.segment(offset - field.offset, always);
+            let (init, end) = field.layout.segment(offset - field.offset, always, checked);
             return (init, field.offset + end);
           }
           i += 1;
@@ -930,7 +936,7 @@ impl Layout {
         let (mut i, mut every, mut some) = (0, true, false);
         let mut stop = if offset < start { start } else { self.size };
         while i < layout.variants.len() {
-          let (init, end) = layout.variants[i].layout.segment(offset, always);
+          let (init, end) = layout.variants[i].layout.segment(offset, always, checked);
           (every, some) = (every && init, some || init);
           if end < stop {
             stop = end;
@@ -1047,6 +1053,21 @@ impl Layout {
       Kind::Pattern(dfa) => Shape::Pattern(dfa),
       Kind::Enum(layout) => Shape::Enum(layout),
     }
+  }
+
+  /// Whatever a rule of the struct reads bytes of its value other than its fields (`le`, `be`,
+  /// `crc32`, `sum16`): its padding, if it has any, is then read when the rule is checked.
+  pub(crate) const fn rules_read_bytes(&self) -> bool {
+    let (rules, mut i) = (self.rules(), 0);
+    while i < rules.len() {
+      if let Some(ops) = rules[i].ops()
+        && ops_read_bytes(ops)
+      {
+        return true;
+      }
+      i += 1;
+    }
+    false
   }
 
   /// Rules of a struct.
@@ -1589,6 +1610,20 @@ pub enum Rule {
   /// The tail of the value starts with a region of as many bytes as the result of the
   /// expression (`None`: what remains). Regions follow each other, in the order of the rules.
   Region(Option<&'static [Op]>),
+}
+
+/// Whatever an expression reads bytes of the value that are not those of its integer fields.
+const fn ops_read_bytes(ops: &[Op]) -> bool {
+  let mut i = 0;
+  while i < ops.len() {
+    match ops[i] {
+      Op::At { .. } | Op::Crc32 | Op::Sum16 => return true,
+      Op::Walk { cond, next, .. } if ops_read_bytes(cond) || ops_read_bytes(next) => return true,
+      _ => {}
+    }
+    i += 1;
+  }
+  false
 }
 
 /// The operations of an expression can read the whole value, not only its sized fields.

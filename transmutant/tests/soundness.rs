@@ -25,3 +25,64 @@ fn a_requirement_does_not_prove_a_guarantee_in_an_enum() {
   assert_eq!(transmutant::try_transmute::<Soft, Hard>(soft), Err(Error::Validity));
   assert_eq!(transmutant::try_transmute::<Soft, Hard>(Soft::V(1)), Ok(Hard::V(true)));
 }
+
+/// A rule that reads the bytes of the value (`le`, `be`, `crc32`, `sum16`) reads its padding too:
+/// it can only be checked if the source has initialized bytes there.
+#[derive(Data, Debug, Clone, Copy)]
+#[repr(C)]
+#[data(assert(le(1, 1) == 0))]
+struct ReadsPadding {
+  a: u8,
+  b: u16,
+}
+
+#[derive(Data, Debug, Clone, Copy)]
+#[repr(C)]
+struct Plain {
+  a: u8,
+  b: u16,
+}
+
+#[derive(Data, Debug, Clone, Copy)]
+#[repr(u8)]
+enum HoldsReadsPadding {
+  A(ReadsPadding),
+}
+
+#[test]
+fn a_rule_reads_padding_only_if_it_is_initialized() {
+  // From bytes, the rule is checked, padding included.
+  let ok = [u16::from_ne_bytes([7, 0]), 9];
+  let ok: &[u8; 4] = transmutant::transmute_ref(&ok);
+  assert_eq!(
+    transmutant::try_transmute_ref::<[u8; 4], ReadsPadding>(ok).map(|r| (r.a, r.b)),
+    Ok((7, 9))
+  );
+  let bad = [u16::from_ne_bytes([1, 5]), 0];
+  let bad: &[u8; 4] = transmutant::transmute_ref(&bad);
+  assert_eq!(
+    transmutant::try_transmute_ref::<[u8; 4], ReadsPadding>(bad).unwrap_err(),
+    Error::Validity
+  );
+  // In the variant of an enum, the same.
+  let mut bytes = [0u8; 6];
+  bytes[2] = 7;
+  bytes[4..].copy_from_slice(&9u16.to_ne_bytes());
+  let HoldsReadsPadding::A(value) =
+    transmutant::try_transmute::<[u8; 6], HoldsReadsPadding>(bytes).unwrap();
+  assert_eq!((value.a, value.b), (7, 9));
+  bytes[3] = 5;
+  assert_eq!(
+    transmutant::try_transmute::<[u8; 6], HoldsReadsPadding>(bytes).err(),
+    Some(Error::Validity)
+  );
+  // The same rule, at the same place, proves it: nothing is checked, nothing is read.
+  let mut value =
+    transmutant::transmute::<HoldsReadsPadding, HoldsReadsPadding>(HoldsReadsPadding::A(value));
+  let HoldsReadsPadding::A(inner) = &mut value;
+  assert_eq!(transmutant::transmute_ref::<ReadsPadding, ReadsPadding>(inner).b, 9);
+  // A `&mut` is about what the type system enforces: rules are not invariants.
+  let plain: &mut Plain = transmutant::transmute_mut(inner);
+  plain.a = 3;
+  assert_eq!(inner.a, 3);
+}
