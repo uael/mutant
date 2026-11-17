@@ -1,4 +1,5 @@
 #[test]
+#[cfg_attr(miri, ignore = "trybuild runs the compiler, which Miri cannot")]
 fn compile_fail() {
   let t = trybuild::TestCases::new();
   t.compile_fail("tests/compile-fail/*.rs");
