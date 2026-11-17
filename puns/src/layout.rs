@@ -1620,7 +1620,8 @@ pub enum Op {
   /// it, it is replaced by the expression `next`. In both, the value is the variable `var`.
   ///
   /// This is how what is at an offset that depends on what is before is reached: options, a
-  /// chain of headers. A value takes at most as many steps as it has bytes.
+  /// chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is the size of
+  /// the value in bytes: a step for each bit of the value, and for each bit of a `u128`.
   Walk {
     var: u8,
     cond: &'static [Op],

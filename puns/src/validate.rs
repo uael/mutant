@@ -254,7 +254,8 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
     return;
   };
   let Some(mut state) = machine.top() else { return };
-  let mut steps = 0;
+  // So that a walk ends: a step for each bit of the value, and for each bit of a `u128`.
+  let (mut steps, limit) = (0, size.saturating_mul(8).saturating_add(128));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.
@@ -264,8 +265,7 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
       Some(_) => {}
       None => break None,
     }
-    // A value is not walked for more steps than it has bytes.
-    if steps == size {
+    if steps == limit {
       break None;
     }
     steps += 1;

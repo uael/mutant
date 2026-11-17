@@ -132,3 +132,22 @@ fn what_a_let_binds_is_computed() {
   assert!(puns::from_bytes::<Branch>(&[4, 0]).is_ok());
   assert!(puns::from_bytes::<Branch>(&[4]).is_err());
 }
+
+/// A netmask: ones, then zeros. The walk takes a step per bit, more than the value has bytes.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert({
+  let ones = walk(0, |i| i < 32 && (mask >> (31 - i)) & 1 == 1, |i| i + 1);
+  (mask << ones) as u32 == 0
+}))]
+struct Netmask {
+  mask: puns::num::u32be,
+}
+
+#[test]
+fn a_walk_takes_a_step_per_bit() {
+  assert!(puns::from_bytes::<Netmask>(&[0xff, 0xff, 0xff, 0]).is_ok());
+  assert!(puns::from_bytes::<Netmask>(&[0xff, 0xff, 0xff, 0xff]).is_ok());
+  assert!(puns::from_bytes::<Netmask>(&[0, 0, 0, 0]).is_ok());
+  assert!(puns::from_bytes::<Netmask>(&[0xff, 0xff, 0, 0xff]).is_err());
+}

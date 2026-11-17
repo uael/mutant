@@ -81,8 +81,8 @@ use syn::{
 ///   replaced by `NEXT` for as long as `COND` is true of it. This is how what is at an offset
 ///   that depends on what is before is reached: after options, at the end of a chain of headers
 ///   (`walk(0, |at| be(at, 1) != 0, |at| at + 2 + be(at + 1, 1))` is the offset of the first
-///   "type, length, value" whose type is 0). A value is walked for at most as many steps as it
-///   has bytes, and the rule fails beyond.
+///   "type, length, value" whose type is 0). A walk takes at most `8 * size_of_val(self) + 128`
+///   steps (a step for each bit of the value, or of a `u128`), and the rule fails beyond.
 ///
 /// # Enums
 ///

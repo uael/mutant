@@ -197,7 +197,9 @@ and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
 `START` becomes when it is replaced by `NEXT` for as long as `COND` is true of it. This is how
 what lies at an offset that depends on what is before is reached: the checksum of UDP, TCP and
 ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each of which tells
-what follows it and how long it is. A value is walked for at most as many steps as it has bytes.
+what follows it and how long it is. A walk takes at most a step for each bit of the value, plus
+128 (the bits of a `u128`), so that it ends: a walk over the bits of a field fits, whatever the
+size of the value.
 
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
 the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
