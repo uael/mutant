@@ -8,3 +8,21 @@ edition = "2024"
 [profile.release]
 lto = true
 codegen-units = 1
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+# As nearest: long functions are the analysis and the derive, split where it reads better only.
+too_many_lines = "allow"
+# As nearest: sizes, offsets and lengths are `usize` and `u128` both ways; values come from types.
+cast_possible_truncation = "allow"
+# As nearest: the type is spelled out where `Self` would hide which of two layouts is meant.
+use_self = "allow"
+# The transmutations must cost nothing: `#[inline(always)]` is what makes the checks that the
+# analysis proved disappear, and is measured by `examples/codegen.rs`.
+inline_always = "allow"

@@ -16,12 +16,14 @@ fn verdict<S: ?Sized + Data, D: ?Sized + Data>() -> String {
     Exact::Never(why) => return format!("never: {why}"),
   };
   let relation = match () {
-    _ if a.relation.uninit.is_some() => return format!("uninit at {}", a.relation.uninit.unwrap()),
-    _ if a.relation.disjoint.is_some() => {
+    () if a.relation.uninit.is_some() => {
+      return format!("uninit at {}", a.relation.uninit.unwrap());
+    }
+    () if a.relation.disjoint.is_some() => {
       return format!("unreachable at {}", a.relation.disjoint.unwrap());
     }
-    _ if a.relation.infallible() => "infallible".to_string(),
-    _ => format!("fallible at {}", a.relation.partial.unwrap()),
+    () if a.relation.infallible() => "infallible".to_string(),
+    () => format!("fallible at {}", a.relation.partial.unwrap()),
   };
   let mutable = if const { mutable(&S::LAYOUT, &D::LAYOUT, &analyze(&S::LAYOUT, &D::LAYOUT).fit) } {
     ", mutable"
@@ -36,6 +38,8 @@ macro_rules! scalar {
     #[derive(Copy, Clone)]
     #[repr(transparent)]
     struct $name($repr);
+    // SAFETY: these types are only given to the analysis, never constructed: there is no value
+    // of them that `SPEC` could misdescribe.
     unsafe impl Scalar for $name {
       const SPEC: Spec = Spec::ranges::<$repr>(Endian::$endian, &$ranges);
     }
@@ -50,7 +54,7 @@ scalar!(Be3412(u16) = Big[(0x3412, 0x3412)]);
 scalar!(Be1234(u16) = Big[(0x1234, 0x1234)]);
 scalar!(GeLe(u32) = Little[(0x100, 0xffff_ffff)]);
 scalar!(GeBe(u32) = Big[(0x100, 0xffff_ffff)]);
-scalar!(Enum3(u32) = Little [(0x01010101, 0x01010101), (0x02020202, 0x02020202), (0x03030303, 0x03030303)]);
+scalar!(Enum3(u32) = Little [(0x0101_0101, 0x0101_0101), (0x0202_0202, 0x0202_0202), (0x0303_0303, 0x0303_0303)]);
 
 #[derive(Data)]
 #[repr(C)]

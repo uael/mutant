@@ -33,7 +33,7 @@ use crate::layout::{Dfa, Kind, Layout, Spec, Uniform, Valid, max_value};
 const MAX_DEPTH: usize = 32;
 
 #[derive(Copy, Clone)]
-pub(crate) enum RunKind {
+pub enum RunKind {
   /// Bytes that may be uninitialized.
   Pad,
   /// Initialized bytes, any value.
@@ -46,7 +46,7 @@ pub(crate) enum RunKind {
 
 /// Consecutive bytes of the same nature: `start..end` are offsets from the root of the layout.
 #[derive(Copy, Clone)]
-pub(crate) struct Run {
+pub struct Run {
   kind: RunKind,
   /// Only meaningful for atoms: other runs may start before `start`.
   start: usize,
@@ -85,7 +85,7 @@ struct Repeat {
 }
 
 /// Forward-only iterator over the runs of a layout.
-pub(crate) struct Cursor {
+pub struct Cursor {
   stack: [Frame; MAX_DEPTH],
   depth: usize,
   /// The layout is the one of the target: a byte that is only initialized in some of the
@@ -221,7 +221,7 @@ impl Cursor {
 
 /// A set of constrained scalars of a type, by index.
 #[derive(Copy, Clone)]
-pub(crate) struct Marks {
+pub struct Marks {
   bits: [u64; Self::CAPACITY / 64],
   /// Scalars whose index is not less than `CAPACITY` are all in the set.
   overflow: bool,
@@ -269,7 +269,7 @@ impl Marks {
 
 /// How the values a source may hold relate to the values a target accepts.
 #[derive(Copy, Clone)]
-pub(crate) struct Relation {
+pub struct Relation {
   /// Offset of a byte the target needs initialized that is padding in the source.
   pub(crate) uninit: Option<usize>,
   /// Offset of a scalar of the target that none of the source values is valid for.
@@ -304,7 +304,7 @@ impl Relation {
 }
 
 /// Relate the first `end` bytes (`usize::MAX`: all of them, however many) of `a` and `b`.
-pub(crate) const fn relate(a: &'static Layout, b: &'static Layout, end: usize) -> Relation {
+pub const fn relate(a: &'static Layout, b: &'static Layout, end: usize) -> Relation {
   let mut relation = Relation::NEW;
   let (mut a, mut b) = (Cursor::new(a, false), Cursor::new(b, true));
   relate_range(&mut a, &mut b, 0, end, &mut relation);
@@ -593,12 +593,13 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
     return Some(Rel::Overlap);
   }
   // The usual case: a scalar over a scalar of the same size and byte order.
-  if len == 1 {
-    if let RunKind::Atom(Spec { size, endian, valid: Valid::In(from), .. }) = pieces[0].kind {
-      if pieces[0].skip == 0 && size == spec.size && (size == 1 || endian.equals(spec.endian)) {
-        return Some(relate_ranges(from, ranges));
-      }
-    }
+  if len == 1
+    && let RunKind::Atom(Spec { size, endian, valid: Valid::In(from), .. }) = pieces[0].kind
+    && pieces[0].skip == 0
+    && size == spec.size
+    && (size == 1 || endian.equals(spec.endian))
+  {
+    return Some(relate_ranges(from, ranges));
   }
   // The general case.
   let mut boxes =
@@ -612,7 +613,7 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
 }
 
 /// Relation of two sorted lists of disjoint and non-adjacent ranges.
-pub(crate) const fn relate_ranges(a: &[(u128, u128)], b: &[(u128, u128)]) -> Rel {
+pub const fn relate_ranges(a: &[(u128, u128)], b: &[(u128, u128)]) -> Rel {
   let (mut subset, mut meets, mut i) = (true, false, 0);
   while i < a.len() {
     let ((lo, hi), mut inside, mut j) = (a[i], false, 0);
@@ -709,10 +710,10 @@ impl Boxes<'_> {
     while i < self.ranges.len() {
       let (start, end) = self.ranges[i];
       self.meets = self.meets || box_meets(&digits_lo, &digits_hi, size, start, end);
-      if let Some(gap) = gap {
-        if gap < start {
-          self.escapes = self.escapes || box_meets(&digits_lo, &digits_hi, size, gap, start - 1);
-        }
+      if let Some(gap) = gap
+        && gap < start
+      {
+        self.escapes = self.escapes || box_meets(&digits_lo, &digits_hi, size, gap, start - 1);
       }
       gap = if end < max_value(size) { Some(end + 1) } else { None };
       i += 1;
@@ -806,13 +807,13 @@ const fn box_meets(lo: &[u8; 16], hi: &[u8; 16], size: usize, start: u128, end: 
     i += 1;
   }
   // Whatever the digit at `i` is bumped (else it is, as the digits after it, the least one).
-  let bump;
-  if i == size {
+
+  let bump = if i == size {
     // `start` is in the box.
     return true;
   } else if digit(start, size, i) < lo[i] {
     // Any digit of the box is greater there.
-    bump = false;
+    false
   } else {
     // Any digit of the box is lesser there: a previous digit has to be greater than in `start`.
     loop {
@@ -824,14 +825,14 @@ const fn box_meets(lo: &[u8; 16], hi: &[u8; 16], size: usize, start: u128, end: 
         break;
       }
     }
-    bump = true;
-  }
+    true
+  };
   let (mut least, mut k) = (0u128, 0);
   while k < size {
     let digit = match () {
-      _ if k < i => digit(start, size, k),
-      _ if k == i && bump => digit(start, size, k) + 1,
-      _ => lo[k],
+      () if k < i => digit(start, size, k),
+      () if k == i && bump => digit(start, size, k) + 1,
+      () => lo[k],
     };
     least = (least << 8) | digit as u128;
     k += 1;
@@ -1093,7 +1094,7 @@ const fn covered(source: &'static Layout, offset: usize, target: &'static Layout
 
 /// Whatever sources and targets have the same extent.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Exact {
+pub enum Exact {
   Always,
   /// Depending on the slice length of the source.
   Sometimes,
@@ -1105,7 +1106,7 @@ pub(crate) enum Exact {
 /// The *extent* of a value is its size without the trailing padding of dynamically sized types:
 /// the offset of its tail slice plus the size of that slice.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Fit {
+pub struct Fit {
   pub(crate) exact: Exact,
   /// Whatever any source is at least as large as the smallest target.
   pub(crate) shrink: bool,
@@ -1113,20 +1114,20 @@ pub(crate) struct Fit {
   pub(crate) end: usize,
 }
 
-pub(crate) const TOO_SMALL: &str = "the source is smaller than the target";
-pub(crate) const TOO_LARGE: &str = "the source is larger than the target";
-pub(crate) const UNEVEN: &str =
+pub const TOO_SMALL: &str = "the source is smaller than the target";
+pub const TOO_LARGE: &str = "the source is larger than the target";
+pub const UNEVEN: &str =
   "the size of the source cannot be reached with elements of the tail slice of the target";
 
-pub(crate) const fn fit(a: &Layout, b: &Layout) -> Fit {
+pub const fn fit(a: &Layout, b: &Layout) -> Fit {
   let ((sa, ya), (sb, yb)) = ((a.size, a.stride()), (b.size, b.stride()));
   match (ya != 0, yb != 0) {
     // Both have a fixed size.
     (false, false) => Fit {
       exact: match () {
-        _ if sa < sb => Exact::Never(TOO_SMALL),
-        _ if sa > sb => Exact::Never(TOO_LARGE),
-        _ => Exact::Always,
+        () if sa < sb => Exact::Never(TOO_SMALL),
+        () if sa > sb => Exact::Never(TOO_LARGE),
+        () => Exact::Always,
       },
       shrink: sa >= sb,
       end: sb,
@@ -1136,9 +1137,9 @@ pub(crate) const fn fit(a: &Layout, b: &Layout) -> Fit {
       let elems = if sa >= sb { (sa - sb) / yb } else { 0 };
       Fit {
         exact: match () {
-          _ if sa < sb => Exact::Never(TOO_SMALL),
-          _ if (sa - sb) % yb != 0 => Exact::Never(UNEVEN),
-          _ => Exact::Always,
+          () if sa < sb => Exact::Never(TOO_SMALL),
+          () if (sa - sb) % yb != 0 => Exact::Never(UNEVEN),
+          () => Exact::Always,
         },
         shrink: sa >= sb,
         end: sb + elems * yb,
@@ -1147,9 +1148,9 @@ pub(crate) const fn fit(a: &Layout, b: &Layout) -> Fit {
     // The source must have the very number of elements that makes it the size of the target.
     (true, false) => Fit {
       exact: match () {
-        _ if sa > sb => Exact::Never(TOO_LARGE),
-        _ if (sb - sa) % ya != 0 => Exact::Never(UNEVEN),
-        _ => Exact::Sometimes,
+        () if sa > sb => Exact::Never(TOO_LARGE),
+        () if (sb - sa) % ya != 0 => Exact::Never(UNEVEN),
+        () => Exact::Sometimes,
       },
       shrink: sa >= sb,
       end: sb,
@@ -1157,10 +1158,10 @@ pub(crate) const fn fit(a: &Layout, b: &Layout) -> Fit {
     (true, true) => Fit {
       exact: match () {
         // No `sa + n * ya == sb + m * yb`.
-        _ if sa.abs_diff(sb) % gcd(ya, yb) != 0 => Exact::Never(UNEVEN),
+        () if sa.abs_diff(sb) % gcd(ya, yb) != 0 => Exact::Never(UNEVEN),
         // One for every `n`.
-        _ if sa >= sb && (sa - sb) % yb == 0 && ya % yb == 0 => Exact::Always,
-        _ => Exact::Sometimes,
+        () if sa >= sb && (sa - sb) % yb == 0 && ya % yb == 0 => Exact::Always,
+        () => Exact::Sometimes,
       },
       shrink: sa >= sb,
       end: usize::MAX,
@@ -1172,13 +1173,13 @@ pub(crate) const fn fit(a: &Layout, b: &Layout) -> Fit {
 // `Analysis`
 
 #[derive(Copy, Clone)]
-pub(crate) struct Analysis {
+pub struct Analysis {
   pub(crate) fit: Fit,
   pub(crate) relation: Relation,
   pub(crate) aligned: bool,
 }
 
-pub(crate) const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
+pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
   let fit = fit(a, b);
   // No source fits, even truncated: there is nothing to relate.
   let hopeless = matches!(fit.exact, Exact::Never(_)) && !fit.shrink;
@@ -1190,6 +1191,6 @@ pub(crate) const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis 
 }
 
 /// Whatever any value written through a `&mut` to the target `b` leaves a valid source `a`.
-pub(crate) const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
+pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
   !matches!(fit.exact, Exact::Never(_)) && relate(b, a, fit.end).infallible()
 }

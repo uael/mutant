@@ -5,7 +5,14 @@
 //! ```
 //!
 //! and look for their names in `target/release/**/codegen*.s`. See `DESIGN.md` for what to expect.
-#![allow(clippy::missing_safety_doc)]
+#![expect(
+  clippy::no_mangle_with_rust_abi,
+  reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
+)]
+#![expect(
+  clippy::trait_duplication_in_bounds,
+  reason = "`#[derive(Data)]` bounds the type of a field by `Data` again, here a payload `P: Data`"
+)]
 
 use transmutant::{
   Data, Tag,
@@ -32,7 +39,7 @@ pub enum Kind {
 #[derive(Data)]
 #[repr(C)]
 pub struct Header {
-  pub magic: u32bec<0xcafebabe>,
+  pub magic: u32bec<0xcafe_babe>,
   pub kind: Kind,
   pub flag: bool,
   pub len: u16be,
@@ -120,19 +127,19 @@ pub enum Drawing {
 
 // Nothing to check.
 #[unsafe(no_mangle)]
-pub fn position_bytes(p: &Position) -> &[u8; 2] {
+pub const fn position_bytes(p: &Position) -> &[u8; 2] {
   transmute_ref(p)
 }
 #[unsafe(no_mangle)]
-pub fn bools_to_u32(b: [bool; 4]) -> u32 {
+pub const fn bools_to_u32(b: [bool; 4]) -> u32 {
   transmute(b)
 }
 #[unsafe(no_mangle)]
-pub fn frame_bytes(f: &Frame<Ipv4>) -> &[u8] {
+pub const fn frame_bytes(f: &Frame<Ipv4>) -> &[u8] {
   transmute_ref(f)
 }
 #[unsafe(no_mangle)]
-pub fn words_bytes(w: &[u32]) -> &[u8] {
+pub const fn words_bytes(w: &[u32]) -> &[u8] {
   transmute_ref(w)
 }
 // One comparison.
@@ -163,7 +170,7 @@ pub fn ipv4(b: &[u8]) -> Option<&Frame<Ipv4>> {
   unpack::<Frame<Ipv4>>(b).ok().map(|(u, _)| u)
 }
 #[unsafe(no_mangle)]
-pub fn options(p: &Ipv4) -> &[u8] {
+pub const fn options(p: &Ipv4) -> &[u8] {
   p.options()
 }
 #[unsafe(no_mangle)]
@@ -173,7 +180,7 @@ pub fn bools(b: &[u8]) -> Option<&[bool]> {
 // Enums with fields: nothing when every variant is one of the target, else the tag, then what
 // the variant of that tag requires.
 #[unsafe(no_mangle)]
-pub fn shapes_drawings(s: &[Shape]) -> &[Drawing] {
+pub const fn shapes_drawings(s: &[Shape]) -> &[Drawing] {
   transmute_ref(s)
 }
 #[unsafe(no_mangle)]

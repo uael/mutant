@@ -5,7 +5,7 @@
 //! initialized byte, or part of a *scalar* with a restricted set of valid values.
 //!
 //! The whole static analysis of the crate is ordinary `const fn` code running over those values
-//! (see [`analysis`](crate::analysis)); nothing is encoded in the type system.
+//! (see `analysis.rs`); nothing is encoded in the type system.
 
 use core::mem;
 
@@ -74,12 +74,14 @@ pub(crate) const fn max_value(size: usize) -> u128 {
 impl Spec {
   /// A scalar the size of `T` that accepts every initialized bit pattern.
   #[inline]
+  #[must_use]
   pub const fn any<T>() -> Self {
     Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any }
   }
 
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
   #[inline]
+  #[must_use]
   pub const fn uninit<T>() -> Self {
     let (size, endian) = (size_of::<T>(), Endian::NATIVE);
     Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit }
@@ -90,11 +92,17 @@ impl Spec {
   ///
   /// `ranges` are inclusive and must be sorted, disjoint and non-adjacent; this is checked at
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
+  #[must_use]
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
     Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }.with_ranges(ranges)
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
+  ///
+  /// # Panics
+  /// If the scalar is not 1 to 16 bytes wide, or if `ranges` is empty, not sorted, overlapping,
+  /// adjacent or out of the bounds of the scalar.
+  #[must_use]
   pub const fn with_ranges(self, ranges: &'static [(u128, u128)]) -> Self {
     let (size, endian) = (self.size, self.endian);
     assert!(size >= 1 && size <= 16, "a constrained scalar must be 1 to 16 bytes wide");
@@ -124,12 +132,14 @@ impl Spec {
 
   /// Same as `self`, read in another byte order.
   #[inline]
+  #[must_use]
   pub const fn with_endian(self, endian: Endian) -> Self {
     Self { endian, ..self }
   }
 
   /// Whatever the scalar is an initialized integer of at most 16 bytes.
   #[doc(hidden)]
+  #[must_use]
   pub const fn is_integer(&self) -> bool {
     self.size <= 16 && !matches!(self.known, Valid::Uninit) && !matches!(self.valid, Valid::Uninit)
   }
@@ -140,6 +150,7 @@ impl Spec {
   /// `self` must be [an integer](Self::is_integer), and `ptr` must be valid for reads of one.
   #[doc(hidden)]
   #[inline(always)]
+  #[must_use]
   pub const unsafe fn load(&self, ptr: *const u8) -> u128 {
     // SAFETY: guaranteed by the caller.
     unsafe { load(ptr, self.size, self.endian) }
@@ -152,6 +163,7 @@ impl Spec {
   }
 
   /// Whatever `value` is valid for this scalar.
+  #[must_use]
   pub const fn contains(&self, value: u128) -> bool {
     match self.valid {
       Valid::Uninit | Valid::Any => self.size >= 16 || value <= max_value(self.size),
@@ -214,6 +226,7 @@ pub(crate) const unsafe fn load(ptr: *const u8, size: usize, endian: Endian) -> 
 ///
 /// assert_eq!(sorted_ranges([7, 1, 0, 2]), ([(0, 2), (7, 7), (0, 0), (0, 0)], 2));
 /// ```
+#[must_use]
 pub const fn sorted_ranges<const N: usize>(mut values: [u128; N]) -> ([(u128, u128); N], usize) {
   // Insertion sort.
   let mut i = 1;
@@ -284,6 +297,10 @@ impl Enum {
   /// With `repr(C)`, the tag is `outside`: the fields of a variant are at the offset of the
   /// shadows (`fields`) plus their offset in the shadow of the variant. Without, the tag is the
   /// first field of each shadow.
+  ///
+  /// # Panics
+  /// If `fields` is not where the fields of the variants are.
+  #[must_use]
   pub const fn new(
     tag: &'static Layout,
     outside: bool,
@@ -314,6 +331,7 @@ impl Enum {
 
   /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
   /// `shadows` (see [`Enum::new`]).
+  #[must_use]
   pub const fn fields(tag: &Layout, shadows: &[(usize, usize)]) -> usize {
     let (mut align, mut i) = (1, 0);
     while i < shadows.len() {
@@ -338,6 +356,7 @@ pub struct Variant {
 impl Variant {
   /// - `tag` is what the tag of the enum is for this variant, as an integer of native endianness,
   /// - `layout` is the [`Layout::variant`] of its fields.
+  #[must_use]
   pub const fn new(tag: u128, layout: &'static Layout) -> Self {
     Self { tag, layout }
   }
@@ -364,13 +383,18 @@ pub struct Field {
 
 impl Field {
   #[inline]
+  #[must_use]
   pub const fn new(offset: usize, layout: &'static Layout) -> Self {
     Self { offset, layout, index: 0, leaf: 0, restricted: false }
   }
 
   /// A scalar field that only accepts some of the values of its type, see
   /// [`Layout::restricted`].
+  ///
+  /// # Panics
+  /// If `layout` is not a scalar.
   #[inline]
+  #[must_use]
   pub const fn restricted(offset: usize, layout: &'static Layout) -> Self {
     assert!(matches!(layout.kind, Kind::Scalar(_)), "only scalar fields can be restricted");
     Self { offset, layout, index: 0, leaf: 0, restricted: true }
@@ -378,6 +402,7 @@ impl Field {
 
   /// The specification of a restricted field.
   #[doc(hidden)]
+  #[must_use]
   pub const fn restriction(&self) -> Option<Spec> {
     match self.layout.kind {
       Kind::Scalar(spec) if self.restricted => Some(spec),
@@ -386,11 +411,13 @@ impl Field {
   }
 
   #[doc(hidden)]
+  #[must_use]
   pub const fn offset(&self) -> usize {
     self.offset
   }
 
   #[doc(hidden)]
+  #[must_use]
   pub const fn leaf(&self) -> usize {
     self.leaf
   }
@@ -441,6 +468,7 @@ pub(crate) const fn round_up(value: usize, align: usize) -> Option<usize> {
 /// - `align` is the alignment of its type,
 /// - `pack` is the `N` of `repr(packed(N))`, or `usize::MAX`.
 #[doc(hidden)]
+#[must_use]
 pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
   match round_up(end, if align < pack { align } else { pack }) {
     Some(offset) => offset,
@@ -450,6 +478,10 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
 
 impl Layout {
   /// Layout of a scalar.
+  ///
+  /// # Panics
+  /// If `spec` does not have the size of `T`.
+  #[must_use]
   pub const fn scalar<T>(spec: Spec) -> Self {
     assert!(spec.size == size_of::<T>(), "`Spec` size mismatch");
     Self {
@@ -470,6 +502,11 @@ impl Layout {
 
   /// Same scalar, that only accepts the values of `ranges` (see [`Spec::ranges`]), which must
   /// all be valid for the scalar.
+  ///
+  /// # Panics
+  /// If `self` is not an initialized scalar, or if `ranges` are not valid values of it (see
+  /// [`Spec::with_ranges`]).
+  #[must_use]
   pub const fn restricted(&self, ranges: &'static [(u128, u128)]) -> Self {
     let Kind::Scalar(spec) = self.kind else { panic!("only scalars can be restricted") };
     assert!(!matches!(spec.valid, Valid::Uninit), "only initialized scalars can be restricted");
@@ -502,6 +539,9 @@ impl Layout {
   /// # Safety
   /// `probe` must be a pointer to a type whose pointers have a slice length, which is
   /// `PROBE_LEN` (see `Data::PROBE`).
+  ///
+  /// # Panics
+  /// If `probe` is not a pointer to bytes, or if `dfa` is not well formed.
   pub const unsafe fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
     // SAFETY: the caller gives the probe of a type whose pointers have a slice length.
     unsafe { ptr::verify::<T>(probe) };
@@ -521,6 +561,7 @@ impl Layout {
   }
 
   /// Layout of a type the size and alignment of `T` whose bytes are all padding.
+  #[must_use]
   pub const fn padding<T>() -> Self {
     Self {
       kind: Kind::Struct(&[], &[]),
@@ -535,6 +576,10 @@ impl Layout {
   }
 
   /// Layout of `[T; len]`.
+  ///
+  /// # Panics
+  /// If `elem` is unsized, or if the array is larger than `usize::MAX` bytes.
+  #[must_use]
   pub const fn array(elem: &'static Layout, len: usize) -> Self {
     assert!(!elem.unsized_);
     Self {
@@ -556,6 +601,9 @@ impl Layout {
   ///
   /// # Safety
   /// The length of `probe` must be `PROBE_LEN` (see `Data::PROBE`).
+  ///
+  /// # Panics
+  /// If `elem` is unsized or does not have the size of `T`.
   pub const unsafe fn slice<T>(probe: *const [T], elem: &'static Layout) -> Self {
     assert!(!elem.unsized_ && elem.size == size_of::<T>());
     // SAFETY: `[T]` is a slice.
@@ -584,6 +632,10 @@ impl Layout {
   /// # Safety
   /// If `T` is unsized, its tail must be a slice, and the slice length of `probe` must be
   /// `PROBE_LEN` (see `Data::PROBE`).
+  ///
+  /// # Panics
+  /// If the fields overlap, are not sorted or are out of the bounds of `T`, if a rule is
+  /// malformed, or if `T` is not laid out as this crate models it.
   pub const unsafe fn structure<T: ?Sized>(
     probe: *const T,
     fields: &'static [Field],
@@ -676,6 +728,7 @@ impl Layout {
 
   /// Layout of a variant of the enum `T`: its `fields`, as returned by [`Layout::sort_fields`],
   /// with their offsets from the start of the enum.
+  #[must_use]
   pub const fn variant<T>(fields: &'static [Field]) -> Self {
     let (mut i, mut leaves, mut has_rules) = (0, 0, false);
     while i < fields.len() {
@@ -701,6 +754,11 @@ impl Layout {
   /// What is known of such an enum is its tag, and which of its bytes are initialized; what it
   /// requires is checked as a whole, at run time, unless the source is an enum whose variants
   /// each prove the variant of the same tag.
+  ///
+  /// # Panics
+  /// If `T` is not laid out as its representation specifies, or if the variants do not fit it:
+  /// a tag that is not a value of the tag or that two variants share, a field out of bounds.
+  #[must_use]
   pub const fn enumeration<T>(layout: &'static Enum) -> Self {
     let (size, tag) = (size_of::<T>(), &layout.tag);
     let Kind::Scalar(spec) = tag.layout.kind else { panic!("the tag of an enum is a scalar") };
@@ -811,6 +869,7 @@ impl Layout {
 
   /// The tag of the `variant`th variant of an enum.
   #[doc(hidden)]
+  #[must_use]
   pub const fn variant_tag(&self, variant: usize) -> u128 {
     let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
     layout.variants[variant].tag
@@ -818,6 +877,7 @@ impl Layout {
 
   /// The `index`th field, as declared, of the `variant`th variant of an enum.
   #[doc(hidden)]
+  #[must_use]
   pub const fn variant_field(&self, variant: usize, index: usize) -> &Field {
     let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
     let (fields, mut i) = (layout.variants[variant].fields(), 0);
@@ -883,6 +943,7 @@ impl Layout {
   }
 
   /// Number the fields of a struct (given in declaration order) and sort them by offset.
+  #[must_use]
   pub const fn sort_fields<const N: usize>(mut fields: [Field; N]) -> [Field; N] {
     let (mut i, mut leaf) = (0, 0);
     while i < N {
@@ -905,12 +966,14 @@ impl Layout {
 
   /// Size and alignment of the type.
   #[inline]
+  #[must_use]
   pub const fn align(&self) -> usize {
     self.align
   }
 
   /// Size of the type if it is `Sized`, otherwise the offset of its tail slice.
   #[inline]
+  #[must_use]
   pub const fn size(&self) -> usize {
     self.size
   }
@@ -949,6 +1012,7 @@ impl Layout {
 
   /// Offset of the field declared at `index`.
   #[doc(hidden)]
+  #[must_use]
   pub const fn field(&self, index: usize) -> &Field {
     let Kind::Struct(fields, _) = self.kind else { panic!("not a struct") };
     let mut i = 0;
@@ -962,11 +1026,13 @@ impl Layout {
   }
 
   #[doc(hidden)]
+  #[must_use]
   pub const fn field_offset(&self, index: usize) -> usize {
     self.field(index).offset
   }
 
   #[doc(hidden)]
+  #[must_use]
   pub const fn field_leaf(&self, index: usize) -> usize {
     self.field(index).leaf
   }
@@ -1018,6 +1084,7 @@ impl Layout {
   /// The specification of the integer that the type is, if it is one: an initialized scalar of 1
   /// to 16 bytes, or a struct whose only field (but for the ones without size) is one.
   #[doc(hidden)]
+  #[must_use]
   pub const fn as_integer(&self) -> Option<Spec> {
     match self.kind {
       Kind::Scalar(spec) if spec.is_integer() && spec.size >= 1 => Some(spec),
@@ -1117,6 +1184,10 @@ impl Layout {
   }
 
   /// Whatever two layouts describe the same thing.
+  #[expect(
+    clippy::many_single_char_names,
+    reason = "`a` and `x` are parts of `self`, `b` and `y` the same parts of `other`"
+  )]
   pub(crate) const fn equals(&self, other: &Layout) -> bool {
     if self.size != other.size
       || self.align != other.align
@@ -1406,11 +1477,19 @@ pub enum Op {
 impl Op {
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.
+  ///
+  /// # Panics
+  /// If `T` is not an integer.
+  #[must_use]
   pub const fn load<T: crate::Data>(offset: usize) -> Self {
     let Some(spec) = T::LAYOUT.as_integer() else { panic!("not an integer field") };
     Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }
   }
 
+  #[expect(
+    clippy::many_single_char_names,
+    reason = "`a`, `b`, `c` of one side are compared with `x`, `y`, `z` of the other"
+  )]
   const fn equals(&self, other: &Op) -> bool {
     match (*self, *other) {
       (Op::Lit(a), Op::Lit(b)) => a == b,
@@ -1508,8 +1587,11 @@ const fn reads_value(op: &Op) -> bool {
 impl Rule {
   const fn ops(&self) -> Option<&'static [Op]> {
     match *self {
-      Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => Some(ops),
-      Rule::Walk(ops) => Some(ops),
+      Rule::Size(ops)
+      | Rule::Len(ops)
+      | Rule::Assert(ops)
+      | Rule::Region(Some(ops))
+      | Rule::Walk(ops) => Some(ops),
       Rule::Region(None) => None,
     }
   }
@@ -1923,9 +2005,19 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     Op::Le => Some((a <= b) as u128),
     Op::Gt => Some((a > b) as u128),
     Op::Ge => Some((a >= b) as u128),
-    Op::Lit(_) | Op::Load { .. } | Op::Size | Op::Not => None,
-    Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Both | Op::Either => None,
-    Op::Select | Op::Set(_) | Op::Get(_) | Op::Walk { .. } => None,
+    Op::Lit(_)
+    | Op::Load { .. }
+    | Op::Size
+    | Op::Not
+    | Op::At { .. }
+    | Op::Crc32
+    | Op::Sum16
+    | Op::Both
+    | Op::Either
+    | Op::Select
+    | Op::Set(_)
+    | Op::Get(_)
+    | Op::Walk { .. } => None,
   }
 }
 
@@ -1935,6 +2027,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
 /// ```
 /// assert_eq!(transmutant::crc32(b"123456789"), 0xcbf43926);
 /// ```
+#[must_use]
 pub const fn crc32(bytes: &[u8]) -> u32 {
   const TABLE: [u32; 256] = {
     let (mut table, mut i) = ([0u32; 256], 0);
@@ -1957,13 +2050,15 @@ pub const fn crc32(bytes: &[u8]) -> u32 {
   !crc
 }
 
-/// The ones' complement sum of the big-endian 16 bits words of `bytes` (a last byte alone is the
-/// high byte of a word): what the checksums of IP, UDP and TCP are the complement of. Over data
-/// that holds its own checksum, the sum is `0xffff`.
+/// The ones' complement sum of the big-endian 16 bits words of `bytes`.
+///
+/// A last byte alone is the high byte of a word. The checksums of IP, UDP and TCP are the
+/// complement of this sum: over data that holds its own checksum, it is `0xffff`.
 ///
 /// ```
 /// assert_eq!(transmutant::sum16(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]), 0xddf2);
 /// ```
+#[must_use]
 pub const fn sum16(bytes: &[u8]) -> u16 {
   let (mut sum, mut i) = (0u64, 0);
   while i < bytes.len() {
@@ -1978,6 +2073,7 @@ pub const fn sum16(bytes: &[u8]) -> u16 {
 
 /// Bounds of a range of valid values of an integer of the size of `T`, for `#[data(valid(..))]`.
 #[doc(hidden)]
+#[must_use]
 pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -> (u128, u128) {
   let start = match start {
     Some(start) => start,
@@ -1997,6 +2093,7 @@ pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -
 
 /// Sort and merge inclusive ranges; returns the ranges and their count.
 #[doc(hidden)]
+#[must_use]
 pub const fn merge_ranges<const N: usize>(
   mut ranges: [(u128, u128); N],
 ) -> ([(u128, u128); N], usize) {
@@ -2032,5 +2129,5 @@ pub const fn merge_ranges<const N: usize>(
 pub const unsafe fn bits_of<T>(value: &T) -> u128 {
   assert!(size_of::<T>() <= 16, "a fieldless enum cannot be larger than 16 bytes");
   // SAFETY: guaranteed by the caller.
-  unsafe { load((value as *const T).cast(), size_of::<T>(), Endian::NATIVE) }
+  unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
 }

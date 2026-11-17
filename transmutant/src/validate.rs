@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// The things of a target that have to be checked.
-pub(crate) trait Checks {
+pub trait Checks {
   const MARKS: Marks;
 }
 
@@ -28,7 +28,7 @@ impl Checks for All {
 /// # Safety
 /// `ptr` must be valid for reads of a `T`, whose bytes that are not padding must be initialized.
 /// It does not have to be aligned.
-pub(crate) const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Data>(ptr: *const T) -> bool {
+pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Data>(ptr: *const T) -> bool {
   if const { !C::MARKS.any(P::LEAF, T::LAYOUT.leaves) } {
     return true;
   }
@@ -50,6 +50,9 @@ pub(crate) const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Data>(ptr: *
 
 /// Whatever the enum at `ptr` has the tag of one of its variants, and what that variant
 /// requires of its fields: all of it, as nothing is known of what is in an enum.
+///
+/// # Safety
+/// As [`validate`], and `layout` must be the one of `T`.
 #[inline(always)]
 const unsafe fn validate_enum<T: ?Sized + Data>(ptr: *const T, layout: &Enum) -> bool {
   let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
@@ -63,6 +66,10 @@ const unsafe fn validate_enum<T: ?Sized + Data>(ptr: *const T, layout: &Enum) ->
 
 /// Validate the fields of the variant of the enum at `ptr`, among `V` and the ones after it,
 /// whose tag is `tag`.
+///
+/// # Safety
+/// As [`validate`]: `ptr` must be valid for reads of a `T`, whose variant of tag `tag`, if it
+/// has one, has its fields initialized.
 const unsafe fn validate_variants<T: ?Sized + Data, V: Variants>(ptr: *const T, tag: u128) -> bool {
   let Some(expected) = (const { V::TAG }) else { return false };
   // SAFETY: guaranteed by the caller.
@@ -75,6 +82,10 @@ const unsafe fn validate_variants<T: ?Sized + Data, V: Variants>(ptr: *const T, 
   }
 }
 
+/// Validate the `len` elements at `ptr`.
+///
+/// # Safety
+/// `ptr` must be valid for reads of `len` consecutive `T`s, each as [`validate`] requires.
 const unsafe fn validate_elems<C: Checks, P: Path, T: Data>(ptr: *const T, len: usize) -> bool {
   let mut i = 0;
   while i < len {
@@ -88,6 +99,10 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Data>(ptr: *const T, len: 
 }
 
 /// Validate the field `F` of the struct `T` at `ptr`, and the fields after it.
+///
+/// # Safety
+/// As [`validate`], and `F` must be a field of `T`: of the struct, or of the variant of the enum
+/// that the value at `ptr` is.
 const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Data, F: Fields>(
   ptr: *const T,
 ) -> bool {
@@ -117,7 +132,7 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Data>() -> bool {
 /// # Safety
 /// Same as [`validate`].
 #[inline(always)]
-pub(crate) const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &[Rule]) -> bool {
+pub const unsafe fn check_rules<T: ?Sized + Data>(ptr: *const T, rules: &[Rule]) -> bool {
   let base = ptr.cast::<u8>();
   let (len, tail, size) = tail_of(ptr);
   // What the regions before take of the tail.
@@ -191,6 +206,9 @@ const unsafe fn check_walks<T: ?Sized + Data, W: Walks>(base: *const u8, size: u
 }
 
 /// Apply the `N` first operations of the expression of the rule `W` of `T`.
+///
+/// # Safety
+/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn steps<T: ?Sized + Data, W: Walks, N: Count>(
   machine: &mut Machine,
@@ -207,11 +225,14 @@ const unsafe fn steps<T: ?Sized + Data, W: Walks, N: Count>(
       return walk::<T, W>(machine, base, size);
     }
     let Some(op) = (const { T::LAYOUT.rule_op(W::RULE, N::VALUE.wrapping_sub(1)) }) else { return };
-    machine.apply(op, base, size)
+    machine.apply(op, base, size);
   }
 }
 
 /// Apply the [`Op::Walk`] of the expression of the rule `W` of `T`.
+///
+/// # Safety
+/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn walk<T: ?Sized + Data, W: Walks>(
   machine: &mut Machine,
@@ -251,6 +272,9 @@ const unsafe fn walk<T: ?Sized + Data, W: Walks>(
 
 /// Apply the `N` first operations of an expression of the walk of the rule `W` of `T`: its
 /// condition, or with `NEXT` what follows.
+///
+/// # Safety
+/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn walk_steps<T: ?Sized + Data, W: Walks, const NEXT: bool, N: Count>(
   machine: &mut Machine,
@@ -266,7 +290,7 @@ const unsafe fn walk_steps<T: ?Sized + Data, W: Walks, const NEXT: bool, N: Coun
     let Some(op) = (const { T::LAYOUT.walk_op(W::RULE, NEXT, N::VALUE.wrapping_sub(1)) }) else {
       return;
     };
-    machine.apply(op, base, size)
+    machine.apply(op, base, size);
   }
 }
 
@@ -275,7 +299,7 @@ const unsafe fn walk_steps<T: ?Sized + Data, W: Walks, const NEXT: bool, N: Coun
 /// The number of elements of the tail of the struct at `ptr`, the size of that tail, and the size
 /// of the struct. The tail of a `Sized` struct is its last field.
 #[inline(always)]
-pub(crate) const fn tail_of<T: ?Sized + Data>(ptr: *const T) -> (usize, usize, usize) {
+pub const fn tail_of<T: ?Sized + Data>(ptr: *const T) -> (usize, usize, usize) {
   let (layout, shape) = const { (T::LAYOUT, T::LAYOUT.tail_shape()) };
   if const { T::LAYOUT.is_unsized() } {
     // The value exists: its size does not overflow.

@@ -20,7 +20,6 @@ struct Unchecked(#[data(valid(..=0x7f))] u8);
 
 #[derive(Data, Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
-#[allow(dead_code)]
 enum Digit {
   Zero = b'0',
   One = b'1',
@@ -76,9 +75,9 @@ fn proven_at_compile_time() {
   // Literals, then ASCII.
   let get: &Get<[Ascii]> = &Get {
     method: Default::default(),
-    e: Default::default(),
-    t: Default::default(),
-    space: Default::default(),
+    e: u8c::default(),
+    t: u8c::default(),
+    space: u8c::default(),
     path: [ascii(b'/'), ascii(b'a')],
   };
   assert_eq!(transmute_ref::<Get<[Ascii]>, str>(get), "GET /a");
@@ -113,9 +112,9 @@ fn checked_at_run_time() {
   assert_eq!(
     try_transmute_ref::<Get<[u8]>, str>(&Get::<[u8; 2]> {
       method: Default::default(),
-      e: Default::default(),
-      t: Default::default(),
-      space: Default::default(),
+      e: u8c::default(),
+      t: u8c::default(),
+      space: u8c::default(),
       path: [b'/', 0xff],
     } as &Get<[u8]>),
     Err(Error::Validity)

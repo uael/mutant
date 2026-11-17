@@ -25,7 +25,7 @@ macro_rules! ints {
   ($($name:ident $literal:ident: $raw:ident[$size:literal] $endian:ident;)+) => {$(
     #[doc = concat!("A `", stringify!($raw), "` of ", stringify!($size), " bytes, most significant ")]
     #[doc = endian!($endian, "last (little-endian).", "first (big-endian).")]
-    #[allow(non_camel_case_types)]
+    #[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
     #[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
     #[repr(transparent)]
     pub struct $name([u8; $size]);
@@ -115,7 +115,7 @@ macro_rules! ints {
     }
 
     #[doc = concat!("A [`", stringify!($name), "`] that is `V`, and nothing else.")]
-    #[allow(non_camel_case_types)]
+    #[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
     #[derive(Copy, Clone, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct $literal<const V: $raw>($name);
@@ -193,18 +193,20 @@ ints! {
 }
 
 /// A `u8` that is `V`, and nothing else.
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct u8c<const V: u8>(u8);
 
 impl<const V: u8> u8c<V> {
   #[inline]
+  #[must_use]
   pub const fn new() -> Self {
     Self(V)
   }
 
   #[inline]
+  #[must_use]
   pub const fn get(self) -> u8 {
     V
   }
@@ -232,18 +234,20 @@ impl<const V: u8> fmt::Debug for u8c<V> {
 ///
 /// Unlike a field restricted by `#[data(valid(..))]`, which safe code can write anything to, this
 /// is a guarantee: it can prove what a target requires.
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct u8in<const MIN: u8, const MAX: u8>(u8);
 
 impl<const MIN: u8, const MAX: u8> u8in<MIN, MAX> {
   #[inline]
+  #[must_use]
   pub const fn new(value: u8) -> Option<Self> {
     if MIN <= value && value <= MAX { Some(Self(value)) } else { None }
   }
 
   #[inline]
+  #[must_use]
   pub const fn get(self) -> u8 {
     self.0
   }

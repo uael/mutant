@@ -337,7 +337,7 @@ fn compile(
     // Everything is an unsigned integer.
     Expr::Cast(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     Expr::Lit(ExprLit { lit: Lit::Bool(lit), .. }) => {
-      let value = lit.value as u128;
+      let value = u128::from(lit.value);
       ops.push(quote!(#op::Lit(#value)));
     }
     Expr::Block(block) => compile_block(&block.block, fields, root, ops, scope)?,
@@ -482,17 +482,13 @@ fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
       let (inner, ty) = (rust(&cast.expr, fields, root), &cast.ty);
       quote!((#inner as #ty))
     }
-    Expr::Path(path) => {
-      match path.path.get_ident().and_then(|ident| field(&Member::Named(ident.clone()))) {
-        Some(field) => field,
-        None => quote!(#path),
-      }
-    }
+    Expr::Path(path) => path
+      .path
+      .get_ident()
+      .and_then(|ident| field(&Member::Named(ident.clone())))
+      .unwrap_or_else(|| quote!(#path)),
     Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
-      match field(&access.member) {
-        Some(field) => field,
-        None => quote!(#access),
-      }
+      field(&access.member).unwrap_or_else(|| quote!(#access))
     }
     Expr::Unary(unary) => {
       let (op, inner) = (&unary.op, rust(&unary.expr, fields, root));
@@ -555,9 +551,11 @@ fn valid_ranges(
   ty: &Type,
   root: &TokenStream,
 ) -> TokenStream {
-  let option = |expr: &Option<Box<Expr>>| match expr {
-    Some(expr) => quote!(::core::option::Option::Some((#expr) as u128)),
-    None => quote!(::core::option::Option::None),
+  let option = |expr: &Option<Box<Expr>>| {
+    expr.as_ref().map_or_else(
+      || quote!(::core::option::Option::None),
+      |expr| quote!(::core::option::Option::Some((#expr) as u128)),
+    )
   };
   let count = ranges.len();
   let ranges = ranges.iter().map(|range| match range {
@@ -597,10 +595,10 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     .enumerate()
     .map(|(i, field)| {
       Ok(FieldInfo {
-        member: match &field.ident {
-          Some(ident) => Member::Named(ident.clone()),
-          None => Member::Unnamed(Index::from(i)),
-        },
+        member: field
+          .ident
+          .as_ref()
+          .map_or_else(|| Member::Unnamed(Index::from(i)), |ident| Member::Named(ident.clone())),
         ty: &field.ty,
         vis: &field.vis,
         options: parse_options(&field.attrs)?,
@@ -644,16 +642,16 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       }
       _ => quote!(0),
     };
-    layouts.push(match &field.options.valid {
-      Some(ranges) => {
+    layouts.push(field.options.valid.as_ref().map_or_else(
+      || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
+      |ranges| {
         let ranges = valid_ranges(ranges, ty, &root);
         quote!(#root::layout::Field::restricted(
           #offset,
           const { &<#ty as #root::Data>::LAYOUT.restricted(#ranges) },
         ))
-      }
-      None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
-    });
+      },
+    ));
   }
 
   // Rules.
@@ -667,13 +665,14 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let mut walks = vec![];
   for assert in &options.asserts {
     let Expression { ops, len, walk } = expression(assert, &fields, &root)?;
-    rules.push(match walk {
-      Some(inner) => {
-        walks.push((rules.len(), len, inner));
+    let index = rules.len();
+    rules.push(walk.map_or_else(
+      || quote!(#rule::Assert(#ops)),
+      |inner| {
+        walks.push((index, len, inner));
         quote!(#rule::Walk(#ops))
-      }
-      None => quote!(#rule::Assert(#ops)),
-    });
+      },
+    ));
   }
   let mut accessors = vec![];
   for (i, field) in fields.iter().enumerate() {
@@ -700,8 +699,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           None if index + 1 == regions.len() => quote!(#rule::Region(::core::option::Option::None)),
           None => return Err(Error::new(name.span(), "only the last region can be unsized")),
         });
-        accessors.push(match &region.ty {
-          None => {
+        accessors.push(region.ty.as_ref().map_or_else(
+          || {
             let doc = format!("The bytes of the `{name}` region.");
             quote! {
               #[doc = #doc]
@@ -710,8 +709,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
                 #root::region(self, #index)
               }
             }
-          }
-          Some(ty) => {
+          },
+          |ty| {
             let doc = format!("The `{name}` region, if its bytes are what it is said to hold.");
             quote! {
               #[doc = #doc]
@@ -720,8 +719,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
                 #root::try_transmute_ref::<[::core::primitive::u8], #ty>(#root::region(self, #index))
               }
             }
-          }
-        });
+          },
+        ));
       }
     }
   }
@@ -761,17 +760,11 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
   // The list of the fields, at the type level.
   let markers = (0..count).map(|i| format_ident!("__DataField{}", i)).collect::<Vec<_>>();
-  let first = match markers.first() {
-    Some(marker) => quote!(#marker #ty_generics),
-    None => quote!(()),
-  };
+  let first = markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
   let vis = &input.vis;
   let lists = fields.iter().enumerate().map(|(i, field)| {
     let (marker, ty) = (&markers[i], field.ty);
-    let next = match markers.get(i + 1) {
-      Some(marker) => quote!(#marker #ty_generics),
-      None => quote!(()),
-    };
+    let next = markers.get(i + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
     quote! {
       // As visible as the struct, so that it can be named by its implementation of `Data`.
       #[allow(non_camel_case_types)]
@@ -790,17 +783,13 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
   // The list of the rules that walk, at the type level.
   let walk_markers = (0..walks.len()).map(|i| format_ident!("__DataWalk{}", i)).collect::<Vec<_>>();
-  let first_walk = match walk_markers.first() {
-    Some(marker) => quote!(#marker #ty_generics),
-    None => quote!(()),
-  };
+  let first_walk =
+    walk_markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
   let walk_lists = walks.iter().enumerate().map(|(i, (index, len, inner))| {
     let (marker, ops, inner) =
       (&walk_markers[i], count_type(*len, &root), count_type(*inner, &root));
-    let next = match walk_markers.get(i + 1) {
-      Some(marker) => quote!(#marker #ty_generics),
-      None => quote!(()),
-    };
+    let next =
+      walk_markers.get(i + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
     quote! {
       #[allow(non_camel_case_types)]
       #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
@@ -973,10 +962,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
 
   // The tag: an enum without fields of the same variants.
   let tag = format_ident!("__DataTag");
-  let tag_repr = match &repr.int {
-    Some(int) => quote!(#int),
-    None => quote!(C),
-  };
+  let tag_repr = repr.int.as_ref().map_or_else(|| quote!(C), |int| quote!(#int));
   let tags = data.variants.iter().map(|variant| {
     let (name, discriminant) =
       (&variant.ident, variant.discriminant.as_ref().map(|(_, expr)| expr));
@@ -998,10 +984,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let sizes = quote!([#(#sizes),*]);
   let tag_layout = quote!(<#tag as #root::Data>::LAYOUT);
   // Where the fields of the variants are.
-  let fields = match repr.c {
-    true => quote!(#root::layout::Enum::fields(&#tag_layout, &#sizes)),
-    false => quote!(0),
-  };
+  let fields =
+    if repr.c { quote!(#root::layout::Enum::fields(&#tag_layout, &#sizes)) } else { quote!(0) };
   let (mut items, mut variants) = (vec![], vec![]);
   for (i, variant) in data.variants.iter().enumerate() {
     let (shadow, name) = (&shadows[i], &names[i]);
@@ -1017,22 +1001,19 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       }
       let (ty, index) = (&field.ty, Index::from(first + j));
       let offset = quote!(#fields + ::core::mem::offset_of!(#shadow #ty_generics, #index));
-      layouts.push(match &options.valid {
-        Some(ranges) => {
+      layouts.push(options.valid.as_ref().map_or_else(
+        || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
+        |ranges| {
           let ranges = valid_ranges(ranges, ty, root);
           quote!(#root::layout::Field::restricted(
             #offset,
             const { &<#ty as #root::Data>::LAYOUT.restricted(#ranges) },
           ))
-        }
-        None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
-      });
+        },
+      ));
       let (marker, next) = (
         &markers[j],
-        match markers.get(j + 1) {
-          Some(marker) => quote!(#marker #ty_generics),
-          None => quote!(()),
-        },
+        markers.get(j + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics)),
       );
       items.push(quote! {
         #[allow(non_camel_case_types)]
@@ -1049,14 +1030,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       });
     }
     let (fields, next) = (
-      match markers.first() {
-        Some(marker) => quote!(#marker #ty_generics),
-        None => quote!(()),
-      },
-      match shadows.get(i + 1) {
-        Some(shadow) => quote!(#shadow #ty_generics),
-        None => quote!(()),
-      },
+      markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics)),
+      shadows.get(i + 1).map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics)),
     );
     items.push(quote! {
       // As visible as the enum, so that it can be named by its implementation of `Data`.

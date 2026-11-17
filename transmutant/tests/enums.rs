@@ -80,8 +80,9 @@ enum Drawing {
 }
 
 fn bytes<T: Copy, const N: usize>(value: T) -> [u8; N] {
-  // The bytes of the tests are all initialized.
   assert_eq!(size_of::<T>(), N);
+  // SAFETY: `[u8; N]` has the size of `T` (just asserted) and an alignment of 1, and the only
+  // value given is a `Bit`, a `u8` tag and a `u8`: its `N` bytes are all initialized.
   unsafe { core::mem::transmute_copy(&value) }
 }
 

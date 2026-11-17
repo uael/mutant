@@ -689,7 +689,7 @@ pub fn main() {
   let checked: &CheckedFrame = try_transmute_ref(&wire[..]).unwrap();
   assert_eq!((checked.payload().len(), checked.fcs().len()), (46, 4));
   // As anyone would check it: the CRC of a frame with its sequence is a constant.
-  assert_eq!(transmutant::crc32(&wire), 0x2144df1c);
+  assert_eq!(transmutant::crc32(&wire), 0x2144_df1c);
   for at in [0, 30, 59, 60, 63] {
     let mut wire = wire.clone();
     wire[at] ^= 1;
@@ -744,12 +744,12 @@ pub fn main() {
   let request = Frame {
     destination: Mac(u48be::MAX),
     source: A,
-    ether_type: Default::default(),
+    ether_type: u16bec::default(),
     payload: Arp {
-      hardware_type: Default::default(),
-      protocol_type: Default::default(),
-      hardware_length: Default::default(),
-      protocol_length: Default::default(),
+      hardware_type: u16bec::default(),
+      protocol_type: u16bec::default(),
+      hardware_length: u8c::default(),
+      protocol_length: u8c::default(),
       operation: Operation::Request,
       sender: (A, [10, 0, 0, 1]),
       target: (Mac(u48be::new(0)), [10, 0, 0, 2]),
@@ -827,8 +827,8 @@ pub fn main() {
   assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&long[..]).err(), Some(Error::Validity));
   // A chain of headers, of the two units of size: the segment at its end is checked as well.
   let chain6 = frame(0x86dd, &CHAIN6);
-  type Chain = Ipv6<HopByHop<Routing<Authentication<Tcp>>>>;
-  let ip6: &Frame<Chain> = try_transmute_ref(&chain6[..]).unwrap();
+  let ip6: &Frame<Ipv6<HopByHop<Routing<Authentication<Tcp>>>>> =
+    try_transmute_ref(&chain6[..]).unwrap();
   let routing = ip6.payload.payload().unwrap().payload().unwrap();
   assert_eq!((routing.kind, routing.segments_left, routing.route()), (0, 0, &[0; 4][..]));
   let authentication = routing.payload().unwrap();

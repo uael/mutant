@@ -65,10 +65,10 @@ struct Checked {
 
 #[test]
 fn by_value() {
-  assert_eq!(transmute::<u32, [u8; 4]>(0x01020304), 0x01020304u32.to_ne_bytes());
+  assert_eq!(transmute::<u32, [u8; 4]>(0x0102_0304), 0x0102_0304_u32.to_ne_bytes());
   assert_eq!(transmute::<[bool; 2], [u8; 2]>([true, false]), [1, 0]);
   assert_eq!(transmute::<Sign, i8>(Sign::Minus), -1);
-  assert_eq!(transmute::<u32bec<0xcafe>, [u8; 4]>(Default::default()), [0, 0, 0xca, 0xfe]);
+  assert_eq!(transmute::<u32bec<0xcafe>, [u8; 4]>(u32bec::default()), [0, 0, 0xca, 0xfe]);
   assert_eq!(
     transmute::<NonZero<u8>, Option<NonZero<u8>>>(NonZero::new(3).unwrap()),
     NonZero::new(3)
@@ -85,12 +85,10 @@ fn by_value() {
   assert_eq!(try_transmute::<u32, char>(0xd800), Err(Error::Validity));
   assert_eq!(try_transmute::<u16, NonZero<u16>>(0), Err(Error::Validity));
   // Whatever the order the compiler chose for the fields.
-  let rust = Rust { flag: true, word: 0xdeadbeef, level: Level::High, bytes: [7, 8] };
+  let rust = Rust { flag: true, word: 0xdead_beef, level: Level::High, bytes: [7, 8] };
   assert_eq!(try_transmute::<[u8; 8], Rust>(transmute(rust)), Ok(rust));
   let mut bytes: [u8; 8] = transmute(rust);
-  for byte in &mut bytes {
-    *byte = 0xff;
-  }
+  bytes.fill(0xff);
   assert_eq!(try_transmute::<[u8; 8], Rust>(bytes), Err(Error::Validity));
 }
 
@@ -170,7 +168,7 @@ fn rules() {
 
 #[test]
 fn in_const() {
-  const BYTES: [u8; 4] = transmute(0x01020304u32.to_be());
+  const BYTES: [u8; 4] = transmute(0x0102_0304_u32.to_be());
   const WORD: &u16be = truncate_ref(&BYTES);
   const LEVEL: Result<Level, Error> = try_transmute(2u8);
   const CHECKED: Result<&Checked, Error> = try_transmute_ref(&[2u8, 0, 1, 0]);
@@ -213,7 +211,7 @@ fn rules_on_sized_and_unsized() {
   let (counted, rest) = unpack::<Counted<[u8]>>(&[1, 7, 8]).unwrap();
   assert_eq!((&counted.1, rest), (&[7][..], &[8][..]));
 
-  assert_eq!(transmutant::crc32(b"123456789"), 0xcbf43926);
+  assert_eq!(transmutant::crc32(b"123456789"), 0xcbf4_3926);
   assert_eq!(transmutant::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
 }
 
@@ -248,7 +246,7 @@ mod views {
   };
 
   /// The kind of a message, when what it carries is not known.
-  #[derive(Data, Debug, Copy, Clone, PartialEq)]
+  #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
   #[repr(transparent)]
   pub struct Kind(pub u8);
 
@@ -262,12 +260,12 @@ mod views {
     pub data: [u8],
   }
 
-  #[derive(Data, Debug, PartialEq)]
+  #[derive(Data, Debug, PartialEq, Eq)]
   #[repr(C)]
   #[data(tag(Kind = u8c<1>))]
   pub struct Ping(pub u16be);
 
-  #[derive(Data, Debug, PartialEq)]
+  #[derive(Data, Debug, PartialEq, Eq)]
   #[repr(transparent)]
   #[data(tag(Kind = u8c<2>))]
   pub struct Text(pub str);
@@ -300,8 +298,8 @@ mod views {
     let Ok(Any::Text(text)) = Any::parse(&[2, 3, 0xff]) else { panic!() };
     assert_eq!(text.body().err(), Some(Error::Validity));
     // In `const`.
-    const FIRST: Result<(Any<'static>, &[u8]), Error> = Any::unpack(&[1, 4, 0, 7, 0]);
-    assert!(matches!(FIRST, Ok((Any::Ping(_), [0]))));
+    let first: Result<(Any<'static>, &[u8]), Error> = const { Any::unpack(&[1, 4, 0, 7, 0]) };
+    assert!(matches!(first, Ok((Any::Ping(_), [0]))));
   }
 }
 
@@ -358,9 +356,13 @@ mod walks {
     assert_eq!(try_transmute_ref::<_, Chain>(&[1u8, 7, 0, 7, 0][..]).err(), Some(Error::Validity));
     assert_eq!(try_transmute_ref::<_, Chain>(&[1u8][..]).err(), Some(Error::Validity));
     // In `const`.
-    const VALID: bool = try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x00]).is_ok();
-    const INVALID: bool = try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x01]).is_ok();
-    assert!(VALID && !INVALID);
+    let (valid, invalid) = const {
+      (
+        try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x00]).is_ok(),
+        try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x01]).is_ok(),
+      )
+    };
+    assert!(valid && !invalid);
     // The same rule proves itself: nothing is walked.
     let chain: &Chain = try_transmute_ref(&bytes[..]).unwrap();
     let same: &Chain = transmutant::transmute_ref(chain);

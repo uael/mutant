@@ -477,7 +477,7 @@ unsafe impl Scalar for bool {
 
 // SAFETY: a Unicode scalar value.
 unsafe impl Scalar for char {
-  const SPEC: Spec = Spec::ranges::<char>(Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10FFFF)]);
+  const SPEC: Spec = Spec::ranges::<char>(Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10_FFFF)]);
 }
 
 macro_rules! impl_non_zero {
@@ -653,7 +653,7 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
     let rest = extent - target.head();
     let len = match target.stride() {
       0 if rest == 0 => 0,
-      stride if stride != 0 && rest % stride == 0 => rest / stride,
+      stride if stride != 0 && rest.is_multiple_of(stride) => rest / stride,
       _ => return Err(Error::Size),
     };
     // A target of greater alignment may end with more padding than the source has room for.
@@ -762,6 +762,9 @@ pub const fn truncate<S: Data + Copy, D: Data + Copy>(value: S) -> D {
 /// assert_eq!(transmutant::try_transmute::<u8, bool>(1), Ok(true));
 /// assert_eq!(transmutant::try_transmute::<u8, bool>(2), Err(transmutant::Error::Validity));
 /// ```
+///
+/// # Errors
+/// [`Error::Validity`] if `value` is not a valid `D`.
 #[inline]
 pub const fn try_transmute<S: Data + Copy, D: Data + Copy>(value: S) -> Result<D, Error> {
   const { Plan::<S, D>::TRY };
@@ -854,6 +857,10 @@ pub const fn truncate_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> &D {
 ///
 /// This is a `const fn`, but a target of greater alignment than the source cannot be made at
 /// compile time, where addresses are not known.
+///
+/// # Errors
+/// [`Error::Alignment`] if the address of `value` is not aligned for `D`, [`Error::Size`] if its
+/// size is not one that `D` can have, [`Error::Validity`] if it is not a valid `D`.
 #[inline]
 pub const fn try_transmute_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> Result<&D, Error> {
   const { Plan::<S, D>::TRY_REF };
@@ -868,6 +875,9 @@ pub const fn try_transmute_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) ->
 /// valid one.
 ///
 /// See [`try_transmute_ref`] and [`transmute_mut`].
+///
+/// # Errors
+/// As [`try_transmute_ref`].
 #[inline]
 pub const fn try_transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(
   value: &mut S,
@@ -891,6 +901,7 @@ pub const fn try_transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(
 /// let _ = transmutant::zeroed::<core::num::NonZero<u8>>();
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn zeroed<T: Data + Copy>() -> T {
   const { assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type") };
   // SAFETY: checked at compile time.
@@ -908,7 +919,7 @@ pub const fn int<T: Data>(value: &T) -> u128 {
     }
   };
   // SAFETY: a `T` is that integer, which is not allowed to be uninitialized.
-  unsafe { spec.load((value as *const T).cast()) }
+  unsafe { spec.load(core::ptr::from_ref::<T>(value).cast()) }
 }
 
 /// The bytes of a value that has no padding.
@@ -941,6 +952,11 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 /// let (chunk, rest) = transmutant::unpack::<Chunk>(&[7, 0, 5, b'h', b'i', 1, 2, 3]).unwrap();
 /// assert_eq!((chunk.kind, &chunk.data, rest), (7, &b"hi"[..], &[1, 2, 3][..]));
 /// ```
+///
+/// # Errors
+/// [`Error::Alignment`] if `bytes` are not aligned for `D`, [`Error::Size`] if they are fewer
+/// than a `D` takes, [`Error::Validity`] if its `size` or `len` rule cannot be computed or does
+/// not give a size it can have, or if what it takes is not a valid `D`.
 #[inline]
 pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
   const { Plan::<[u8], D>::TRY_REF };
@@ -967,11 +983,11 @@ pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error
       // From the size of the struct that has the rule, down to a number of elements.
       let before = (head - rule.base) as u128;
       let len = match () {
-        _ if rule.elements => value,
-        _ if value >= before && (value - before) % stride as u128 == 0 => {
+        () if rule.elements => value,
+        () if value >= before && (value - before).is_multiple_of(stride as u128) => {
           (value - before) / stride as u128
         }
-        _ => return Err(Error::Validity),
+        () => return Err(Error::Validity),
       };
       if len > ((bytes.len() - head) / stride) as u128 {
         return Err(Error::Size);
@@ -1003,7 +1019,7 @@ pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
   // The bytes of the value can be read: it has no padding.
   const { Plan::<S, [u8]>::BY_REF };
   let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
-  let base = (value as *const S).cast::<u8>();
+  let base = core::ptr::from_ref::<S>(value).cast::<u8>();
   let (_, tail, size) = validate::tail_of::<S>(value);
   // Where the region starts in the tail, and how many regions are before it.
   let (mut start, mut count) = (0, 0);
