@@ -1,2 +1,2 @@
 # Protocol names in the Ethernet example, which are not code; ".." keeps clippy's defaults.
-doc-valid-idents = ["EtherType", "IPsec", "ICMPv6", "PPPoE", "NetFlow", "NTPv4", ".."]
+doc-valid-idents = ["EtherType", "IPsec", "ICMPv6", "PPPoE", "NetFlow", "NTPv4", "ClientHello", "QoS", ".."]
