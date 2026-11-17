@@ -14,6 +14,7 @@
 //! | below `1500`, it is the length of the payload        | `valid(..=1500)`, `regions(..)`        |
 //! | frames are 60 to 1514 bytes, padded if needed        | `assert(size_of_val(self) >= 60 ..)`   |
 //! | the frame check sequence: 4 last bytes, a CRC-32     | `regions(..)`, `assert(crc32(..) ..)`  |
+//! | the preamble and the start frame delimiter           | `[u8c<0x55>; 7]`, `u8c<0xd5>`          |
 //! | LLC and SNAP headers                                 | `u8c<0xaa>`                            |
 //! | 802.1Q tags, nested or not                           | a payload that has a payload           |
 //! | bit fields (VLAN identifier, IPv4 header length)     | `get(..)`, `assert(..)`, `valid(..)`   |
@@ -76,6 +77,16 @@ pub struct CheckedFrame {
   pub ether_type: EtherType,
   #[data(regions(payload = size_of_val(self) - 18, fcs))]
   pub data: [u8],
+}
+
+/// A frame as it is on the medium: a preamble, a start frame delimiter, the frame and its
+/// check sequence.
+#[derive(Data)]
+#[repr(C)]
+pub struct Packet {
+  pub preamble: [u8c<0x55>; 7],
+  pub start: u8c<0xd5>,
+  pub frame: CheckedFrame,
 }
 
 /// An IEEE 802.3 frame: no EtherType, but the length of the payload, which is then padded.
@@ -286,6 +297,12 @@ pub fn main() {
     assert_eq!(try_transmute_ref::<_, CheckedFrame>(&wire[..]).err(), Some(Error::Validity));
   }
   assert!(try_transmute_ref::<_, CheckedFrame>(&wire[..63]).is_err());
+  // On the medium, after its preamble.
+  let mut medium = [&[0x55; 7][..], &[0xd5], &wire].concat();
+  let packet: &Packet = try_transmute_ref(&medium[..]).unwrap();
+  assert_eq!((packet.frame.source, packet.frame.payload().len()), (A, 46));
+  medium[7] = 0x55;
+  assert_eq!(try_transmute_ref::<_, Packet>(&medium[..]).err(), Some(Error::Validity));
 
   // ---- 802.1Q: a tag, then a frame; twice for "Q-in-Q".
   let tagged = frame(0x8100, &[&[0xb0, 0x2a, 0x08, 0x00][..], &ipv4()].concat());
