@@ -58,7 +58,10 @@ use syn::{
 /// Where Rust would panic, the rule fails (does not hold): an overflow of `+`, `-` or `*`, a
 /// division or a remainder by zero, a shift by 128 or more (which Rust also panics on, with debug
 /// assertions), and a read out of the value. `<<` drops the bits that it shifts out, as in Rust:
-/// `(1 << 127) << 1` is `0`.
+/// `(1 << 127) << 1` is `0`. As in Rust, the right side of `&&` and `||` only counts if the left
+/// one does not decide, and the branch of an `if` that is not taken does not count: what is not
+/// computed cannot fail, so `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind
+/// 7, however short.
 ///
 /// A rule names the integer fields of its struct, not the fields of a field or the elements of
 /// an array, which `le` and `be` read; it calls no method and no function but the ones below.

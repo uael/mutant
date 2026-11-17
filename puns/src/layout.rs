@@ -1556,8 +1556,9 @@ impl Dfa {
 ///
 /// Expressions are evaluated on `u128`. What cannot be computed (an overflow, an underflow, a
 /// division by zero, a shift by 128 or more, a read out of the value) makes the rule that holds
-/// the expression fail, unless it is the side of a `&&` or of a `||` that the other side decides
-/// without: `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short.
+/// the expression fail, unless it is the right side of a `&&` or of a `||` that the left side
+/// decides without, as in Rust: `kind != 7 || be(40, 2) == 0` holds for a value that is not of
+/// kind 7, however short, and `be(40, 2) == 0 || kind != 7` fails for one that is too short.
 /// `<<` drops the bits that it shifts out, as in Rust.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -2106,20 +2107,20 @@ impl Machine {
           self.set(depth - 2, None);
         }
       }
-      // What decides of `&&` and `||` is enough: the other side may have failed.
+      // As in Rust, the left side first: the right one only counts if the left one does not
+      // decide, and may then have failed.
       op @ (Op::Both | Op::Either) => {
-        let (a, b) = (self.get(depth - 2), self.get(depth - 1));
-        let (failed_a, failed_b) = (self.has_failed(depth - 2), self.has_failed(depth - 1));
         let decides = matches!(op, Op::Either) as u128;
+        let value = match self.slot(depth - 2) {
+          Some(a) if (a != 0) as u128 == decides => Some(decides),
+          Some(_) => match self.slot(depth - 1) {
+            Some(b) => Some((b != 0) as u128),
+            None => None,
+          },
+          None => None,
+        };
         self.depth -= 1;
-        if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides)
-        {
-          self.set(depth - 2, Some(decides));
-        } else if failed_a || failed_b {
-          self.set(depth - 2, None);
-        } else {
-          self.set(depth - 2, Some(1 - decides));
-        }
+        self.set(depth - 2, value);
       }
       // The value that is not selected may have failed.
       Op::Select => {

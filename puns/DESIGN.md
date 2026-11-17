@@ -199,9 +199,10 @@ ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each
 what follows it and how long it is. A value is walked for at most as many steps as it has bytes.
 
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
-the value) makes a rule fail, unless it is the side of a `&&` or `||` that the other side decides
-without: `protocol != 17 || be(..) == 0` holds for a packet that is not UDP, however short. `<<`
-drops the bits that it shifts out, as Rust does.
+the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
+`||` that the left side decides without, as Rust does not compute it: `protocol != 17 ||
+be(..) == 0` holds for a packet that is not UDP, however short. `<<` drops the bits that it
+shifts out, as Rust does.
 
 Two more options are not rules, but save the code that would otherwise be written by hand:
 

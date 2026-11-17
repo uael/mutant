@@ -78,3 +78,23 @@ fn shifts_drop_bits_and_fail_beyond_the_width() {
   assert!(puns::from_bytes::<Shifts>(&[1, 128]).is_err());
   assert!(puns::from_bytes::<Shifts>(&[0xff, 200]).is_err());
 }
+
+/// `&&` and `||` compute their left side first, as Rust does: the right side is only computed if
+/// the left one does not decide, and what fails on the left fails.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(be(1, 2) == 0xcafe || self.0 != 7))]
+#[pun(assert(10 - self.0 > 0 && self.0 != 8 || true))]
+struct LeftFirst(u8, [u8]);
+
+#[test]
+fn and_or_compute_the_left_side_first() {
+  assert!(puns::from_bytes::<LeftFirst>(&[7, 0xca, 0xfe]).is_ok());
+  assert!(puns::from_bytes::<LeftFirst>(&[1, 0xca, 0xfe]).is_ok());
+  assert!(puns::from_bytes::<LeftFirst>(&[1, 0, 0]).is_ok());
+  // Out of the value, on the left: as Rust would panic, the rule fails.
+  assert!(puns::from_bytes::<LeftFirst>(&[1]).is_err());
+  // `10 - 11` fails, whatever the right side.
+  assert!(puns::from_bytes::<LeftFirst>(&[11, 0xca, 0xfe]).is_err());
+  assert!(puns::from_bytes::<LeftFirst>(&[8, 0xca, 0xfe]).is_ok());
+}
