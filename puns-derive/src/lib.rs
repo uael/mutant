@@ -9,6 +9,7 @@ use syn::{
   parse_macro_input, parse_quote,
   punctuated::Punctuated,
   spanned::Spanned,
+  visit_mut::{self, VisitMut},
 };
 
 /// Derive `Pun`: tell the layout and the valid values of a type, so that it can be punned.
@@ -22,8 +23,11 @@ use syn::{
 /// Options of the struct:
 /// - `#[pun(size = EXPR)]`: the size in bytes of a value is `EXPR`;
 /// - `#[pun(assert(EXPR))]`: `EXPR` is true;
-/// - `#[pun(get(name: Type = EXPR, ..))]`: a method `name` that returns `EXPR`, for bit fields
-///   and the like. Here `EXPR` is any Rust expression, in which the integer fields are `u128`;
+/// - `#[pun(get(name: Type = EXPR, ..))]`: a `const fn` method `name` that returns
+///   `(EXPR) as Type`, for bit fields and the like. Here `EXPR` is any Rust expression, in which
+///   an integer field, wherever it is named (by name or as `self.name`, but for a name that a
+///   `let` or a closure declares), is its value as a `u128`. It is read by reference, but in a
+///   packed struct, where it is copied;
 /// - `#[pun(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
 ///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
 /// - `#[pun(crate = path)]`: path of the `puns` crate.
@@ -790,50 +794,107 @@ fn is_call(call: &syn::ExprCall, name: &str) -> bool {
   matches!(&*call.func, Expr::Path(path) if path.path.is_ident(name))
 }
 
-/// Turn the expression of a getter into Rust, where a field is its value as an `u128`.
-fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
-  let field = |member: &Member| {
-    fields
-      .iter()
-      .any(|field| &field.member == member)
-      .then(|| quote!(#root::int(&{ self.#member })))
-  };
-  match expr {
-    Expr::Paren(expr) => {
-      let inner = rust(&expr.expr, fields, root);
-      quote!((#inner))
+/// Turn the expression of a getter into Rust, where an integer field, wherever it is named (by
+/// name, or as `self.name`), is its value as a `u128`.
+fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream, packed: bool) -> TokenStream {
+  let mut expr = expr.clone();
+  Fielder { fields, root, packed, shadowed: vec![] }.visit_expr_mut(&mut expr);
+  expr.into_token_stream()
+}
+
+/// What replaces the fields of the expression of a getter.
+struct Fielder<'a> {
+  fields: &'a [FieldInfo<'a>],
+  root: &'a TokenStream,
+  /// The fields of a packed struct cannot be borrowed: they are copied.
+  packed: bool,
+  /// The names that are not fields, where they are declared.
+  shadowed: Vec<Ident>,
+}
+
+impl Fielder<'_> {
+  /// The value of `member` as a `u128`, if it is a field.
+  fn value(&self, member: &Member) -> Option<Expr> {
+    self.fields.iter().any(|field| &field.member == member).then(|| {
+      let root = self.root;
+      if self.packed {
+        parse_quote!((#root::int(&{ self.#member })))
+      } else {
+        parse_quote!((#root::int(&self.#member)))
+      }
+    })
+  }
+}
+
+/// The names that `pat` declares.
+fn declared(pat: &syn::Pat, names: &mut Vec<Ident>) {
+  match pat {
+    syn::Pat::Ident(pat) => {
+      names.push(pat.ident.clone());
+      if let Some((_, pat)) = &pat.subpat {
+        declared(pat, names);
+      }
     }
-    Expr::Group(expr) => rust(&expr.expr, fields, root),
-    Expr::Cast(cast) => {
-      let (inner, ty) = (rust(&cast.expr, fields, root), &cast.ty);
-      quote!((#inner as #ty))
+    syn::Pat::Type(pat) => declared(&pat.pat, names),
+    syn::Pat::Reference(pat) => declared(&pat.pat, names),
+    syn::Pat::Paren(pat) => declared(&pat.pat, names),
+    syn::Pat::Tuple(pat) => pat.elems.iter().for_each(|pat| declared(pat, names)),
+    syn::Pat::TupleStruct(pat) => pat.elems.iter().for_each(|pat| declared(pat, names)),
+    syn::Pat::Slice(pat) => pat.elems.iter().for_each(|pat| declared(pat, names)),
+    syn::Pat::Or(pat) => pat.cases.iter().for_each(|pat| declared(pat, names)),
+    syn::Pat::Struct(pat) => pat.fields.iter().for_each(|field| declared(&field.pat, names)),
+    _ => {}
+  }
+}
+
+impl VisitMut for Fielder<'_> {
+  fn visit_expr_mut(&mut self, expr: &mut Expr) {
+    let value = match expr {
+      Expr::Path(path) if path.qself.is_none() => path
+        .path
+        .get_ident()
+        .filter(|ident| !self.shadowed.contains(ident))
+        .and_then(|ident| self.value(&Member::Named(ident.clone()))),
+      Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
+        self.value(&access.member)
+      }
+      Expr::Closure(closure) => {
+        let visible = self.shadowed.len();
+        let mut names = vec![];
+        closure.inputs.iter().for_each(|pat| declared(pat, &mut names));
+        self.shadowed.extend(names);
+        self.visit_expr_mut(&mut closure.body);
+        self.shadowed.truncate(visible);
+        return;
+      }
+      _ => None,
+    };
+    match value {
+      Some(value) => *expr = value,
+      None => visit_mut::visit_expr_mut(self, expr),
     }
-    Expr::Path(path) => path
-      .path
-      .get_ident()
-      .and_then(|ident| field(&Member::Named(ident.clone())))
-      .unwrap_or_else(|| quote!(#path)),
-    Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
-      field(&access.member).unwrap_or_else(|| quote!(#access))
+  }
+
+  fn visit_block_mut(&mut self, block: &mut syn::Block) {
+    let visible = self.shadowed.len();
+    for statement in &mut block.stmts {
+      match statement {
+        // What a `let` declares is not a field after it.
+        syn::Stmt::Local(local) => {
+          if let Some(init) = &mut local.init {
+            self.visit_expr_mut(&mut init.expr);
+            if let Some((_, diverge)) = &mut init.diverge {
+              self.visit_expr_mut(diverge);
+            }
+          }
+          let mut names = vec![];
+          declared(&local.pat, &mut names);
+          self.shadowed.extend(names);
+        }
+        statement => self.visit_stmt_mut(statement),
+      }
     }
-    Expr::Unary(unary) => {
-      let (op, inner) = (&unary.op, rust(&unary.expr, fields, root));
-      quote!((#op #inner))
-    }
-    Expr::Binary(binary) => {
-      let (left, right) = (rust(&binary.left, fields, root), rust(&binary.right, fields, root));
-      let op = &binary.op;
-      quote!((#left #op #right))
-    }
-    Expr::Call(call)
-      if call.args.len() == 1
-        && matches!(&*call.func, Expr::Path(path)
-          if path.path.segments.last().is_some_and(|segment| segment.ident == "size_of_val"))
-        && matches!(&call.args[0], Expr::Path(path) if path.path.is_ident("self")) =>
-    {
-      quote!((::core::mem::size_of_val(self) as u128))
-    }
-    expr => quote!(#expr),
+    self.shadowed.truncate(visible);
   }
 }
 
@@ -1093,14 +1154,14 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   // Getters.
   for getter in &options.getters {
     let (name, ty, vis) = (&getter.name, &getter.ty, &input.vis);
-    let expr = rust(&getter.expr, &fields, &root);
+    let expr = rust(&getter.expr, &fields, &root, repr.packed.is_some());
     let doc = format!("`{}`", getter.expr.to_token_stream());
     accessors.push(quote! {
       #[doc = #doc]
       #[inline]
       #[allow(unused_parens, clippy::all)]
       #vis const fn #name(&self) -> #ty {
-        #expr as #ty
+        (#expr) as #ty
       }
     });
   }

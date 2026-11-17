@@ -325,9 +325,7 @@ pub struct Uint32 {
 /// `puns::num`: it is its bits.
 #[derive(Pun)]
 #[repr(C, packed)]
-// (A getter is Rust in which integer fields are `u128`, but for fields in a call: they are
-// reached as fields, here.)
-#[pun(get(value: f64 = f64::from_bits(self.bits.get())))]
+#[pun(get(value: f64 = f64::from_bits(bits as u64)))]
 pub struct Float64 {
   pub head: u8c<0xcb>,
   pub bits: u64be,

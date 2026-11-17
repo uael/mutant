@@ -214,7 +214,8 @@ Two more options are not rules, but save the code that would otherwise be writte
   `struct Frame<P: ?Sized + Tag<EtherType> = [u8]> { .., ether_type: P::Tag, payload: P }`, and
   `Frame<Ipv4>` requires the EtherType of IPv4 while `Frame` takes any (bytes go with any tag);
 - `#[pun(get(name: Type = EXPR))]` generates a `const fn` getter, for bit fields. Here `EXPR`
-  is plain Rust, in which integer fields are `u128`: any function can be called;
+  is plain Rust, in which an integer field, wherever it is named, is its value as a `u128`: any
+  `const fn` can be called;
 - a region can be given a type, `regions(options = EXPR, payload: P)`: its accessor then returns
   a `&P`, if the bytes of the region are one. This is how a packet whose header has a variable
   size carries a typed payload;

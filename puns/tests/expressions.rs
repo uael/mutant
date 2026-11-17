@@ -151,3 +151,37 @@ fn a_walk_takes_a_step_per_bit() {
   assert!(puns::from_bytes::<Netmask>(&[0, 0, 0, 0]).is_ok());
   assert!(puns::from_bytes::<Netmask>(&[0xff, 0xff, 0, 0xff]).is_err());
 }
+
+/// Getters are Rust, where an integer field, wherever it is named, is its value as a `u128`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(get(
+  magnitude: u32 = if height >> 31 != 0 { 0x1_0000_0000 - height } else { height },
+  value: f64 = f64::from_bits(bits as u64),
+  low: u8 = { let bits = bits & 0xff; bits as u8 },
+  wide: u32 = self.height.wrapping_add(0) as u32,
+))]
+struct Getters {
+  height: puns::num::u32le,
+  bits: puns::num::u64le,
+}
+
+/// A getter over a field of a generic type, which is not `Copy`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(get(is_two: bool = kind == 2))]
+struct Generic<H> {
+  kind: H,
+}
+
+#[test]
+fn getters_are_rust() {
+  let mut bytes = [0u8; 12];
+  bytes[..4].copy_from_slice(&(-3i32).to_le_bytes());
+  bytes[4..].copy_from_slice(&1.5f64.to_bits().to_le_bytes());
+  let getters = puns::from_bytes::<Getters>(&bytes).unwrap();
+  assert_eq!((getters.magnitude(), getters.value(), getters.low()), (3, 1.5, 0));
+  assert_eq!(getters.wide(), 0xffff_fffd);
+  assert!(puns::from_bytes::<Generic<u8>>(&[2]).unwrap().is_two());
+  assert!(!puns::from_bytes::<Generic<u8>>(&[3]).unwrap().is_two());
+}
