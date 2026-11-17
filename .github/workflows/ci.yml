@@ -24,9 +24,6 @@ jobs:
       - run: cargo run --example ethernet
       # The functions whose machine code `DESIGN.md` measures: they must at least build.
       - run: cargo build --release --example codegen
-      # The full model check (`cargo test` runs a sample of it), optimized: the `model` profile is
-      # the release one without LTO, which takes minutes to build it.
-      - run: cargo test --profile model -p puns-model -- --ignored
 
   clippy:
     name: Clippy
@@ -99,8 +96,9 @@ jobs:
       - run: cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
-      # The part of the model check that Miri affords (`miri_sample`, `dst`, the regressions):
-      # about twenty minutes, so once, with tree borrows.
+      # The model check under Miri: a selection of pairs that runs every unsafe path it reaches
+      # (see `puns-model/tests/miri_sample.rs`), under a minute; the verdicts of every pair are the
+      # job of the full native run, in `model.yml`.
       - run: cargo +nightly-2026-11-17 miri test -p puns-model
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance

@@ -6,7 +6,7 @@ use puns::num::*;
 use puns_model::types::*;
 
 #[test]
-#[ignore = "full model run, a minute in debug: CI runs it with `--profile model`"]
+#[ignore = "full model run: `cargo test --profile model -p puns-model -- --ignored`, nightly in `model.yml`"]
 fn parts8() {
   puns_model::part_pairs!(usize::MAX;
     [

@@ -1,6 +1,6 @@
-//! Parts of values (`head`, `tail`, `head_mut`, `tail_mut`...): a sample that Miri can afford,
-//! of each size of source, with targets of every size below it. Every pair of the model is run by
-//! `parts2`, `parts3`, `parts4` and `parts8`.
+//! Parts of values (`head`, `tail`, `head_mut`, `tail_mut`...): natively a sample of each size of
+//! source, with targets of every size below it; under Miri a selection of the unsafe paths. Every
+//! pair of the model is run natively by `parts2`, `parts3`, `parts4` and `parts8`.
 
 use core::num::NonZero;
 
@@ -9,6 +9,18 @@ use puns_model::types::*;
 
 #[test]
 fn parts_sample() {
+  if cfg!(miri) {
+    // What Miri is there for: each unsafe path of the parts once, at its offset (see
+    // `miri_sample.rs`). `head`, `head_ref`, `head_mut` and `tail_mut` of a scalar: `u16 -> u8`;
+    // `tail_ref` at an aligned offset: `u32 -> u16`; an enum of which the head is proven:
+    // `Opt -> bool`; a `&mut` refused for a rule: `NotOneOne -> u8`; parts of 3 bytes:
+    // `[u8; 3] -> [u8; 2]`.
+    puns_model::pairs!(check_part, 2;
+      (u16, u8), (u32, u16), (Opt, bool), (NotOneOne, u8), ([u8; 3], [u8; 2]),
+    );
+    puns_model::finish("parts, under Miri");
+    return;
+  }
   puns_model::part_pairs!(4;
     [u16, [bool; 2], (u8, bool), NotOneOne, Opt, OptFlag, Skewed, Aligned, PackedU16, OptSoftBit];
     [u8, bool, NonZero<u8>, u8in<0, 0x7f>, Third, SoftBit]

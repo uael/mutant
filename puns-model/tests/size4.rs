@@ -6,7 +6,7 @@ use puns::num::*;
 use puns_model::types::*;
 
 #[test]
-#[ignore = "full model run, a minute in debug: CI runs it with `--profile model`"]
+#[ignore = "full model run: `cargo test --profile model -p puns-model -- --ignored`, nightly in `model.yml`"]
 fn size4() {
   puns_model::all_pairs!(usize::MAX;
     u32, i32, f32, char, NonZero<u32>, Option<NonZero<u32>>, u32le, u32be, u32lec<0x10_ffff>,

@@ -1,0 +1,27 @@
+name: Model check
+
+# The exhaustive model check: every pair of the types of the model, every part, every value over
+# the alphabets (`puns-model/tests/size*.rs` and `parts*.rs`, `#[ignore]`d by `cargo test`). It
+# takes minutes to build and about two to run, too long for every push, where CI runs a sample of
+# it: here on demand, and every night.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  model:
+    name: Model check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+      # Optimized: the `model` profile is the release one without LTO.
+      - run: cargo test --profile model -p puns-model -- --ignored
