@@ -1173,9 +1173,84 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 }
 
 /// The bytes of a value that has no padding.
+///
+/// Convenient sugar for [`pun_ref::<S, [u8]>`](pun_ref), with identical behaviour: it exists
+/// because it names the target, bytes, so that only the source is left to infer.
+///
+/// ```
+/// assert_eq!(puns::as_bytes(&[1u16.to_be(), 2u16.to_be()]), &[0, 1, 0, 2]);
+/// ```
+///
+/// ```compile_fail
+/// // The second byte is padding.
+/// let _ = puns::as_bytes(&(0u8, 0u16));
+/// ```
 #[inline(always)]
 pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
   pun_ref(value)
+}
+
+/// A reference to bytes as a reference to a `D`, if they are one.
+///
+/// Convenient sugar for [`try_pun_ref::<[u8], D>`](try_pun_ref), with identical behaviour. It
+/// exists because it pins the source to bytes, which a call to `try_pun_ref` leaves to inference
+/// (`try_pun_ref(&[1, 0])` is a pun of `[i32; 2]`: an unsuffixed integer literal is an `i32`
+/// unless something says otherwise), and because it takes one type parameter.
+///
+/// The size is checked if it depends on a slice length, the address if `D` has an alignment
+/// greater than 1, and then what bytes do not prove of `D`.
+///
+/// ```
+/// use puns::{Error, Pun};
+///
+/// #[derive(Pun, Debug, PartialEq)]
+/// #[repr(C)]
+/// struct Position {
+///   x: u8,
+///   visible: bool,
+/// }
+///
+/// assert_eq!(puns::from_bytes(&[7, 1]), Ok(&Position { x: 7, visible: true }));
+/// assert_eq!(puns::from_bytes::<Position>(&[7, 2]), Err(Error::Validity));
+/// assert_eq!(puns::from_bytes::<Position>(&[7, 1, 0]), Err(Error::Size));
+/// assert_eq!(puns::from_bytes::<str>(b"caf\xc3\xa9"), Ok("caf\u{e9}"));
+/// ```
+///
+/// The source is bytes, whatever the literal:
+///
+/// ```compile_fail
+/// let _ = puns::from_bytes::<[u8; 2]>(&[7i32, 1]);
+/// ```
+///
+/// # Errors
+/// As [`try_pun_ref`]: [`Error::Alignment`], [`Error::Size`], [`Error::Validity`].
+#[inline]
+pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
+  try_pun_ref::<[u8], D>(bytes)
+}
+
+/// A mutable reference to bytes as a mutable reference to a `D`, if they are one.
+///
+/// Convenient sugar for [`try_pun_mut::<[u8], D>`](try_pun_mut), with identical behaviour; see
+/// [`from_bytes`] for why it exists. As anything can be written through the result, `D` must not
+/// have padding: bytes would be de-initialized.
+///
+/// ```
+/// let mut bytes = [0u8, 0, 0, 1];
+/// *puns::from_bytes_mut::<[bool; 2]>(&mut bytes[2..]).unwrap() = [true, false];
+/// assert_eq!(bytes, [0, 0, 1, 0]);
+/// assert!(puns::from_bytes_mut::<[bool; 2]>(&mut [2, 0]).is_err());
+/// ```
+///
+/// ```compile_fail
+/// let _ = puns::from_bytes_mut::<(u8, u16)>(&mut [0; 4]);
+/// ```
+///
+/// # Errors
+/// As [`try_pun_mut`].
+#[inline]
+pub const fn from_bytes_mut<D: ?Sized + Pun>(bytes: &mut [u8]) -> Result<&mut D, Error> {
+  try_pun_mut::<[u8], D>(bytes)
 }
 
 // -------------------------------------------------------------------------------------------------

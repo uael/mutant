@@ -813,7 +813,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
               #[doc = #doc]
               #[inline]
               #vis const fn #name(&self) -> ::core::result::Result<&#ty, #root::Error> {
-                #root::try_pun_ref::<[::core::primitive::u8], #ty>(#root::region(self, #index))
+                #root::from_bytes::<#ty>(#root::region(self, #index))
               }
             }
           },
@@ -998,7 +998,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
     let wholes = references.iter().map(|(variant, reference)| {
       let ty = &reference.elem;
       quote! {
-        if let #result::Ok(value) = #root::try_pun_ref::<[::core::primitive::u8], #ty>(bytes) {
+        if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
           return #result::Ok(Self::#variant(value));
         }
       }
