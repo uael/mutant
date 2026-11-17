@@ -767,6 +767,19 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
   const TRY: () = Self::require(Self::check(Need::TRY));
   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+  const FROM_TAIL: () = Self::require(Self::check_from_tail());
+
+  /// Why the target cannot be taken from the end of the source (bytes) at run time, if it
+  /// cannot.
+  const fn check_from_tail() -> Option<Message> {
+    if D::LAYOUT.is_unsized() {
+      return Some(Message::new(
+        "the target is unsized: where it starts cannot be found from the end of the bytes.\nUse \
+         `from_head` or `from_bytes`",
+      ));
+    }
+    Self::check(Need::TRY_REF)
+  }
   const TRY_MUT: () = {
     let () = Self::TRY_REF;
     if !Self::MUTABLE {
@@ -1256,28 +1269,32 @@ pub const fn from_bytes_mut<D: ?Sized + Pun>(bytes: &mut [u8]) -> Result<&mut D,
 // -------------------------------------------------------------------------------------------------
 // Parsing
 
-/// The body of [`from_head`], after its compile-time check: a macro rather than a function, so that
-/// `hook::from_head` shares it without changing the code of `from_head`.
-macro_rules! from_head {
-  ($d:ident, $bytes:ident) => {{
-    let (layout, rule) = const { ($d::LAYOUT, $d::LAYOUT.length_rule()) };
+impl<D: ?Sized + Pun> Plan<[u8], D> {
+  /// The `D` at the start of the `len` bytes at `addr`, and its size, with every check that
+  /// could not be made at compile time (`from_head`, `from_head_mut`).
+  ///
+  /// # Safety
+  /// `addr` must be valid for reads of `n` initialized bytes.
+  #[inline(always)]
+  const unsafe fn front(addr: *const u8, n: usize) -> Result<(*const D, usize), Error> {
+    let (layout, rule) = const { (D::LAYOUT, D::LAYOUT.length_rule()) };
     let (head, stride) = (layout.head(), layout.stride());
-    if $bytes.len() < head {
+    if n < head {
       return Err(Error::Size);
     }
-    if const { $d::LAYOUT.align() > 1 } && !ptr::is_aligned($bytes.as_ptr(), layout.align()) {
+    if const { D::LAYOUT.align() > 1 } && !ptr::is_aligned(addr, layout.align()) {
       return Err(Error::Alignment);
     }
     let len = match rule {
       _ if stride == 0 => 0,
       // As many elements as fit, trailing padding included.
-      None => match $bytes.len() & !(layout.align() - 1) {
+      None => match n & !(layout.align() - 1) {
         room if room >= head => (room - head) / stride,
         _ => return Err(Error::Size),
       },
       Some(rule) => {
         // SAFETY: the sized fields of the target are in the first `head` bytes.
-        let Some(value) = (unsafe { eval(rule.ops, $bytes.as_ptr().add(rule.base), 0) }) else {
+        let Some(value) = (unsafe { eval(rule.ops, addr.add(rule.base), 0) }) else {
           return Err(Error::Validity);
         };
         // From the size of the struct that has the rule, down to a number of elements.
@@ -1289,7 +1306,7 @@ macro_rules! from_head {
           }
           () => return Err(Error::Validity),
         };
-        if len > (($bytes.len() - head) / stride) as u128 {
+        if len > ((n - head) / stride) as u128 {
           return Err(Error::Size);
         }
         len as usize
@@ -1297,17 +1314,38 @@ macro_rules! from_head {
     };
     // With its trailing padding, if any.
     let size = match layout.size_of_val(len) {
-      Some(size) if size <= $bytes.len() => size,
+      Some(size) if size <= n => size,
       _ => return Err(Error::Size),
     };
-    let target = ptr::from_raw_parts::<$d>($bytes.as_ptr(), len);
-    // SAFETY: the target is in the bounds of `$bytes`, which are initialized.
-    if !unsafe { validate::<Plan<[u8], $d>, Root, $d>(target) } {
+    let target = ptr::from_raw_parts::<D>(addr, len);
+    // SAFETY: the target is in the bounds of the bytes, which are initialized.
+    if !unsafe { validate::<Self, Root, D>(target) } {
       return Err(Error::Validity);
     }
-    // SAFETY: validated.
-    Ok((unsafe { &*target }, $bytes.split_at(size).1))
-  }};
+    Ok((target, size))
+  }
+
+  /// The `D` at the end of the `n` bytes at `addr`, and where it starts, with every check that
+  /// could not be made at compile time (`from_tail`, `from_tail_mut`). `D` is sized.
+  ///
+  /// # Safety
+  /// `addr` must be valid for reads of `n` initialized bytes.
+  #[inline(always)]
+  const unsafe fn back(addr: *const u8, n: usize) -> Result<(usize, *const D), Error> {
+    let layout = const { D::LAYOUT };
+    let Some(start) = n.checked_sub(layout.size()) else { return Err(Error::Size) };
+    // SAFETY: `start <= n`.
+    let addr = unsafe { addr.add(start) };
+    if const { D::LAYOUT.align() > 1 } && !ptr::is_aligned(addr, layout.align()) {
+      return Err(Error::Alignment);
+    }
+    let target = ptr::from_raw_parts::<D>(addr, 0);
+    // SAFETY: the target is the last bytes, which are initialized.
+    if !unsafe { validate::<Self, Root, D>(target) } {
+      return Err(Error::Validity);
+    }
+    Ok((start, target))
+  }
 }
 
 /// Take a `D` from the start of `bytes`: returns it and what remains.
@@ -1339,14 +1377,55 @@ macro_rules! from_head {
 #[inline]
 pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
   const { Plan::<[u8], D>::TRY_REF };
-  from_head!(D, bytes)
+  // SAFETY: bytes.
+  match unsafe { Plan::<[u8], D>::front(bytes.as_ptr(), bytes.len()) } {
+    // SAFETY: validated.
+    Ok((target, size)) => Ok((unsafe { &*target }, bytes.split_at(size).1)),
+    Err(error) => Err(error),
+  }
 }
 
-/// [`from_head`], without the compile-time check that `Plan::<[u8], D>::TRY_REF` holds, which the
-/// caller must make (`hook::from_head`).
-#[cfg(feature = "verdict")]
-const fn from_head_unchecked<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
-  from_head!(D, bytes)
+/// Take a `D` from the end of `bytes`: returns what precedes it, and it.
+///
+/// The target is the last `size_of::<D>()` bytes, which are checked as [`from_bytes`] checks
+/// them: their address if `D` has an alignment greater than 1, then what bytes do not prove of
+/// `D`.
+///
+/// ```
+/// use puns::Pun;
+/// use puns::num::u16be;
+///
+/// /// A trailer: the length of what precedes it, and a check.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Trailer {
+///   length: u16be,
+///   check: u8,
+/// }
+///
+/// let (body, trailer) = puns::from_tail::<Trailer>(&[b'h', b'i', 0, 2, 0xff]).unwrap();
+/// assert_eq!((body, trailer.length.get(), trailer.check), (&b"hi"[..], 2, 0xff));
+/// assert_eq!(puns::from_tail::<Trailer>(&[0, 2]).err(), Some(puns::Error::Size));
+/// ```
+///
+/// Where an unsized target starts cannot be found from the end of the bytes:
+///
+/// ```compile_fail
+/// let _ = puns::from_tail::<[u16]>(&[0; 4]);
+/// ```
+///
+/// # Errors
+/// [`Error::Size`] if `bytes` are fewer than `size_of::<D>()`, [`Error::Alignment`] if the last
+/// ones are not aligned for `D`, [`Error::Validity`] if they are not a valid `D`.
+#[inline]
+pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&[u8], &D), Error> {
+  const { Plan::<[u8], D>::FROM_TAIL };
+  // SAFETY: bytes.
+  match unsafe { Plan::<[u8], D>::back(bytes.as_ptr(), bytes.len()) } {
+    // SAFETY: validated.
+    Ok((start, target)) => Ok((bytes.split_at(start).0, unsafe { &*target })),
+    Err(error) => Err(error),
+  }
 }
 
 /// The bytes of the `index`th region of the tail of a struct, see `#[derive(Pun)]`.

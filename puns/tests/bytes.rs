@@ -2,7 +2,7 @@
 //! (`from_tail`), by reference and by mutable reference.
 
 use puns::{
-  Error, Pun, from_bytes, from_bytes_mut,
+  Error, Pun, from_bytes, from_bytes_mut, from_head, from_tail,
   num::{u16be, u16bec},
   try_pun_mut, try_pun_ref,
 };
@@ -85,7 +85,32 @@ fn whole_mut() {
 }
 
 #[test]
-fn whole_in_const() {
+fn in_const() {
   const POSITION: Result<&Position, Error> = from_bytes(&[3, 0]);
+  const BACK: Result<(&[u8], &Position), Error> = from_tail(&[1, 1]);
   assert_eq!(POSITION.map(|p| (p.x, p.visible)), Ok((3, false)));
+  assert_eq!(BACK.map(|(rest, p)| (rest.len(), p.x)), Ok((0, 1)));
+}
+
+#[test]
+fn back() {
+  let (rest, position) = from_tail::<Position>(&[1, 2, 3, 7, 1]).unwrap();
+  assert_eq!((rest, position), (&[1, 2, 3][..], &Position { x: 7, visible: true }));
+  let (rest, position) = from_tail::<Position>(&[7, 0]).unwrap();
+  assert_eq!((rest.len(), position.visible), (0, false));
+  assert_eq!(from_tail::<Position>(&[1, 7, 2]).err(), Some(Error::Validity));
+  assert_eq!(from_tail::<Position>(&[7]).err(), Some(Error::Size));
+  assert_eq!(from_tail::<[u8; 0]>(&[1, 2]), Ok((&[1, 2][..], &[])));
+  // The address of the last bytes.
+  let words = Aligned([0u8, 0, 0, 1, 0, 0, 0, 2]);
+  let (rest, word) = from_tail::<Word>(&words.0).unwrap();
+  assert_eq!((rest.len(), word.value), (4, u32::from_ne_bytes([0, 0, 0, 2])));
+  assert_eq!(from_tail::<Word>(&words.0[..7]).err(), Some(Error::Alignment));
+  assert_eq!(from_tail::<Magic>(&[9, 0xca, 0xfe, 0]).map(|(rest, _)| rest), Ok(&[9][..]));
+  assert_eq!(from_tail::<Magic>(&[0xca, 0xfe, 0, 9]).err(), Some(Error::Validity));
+  // Front and back of the same bytes.
+  let bytes = [7u8, 0, 5, b'h', b'i', 0xca, 0xfe, 1];
+  let (rest, magic) = from_tail::<Magic>(&bytes).unwrap();
+  let (chunk, rest) = from_head::<Chunk>(rest).unwrap();
+  assert_eq!((&chunk.data, rest.len(), magic.flag), (&b"hi"[..], 0, true));
 }

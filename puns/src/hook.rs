@@ -166,5 +166,24 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&D, &[u8
   if const { !verdict::<[u8], D>().try_pun_ref } {
     return None;
   }
-  Some(crate::from_head_unchecked::<D>(bytes))
+  // SAFETY: bytes.
+  Some(match unsafe { Plan::<[u8], D>::front(bytes.as_ptr(), bytes.len()) } {
+    // SAFETY: as in `from_head`, which would compile.
+    Ok((target, size)) => Ok((unsafe { &*target }, bytes.split_at(size).1)),
+    Err(error) => Err(error),
+  })
+}
+
+/// [`from_tail`](crate::from_tail), if it compiles.
+#[must_use]
+pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&[u8], &D), Error>> {
+  if const { Plan::<[u8], D>::check_from_tail().is_some() } {
+    return None;
+  }
+  // SAFETY: bytes.
+  Some(match unsafe { Plan::<[u8], D>::back(bytes.as_ptr(), bytes.len()) } {
+    // SAFETY: as in `from_tail`, which would compile.
+    Ok((start, target)) => Ok((bytes.split_at(start).0, unsafe { &*target })),
+    Err(error) => Err(error),
+  })
 }
