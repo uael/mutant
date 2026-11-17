@@ -615,7 +615,7 @@ impl Layout {
           (_, true) => Uniform::Pad,
           _ => Uniform::No,
         };
-        check_rules(rules, end, false);
+        check_rules(rules, end);
         let this = Self {
           kind: Kind::Struct(fields, rules),
           size,
@@ -641,7 +641,7 @@ impl Layout {
         unsafe { ptr::verify::<T>(probe) };
         // SAFETY: the metadata of `probe` is a small slice length.
         let align = unsafe { mem::align_of_val_raw(probe) };
-        check_rules(rules, end, true);
+        check_rules(rules, end);
         let this = Self {
           kind: Kind::Struct(fields, rules),
           size: field.offset + field.layout.size,
@@ -744,6 +744,64 @@ impl Layout {
       // What the fields of the variants require is a matter of the enum as a whole.
       has_rules: false,
     }
+  }
+
+  /// The `index`th operation of the expression of the `rule`th rule, if any.
+  pub(crate) const fn rule_op(&self, rule: usize, index: usize) -> Option<Op> {
+    let rules = self.rules();
+    if rule >= rules.len() {
+      return None;
+    }
+    match rules[rule].ops() {
+      Some(ops) if index < ops.len() => Some(ops[index]),
+      _ => None,
+    }
+  }
+
+  /// Index of the [`Op::Walk`] of the expression of the `rule`th rule, `usize::MAX` if none.
+  pub(crate) const fn walk_at(&self, rule: usize) -> usize {
+    let mut i = 0;
+    while let Some(op) = self.rule_op(rule, i) {
+      if matches!(op, Op::Walk { .. }) {
+        return i;
+      }
+      i += 1;
+    }
+    usize::MAX
+  }
+
+  /// The `index`th operation of an expression (the condition, or with `next` what follows) of
+  /// the [`Op::Walk`] of the `rule`th rule.
+  pub(crate) const fn walk_op(&self, rule: usize, next: bool, index: usize) -> Option<Op> {
+    let Some(Op::Walk { cond, next: then, .. }) = self.rule_op(rule, self.walk_at(rule)) else {
+      return None;
+    };
+    let ops = if next { then } else { cond };
+    if index < ops.len() { Some(ops[index]) } else { None }
+  }
+
+  /// Whatever the `rule`th rule is a [`Rule::Walk`] whose expression has `ops` operations, and
+  /// whose walk has expressions of at most `inner` operations.
+  pub(crate) const fn walks(&self, rule: usize, ops: usize, inner: usize) -> bool {
+    let rules = self.rules();
+    if rule >= rules.len() {
+      return false;
+    }
+    let Rule::Walk(expression) = rules[rule] else { return false };
+    let Some(Op::Walk { cond, next, .. }) = self.rule_op(rule, self.walk_at(rule)) else {
+      return false;
+    };
+    expression.len() == ops && cond.len() <= inner && next.len() <= inner
+  }
+
+  /// Number of rules that are a [`Rule::Walk`].
+  pub(crate) const fn walk_rules(&self) -> usize {
+    let (rules, mut count, mut i) = (self.rules(), 0, 0);
+    while i < rules.len() {
+      count += matches!(rules[i], Rule::Walk(_)) as usize;
+      i += 1;
+    }
+    count
   }
 
   /// The tag of the `variant`th variant of an enum.
@@ -1314,6 +1372,19 @@ pub enum Op {
   Either,
   /// `!`, on a boolean.
   Not,
+  /// Replace a condition and two values by the first value if the condition is true, by the
+  /// second if not: only that one has to be computed.
+  Select,
+  /// Take a value off the stack: it is the `index`th variable.
+  Set(u8),
+  /// Push the `index`th variable.
+  Get(u8),
+  /// Replace a value by what it becomes when, for as long as the expression `cond` is true of
+  /// it, it is replaced by the expression `next`. In both, the value is the variable `var`.
+  ///
+  /// This is how what is at an offset that depends on what is before is reached: options, a
+  /// chain of headers. A value takes at most as many steps as it has bytes.
+  Walk { var: u8, cond: &'static [Op], next: &'static [Op] },
 }
 
 impl Op {
@@ -1331,8 +1402,14 @@ impl Op {
         a == x && b == y && c == z
       }
       (Op::At { size: a, big: b }, Op::At { size: x, big: y }) => a == x && b == y,
-      (Op::Lit(_) | Op::Load { .. } | Op::At { .. }, _)
-      | (_, Op::Lit(_) | Op::Load { .. } | Op::At { .. }) => false,
+      (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) => a == b,
+      (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
+        a == x && same_ops(b, y) && same_ops(c, z)
+      }
+      (Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. }, _)
+      | (_, Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. }) => {
+        false
+      }
       // Other operations hold no data.
       (a, b) => a.code() == b.code(),
     }
@@ -1366,8 +1443,21 @@ impl Op {
       Op::At { .. } => 22,
       Op::Crc32 => 23,
       Op::Sum16 => 24,
+      Op::Select => 25,
+      Op::Set(_) => 26,
+      Op::Get(_) => 27,
+      Op::Walk { .. } => 28,
     }
   }
+}
+
+/// Whatever two expressions are the same.
+const fn same_ops(a: &[Op], b: &[Op]) -> bool {
+  let mut i = 0;
+  while i < a.len() && i < b.len() && a[i].equals(&b[i]) {
+    i += 1;
+  }
+  a.len() == b.len() && i == a.len()
 }
 
 /// Something that values of a struct must satisfy, beyond the validity of their fields.
@@ -1383,6 +1473,8 @@ pub enum Rule {
   Len(&'static [Op]),
   /// The expression is true.
   Assert(&'static [Op]),
+  /// The expression, which has one [`Op::Walk`], is true.
+  Walk(&'static [Op]),
   /// The tail of the value starts with a region of as many bytes as the result of the
   /// expression (`None`: what remains). Regions follow each other, in the order of the rules.
   Region(Option<&'static [Op]>),
@@ -1390,13 +1482,14 @@ pub enum Rule {
 
 /// The operations of an expression can read the whole value, not only its sized fields.
 const fn reads_value(op: &Op) -> bool {
-  matches!(op, Op::Size | Op::At { .. } | Op::Crc32 | Op::Sum16)
+  matches!(op, Op::Size | Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Walk { .. })
 }
 
 impl Rule {
   const fn ops(&self) -> Option<&'static [Op]> {
     match *self {
       Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => Some(ops),
+      Rule::Walk(ops) => Some(ops),
       Rule::Region(None) => None,
     }
   }
@@ -1407,17 +1500,12 @@ impl Rule {
       (Rule::Size(_), Rule::Size(_))
         | (Rule::Len(_), Rule::Len(_))
         | (Rule::Assert(_), Rule::Assert(_))
+        | (Rule::Walk(_), Rule::Walk(_))
         | (Rule::Region(_), Rule::Region(_))
     );
     match (self.ops(), other.ops()) {
       (None, None) => same_kind,
-      (Some(a), Some(b)) => {
-        let mut i = 0;
-        while i < a.len() && i < b.len() && a[i].equals(&b[i]) {
-          i += 1;
-        }
-        same_kind && a.len() == b.len() && i == a.len()
-      }
+      (Some(a), Some(b)) => same_kind && same_ops(a, b),
       _ => false,
     }
   }
@@ -1448,47 +1536,306 @@ pub(crate) struct LengthRule {
 
 /// Depth of the stack of [`eval`].
 const STACK: usize = 8;
+/// Number of variables of an expression.
+const VARIABLES: usize = 4;
+/// An expression that has a [`Op::Walk`] is, as each expression of the walk, of at most that
+/// many operations: they are counted with types, see `validate::check_walks`.
+const WALK_OPS: usize = 64;
+const WALK_INNER_OPS: usize = 48;
 
 /// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
-const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
+const fn check_rules(rules: &[Rule], head: usize) {
   let mut i = 0;
   while i < rules.len() {
-    let _ = unsized_;
     if let Some(ops) = rules[i].ops() {
-      let (mut depth, mut j) = (0usize, 0);
-      while j < ops.len() {
-        assert!(
-          !(reads_value(&ops[j]) && matches!(rules[i], Rule::Size(_) | Rule::Len(_))),
-          "the size of a value cannot be defined from the value itself"
-        );
-        match ops[j] {
-          Op::Lit(_) | Op::Size => depth += 1,
-          Op::At { size, .. } => assert!(size >= 1 && size <= 16 && depth >= 1, "malformed expression"),
-          Op::Load { offset, size, .. } => {
-            assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
-            depth += 1;
-          }
-          Op::Not => assert!(depth >= 1, "malformed expression"),
-          _ => {
-            assert!(depth >= 2, "malformed expression");
-            depth -= 1;
-          }
-        }
-        assert!(depth <= STACK, "expression is too deep");
-        j += 1;
-      }
-      assert!(depth == 1, "malformed expression");
+      let sizes = matches!(rules[i], Rule::Size(_) | Rule::Len(_));
+      let walks = matches!(rules[i], Rule::Walk(_));
+      assert!(!walks || ops.len() <= WALK_OPS, "an expression that walks is too long");
+      let walked = check_ops(ops, head, sizes, walks, 0);
+      assert!(walked == walks as usize, "a `walk`, and only one, is in a rule that walks");
     }
     i += 1;
   }
 }
 
-/// Evaluate a postfix expression over the struct at `base`.
+/// Check an expression, in which the variables of `defined` are (a bit for each): returns the
+/// number of [`Op::Walk`] that it has.
+const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut defined: u8) -> usize {
+  let (mut depth, mut walked, mut i) = (0usize, 0, 0);
+  while i < ops.len() {
+    assert!(
+      !(sizes && reads_value(&ops[i])),
+      "the size of a value cannot be defined from the value itself"
+    );
+    match ops[i] {
+      Op::Lit(_) | Op::Size => depth += 1,
+      Op::At { size, .. } => assert!(size >= 1 && size <= 16 && depth >= 1, "malformed expression"),
+      Op::Load { offset, size, .. } => {
+        assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
+        depth += 1;
+      }
+      Op::Not => assert!(depth >= 1, "malformed expression"),
+      Op::Select => {
+        assert!(depth >= 3, "malformed expression");
+        depth -= 2;
+      }
+      Op::Set(index) => {
+        assert!(depth >= 1, "malformed expression");
+        assert!((index as usize) < VARIABLES, "too many variables in an expression");
+        (depth, defined) = (depth - 1, defined | 1 << index);
+      }
+      Op::Get(index) => {
+        assert!((index as usize) < VARIABLES && defined & (1 << index) != 0, "no such variable");
+        depth += 1;
+      }
+      Op::Walk { var, cond, next } => {
+        assert!(depth >= 1, "malformed expression");
+        assert!(walks, "`walk` is for `assert`, and cannot be in another `walk`");
+        walked += 1;
+        assert!((var as usize) < VARIABLES, "too many variables in an expression");
+        assert!(
+          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
+          "the expressions of a `walk` are too long"
+        );
+        check_ops(cond, head, sizes, false, defined | 1 << var);
+        check_ops(next, head, sizes, false, defined | 1 << var);
+      }
+      _ => {
+        assert!(depth >= 2, "malformed expression");
+        depth -= 1;
+      }
+    }
+    assert!(depth <= STACK, "expression is too deep");
+    i += 1;
+  }
+  assert!(depth == 1, "malformed expression");
+  walked
+}
+
+/// What evaluates an expression: a stack, and variables.
 ///
 /// This is written so that, once inlined in a function where the expression is a constant, which
 /// is how it is used, what remains is the arithmetic of the expression, without relying on much
-/// of the optimizer: the first operations are not in a loop, and the stack is not an array but a
-/// local variable for each of its slots.
+/// of the optimizer: the stack is not an array but a variable for each of its slots.
+#[derive(Copy, Clone)]
+pub(crate) struct Machine {
+  stack: (u128, u128, u128, u128, u128, u128, u128, u128),
+  variables: (u128, u128, u128, u128),
+  depth: usize,
+  /// A bit for each slot whose value could not be computed (an overflow, a read out of bounds).
+  failed: u8,
+  /// The same, for each variable.
+  unknown: u8,
+}
+
+impl Machine {
+  pub(crate) const NEW: Self =
+    Self { stack: (0, 0, 0, 0, 0, 0, 0, 0), variables: (0, 0, 0, 0), depth: 0, failed: 0, unknown: 0 };
+
+  #[inline(always)]
+  const fn get(&self, slot: usize) -> u128 {
+    match slot {
+      0 => self.stack.0,
+      1 => self.stack.1,
+      2 => self.stack.2,
+      3 => self.stack.3,
+      4 => self.stack.4,
+      5 => self.stack.5,
+      6 => self.stack.6,
+      _ => self.stack.7,
+    }
+  }
+
+  /// Set a slot to a value, or mark it as failed.
+  #[inline(always)]
+  const fn set(&mut self, slot: usize, value: Option<u128>) {
+    match value {
+      Some(value) => {
+        self.failed &= !(1 << slot);
+        match slot {
+          0 => self.stack.0 = value,
+          1 => self.stack.1 = value,
+          2 => self.stack.2 = value,
+          3 => self.stack.3 = value,
+          4 => self.stack.4 = value,
+          5 => self.stack.5 = value,
+          6 => self.stack.6 = value,
+          _ => self.stack.7 = value,
+        }
+      }
+      None => self.failed |= 1 << slot,
+    }
+  }
+
+  #[inline(always)]
+  const fn has_failed(&self, slot: usize) -> bool {
+    self.failed & (1 << slot) != 0
+  }
+
+  #[inline(always)]
+  const fn slot(&self, slot: usize) -> Option<u128> {
+    if self.has_failed(slot) { None } else { Some(self.get(slot)) }
+  }
+
+  #[inline(always)]
+  const fn variable(&self, index: u8) -> Option<u128> {
+    if self.unknown & (1 << index) != 0 {
+      return None;
+    }
+    Some(match index {
+      0 => self.variables.0,
+      1 => self.variables.1,
+      2 => self.variables.2,
+      _ => self.variables.3,
+    })
+  }
+
+  #[inline(always)]
+  const fn set_variable(&mut self, index: u8, value: Option<u128>) {
+    match value {
+      Some(value) => {
+        self.unknown &= !(1 << index);
+        match index {
+          0 => self.variables.0 = value,
+          1 => self.variables.1 = value,
+          2 => self.variables.2 = value,
+          _ => self.variables.3 = value,
+        }
+      }
+      None => self.unknown |= 1 << index,
+    }
+  }
+
+  /// The value of the expression, once all of its operations are applied.
+  #[inline(always)]
+  pub(crate) const fn result(&self) -> Option<u128> {
+    self.slot(0)
+  }
+
+  /// The value at the top of the stack.
+  #[inline(always)]
+  pub(crate) const fn top(&self) -> Option<u128> {
+    self.slot(self.depth - 1)
+  }
+
+  /// Replace the value at the top of the stack.
+  #[inline(always)]
+  pub(crate) const fn replace(&mut self, value: Option<u128>) {
+    self.set(self.depth - 1, value);
+  }
+
+  /// A machine to evaluate another expression, in which the variable `index` is `value` and the
+  /// other ones are what they are here.
+  #[inline(always)]
+  pub(crate) const fn enter(&self, index: u8, value: u128) -> Self {
+    let mut inner = Self { depth: 0, failed: 0, ..*self };
+    inner.set_variable(index, Some(value));
+    inner
+  }
+
+  /// Apply an operation of an expression over the struct at `base`, whose size is `size`.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  // Not in debug builds, where this would only make every struct that has rules slow to build.
+  #[cfg_attr(not(debug_assertions), inline(always))]
+  pub(crate) const unsafe fn apply(&mut self, op: Op, base: *const u8, size: usize) {
+    let depth = self.depth;
+    match op {
+      Op::Lit(value) => {
+        self.set(depth, Some(value));
+        self.depth += 1;
+      }
+      Op::Load { offset, size, big } => {
+        let endian = if big { Endian::Big } else { Endian::Little };
+        // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
+        self.set(depth, Some(unsafe { load(base.add(offset), size as usize, endian) }));
+        self.depth += 1;
+      }
+      Op::Size => {
+        self.set(depth, Some(size as u128));
+        self.depth += 1;
+      }
+      Op::Get(index) => {
+        self.set(depth, self.variable(index));
+        self.depth += 1;
+      }
+      Op::Set(index) => {
+        self.set_variable(index, self.slot(depth - 1));
+        self.depth -= 1;
+      }
+      Op::Not => {
+        if !self.has_failed(depth - 1) {
+          self.set(depth - 1, Some((self.get(depth - 1) == 0) as u128));
+        }
+      }
+      Op::At { size: width, big } => {
+        let (offset, endian) = (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
+        let inside = offset <= size as u128 && size - offset as usize >= width as usize;
+        if inside && !self.has_failed(depth - 1) {
+          // SAFETY: in the bounds of the value.
+          let value = unsafe { load(base.add(offset as usize), width as usize, endian) };
+          self.set(depth - 1, Some(value));
+        } else {
+          self.set(depth - 1, None);
+        }
+      }
+      op @ (Op::Crc32 | Op::Sum16) => {
+        let (start, end) = (self.get(depth - 2), self.get(depth - 1));
+        let inside = start <= end && end <= size as u128;
+        let computed = inside && !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
+        self.depth -= 1;
+        if computed {
+          // SAFETY: in the bounds of the value.
+          let bytes = unsafe {
+            core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
+          };
+          let value = if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
+          self.set(depth - 2, Some(value));
+        } else {
+          self.set(depth - 2, None);
+        }
+      }
+      // What decides of `&&` and `||` is enough: the other side may have failed.
+      op @ (Op::Both | Op::Either) => {
+        let (a, b) = (self.get(depth - 2), self.get(depth - 1));
+        let (failed_a, failed_b) = (self.has_failed(depth - 2), self.has_failed(depth - 1));
+        let decides = matches!(op, Op::Either) as u128;
+        self.depth -= 1;
+        if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides) {
+          self.set(depth - 2, Some(decides));
+        } else if failed_a || failed_b {
+          self.set(depth - 2, None);
+        } else {
+          self.set(depth - 2, Some(1 - decides));
+        }
+      }
+      // The value that is not selected may have failed.
+      Op::Select => {
+        let value = match self.slot(depth - 3) {
+          Some(0) => self.slot(depth - 1),
+          Some(_) => self.slot(depth - 2),
+          None => None,
+        };
+        self.depth -= 2;
+        self.set(depth - 3, value);
+      }
+      // See `validate::check_walks`, which is what evaluates the expressions that walk.
+      Op::Walk { .. } => self.set(depth - 1, None),
+      op => {
+        let computed = !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
+        let value = binary(op, self.get(depth - 2), self.get(depth - 1));
+        self.depth -= 1;
+        self.set(depth - 2, if computed { value } else { None });
+      }
+    }
+  }
+}
+
+/// Evaluate a postfix expression over the struct at `base`.
+///
+/// The first operations are not in a loop: where the expression is a constant, each of them is
+/// one, and what remains is its arithmetic (see [`Machine`]).
 ///
 /// # Safety
 /// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
@@ -1498,138 +1845,23 @@ const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
 // Not in debug builds, where this would only make every struct that has rules slow to build.
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-  let (mut s0, mut s1, mut s2, mut s3) = (0u128, 0u128, 0u128, 0u128);
-  let (mut s4, mut s5, mut s6, mut s7) = (0u128, 0u128, 0u128, 0u128);
-  // A bit for each slot whose value could not be computed (an overflow, a read out of bounds).
-  let (mut depth, mut failed) = (0usize, 0u8);
-  macro_rules! get {
-    ($slot:expr) => {
-      match $slot {
-        0 => s0,
-        1 => s1,
-        2 => s2,
-        3 => s3,
-        4 => s4,
-        5 => s5,
-        6 => s6,
-        _ => s7,
-      }
-    };
-  }
-  // Set a slot to a value, or mark it as failed.
-  macro_rules! set {
-    ($slot:expr, $value:expr) => {{
-      let (slot, value): (usize, Option<u128>) = ($slot, $value);
-      match value {
-        Some(value) => {
-          failed &= !(1 << slot);
-          match slot {
-            0 => s0 = value,
-            1 => s1 = value,
-            2 => s2 = value,
-            3 => s3 = value,
-            4 => s4 = value,
-            5 => s5 = value,
-            6 => s6 = value,
-            _ => s7 = value,
-          }
-        }
-        None => failed |= 1 << slot,
-      }
-    }};
-  }
-  macro_rules! has_failed {
-    ($slot:expr) => {
-      failed & (1 << $slot) != 0
-    };
-  }
-  macro_rules! step {
-    ($op:expr) => {
-      match $op {
-        Op::Lit(value) => {
-          set!(depth, Some(value));
-          depth += 1;
-        }
-        Op::Load { offset, size, big } => {
-          let endian = if big { Endian::Big } else { Endian::Little };
-          // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
-          set!(depth, Some(unsafe { load(base.add(offset), size as usize, endian) }));
-          depth += 1;
-        }
-        Op::Size => {
-          set!(depth, Some(size as u128));
-          depth += 1;
-        }
-        Op::Not => {
-          if !has_failed!(depth - 1) {
-            set!(depth - 1, Some((get!(depth - 1) == 0) as u128));
-          }
-        }
-        Op::At { size: width, big } => {
-          let (offset, endian) = (get!(depth - 1), if big { Endian::Big } else { Endian::Little });
-          let inside = offset <= size as u128 && size - offset as usize >= width as usize;
-          if inside && !has_failed!(depth - 1) {
-            // SAFETY: in the bounds of the value.
-            let value = unsafe { load(base.add(offset as usize), width as usize, endian) };
-            set!(depth - 1, Some(value));
-          } else {
-            set!(depth - 1, None);
-          }
-        }
-        op @ (Op::Crc32 | Op::Sum16) => {
-          let (start, end) = (get!(depth - 2), get!(depth - 1));
-          let inside = start <= end && end <= size as u128;
-          let computed = inside && !has_failed!(depth - 2) && !has_failed!(depth - 1);
-          depth -= 1;
-          if computed {
-            // SAFETY: in the bounds of the value.
-            let bytes = unsafe {
-              core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
-            };
-            let value = if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
-            set!(depth - 1, Some(value));
-          } else {
-            set!(depth - 1, None);
-          }
-        }
-        // What decides of `&&` and `||` is enough: the other side may have failed.
-        op @ (Op::Both | Op::Either) => {
-          let (a, b) = (get!(depth - 2), get!(depth - 1));
-          let (failed_a, failed_b) = (has_failed!(depth - 2), has_failed!(depth - 1));
-          let decides = matches!(op, Op::Either) as u128;
-          depth -= 1;
-          if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides) {
-            set!(depth - 1, Some(decides));
-          } else if failed_a || failed_b {
-            set!(depth - 1, None);
-          } else {
-            set!(depth - 1, Some(1 - decides));
-          }
-        }
-        op => {
-          let computed = !has_failed!(depth - 2) && !has_failed!(depth - 1);
-          let value = binary(op, get!(depth - 2), get!(depth - 1));
-          depth -= 1;
-          set!(depth - 1, if computed { value } else { None });
-        }
-      }
-    };
-  }
+  let mut machine = Machine::NEW;
   macro_rules! unrolled {
     ($($index:literal)+) => {$(
       if $index < ops.len() {
-        step!(ops[$index]);
+        // SAFETY: guaranteed by the caller.
+        unsafe { machine.apply(ops[$index], base, size) };
       }
     )+};
   }
   unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
   let mut i = 24;
   while i < ops.len() {
-    step!(ops[i]);
+    // SAFETY: guaranteed by the caller.
+    unsafe { machine.apply(ops[i], base, size) };
     i += 1;
   }
-  let _ = (s1, s2, s3, s4, s5, s6, s7, depth);
-  if failed & 1 == 0 { Some(s0) } else { None }
+  machine.result()
 }
 
 #[inline(always)]
@@ -1653,6 +1885,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     Op::Ge => Some((a >= b) as u128),
     Op::Lit(_) | Op::Load { .. } | Op::Size | Op::Not => None,
     Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Both | Op::Either => None,
+    Op::Select | Op::Set(_) | Op::Get(_) | Op::Walk { .. } => None,
   }
 }
 

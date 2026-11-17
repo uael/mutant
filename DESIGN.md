@@ -104,11 +104,12 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
 | `unpack::<Frame<Ipv4>>(&[u8])`                     | 43 instructions, no loop, no call          |
-| `Ipv4::options()` (a region)                       | 19 instructions, no branch                 |
+| `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | a loop of one `cmp` per byte               |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 362 instructions, two loops, no call       |
 
 ### 4. Rules: what is not a property of bytes
 
@@ -126,6 +127,13 @@ An expression can read the value beyond its fields: `size_of_val(self)`, `le(off
 last bytes are the CRC of what is before" is an assertion. A checksum that covers several layers
 (the one of UDP and TCP covers the addresses of the IP header) is an assertion of the struct that
 holds them all: the IPv4 packet.
+
+An expression can name what it computes and choose (`{ let header = ..; .. }`,
+`if .. { .. } else { .. }`), and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
+`START` becomes when it is replaced by `NEXT` for as long as `COND` is true of it. This is how
+what lies at an offset that depends on what is before is reached: the checksum of UDP, TCP and
+ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each of which tells
+what follows it and how long it is. A value is walked for at most as many steps as it has bytes.
 
 What cannot be computed (an overflow, a read out of the value) makes a rule fail, unless it is
 the side of a `&&` or `||` that the other side decides without: `protocol != 17 || be(..) == 0`
@@ -151,6 +159,13 @@ Rules are checked when a value comes from something else, tell `unpack` how long
 are proven only by the same rule, in the same struct, at the same place of the source. The
 evaluator (`layout::eval`) is written so that a constant program compiles to its arithmetic: no
 loop for the first operations, and a local variable per stack slot rather than an array.
+
+An expression that walks holds two more expressions, which are evaluated in a loop: there, the
+operations are not left to the optimizer to find constant. They are constants of the instances
+of the functions that apply them (`validate::check_walks`), one instance per operation, reached
+by a recursion over a number that is a type. What is compiled is the loop and the arithmetic of
+both expressions, never an interpreter; and the list of the rules that walk is itself a type
+(`Data::Walks`), so that a struct without any costs nothing more to compile.
 
 ### 5. What the type system enforces, and what it does not
 
@@ -195,7 +210,9 @@ The tests pass under Miri, with strict provenance and with tree borrows.
   to declare one from the derive.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
 - An arbitrary function in a rule (getters take any): it could only be called through a trait,
-  hence not in `const` contexts on stable. `crc32` and `sum16` are built in for that reason.
+  hence not in `const` contexts on stable. `crc32`, `sum16` and `walk` are built in for that
+  reason.
+- `walk` is for `assert`: once in an expression, not for sizes, lengths or regions.
 
 ## Limits
 

@@ -42,12 +42,21 @@ use syn::{
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
 /// arithmetic costs, and fails (as a rule that does not hold) on overflow.
 ///
+/// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
+/// once), `if EXPR { EXPR } else { EXPR }`.
+///
 /// It can also read the value beyond its fields, where `start`, `end` and `offset` are
 /// expressions that count bytes from the start of the value:
 /// - `le(offset, N)`, `be(offset, N)`: the integer of `N` bytes at `offset`;
 /// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
 /// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
-///   (`0xffff` over data that holds its own IP checksum).
+///   (`0xffff` over data that holds its own IP checksum);
+/// - `walk(START, |at| COND, |at| NEXT)`, in an `assert`: what `START` becomes when it is
+///   replaced by `NEXT` for as long as `COND` is true of it. This is how what is at an offset
+///   that depends on what is before is reached: after options, at the end of a chain of headers
+///   (`walk(0, |at| be(at, 1) != 0, |at| at + 2 + be(at + 1, 1))` is the offset of the first
+///   "type, length, value" whose type is 0). A value is walked for at most as many steps as it
+///   has bytes, and the rule fails beyond.
 ///
 /// # Enums
 ///
@@ -244,8 +253,70 @@ struct FieldInfo<'a> {
 }
 
 /// Compile `expr` to the operations of a postfix expression.
+/// The variables of an expression: its `let`s, and the parameters of the closures of a `walk`.
+#[derive(Default)]
+struct Scope {
+  names: Vec<(Ident, u8)>,
+  /// In a closure of a `walk`.
+  walking: bool,
+  /// For each `walk`: the number of operations of the longest of its two expressions.
+  walks: Vec<usize>,
+}
+
+impl Scope {
+  fn declare(&mut self, name: &Ident) -> Result<u8> {
+    let index = self.names.len() as u8;
+    if index >= 4 {
+      return Err(Error::new(name.span(), "too many variables in an expression"));
+    }
+    self.names.push((name.clone(), index));
+    Ok(index)
+  }
+
+  fn get(&self, name: &Ident) -> Option<u8> {
+    self.names.iter().rev().find(|(declared, _)| declared == name).map(|(_, index)| *index)
+  }
+}
+
+/// `{ let name = EXPR; .. EXPR }`
+fn compile_block(
+  block: &syn::Block, fields: &[FieldInfo], root: &TokenStream, ops: &mut Vec<TokenStream>,
+  scope: &mut Scope,
+) -> Result<()> {
+  let (op, visible) = (quote!(#root::layout::Op), scope.names.len());
+  let Some((last, statements)) = block.stmts.split_last() else {
+    return Err(Error::new(block.span(), "a block has a value"));
+  };
+  for statement in statements {
+    let syn::Stmt::Local(local) = statement else {
+      return Err(Error::new(statement.span(), "expected `let name = EXPR;`"));
+    };
+    let name = match &local.pat {
+      syn::Pat::Ident(pat) => &pat.ident,
+      syn::Pat::Type(pat) if matches!(&*pat.pat, syn::Pat::Ident(_)) => match &*pat.pat {
+        syn::Pat::Ident(pat) => &pat.ident,
+        _ => unreachable!(),
+      },
+      pat => return Err(Error::new(pat.span(), "expected a name")),
+    };
+    let Some(syn::LocalInit { expr, diverge: None, .. }) = &local.init else {
+      return Err(Error::new(local.span(), "expected `let name = EXPR;`"));
+    };
+    compile(expr, fields, root, ops, scope)?;
+    let index = scope.declare(name)?;
+    ops.push(quote!(#op::Set(#index)));
+  }
+  let syn::Stmt::Expr(value, None) = last else {
+    return Err(Error::new(last.span(), "a block ends with its value"));
+  };
+  compile(value, fields, root, ops, scope)?;
+  scope.names.truncate(visible);
+  Ok(())
+}
+
 fn compile(
   expr: &Expr, fields: &[FieldInfo], root: &TokenStream, ops: &mut Vec<TokenStream>,
+  scope: &mut Scope,
 ) -> Result<()> {
   let op = quote!(#root::layout::Op);
   let load = |member: &Member, ops: &mut Vec<TokenStream>| {
@@ -255,13 +326,29 @@ fn compile(
     Some(())
   };
   match expr {
-    Expr::Paren(expr) => compile(&expr.expr, fields, root, ops)?,
-    Expr::Group(expr) => compile(&expr.expr, fields, root, ops)?,
+    Expr::Paren(expr) => compile(&expr.expr, fields, root, ops, scope)?,
+    Expr::Group(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     // Everything is an unsigned integer.
-    Expr::Cast(expr) => compile(&expr.expr, fields, root, ops)?,
+    Expr::Cast(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     Expr::Lit(ExprLit { lit: Lit::Bool(lit), .. }) => {
       let value = lit.value as u128;
       ops.push(quote!(#op::Lit(#value)));
+    }
+    Expr::Block(block) => compile_block(&block.block, fields, root, ops, scope)?,
+    // `if COND { EXPR } else { EXPR }`
+    Expr::If(branch) => {
+      let Some((_, otherwise)) = &branch.else_branch else {
+        return Err(Error::new(branch.span(), "an `if` has an `else`"));
+      };
+      compile(&branch.cond, fields, root, ops, scope)?;
+      compile_block(&branch.then_branch, fields, root, ops, scope)?;
+      compile(otherwise, fields, root, ops, scope)?;
+      ops.push(quote!(#op::Select));
+    }
+    // A variable.
+    Expr::Path(path) if path.path.get_ident().is_some_and(|ident| scope.get(ident).is_some()) => {
+      let index = path.path.get_ident().and_then(|ident| scope.get(ident));
+      ops.push(quote!(#op::Get(#index)));
     }
     Expr::Path(path) if path.path.get_ident().is_some_and(|ident| {
       load(&Member::Named(ident.clone()), ops).is_some()
@@ -271,7 +358,7 @@ fn compile(
         .ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
     }
     Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_)) => {
-      compile(&unary.expr, fields, root, ops)?;
+      compile(&unary.expr, fields, root, ops, scope)?;
       ops.push(quote!(#op::Not));
     }
     Expr::Binary(binary) => {
@@ -296,8 +383,8 @@ fn compile(
         BinOp::Or(_) => "Either",
         _ => return Err(Error::new(binary.op.span(), "unsupported operator")),
       };
-      compile(&binary.left, fields, root, ops)?;
-      compile(&binary.right, fields, root, ops)?;
+      compile(&binary.left, fields, root, ops, scope)?;
+      compile(&binary.right, fields, root, ops, scope)?;
       let name = Ident::new(name, binary.op.span());
       ops.push(quote!(#op::#name));
     }
@@ -312,15 +399,50 @@ fn compile(
     }
     // `crc32(start, end)`, `sum16(start, end)`: over the bytes of the value.
     Expr::Call(call) if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) => {
-      compile(&call.args[0], fields, root, ops)?;
-      compile(&call.args[1], fields, root, ops)?;
+      compile(&call.args[0], fields, root, ops, scope)?;
+      compile(&call.args[1], fields, root, ops, scope)?;
       ops.push(if is_call(call, "crc32") { quote!(#op::Crc32) } else { quote!(#op::Sum16) });
     }
     // `le(offset, size)`, `be(offset, size)`: an integer, anywhere in the value.
     Expr::Call(call) if call.args.len() == 2 && (is_call(call, "le") || is_call(call, "be")) => {
-      compile(&call.args[0], fields, root, ops)?;
+      compile(&call.args[0], fields, root, ops, scope)?;
       let (size, big) = (&call.args[1], is_call(call, "be"));
       ops.push(quote!(#op::At { size: #size, big: #big }));
+    }
+    // `walk(START, |at| COND, |at| NEXT)`: `START`, replaced by `NEXT` for as long as `COND`.
+    Expr::Call(call) if call.args.len() == 3 && is_call(call, "walk") => {
+      if scope.walking {
+        return Err(Error::new(call.span(), "a `walk` cannot be in a `walk`"));
+      }
+      compile(&call.args[0], fields, root, ops, scope)?;
+      let (mut var, mut programs) = (0, vec![]);
+      for closure in [&call.args[1], &call.args[2]] {
+        let parameter = match closure {
+          Expr::Closure(closure) if closure.inputs.len() == 1 => match &closure.inputs[0] {
+            syn::Pat::Ident(pat) => Some((&pat.ident, &closure.body)),
+            _ => None,
+          },
+          _ => None,
+        };
+        let Some((name, body)) = parameter else {
+          return Err(Error::new(closure.span(), "expected `|name| EXPR`"));
+        };
+        let (visible, mut program) = (scope.names.len(), vec![]);
+        var = scope.declare(name)?;
+        scope.walking = true;
+        let compiled = compile(body, fields, root, &mut program, scope);
+        scope.walking = false;
+        scope.names.truncate(visible);
+        compiled?;
+        programs.push(program);
+      }
+      let (cond, next) = (&programs[0], &programs[1]);
+      scope.walks.push(cond.len().max(next.len()));
+      ops.push(quote!(#op::Walk {
+        var: #var,
+        cond: const { &[#(#cond),*] },
+        next: const { &[#(#next),*] },
+      }));
     }
     // Anything else must be a constant.
     expr => ops.push(quote!(#op::Lit((#expr) as u128))),
@@ -380,10 +502,37 @@ fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> TokenStream {
 }
 
 /// `&[Op, ...]`
-fn expression(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<TokenStream> {
-  let mut ops = vec![];
-  compile(expr, fields, root, &mut ops)?;
-  Ok(quote!(&[#(#ops),*]))
+/// An expression, as operations.
+struct Expression {
+  ops: TokenStream,
+  /// Number of operations.
+  len: usize,
+  /// The number of operations of the longest of the two expressions of its `walk`, if it has
+  /// one.
+  walk: Option<usize>,
+}
+
+fn expression(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<Expression> {
+  let (mut ops, mut scope) = (vec![], Scope::default());
+  compile(expr, fields, root, &mut ops, &mut scope)?;
+  if scope.walks.len() > 1 {
+    return Err(Error::new(expr.span(), "an expression can only have one `walk`"));
+  }
+  Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk: scope.walks.pop() })
+}
+
+/// An expression that is not the one of an `assert`: it cannot `walk`.
+fn plain(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<TokenStream> {
+  let expression = expression(expr, fields, root)?;
+  match expression.walk {
+    Some(_) => Err(Error::new(expr.span(), "`walk` is for `assert`")),
+    None => Ok(expression.ops),
+  }
+}
+
+/// `count`, as a type.
+fn count_type(count: usize, root: &TokenStream) -> TokenStream {
+  (0..count).fold(quote!(#root::Zero), |less, _| quote!(#root::More<#less>))
 }
 
 /// The ranges of `#[data(valid(..))]`, as `&'static [(u128, u128)]`.
@@ -495,12 +644,20 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let rule = quote!(#root::layout::Rule);
   let mut rules = vec![];
   if let Some(size) = &options.size {
-    let ops = expression(size, &fields, &root)?;
+    let ops = plain(size, &fields, &root)?;
     rules.push(quote!(#rule::Size(#ops)));
   }
+  // The rules that walk: their index, their number of operations and the one of their walk.
+  let mut walks = vec![];
   for assert in &options.asserts {
-    let ops = expression(assert, &fields, &root)?;
-    rules.push(quote!(#rule::Assert(#ops)));
+    let Expression { ops, len, walk } = expression(assert, &fields, &root)?;
+    rules.push(match walk {
+      Some(inner) => {
+        walks.push((rules.len(), len, inner));
+        quote!(#rule::Walk(#ops))
+      }
+      None => quote!(#rule::Assert(#ops)),
+    });
   }
   let mut accessors = vec![];
   for (i, field) in fields.iter().enumerate() {
@@ -509,7 +666,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       if !last {
         return Err(Error::new(len.span(), "`len` is an option of the last field"));
       }
-      let ops = expression(len, &fields, &root)?;
+      let ops = plain(len, &fields, &root)?;
       rules.push(quote!(#rule::Len(#ops)));
     }
     if let Some(regions) = &field.options.regions {
@@ -521,7 +678,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         let name = &region.name;
         rules.push(match &region.size {
           Some(size) => {
-            let ops = expression(size, &fields, &root)?;
+            let ops = plain(size, &fields, &root)?;
             quote!(#rule::Region(::core::option::Option::Some(#ops)))
           }
           None if index + 1 == regions.len() => quote!(#rule::Region(::core::option::Option::None)),
@@ -615,6 +772,32 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     }
   });
 
+  // The list of the rules that walk, at the type level.
+  let walk_markers = (0..walks.len()).map(|i| format_ident!("__DataWalk{}", i)).collect::<Vec<_>>();
+  let first_walk = match walk_markers.first() {
+    Some(marker) => quote!(#marker #ty_generics),
+    None => quote!(()),
+  };
+  let walk_lists = walks.iter().enumerate().map(|(i, (index, len, inner))| {
+    let (marker, ops, inner) = (&walk_markers[i], count_type(*len, &root), count_type(*inner, &root));
+    let next = match walk_markers.get(i + 1) {
+      Some(marker) => quote!(#marker #ty_generics),
+      None => quote!(()),
+    };
+    quote! {
+      #[allow(non_camel_case_types)]
+      #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the rule of the layout of the struct, and the sizes of its expressions.
+      unsafe impl #impl_generics #root::Walks for #marker #ty_generics #where_clause {
+        const RULE: ::core::primitive::usize = #index;
+        type Ops = #ops;
+        type Inner = #inner;
+        type Next = #next;
+      }
+    }
+  });
+
   let accessors = (!accessors.is_empty()).then(|| {
     quote! {
       impl #impl_generics #this #where_clause {
@@ -627,11 +810,14 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     const _: () = {
       #(#lists)*
 
+      #(#walk_lists)*
+
       // SAFETY: the layout comes from the compiler, field by field.
       unsafe impl #impl_generics #root::Data for #this #where_clause {
         type Elem = ();
         type Fields = #first;
         type Variants = ();
+        type Walks = #first_walk;
         const PROBE: *const Self = #probe;
         // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
         // is a slice.
@@ -905,6 +1091,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         type Elem = ();
         type Fields = ();
         type Variants = #first #ty_generics;
+        type Walks = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::enumeration::<Self>(
           const {

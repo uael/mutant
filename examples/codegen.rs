@@ -32,6 +32,24 @@ pub struct Ipv4<P: ?Sized + Data = [u8]> {
   #[data(regions(options = (version_ihl & 0x0f) * 4 - 20, payload))] pub data: P,
 }
 
+// The checksum of what is behind a chain of extension headers: a rule that walks.
+#[derive(Data)] #[repr(C)] #[data(size = payload_length + 40)]
+#[data(assert({
+  let upper = walk(
+    next_header + (40 << 8),
+    |at| { let kind = at & 0xff; kind == 0 || kind == 43 || kind == 60 },
+    |at| { let start = at >> 8; be(start, 1) + ((start + 8 + be(start + 1, 1) * 8) << 8) },
+  );
+  let protocol = upper & 0xff;
+  let start = upper >> 8;
+  let end = 40 + payload_length;
+  protocol != 17 || (sum16(8, 40) + protocol + (end - start) + sum16(start, end)) % 0xffff == 0
+}))]
+pub struct Ipv6 {
+  pub version_class_flow: [u8; 4], pub payload_length: u16be, pub next_header: u8, pub hop_limit: u8,
+  pub source: [u8; 16], pub destination: [u8; 16], pub data: [u8],
+}
+
 #[derive(Data, Clone, Copy)] #[repr(u8)]
 pub enum Shape { Circle { radius: u16 }, Rect(u8, bool), Empty }
 #[derive(Data, Clone, Copy)] #[repr(u8)]
@@ -58,5 +76,7 @@ pub enum Drawing { Circle { radius: u16 }, Rect(u8, u8), Empty, Line(u8, u8) = 9
 #[unsafe(no_mangle)] pub fn shapes_drawings(s: &[Shape]) -> &[Drawing] { transmute_ref(s) }
 #[unsafe(no_mangle)] pub fn drawing_shape(d: &Drawing) -> Option<&Shape> { try_transmute_ref(d).ok() }
 #[unsafe(no_mangle)] pub fn bytes_shape(b: &[u8; 4]) -> Option<Shape> { try_transmute(*b).ok() }
+// A rule that walks: a loop over the headers, then the sums.
+#[unsafe(no_mangle)] pub fn ipv6(b: &[u8]) -> Option<&Ipv6> { try_transmute_ref(b).ok() }
 
 fn main() {}

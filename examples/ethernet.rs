@@ -29,6 +29,7 @@
 //! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains          |
 //! | the protocol of a packet tells what it carries       | `tag(Protocol = u8c<17>)`              |
 //! | IPv6 extension headers, chained by "next header"     | a payload that has a payload           |
+//! | the checksums of UDP and TCP behind such a chain     | `assert({ let .. = walk(..); .. })`    |
 //! | a checksum over a whole message (ICMP)               | `assert(sum16(0, size_of_val(self)))`  |
 //! | label stacks, sessions, lengths in other units       | `get(..)`, `size = length * 8 + ..`    |
 //! | a frame is one thing or another                      | an enum of references ([`AnyFrame`])   |
@@ -190,13 +191,13 @@ pub struct Arp {
 // The checksum of UDP (protocol 17, where 0 is "none") and of TCP (protocol 6), unless the packet
 // is a fragment: over the addresses, the protocol and the size of what is carried, then over what
 // is carried.
-#[data(assert(
+#[data(assert({
+  let header = (version_ihl & 0x0f) * 4;
   (protocol != 17 && protocol != 6)
     || flags_fragment_offset & 0x3fff != 0
-    || (protocol == 17 && be((version_ihl & 0x0f) * 4 + 6, 2) == 0)
-    || (sum16(12, 20) + protocol + (total_length - (version_ihl & 0x0f) * 4)
-      + sum16((version_ihl & 0x0f) * 4, total_length)) % 0xffff == 0
-))]
+    || (protocol == 17 && be(header + 6, 2) == 0)
+    || (sum16(12, 20) + protocol + (total_length - header) + sum16(header, total_length)) % 0xffff == 0
+}))]
 #[data(get(
   version: u8 = version_ihl >> 4,
   header_length: usize = (version_ihl & 0x0f) * 4,
@@ -222,16 +223,39 @@ pub struct Ipv4<P: ?Sized + Tag<Protocol> = [u8]> {
 }
 
 /// An IPv6 packet. Its extension headers are payloads that have a payload ([`HopByHop`],
-/// [`Fragment`]).
+/// [`Routing`], [`Authentication`], [`Fragment`]).
 #[derive(Data)]
 #[repr(C)]
 #[data(tag(EtherType = u16bec<0x86dd>))]
 #[data(size = payload_length + 40)]
 #[data(assert(version_class_flow >> 28 == 6))]
-#[data(assert(
-  (next_header != 17 && next_header != 6)
-    || (sum16(8, 40) + next_header + payload_length + sum16(40, 40 + payload_length)) % 0xffff == 0
-))]
+// The checksum of UDP, of TCP and of ICMPv6, wherever they are: after the header, or after any
+// chain of extension headers, each of which tells what follows it and how long it is (in units
+// of 8 bytes that do not count the first 8; of 4 bytes for authentication). It is over the
+// addresses, the protocol and the size of what is carried, then over what is carried. (A fragment
+// is not the whole of what is carried, and what is encrypted cannot be read: the walk stops
+// there, on something that has no such checksum.)
+#[data(assert({
+  // What a header is (the low 8 bits), and where it starts (the other bits): down to the first
+  // one that is not an extension header.
+  let upper = walk(
+    next_header + (40 << 8),
+    |at| {
+      let kind = at & 0xff;
+      kind == 0 || kind == 43 || kind == 60 || kind == 51 || kind == 135 || kind == 139 || kind == 140
+    },
+    |at| {
+      let start = at >> 8;
+      let size = 8 + be(start + 1, 1) * if at & 0xff == 51 { 4 } else { 8 };
+      be(start, 1) + ((start + size) << 8)
+    },
+  );
+  let protocol = upper & 0xff;
+  let start = upper >> 8;
+  let end = 40 + payload_length;
+  (protocol != 17 && protocol != 6 && protocol != 58)
+    || (sum16(8, 40) + protocol + (end - start) + sum16(start, end)) % 0xffff == 0
+}))]
 #[data(get(
   traffic_class: u8 = (version_class_flow >> 20) & 0xff,
   flow_label: u32 = version_class_flow & 0x000f_ffff,
@@ -267,6 +291,35 @@ pub struct HopByHop<P: ?Sized + Tag<Protocol> = [u8]> {
   pub data: [u8],
 }
 
+/// The routing header of IPv6, and what follows it: the same sizes as [`HopByHop`].
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<43>))]
+pub struct Routing<P: ?Sized + Tag<Protocol> = [u8]> {
+  pub next_header: P::Tag,
+  pub length: u8,
+  pub kind: u8,
+  pub segments_left: u8,
+  #[data(regions(route = length * 8 + 4, payload: P))]
+  pub data: [u8],
+}
+
+/// The authentication header of IPsec, and what follows it: its size is in units of 4 bytes
+/// that do not count the first 8.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<51>))]
+pub struct Authentication<P: ?Sized + Tag<Protocol> = [u8]> {
+  pub next_header: P::Tag,
+  #[data(valid(1..))]
+  pub length: u8,
+  pub reserved: u16be,
+  pub security_parameters: u32be,
+  pub sequence: u32be,
+  #[data(regions(check_value = length * 4 - 4, payload: P))]
+  pub data: [u8],
+}
+
 /// The fragment header of IPv6, and the fragment.
 #[derive(Data)]
 #[repr(C)]
@@ -292,6 +345,18 @@ pub struct Icmp {
   pub checksum: u16be,
   pub rest: [u8; 4],
   pub data: [u8],
+}
+
+/// An ICMPv6 message: its checksum also covers the addresses of the packet that carries it, so
+/// it is checked with that packet (see [`Ipv6`]).
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<58>))]
+pub struct Icmp6 {
+  pub kind: u8,
+  pub code: u8,
+  pub checksum: u16be,
+  pub body: [u8],
 }
 
 /// An IPv4 option that has a length (all but "end of options" and "no operation").
@@ -421,6 +486,7 @@ pub enum AnyFrame<'a> {
   Icmp(&'a Frame<Ipv4<Icmp>>),
   Ipv4(&'a Frame<Ipv4>),
   Udp6(&'a Frame<Ipv6<Udp>>),
+  Icmp6(&'a Frame<Ipv6<Icmp6>>),
   Options6(&'a Frame<Ipv6<HopByHop>>),
   Fragment6(&'a Frame<Ipv6<Fragment>>),
   Ipv6(&'a Frame<Ipv6>),
@@ -487,6 +553,26 @@ const OPTIONS6: [u8; 61] = [
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x11, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00,
   0x30, 0x39, 0x00, 0x35, 0x00, 0x0d, 0x30, 0x1f, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+];
+
+/// An IPv6 packet, as bytes: hop-by-hop options, a routing header, an authentication header,
+/// then a TCP segment.
+const CHAIN6: [u8; 102] = [
+  0x60, 0x00, 0x00, 0x00, 0x00, 0x3e, 0x00, 0x40, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x2b, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00,
+  0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+  0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+  0x30, 0x39, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02, 0x10, 0x00,
+  0xab, 0x78, 0x00, 0x00, 0x68, 0x69,
+];
+
+/// An IPv6 packet, as bytes: an ICMPv6 echo request.
+const ECHO6: [u8; 52] = [
+  0x60, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x3a, 0x40, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x80, 0x00, 0x33, 0x3e, 0x12, 0x34, 0x00, 0x01,
+  0x70, 0x69, 0x6e, 0x67,
 ];
 
 /// An IPv6 packet, as bytes: the first fragment of a UDP datagram.
@@ -712,11 +798,56 @@ pub fn main() {
   assert!(try_transmute_ref::<_, Frame<Ipv6<Udp>>>(&options6[..]).is_err());
   let ip6: &Frame<Ipv6<HopByHop<Tcp>>> = try_transmute_ref(&options6[..]).unwrap();
   assert_eq!(ip6.payload.payload().err(), Some(Error::Validity));
-  // Options that are longer than the packet.
+  // The checksum of the datagram is checked with the packet, behind the options: it covers the
+  // addresses of the packet, and what the datagram carries.
+  for at in [14 + 8, 14 + 60] {
+    let mut corrupted = options6.clone();
+    corrupted[at] ^= 1;
+    assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).err(), Some(Error::Validity));
+    assert!(try_transmute_ref::<_, Frame>(&corrupted[..]).is_ok());
+  }
+  // The options are not covered.
+  let mut other = options6.clone();
+  other[14 + 44] ^= 1;
+  assert!(try_transmute_ref::<_, Frame<Ipv6<HopByHop<Udp>>>>(&other[..]).is_ok());
+  // Options that are longer than the packet: what they are followed by is not in the packet.
   let mut long = options6.clone();
   long[14 + 41] = 2;
-  let ip6: &Frame<Ipv6<HopByHop>> = try_transmute_ref(&long[..]).unwrap();
-  assert_eq!(ip6.payload.payload().err(), Some(Error::Validity));
+  assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&long[..]).err(), Some(Error::Validity));
+  // A chain of headers, of the two units of size: the segment at its end is checked as well.
+  let chain6 = frame(0x86dd, &CHAIN6);
+  type Chain = Ipv6<HopByHop<Routing<Authentication<Tcp>>>>;
+  let ip6: &Frame<Chain> = try_transmute_ref(&chain6[..]).unwrap();
+  let routing = ip6.payload.payload().unwrap().payload().unwrap();
+  assert_eq!((routing.kind, routing.segments_left, routing.route()), (0, 0, &[0; 4][..]));
+  let authentication = routing.payload().unwrap();
+  assert_eq!(authentication.security_parameters.get(), 0x100);
+  assert_eq!(authentication.check_value(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  let tcp = authentication.payload().unwrap();
+  assert_eq!((tcp.destination_port.get(), tcp.syn(), tcp.payload()), (80, true, &b"hi"[..]));
+  for at in [14 + 39, 14 + 80, 14 + 101] {
+    let mut corrupted = chain6.clone();
+    corrupted[at] ^= 1;
+    assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).err(), Some(Error::Validity));
+  }
+  // A header of the chain that tells a size which is not its own: the segment is not where it
+  // is looked for, or not in the packet.
+  for (at, value) in [(14 + 57, 3), (14 + 57, 200)] {
+    let mut corrupted = chain6.clone();
+    corrupted[at] = value;
+    assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).err(), Some(Error::Validity));
+  }
+  // ICMPv6: the same checksum.
+  let echo6 = frame(0x86dd, &ECHO6);
+  let ip6: &Frame<Ipv6<Icmp6>> = try_transmute_ref(&echo6[..]).unwrap();
+  let icmp6 = ip6.payload.payload().unwrap();
+  assert_eq!((icmp6.kind, icmp6.code, &icmp6.body[4..]), (128, 0, &b"ping"[..]));
+  for at in [14 + 23, 14 + 51] {
+    let mut corrupted = echo6.clone();
+    corrupted[at] ^= 1;
+    assert_eq!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).err(), Some(Error::Validity));
+  }
+  // A fragment is not the whole of what is carried: there is no checksum to check with it.
   let fragment6 = frame(0x86dd, &FRAGMENT6);
   let ip6: &Frame<Ipv6<Fragment>> = try_transmute_ref(&fragment6[..]).unwrap();
   let fragment = ip6.payload.payload().unwrap();
@@ -772,6 +903,10 @@ pub fn main() {
     },
     Ok(AnyFrame::Ipv4(frame)) => format!("IPv4, protocol {}", frame.payload.protocol.0),
     Ok(AnyFrame::Udp6(frame)) => format!("UDP over IPv6, {} hops left", frame.payload.hop_limit),
+    Ok(AnyFrame::Icmp6(frame)) => match frame.payload.payload() {
+      Ok(icmp6) => format!("ICMPv6 {}", icmp6.kind),
+      Err(error) => format!("ICMPv6, but {error}"),
+    },
     Ok(AnyFrame::Options6(frame)) => match frame.payload.payload() {
       Ok(options) => format!("IPv6 options, then protocol {}", options.next_header.0),
       Err(error) => format!("IPv6 options, but {error}"),
@@ -799,8 +934,10 @@ pub fn main() {
   assert_eq!(describe(&corrupted_echo), "ICMP, but value is not valid for the target type");
   assert_eq!(describe(&ping), "IPv4, protocol 253");
   assert_eq!(describe(&datagram6), "UDP over IPv6, 64 hops left");
+  assert_eq!(describe(&echo6), "ICMPv6 128");
   assert_eq!(describe(&options6), "IPv6 options, then protocol 17");
-  assert_eq!(describe(&long), "IPv6 options, but value is not valid for the target type");
+  assert_eq!(describe(&long), "EtherType 0x86dd");
+  assert_eq!(describe(&chain6), "IPv6 options, then protocol 43");
   assert_eq!(describe(&fragment6), "IPv6 fragment 0xdeadbeef");
   assert_eq!(describe(&mpls), "MPLS label 16");
   assert_eq!(describe(&eapol), "802.1X, version 2");

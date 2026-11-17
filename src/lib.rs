@@ -178,6 +178,9 @@ pub unsafe trait Data {
   /// First variant of an enum with fields, `()` otherwise.
   #[doc(hidden)]
   type Variants: Variants;
+  /// First of the rules of a struct whose expression walks, `()` if none.
+  #[doc(hidden)]
+  type Walks: Walks;
   /// A null pointer to `Self`, whose slice length is [`ptr::PROBE_LEN`] if `Self` is unsized.
   /// It must be made with `as` casts only: this is what the pointer tricks are checked against.
   #[doc(hidden)]
@@ -265,6 +268,52 @@ unsafe impl Variants for () {
   const TAG: Option<u128> = None;
 }
 
+/// A rule whose expression walks, and the ones after it: a list at the type level.
+///
+/// # Safety
+/// Implemented by `#[derive(Data)]`.
+#[doc(hidden)]
+pub unsafe trait Walks {
+  /// Index of the rule in the layout of the struct, `usize::MAX` at the end of the list.
+  const RULE: usize;
+  /// Number of operations of the expression of the rule.
+  type Ops: Count;
+  /// Number of operations of the longest of the two expressions of its walk.
+  type Inner: Count;
+  type Next: Walks;
+}
+
+// SAFETY: the end of every list.
+unsafe impl Walks for () {
+  const RULE: usize = usize::MAX;
+  type Ops = Zero;
+  type Inner = Zero;
+  type Next = ();
+}
+
+/// A number, as a type: what a recursion over the operations of an expression goes down.
+#[doc(hidden)]
+pub trait Count {
+  const VALUE: usize;
+  type Less: Count;
+}
+
+#[doc(hidden)]
+pub struct Zero;
+
+#[doc(hidden)]
+pub struct More<N>(PhantomData<N>);
+
+impl Count for Zero {
+  const VALUE: usize = 0;
+  type Less = Zero;
+}
+
+impl<N: Count> Count for More<N> {
+  const VALUE: usize = N::VALUE + 1;
+  type Less = N;
+}
+
 /// Where something is in a target, for validation.
 #[doc(hidden)]
 pub trait Path {
@@ -303,6 +352,7 @@ unsafe impl<T: Scalar> Data for T {
   type Elem = ();
   type Fields = ();
   type Variants = ();
+  type Walks = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
 }
@@ -312,6 +362,7 @@ unsafe impl<T: Data, const N: usize> Data for [T; N] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
+  type Walks = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
 }
@@ -321,6 +372,7 @@ unsafe impl<T: Data> Data for [T] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
+  type Walks = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
   // SAFETY: the probe of a slice.
   const LAYOUT: Layout = unsafe { Layout::slice::<T>(Self::PROBE, &T::LAYOUT) };
@@ -331,6 +383,7 @@ unsafe impl Data for str {
   type Elem = ();
   type Fields = ();
   type Variants = ();
+  type Walks = ();
   const PROBE: *const Self = <[u8] as Data>::PROBE as *const str;
   // SAFETY: the probe of a `str`, which is the one of a slice.
   const LAYOUT: Layout = unsafe { Layout::pattern::<str>(Self::PROBE, Dfa::UTF8) };
@@ -341,6 +394,7 @@ unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
   type Elem = T::Elem;
   type Fields = T::Fields;
   type Variants = T::Variants;
+  type Walks = T::Walks;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
 }
@@ -368,6 +422,7 @@ macro_rules! tuple {
       type Elem = ();
       type Fields = TupleField<Self, 0>;
       type Variants = ();
+      type Walks = ();
       const PROBE: *const Self = core::ptr::null();
       // SAFETY: a tuple of `Sized` things is `Sized`.
       const LAYOUT: Layout = unsafe {

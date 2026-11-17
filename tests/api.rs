@@ -292,3 +292,76 @@ mod views {
     assert!(matches!(FIRST, Ok((Any::Ping(_), [0]))));
   }
 }
+
+mod walks {
+  use transmutant::{Data, Error, try_transmute_ref};
+
+  /// "Type, length, value"s, down to the one of type 0, which is followed by a sum of what is
+  /// before: where it is depends on every length before it.
+  #[derive(Data)]
+  #[repr(C)]
+  #[data(assert({
+    let end = walk(1, |at| be(at, 1) != 0, |at| at + 2 + be(at + 1, 1));
+    let sum = sum16(0, end);
+    end + 3 == size_of_val(self) && be(end + 1, 2) == sum
+  }))]
+  struct Chain {
+    version: u8,
+    values: [u8],
+  }
+
+  /// Choices, and names.
+  #[derive(Data)]
+  #[repr(C)]
+  #[data(assert({
+    let wide = if kind == 1 { 4 } else { 2 };
+    let value = if kind == 1 { be(1, 4) } else { be(1, 2) };
+    size_of_val(self) == 1 + wide && value != 0
+  }))]
+  struct Either {
+    kind: u8,
+    value: [u8],
+  }
+
+  #[test]
+  fn a_chain() {
+    // Two values, the end, the sum.
+    let mut bytes = vec![1, 7, 2, 0xaa, 0xbb, 9, 0, 0, 0, 0];
+    let sum = transmutant::sum16(&bytes[..7]);
+    bytes[8..].copy_from_slice(&sum.to_be_bytes());
+    assert!(try_transmute_ref::<_, Chain>(&bytes[..]).is_ok());
+    // No value at all.
+    assert!(try_transmute_ref::<_, Chain>(&[1u8, 0, 0x01, 0x00][..]).is_ok());
+    // A sum that is not the one of what is before.
+    bytes[3] ^= 1;
+    assert_eq!(try_transmute_ref::<_, Chain>(&bytes[..]).err(), Some(Error::Validity));
+    bytes[3] ^= 1;
+    // A length that leads out of the value, or to something that is not its end.
+    for length in [3, 200, 1] {
+      let mut bytes = bytes.clone();
+      bytes[6] = length;
+      assert_eq!(try_transmute_ref::<_, Chain>(&bytes[..]).err(), Some(Error::Validity));
+    }
+    // No end.
+    assert_eq!(try_transmute_ref::<_, Chain>(&[1u8, 7, 0, 7, 0][..]).err(), Some(Error::Validity));
+    assert_eq!(try_transmute_ref::<_, Chain>(&[1u8][..]).err(), Some(Error::Validity));
+    // In `const`.
+    const VALID: bool = try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x00]).is_ok();
+    const INVALID: bool = try_transmute_ref::<[u8], Chain>(&[1, 0, 0x01, 0x01]).is_ok();
+    assert!(VALID && !INVALID);
+    // The same rule proves itself: nothing is walked.
+    let chain: &Chain = try_transmute_ref(&bytes[..]).unwrap();
+    let same: &Chain = transmutant::transmute_ref(chain);
+    assert_eq!(same.version, 1);
+  }
+
+  #[test]
+  fn a_choice() {
+    assert!(try_transmute_ref::<_, Either>(&[1u8, 0, 0, 0, 1][..]).is_ok());
+    assert!(try_transmute_ref::<_, Either>(&[2u8, 0, 1][..]).is_ok());
+    // The size of the other kind: what is not chosen may not be there to read.
+    assert!(try_transmute_ref::<_, Either>(&[1u8, 0, 1][..]).is_err());
+    assert!(try_transmute_ref::<_, Either>(&[2u8, 0, 0, 0, 1][..]).is_err());
+    assert!(try_transmute_ref::<_, Either>(&[2u8, 0, 0][..]).is_err());
+  }
+}
