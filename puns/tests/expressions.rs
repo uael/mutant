@@ -217,3 +217,20 @@ fn bounds_are_not_repeated() {
     assert!(puns::try_pun::<_, Choice<u8>>(same).is_ok());
   }
 }
+
+/// A parameter that only a typed region names is used by a `PhantomData`, as Rust requires.
+#[derive(Pun)]
+#[repr(C)]
+struct Packet<P: ?Sized + Pun> {
+  kind: u8,
+  payload: core::marker::PhantomData<P>,
+  #[pun(regions(body: P))]
+  rest: [u8],
+}
+
+#[test]
+fn a_typed_region_of_a_parameter() {
+  let packet = puns::from_bytes::<Packet<[bool]>>(&[7, 1, 0]).unwrap();
+  assert_eq!((packet.kind, packet.body()), (7, Ok(&[true, false][..])));
+  assert!(puns::from_bytes::<Packet<[bool]>>(&[7, 2]).unwrap().body().is_err());
+}

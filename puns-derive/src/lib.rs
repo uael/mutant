@@ -39,7 +39,8 @@ use syn::{
 ///   consecutive regions of `EXPR` bytes, the last one may take what remains. A method that
 ///   returns the bytes of the region is generated for each name. With a type
 ///   (`first: Type = EXPR`, `last: Type`), the method returns the region as a `&Type`, if it is
-///   one.
+///   one. A type parameter that only a region names is one that no field uses, which Rust refuses
+///   (E0392) before the derive is run: a field `PhantomData<P>`, which has no byte, uses it.
 ///
 /// An `EXPR` is an expression over the integer fields of the struct (by name, or `self.0` for
 /// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
