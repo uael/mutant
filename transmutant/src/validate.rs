@@ -107,6 +107,15 @@ const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Data, F: Fields>
   ptr: *const T,
 ) -> bool {
   let Some(field) = (const { F::FIELD }) else { return true };
+  // Where the list says that the field is must be where its layout says it is: the list is made
+  // by the derive with paths it is told (`#[data(crate = ..)]`), which could name another `At`.
+  const {
+    let leaf = match F::FIELD {
+      Some(field) => P::LEAF + field.leaf(),
+      None => P::LEAF,
+    };
+    assert!(<F::Path<P> as Path>::LEAF == leaf, "not where the field is");
+  };
   // SAFETY: `F` is a field of `T`: it is where it says it is.
   unsafe {
     let valid = match field.restriction() {
