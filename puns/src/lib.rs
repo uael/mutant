@@ -28,6 +28,31 @@
 //! assert_eq!(puns::try_pun_ref::<_, Position>(&[7u8, 2]), Err(puns::Error::Validity));
 //! ```
 //!
+//! # Functions
+//!
+//! What is read (a typed value, or bytes), by how much of it:
+//!
+//! |               | Whole                                  | Front                     | Back                      |
+//! |---------------|----------------------------------------|---------------------------|---------------------------|
+//! | a typed value | [`pun`], [`pun_ref`], [`pun_mut`] (and [`try_pun`], [`try_pun_ref`], [`try_pun_mut`]) | [`head`], [`head_ref`], [`head_mut`] | [`tail`], [`tail_ref`], [`tail_mut`] |
+//! | bytes         | [`from_bytes`], [`from_bytes_mut`], [`as_bytes`] | [`from_head`], [`from_head_mut`] | [`from_tail`], [`from_tail_mut`] |
+//!
+//! The first row is proven, but for the `try_` functions, which are checked; the second row is
+//! checked: the size, the address, then what bytes do not prove of the target. A part is the
+//! first or the last `size_of::<D>()` bytes of the source (or, for the front, as many elements of
+//! a slice as fit). A `&mut` to a part is refused when what is written through it could break
+//! the rest of the source: a rule that holds over the part, an enum of which it is only a part.
+//!
+//! ```
+//! let mut bytes = [0u8, 1, 2, 3, 4];
+//! let (first, rest) = puns::from_head::<[u8; 2]>(&bytes).unwrap();
+//! let (_, last) = puns::from_tail::<[u8; 2]>(rest).unwrap();
+//! assert_eq!((first, last), (&[0, 1], &[3, 4]));
+//! assert_eq!(puns::tail::<[u8; 5], [u8; 2]>(bytes), [3, 4]);
+//! *puns::head_mut::<_, [u8; 2]>(&mut bytes) = [7, 7];
+//! assert_eq!(bytes, [7, 7, 2, 3, 4]);
+//! ```
+//!
 //! # What it knows
 //!
 //! - Integers, `bool`, `char`, `NonZero`, enums without fields: scalars with a set of valid

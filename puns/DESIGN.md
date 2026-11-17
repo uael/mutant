@@ -18,6 +18,29 @@ with sizes, lengths and assertions that are in the data itself, told by `#[deriv
 media, archives, executables, storage and encodings) are the reference for what works; each
 example says what it does not cover, and why.
 
+## API
+
+The conversions are a grid: what is read (a typed value, or bytes) by how much of it (the whole,
+its front, its back).
+
+|               | Whole                                      | Front                          | Back                           |
+|---------------|--------------------------------------------|--------------------------------|--------------------------------|
+| a typed value | `pun`, `pun_ref`, `pun_mut` (+ `try_pun*`) | `head`, `head_ref`, `head_mut` | `tail`, `tail_ref`, `tail_mut` |
+| bytes         | `from_bytes`, `from_bytes_mut`, `as_bytes` | `from_head`, `from_head_mut`   | `from_tail`, `from_tail_mut`   |
+
+- The first row is proven (nothing at run time) but for `try_pun*`, which is checked. A part is
+  the first or the last `size_of::<D>()` bytes (or, for `head*`, as many elements of a slice as
+  fit); `tail*` needs a sized source.
+- The second row is checked: the size, the address, then what bytes do not prove of the target.
+  `from_bytes*` and `as_bytes` are sugar for `try_pun_ref::<[u8], D>`, `try_pun_mut::<[u8], D>`
+  and `pun_ref::<S, [u8]>`, with identical behaviour: they pin one side to bytes (an unsuffixed
+  integer literal array would otherwise be an `[i32; N]`) and take one type parameter.
+  `from_head*` takes as much as the `size` or `len` rule of the target says; `from_tail*` needs
+  a sized target, whose extent cannot be found from the end otherwise.
+- A view enum (variants that hold references, see `#[derive(Pun)]`) gets `from_bytes` and
+  `from_head`: the first variant that the bytes are.
+- Every function is a `const fn`.
+
 ## What stable Rust (1.100) gives us
 
 Probed, not remembered:
@@ -91,12 +114,43 @@ It answers:
   what a checked pun must check at run time;
 - *mutable*: the reverse inclusion, required to hand out a `&mut`.
 
+**Shifted relations** (`relate_at`, `analyze_tail`). The cursors of both layouts count offsets from
+the start of the source, and each starts at its own base: the target of `tail` starts at
+`shift = size(S) - size(D)`, the source of the reverse relation of `tail_mut` there as well.
+Nothing else changes with the shift, since every step only compares what is at the same offset of
+both: a run of the target with what lies under it (scalars cut by the shift are decomposed into
+byte boxes as misaligned ones are), an enum only with an enum whose base is that offset, a rule
+only with the same rule whose struct is at that offset in the source (`mark_rules` from the
+shift). Periods stay correct: a period is the least common multiple of the strides of two
+repetitions, and is only taken when the target is at the start of one of its elements; what lies
+under a run of the target a period later is the same whatever the phase of the two repetitions,
+which a shift only changes. The relation reports offsets of the source; messages subtract the
+shift. `tail_ref` needs the alignment of the target not to be greater than the one of the
+source: the shift is then a multiple of it, as sizes are multiples of alignments.
+
+**Mutable parts** (`mutable_part`). Through `head_mut` or `tail_mut`, any value of the target can
+be written over the bytes `shift..shift + size` of the source, and the source must stay valid:
+
+1. the reverse relation over those bytes must be infallible, as `pun_mut` requires of the whole:
+   every value of the target, padding included, is valid for what the source has there. A
+   scalar of the source that the part covers only in part is not proven (what the rest holds is
+   not known), and neither is an enum whose base is outside the part;
+2. nothing of the source outside those bytes may depend on them (`cut`): a struct of the source
+   with rules (`size`, `len`, `assert`, regions, walks) that covers any of them is refused, since
+   its rules read its fields, and so is an enum (or a string) of the source of which they are
+   only a part: its tag on one side, fields on the other. A target that takes as many elements
+   as fit may end anywhere in the source, and is refused over a source with enums.
+
+This is conservative: a rule that does not read the bytes of the part, or an enum all of whose
+variants would accept what is written, is refused all the same. The model check counts these as
+imprecise, never as unsound.
+
 Errors are post-monomorphization (`const { .. }` in the generic function), since there are no
 const traits to turn them into trait bounds. `cargo check` does not see them, `cargo build` does.
 
 ### 3. Run-time validation is type-directed and guarded by the analysis (`validate.rs`)
 
-`try_*` functions and `from_head` recurse over the *types* (associated types: element, list of
+`try_*` and `from_*` functions recurse over the *types* (associated types: element, list of
 fields) in `const fn`s; each check sits behind `if const { marks say so }`. What the analysis
 proved never reaches code generation.
 
@@ -108,13 +162,17 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)         |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
-| `from_head::<Frame<Ipv4>>(&[u8])`                     | 43 instructions, no loop, no call          |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | a loop of one `cmp` per byte               |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
 | `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 362 instructions, two loops, no call       |
+| `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
+| `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
+| `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
+| `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 19, no loop     |
 
 ### 4. Rules: what is not a property of bytes
 
@@ -157,8 +215,9 @@ Two more options are not rules, but save the code that would otherwise be writte
   size carries a typed payload;
 - on an enum whose variants each hold a reference,
   `enum AnyFrame<'a> { Ipv4(&'a Frame<Ipv4>), Arp(&'a Frame<Arp>), Other(&'a Frame) }`, the derive
-  generates `from_bytes` and `from_head`, which return the first variant that the bytes are: telling one
-  thing from another is a declaration too.
+  generates `from_bytes` and `from_head`, which return the first variant that the bytes are (and
+  no `from_tail`: the variants may be unsized): telling one thing from another is a declaration
+  too.
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
 are proven only by the same rule, in the same struct, at the same place of the source. The
@@ -257,12 +316,29 @@ every value of the source over an alphabet (all bytes up to 2 bytes); slices and
 structs from every pattern of up to 6 bytes. It tells what a type requires (`valid(..)`, rules)
 from what it guarantees, and finds unsound verdicts (a value let through that the type system
 does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time) and
-imprecise ones (counted). `cargo test` runs a sample of it, which Miri runs too; the full run is
-`cargo test --profile model -p puns-model -- --ignored` (optimized, without LTO). See `puns-model/src/lib.rs` for
-what is checked.
+imprecise ones (counted).
+
+Parts are checked over the same types, for every pair whose target is not larger than its source
+(about four thousand): `head*` and `tail*` against the oracle of the target at offset 0 and at
+`size(S) - size(D)`, the bytes and the address that they give at run time, and `head_mut` and
+`tail_mut` by writing every value of the target into every value of the source: the result must
+be a valid source, and one that still meets its requirements if it did and if what was written
+meets those of the target (which is what a rule of the source over the part, or a part of an
+enum, would break). A wrong shift, in the analysis or in the pointer, and a `mutable_part`
+without its second condition, are caught.
+
+`cargo test` runs a sample of it, which Miri runs too; the full run is
+`cargo test --profile model -p puns-model -- --ignored` (optimized, without LTO). See
+`puns-model/src/lib.rs` for what is checked.
 
 ## Not done yet
 
+- **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
+  part, while the operations of a rule tell which fields and bytes it reads (a rule over other
+  fields only could be allowed), and any enum only partly covered, while an enum all of whose
+  variants accept what is written could be allowed.
+- No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
+  `from_head` and `from_tail`.
 - **Enums with fields and no `repr`** (the derive asks for `repr(C)` or `repr(u8)`...; enums
   without fields are supported whatever their `repr`). Their layout is not specified, and stable
   Rust cannot name it, but it can be *observed* in const evaluation from a sample of each

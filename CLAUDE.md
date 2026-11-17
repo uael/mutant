@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build                          # Build all crates
 cargo build --all-targets            # Also tests and examples: refusals are only reported by a build
 cargo test --all                     # All tests: unit, integration, compile-fail, doc tests (README included)
-cargo test --test api                # Run only one integration test file (also: enums, ethernet, str)
+cargo test --test api                # Run only one integration test file (also: bytes, parts, enums, ethernet, str)
 cargo test --test api TESTNAME       # Run a single test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`

@@ -44,6 +44,22 @@ assert_eq!(
 Refusals are errors of the monomorphization of the generic functions: `cargo build` reports
 them, `cargo check` does not.
 
+## Functions
+
+What is read (a typed value, or bytes), by how much of it:
+
+|               | Whole                                      | Front                          | Back                           |
+|---------------|--------------------------------------------|--------------------------------|--------------------------------|
+| a typed value | `pun`, `pun_ref`, `pun_mut` (+ `try_pun*`) | `head`, `head_ref`, `head_mut` | `tail`, `tail_ref`, `tail_mut` |
+| bytes         | `from_bytes`, `from_bytes_mut`, `as_bytes` | `from_head`, `from_head_mut`   | `from_tail`, `from_tail_mut`   |
+
+The first row is proven, but for `try_pun*`, which is checked; the second is checked (the size,
+the address, then what bytes do not prove). `from_bytes*` and `as_bytes` are sugar for
+`try_pun_ref::<[u8], D>`, `try_pun_mut::<[u8], D>` and `pun_ref::<S, [u8]>`: they pin one side to
+bytes, so that `from_bytes::<Position>(&[7, 1])` does not infer an `[i32; 2]`. A `&mut` to a part
+(`head_mut`, `tail_mut`) is refused when what is written through it could break the rest of the
+source: a rule over the part, an enum of which it is only a part. All are `const fn`s.
+
 ## Examples
 
 Each example in `puns/examples/` declares formats with the derive only (no `impl`, no

@@ -15,9 +15,9 @@
 )]
 
 use puns::{
-  Pun, Tag, from_head,
+  Pun, Tag, from_head, from_tail, head_ref,
   num::{u16be, u16bec, u32bec},
-  pun, pun_ref, try_pun, try_pun_ref,
+  pun, pun_ref, tail_ref, try_pun, try_pun_ref,
 };
 
 #[derive(Pun)]
@@ -109,6 +109,14 @@ pub struct Ipv6 {
   pub data: [u8],
 }
 
+/// A trailer: a kind, and a magic number.
+#[derive(Pun)]
+#[repr(C)]
+pub struct Trailer {
+  pub kind: Kind,
+  pub magic: u16bec<0xcafe>,
+}
+
 #[derive(Pun, Clone, Copy)]
 #[repr(u8)]
 pub enum Shape {
@@ -195,6 +203,25 @@ pub fn bytes_shape(b: &[u8; 4]) -> Option<Shape> {
 #[unsafe(no_mangle)]
 pub fn ipv6(b: &[u8]) -> Option<&Ipv6> {
   try_pun_ref(b).ok()
+}
+
+// Parts: the first bytes of a value are where it is, the last an addition away.
+#[unsafe(no_mangle)]
+pub const fn ipv6_header(p: &Ipv6) -> &[u8; 40] {
+  head_ref(p)
+}
+#[unsafe(no_mangle)]
+pub const fn last_word(w: &[u32; 4]) -> &u32 {
+  tail_ref(w)
+}
+// From the front or the back of bytes: the size, then the checks of the target.
+#[unsafe(no_mangle)]
+pub fn front_position(b: &[u8]) -> Option<&Position> {
+  from_head::<Position>(b).ok().map(|(p, _)| p)
+}
+#[unsafe(no_mangle)]
+pub fn back_trailer(b: &[u8]) -> Option<&Trailer> {
+  from_tail::<Trailer>(b).ok().map(|(_, t)| t)
 }
 
 fn main() {}
