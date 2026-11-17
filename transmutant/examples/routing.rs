@@ -8,24 +8,24 @@
 //!
 //! What is specific to these protocols, and what tells it:
 //!
-//! | Specificity                                              | Told by                                        |
-//! |----------------------------------------------------------|------------------------------------------------|
-//! | the BGP marker: 16 bytes of ones                         | `[u8c<0xff>; 16]`                              |
-//! | a BGP message tells its type                             | `tag(MessageType = u8c<1>)`                    |
-//! | BGP UPDATE: three parts, each sized by what precedes it  | `regions(withdrawn = .., attributes = be(..), reachable)` |
-//! | BGP path attributes of 1 or 2 bytes of length, by a flag | a struct per form, an enum of references       |
-//! | BGP prefixes: a length in bits, as many bytes as needed  | `size = (bits + 7) / 8 + 1`                    |
-//! | the OSPF checksum skips the authentication               | `assert((sum16(0, 16) + sum16(24, length)) % 0xffff == 0)` |
-//! | the Fletcher checksum of OSPF LSAs                       | `assert({ let state = walk(..); .. })`         |
-//! | GRE: optional fields told by flags                       | `regions(checksum = if .. { 4 } else { 0 }, ..)` |
-//! | the GRE checksum, when there is one                      | `assert(flags & 0x8000 == 0 \|\| sum16(..) == 0xffff)` |
-//! | GRE and Geneve tell what they carry by an EtherType      | `tag(EtherType = u16bec<0x0800>)`              |
-//! | VXLAN: flags and reserved bytes of fixed values          | `u8c<0x08>`, `[u8c<0>; 3]`                     |
-//! | Geneve options, in 4 bytes words, that fill their room   | `assert(walk(8, ..) == 8 + .. * 4)`            |
-//! | IGMP checksums over the whole message                    | `assert(sum16(0, size_of_val(self)) == 0xffff)` |
-//! | IGMPv3: sources counted by the query                     | `len = source_count`                           |
-//! | IGMPv3 reports: records of their own sizes, counted      | a `walk` whose state is an offset and a count  |
-//! | ICMPv6 options, in units of 8 bytes, that fill a message | `assert(walk(16, ..) == size_of_val(self))`    |
+//! | Specificity                                     | Told by                                     |
+//! |-------------------------------------------------|---------------------------------------------|
+//! | the BGP marker: 16 bytes of ones                | `[u8c<0xff>; 16]`                           |
+//! | a BGP message tells its type                    | `tag(MessageType = u8c<1>)`                 |
+//! | BGP UPDATE: three parts, each sized before it   | `regions(withdrawn = .., attributes = ..)`  |
+//! | BGP attributes: a length of 1 or 2 bytes        | a struct per form, an enum of references    |
+//! | BGP prefixes: a length in bits                  | `size = (bits + 7) / 8 + 1`                 |
+//! | the OSPF checksum skips the authentication      | `assert((sum16(0, 16) + sum16(..)) ..)`     |
+//! | the Fletcher checksum of OSPF LSAs              | `assert({ let state = walk(..); .. })`      |
+//! | GRE: optional fields told by flags              | `regions(key = if .. { 4 } else { 0 }, ..)` |
+//! | the GRE checksum, when there is one             | `assert(.. \|\| sum16(..) == 0xffff)`       |
+//! | GRE and Geneve tell what they carry             | `tag(EtherType = u16bec<0x0800>)`           |
+//! | VXLAN: flags and reserved bytes of fixed values | `u8c<0x08>`, `[u8c<0>; 3]`                  |
+//! | Geneve options, in 4 bytes words, that fill     | `assert(walk(8, ..) == ..)`                 |
+//! | IGMP checksums over the whole message           | `assert(sum16(0, size_of_val(self)) ..)`    |
+//! | IGMPv3: sources counted by the query            | `len = source_count`                        |
+//! | IGMPv3 reports: records of their own sizes      | a `walk` of an offset and a count           |
+//! | ICMPv6 options, in units of 8 bytes, that fill  | `assert(walk(16, ..) == ..)`                |
 //!
 //! What is not covered, and why:
 //!

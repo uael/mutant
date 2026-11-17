@@ -7,29 +7,29 @@
 //!
 //! What is specific to these formats, and what tells it:
 //!
-//! | Specificity                                              | Told by                                        |
-//! |----------------------------------------------------------|------------------------------------------------|
-//! | flags of a few bits (DNS opcode, NTP version and mode)   | `get(..)`, `assert(..)`                        |
-//! | a DNS name: labels, then an empty label or a pointer     | `assert({ let end = walk(..); .. })`           |
-//! | the name of the first question, pointers followed        | `assert(questions == 0 \|\| walk(..) < ..)`    |
-//! | a question is a name and 4 bytes: known from its end     | `regions(name: Name = size_of_val(self) - 4, ..)` |
-//! | a record whose name is a pointer has a fixed head        | `valid(0xc000..)`, `size = rdlength + 12`      |
-//! | the DHCP magic cookie                                    | `u32bec<0x6382_5363>`                          |
-//! | DHCP options end with "end"; pads are single bytes       | `assert(walk(240, ..) < size_of_val(self))`    |
-//! | the DHCP message type option is there                    | a second `walk`, in a second `assert`          |
-//! | NTP extension fields: at least 16 bytes, a multiple of 4 | `size = length`, `assert(length % 4 == 0 ..)`  |
-//! | RADIUS attributes fill the packet                        | `assert(walk(20, ..) == length)`               |
-//! | a RADIUS user name is UTF-8 of a counted length          | `len = length - 2` on a `str`                  |
-//! | NetFlow records, counted by the header                   | `len = count` on `[FlowRecord]`                |
-//! | STUN attributes, padded to 4 bytes                       | `size = 4 + (length + 3) / 4 * 4`, `regions(..)` |
-//! | the STUN fingerprint: a CRC-32 XOR a constant            | `assert(crc32(..) ^ 0x5354_554e == be(..))`    |
-//! | the XOR-mapped address of STUN                           | `get(port: u16 = x_port ^ 0x2112, ..)`         |
-//! | RTP: CSRCs counted by 4 bits                             | `regions(csrcs: [u32be] = (first & 15) * 4, ..)` |
-//! | RTP: an extension told by a bit, sized by its own header | `if first & 0x10 != 0 { 4 + be(..) * 4 } else { 0 }` |
-//! | RTP: padding whose size is its last byte                 | `be(size_of_val(self) - 1, 1)`                 |
-//! | RTCP: a size in 32 bits words, minus one                 | `size = (length + 1) * 4`                      |
-//! | a compound RTCP packet: packets that fill it             | `assert(walk(0, ..) == size_of_val(self))`     |
-//! | a datagram is one message or another                     | an enum of references ([`AnyMessage`])         |
+//! | Specificity                                       | Told by                                   |
+//! |---------------------------------------------------|-------------------------------------------|
+//! | flags of a few bits (DNS opcode, NTP mode)        | `get(..)`, `assert(..)`                   |
+//! | DNS names: labels, then an empty one or a pointer | `assert({ let end = walk(..); .. })`      |
+//! | the name of the first question, pointers followed | `assert(questions == 0 \|\| ..)`          |
+//! | a question: a name, then 4 bytes, from its end    | `regions(name: Name = .., fixed: ..)`     |
+//! | a record whose name is a pointer: a fixed head    | `valid(0xc000..)`, `size = rdlength + 12` |
+//! | the DHCP magic cookie                             | `u32bec<0x6382_5363>`                     |
+//! | DHCP options end with "end"; pads are a byte      | `assert(walk(240, ..) < ..)`              |
+//! | the DHCP message type option is there             | another `walk`, in another `assert`       |
+//! | NTP extensions: 16 bytes or more, by 4 bytes      | `size = length`, `assert(length % 4 ..)`  |
+//! | RADIUS attributes fill the packet                 | `assert(walk(20, ..) == length)`          |
+//! | a RADIUS user name: UTF-8, of a counted length    | `len = length - 2` on a `str`             |
+//! | NetFlow records, counted by the header            | `len = count` on `[FlowRecord]`           |
+//! | STUN attributes, padded to 4 bytes                | `size = 4 + (length + 3) / 4 * 4`         |
+//! | the STUN fingerprint: a CRC-32 XOR a constant     | `assert(crc32(..) ^ 0x5354_554e == ..)`   |
+//! | the XOR-mapped address of STUN                    | `get(port: u16 = x_port ^ 0x2112, ..)`    |
+//! | RTP: CSRCs counted by 4 bits                      | `regions(csrcs: [u32be] = .., ..)`        |
+//! | RTP: an extension told by a bit, of its own size  | `if first & 0x10 != 0 { .. } else { 0 }`  |
+//! | RTP: padding whose size is its last byte          | `be(size_of_val(self) - 1, 1)`            |
+//! | RTCP: a size in 32 bits words, minus one          | `size = (length + 1) * 4`                 |
+//! | a compound RTCP packet: packets that fill it      | `assert(walk(0, ..) == ..)`               |
+//! | a datagram is one message or another              | an enum of references ([`AnyMessage`])    |
 //!
 //! What is not covered, and why:
 //!

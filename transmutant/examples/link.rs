@@ -8,22 +8,22 @@
 //!
 //! What is specific to these links, and what tells it:
 //!
-//! | Specificity                                              | Told by                                        |
-//! |----------------------------------------------------------|------------------------------------------------|
-//! | 802.11: a little-endian frame control of bit fields      | `u16le`, `get(..)`, `assert(..)`               |
-//! | 802.11: a fourth address when two bits are set           | `regions(address4 = if .. { 6 } else { 0 }, ..)` |
-//! | 802.11: QoS and HT control, told by the subtype and a bit | `regions(qos_control = .., ht_control = .., ..)` |
-//! | 802.11: the frame check sequence, a CRC-32               | `assert(crc32(0, ..) == le(size_of_val(self) - 4, 4))` |
-//! | 802.11: information elements that fill a beacon         | `assert(walk(36, ..) == size_of_val(self) - 4)` |
-//! | HCI over UART: an indicator before each packet           | `u8c<0x01>`, an enum of references             |
-//! | HCI: an opcode of two fields (OGF, OCF)                  | `get(ogf: u8 = opcode >> 10, ..)`              |
-//! | L2CAP in ACL data: both lengths agree                    | `Acl<L2cap>`: the size of each is checked      |
-//! | CAN: flags in the identifier, 11 or 29 bits of it        | `get(..)`, `assert(can_id & .. == 0 \|\| ..)`  |
-//! | CAN FD: the 16 lengths that a DLC can tell               | `valid(0..=8, 12, 16, 20, 24, 32, 48, 64)`     |
-//! | Modbus RTU: a CRC-16 of the frame                        | a `walk`, a byte per step, tables in constants |
-//! | Modbus TCP: a protocol identifier of 0, a length         | `u16bec<0>`, `size = length + 6`               |
-//! | Modbus registers, counted in bytes                       | `len = byte_count / 2` on `[u16be]`            |
-//! | SLIP and PPP: escapes, and where a frame ends            | `assert(walk(..) == size_of_val(self) - 1)`    |
+//! | Specificity                                     | Told by                                   |
+//! |-------------------------------------------------|-------------------------------------------|
+//! | 802.11: a little-endian frame control           | `u16le`, `get(..)`, `assert(..)`          |
+//! | 802.11: a fourth address when two bits are set  | `regions(address4 = if .. { 6 } ..)`      |
+//! | 802.11: QoS and HT control, told by bits        | `regions(qos_control = .., ..)`           |
+//! | 802.11: the frame check sequence, a CRC-32      | `assert(crc32(0, ..) == le(.., 4))`       |
+//! | 802.11: information elements that fill a beacon | `assert(walk(36, ..) == ..)`              |
+//! | HCI over UART: an indicator before a packet     | `u8c<0x01>`, an enum of references        |
+//! | HCI: an opcode of two fields (OGF, OCF)         | `get(ogf: u8 = opcode >> 10, ..)`         |
+//! | L2CAP in ACL data: both lengths agree           | `Acl<L2cap>`: the size of each is checked |
+//! | CAN: flags in the identifier, of 11 or 29 bits  | `get(..)`, `assert(..)`                   |
+//! | CAN FD: the 16 lengths that a DLC can tell      | `valid(0..=8, 12, 16, 20, 24, ..)`        |
+//! | Modbus RTU: a CRC-16 of the frame               | a `walk`, tables in constants             |
+//! | Modbus TCP: a protocol identifier of 0          | `u16bec<0>`, `size = length + 6`          |
+//! | Modbus registers, counted in bytes              | `len = byte_count / 2` on `[u16be]`       |
+//! | SLIP and PPP: escapes, where a frame ends       | `assert(walk(..) == ..)`                  |
 //!
 //! What is not covered, and why:
 //!

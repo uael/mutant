@@ -8,28 +8,28 @@
 //!
 //! What is specific to these protocols, and what tells it:
 //!
-//! | Specificity                                               | Told by                                        |
-//! |-----------------------------------------------------------|------------------------------------------------|
-//! | a TLS record tells what it carries                        | `tag(ContentType = u8c<22>)`                   |
-//! | lengths of 24 bits (TLS handshakes, HTTP/2 frames)        | `u24be`, `size = length + 4`                   |
-//! | vectors that follow each other, each with its length      | `regions(items = length, rest: R)`, a chain of types |
-//! | the chain fills the message                               | `assert({ let .. = be(..); .. == size_of_val(self) })` |
-//! | a server name is text                                     | a `str` field                                  |
-//! | QUIC connection IDs of variable length                    | `regions(dcid = dcid_length, ..)`              |
-//! | QUIC variable-length integers (1, 2, 4 or 8 bytes)        | `1 << (be(at, 1) >> 6)`, `be(at, 8) >> ..`     |
-//! | HTTP/2 SETTINGS: an array of settings                     | `[Setting]`: a payload of a multiple of 6 bytes |
-//! | HTTP/2 padding and priority, told by flags                | `if flags & 8 != 0 { .. } else { 0 }` in `regions` |
-//! | the HTTP/2 connection preface                             | `u128bec<..>`, `u64bec<..>`                    |
-//! | WebSocket lengths of 7, 16 or 64 bits; masked or not      | a struct per form, an enum of references       |
-//! | WebSocket: the shortest length form, short control frames | `valid(126..)`, a head type per kind of frame  |
-//! | SSH: a MAC whose size the negotiation tells, not the bytes | a const parameter: `SshPacket<BLOCK, MAC>`    |
-//! | SSH: padding to the block size                            | `assert((packet_length + 4) % BLOCK == 0)`     |
-//! | SSH name-lists of US-ASCII                                | `regions(names: [u8in<0x21, 0x7e>] = length, ..)` |
-//! | MQTT: a remaining length of 1 to 4 bytes of 7 bits        | a struct per length, an enum of references     |
-//! | MQTT: flags that depend on the packet type                | `assert({ let kind = ..; .. })`                |
-//! | MQTT strings: a length, then UTF-8                        | `regions(text: str = length, rest: R)`         |
-//! | CoAP options: nibbles that tell 0, 1 or 2 more bytes     | a struct per form, an enum of references       |
-//! | SCTP chunks, padded to 4 bytes not counted in the length  | `size = (length + 3) / 4 * 4`                  |
+//! | Specificity                                     | Told by                                    |
+//! |-------------------------------------------------|--------------------------------------------|
+//! | a TLS record tells what it carries              | `tag(ContentType = u8c<22>)`               |
+//! | lengths of 24 bits (TLS handshakes, HTTP/2)     | `u24be`, `size = length + 4`               |
+//! | vectors that follow each other                  | `regions(items = length, rest: R)`         |
+//! | the chain of vectors fills the message          | `assert({ let .. = be(..); .. })`          |
+//! | a server name is text                           | a `str` field                              |
+//! | QUIC connection IDs of variable length          | `regions(dcid = dcid_length, ..)`          |
+//! | QUIC integers of 1, 2, 4 or 8 bytes             | `1 << (be(at, 1) >> 6)`, `be(at, 8) >> ..` |
+//! | HTTP/2 SETTINGS: an array of settings           | `[Setting]`: a multiple of 6 bytes         |
+//! | HTTP/2 padding and priority, told by flags      | `if flags & 8 != 0 { .. }` in `regions`    |
+//! | the HTTP/2 connection preface                   | `u128bec<..>`, `u64bec<..>`                |
+//! | WebSocket lengths of 7, 16 or 64 bits           | a struct per form, an enum of references   |
+//! | WebSocket: shortest forms, short control frames | `valid(126..)`, a head type per kind       |
+//! | SSH: a MAC whose size the bytes do not tell     | a const parameter: `SshPacket<_, MAC>`     |
+//! | SSH: padding to the block size                  | `assert((packet_length + 4) % BLOCK ..)`   |
+//! | SSH name-lists of US-ASCII                      | `regions(names: [u8in<0x21, 0x7e>] = ..)`  |
+//! | MQTT: a remaining length of 1 to 4 bytes        | a struct per length, an enum of references |
+//! | MQTT: flags that depend on the packet type      | `assert({ let kind = ..; .. })`            |
+//! | MQTT strings: a length, then UTF-8              | `regions(text: str = length, rest: R)`     |
+//! | CoAP options: nibbles that tell 0, 1 or 2 bytes | a struct per form, an enum of references   |
+//! | SCTP chunks, padded to 4 bytes                  | `size = (length + 3) / 4 * 4`              |
 //!
 //! What is not covered, and why:
 //!
@@ -612,7 +612,10 @@ pub struct Connect {
 #[data(assert(version_type_tkl & 15 <= 8))]
 // Code classes 0 (request), 2, 4, 5 (responses) and 7 (signaling); an empty message (code 0.00)
 // is only its header.
-#[data(assert({ let class = code >> 5; class == 0 || class == 2 || class == 4 || class == 5 || class == 7 }))]
+#[data(assert({
+  let class = code >> 5;
+  class == 0 || class == 2 || class == 4 || class == 5 || class == 7
+}))]
 #[data(assert(code != 0 || size_of_val(self) == 4))]
 #[data(get(kind: u8 = (version_type_tkl >> 4) & 3, class: u8 = code >> 5, detail: u8 = code & 31))]
 pub struct Coap {

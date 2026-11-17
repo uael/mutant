@@ -7,16 +7,16 @@
 //!
 //! What is specific to these formats, and what tells it:
 //!
-//! | Specificity                                               | Told by                                        |
-//! |-----------------------------------------------------------|------------------------------------------------|
-//! | four character codes tell what a chunk or a box holds     | `tag(FourCc = u32bec<0x666d_7420>)`            |
-//! | RIFF chunks are padded to 2 bytes, not counted            | `size = 8 + length + (length & 1)`, `regions(data: P = length, pad)` |
-//! | the fields of a WAVE format agree with each other         | `assert(byte_rate == sample_rate * block_align)` |
-//! | WAVE: chunks fill the file, "fmt " first                  | `assert(walk(12, ..) == size_of_val(self))`    |
-//! | WAVE: the data is whole frames of the format              | `assert({ let data = walk(..); .. % le(32, 2) == 0 })` |
-//! | MP4: a size of 32 bits, of 64 bits (if 1), or to the end (if 0) | a struct per form, an enum of references |
-//! | a full box: a version and flags                           | `u8c<0>`, `u24be`                              |
-//! | an array of brands, to the end of a box                   | `[FourCc]`                                     |
+//! | Specificity                                    | Told by                                  |
+//! |------------------------------------------------|------------------------------------------|
+//! | four character codes tell what is held         | `tag(FourCc = u32bec<0x666d_7420>)`      |
+//! | RIFF chunks padded to 2 bytes, not counted     | `size = 8 + length + (length & 1)`       |
+//! | the fields of a WAVE format agree              | `assert(byte_rate == .. * block_align)`  |
+//! | WAVE: chunks fill the file, "fmt " first       | `assert(walk(12, ..) == ..)`             |
+//! | WAVE: the data is whole frames                 | `assert({ let data = walk(..); .. })`    |
+//! | MP4: a size of 32 bits, 64 bits, or to the end | a struct per form, an enum of references |
+//! | a full box: a version and flags                | `u8c<0>`, `u24be`                        |
+//! | brands, to the end of a box                    | `[FourCc]`                               |
 //!
 //! What is not covered, and why:
 //!

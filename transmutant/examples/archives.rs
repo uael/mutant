@@ -7,20 +7,20 @@
 //!
 //! What is specific to these formats, and what tells it:
 //!
-//! | Specificity                                               | Told by                                        |
-//! |-----------------------------------------------------------|------------------------------------------------|
-//! | little-endian signatures                                  | `u32lec<0x0403_4b50>`                          |
-//! | ZIP headers: a name, extra fields, data, each sized before | `size = 30 + ..`, `regions(name = .., extra = .., data)` |
-//! | stored data agrees with its CRC-32                        | `assert(method != 0 \|\| crc32(..) == crc)`    |
-//! | the end of a ZIP file is found from its end               | `walk(size_of_val(self) - 22, .., \|at\| at - 1)` |
-//! | the central directory ends where the end record starts    | `assert(le(end + 12, 4) + le(end + 16, 4) == end ..)` |
-//! | tar: sizes are octal ASCII digits                         | `size = 512 + ..` of the digits, `assert(.. & 0xf8f8.. == 0x3030..)` |
-//! | tar: data padded to 512 bytes                             | `regions(data = .., padding)`                  |
-//! | tar: a checksum over the header, its own field as spaces  | `assert({ let s = walk(0, ..); .. })`          |
-//! | gzip: optional fields told by flags                       | `if flags & 4 != 0 { .. } else { 0 }`          |
-//! | gzip: NUL-terminated names and comments                   | a `walk` that counts the NULs still to find    |
-//! | gzip: the CRC-16 of the header                            | `assert(flags & 2 == 0 \|\| crc32(0, end) & 0xffff == le(end, 2))` |
-//! | the CRC-32 and the size at the end of a member            | `regions(rest = size_of_val(self) - 18, crc32 = 4, isize = 4)` |
+//! | Specificity                                    | Told by                                     |
+//! |------------------------------------------------|---------------------------------------------|
+//! | little-endian signatures                       | `u32lec<0x0403_4b50>`                       |
+//! | ZIP: a name, extra fields, data, sized before  | `regions(name = .., extra = .., data)`      |
+//! | stored data agrees with its CRC-32             | `assert(method != 0 \|\| crc32(..) ..)`     |
+//! | the end of a ZIP file is found from its end    | `walk(.., \|at\| at - 1)`                   |
+//! | the central directory ends at the end record   | `assert(le(end + 12, 4) + .. == end)`       |
+//! | tar: sizes are octal ASCII digits              | `size = 512 + ..`, `assert(.. == 0x3030..)` |
+//! | tar: data padded to 512 bytes                  | `regions(data = .., padding)`               |
+//! | tar: a checksum, its own field as spaces       | `assert({ let s = walk(0, ..); .. })`       |
+//! | gzip: optional fields told by flags            | `if flags & 4 != 0 { .. } else { 0 }`       |
+//! | gzip: names and comments that end with a NUL   | a `walk` that counts the NULs to find       |
+//! | gzip: the CRC-16 of the header                 | `crc32(0, end) & 0xffff == le(end, 2)`      |
+//! | the CRC-32 and the size at the end of a member | `regions(.., crc32 = 4, isize = 4)`         |
 //!
 //! What is not covered, and why:
 //!

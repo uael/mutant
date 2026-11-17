@@ -7,19 +7,19 @@
 //!
 //! What is specific to these formats, and what tells it:
 //!
-//! | Specificity                                               | Told by                                        |
-//! |-----------------------------------------------------------|------------------------------------------------|
-//! | a signature                                               | `u64bec<0x8950_4e47_0d0a_1a0a>`                |
-//! | PNG chunks: a length, a type, data, a CRC-32 of type and data | `size = length + 12`, `assert(crc32(4, 8 + length) == ..)` |
-//! | a chunk type is four ASCII letters; bit 5 tells "critical" | `assert(..)` on the type, `get(critical: bool = ..)` |
-//! | the type of a chunk tells what its data is                | `tag(ChunkType = u32bec<0x4948_4452>)`         |
-//! | the bit depths that each color type allows                | `assert((color_type == 0 && ..) \|\| ..)`      |
-//! | a PNG file: IHDR first, IEND last, every CRC right        | `assert(walk(8, \|at\| .. crc32(..) == be(..), ..) == ..)` |
-//! | BMP: a signed height (negative: rows from the top)        | `valid(1..=0x7fff_ffff, 0x8000_0001..)`, `get(..)` |
-//! | BMP: rows padded to 4 bytes, that fit in the file         | `assert(.. (bits_per_pixel * width + 31) / 32 * 4 * rows <= ..)` |
-//! | BMP: the header, the palette and the pixels               | `regions(dib_rest = .., palette = .., pixels)` |
-//! | a font's binary search fields, derived from its count     | `assert(search_range == 16 * walk(1, ..))`     |
-//! | font table records sorted by tag; tables in the file      | `assert(walk(12, \|at\| .. be(at, 4) < be(at + 16, 4), ..) == ..)` |
+//! | Specificity                                       | Told by                                   |
+//! |---------------------------------------------------|-------------------------------------------|
+//! | a signature                                       | `u64bec<0x8950_4e47_0d0a_1a0a>`           |
+//! | PNG chunks: a CRC-32 of the type and the data     | `assert(crc32(4, 8 + length) == ..)`      |
+//! | a chunk type: ASCII letters, whose case is a flag | `assert(..)`, `get(critical: bool = ..)`  |
+//! | the type of a chunk tells what its data is        | `tag(ChunkType = u32bec<0x4948_4452>)`    |
+//! | the bit depths that each color type allows        | `assert((color_type == 0 && ..) \|\| ..)` |
+//! | a PNG file: IHDR first, IEND last, right CRCs     | `assert(walk(8, ..) == ..)`               |
+//! | BMP: a signed height (negative: top-down)         | `valid(1..=0x7fff_ffff, 0x8000_0001..)`   |
+//! | BMP: rows padded to 4 bytes, in the file          | `assert(.. (bits_per_pixel * ..) ..)`     |
+//! | BMP: the header, the palette and the pixels       | `regions(dib_rest = .., palette = ..)`    |
+//! | font search fields, derived from the count        | `assert(search_range == 16 * walk(..))`   |
+//! | font records sorted by tag; tables in the file    | `assert(walk(12, ..) == ..)`              |
 //!
 //! What is not covered, and why:
 //!
@@ -82,9 +82,11 @@ pub struct Chunk<P: ?Sized + Tag<ChunkType> = [u8]> {
 #[data(tag(ChunkType = u32bec<0x4948_4452>))]
 // The bit depths that each color type allows: gray, palette, RGB, gray and alpha, RGBA.
 #[data(assert(
-  (color_type == 0 && (bit_depth == 1 || bit_depth == 2 || bit_depth == 4 || bit_depth == 8 || bit_depth == 16))
+  (color_type == 0
+    && (bit_depth == 1 || bit_depth == 2 || bit_depth == 4 || bit_depth == 8 || bit_depth == 16))
     || (color_type == 3 && bit_depth <= 8)
-    || ((color_type == 2 || color_type == 4 || color_type == 6) && (bit_depth == 8 || bit_depth == 16))
+    || ((color_type == 2 || color_type == 4 || color_type == 6)
+      && (bit_depth == 8 || bit_depth == 16))
 ))]
 pub struct Ihdr {
   #[data(valid(1..=0x7fff_ffff))]
@@ -186,7 +188,9 @@ pub struct Bmp {
 // Every table is in the file, at an offset that is a multiple of 4.
 #[data(assert(walk(
   12,
-  |at| at < 12 + num_tables * 16 && be(at + 8, 4) % 4 == 0 && be(at + 8, 4) + be(at + 12, 4) <= size_of_val(self),
+  |at| at < 12 + num_tables * 16
+    && be(at + 8, 4) % 4 == 0
+    && be(at + 8, 4) + be(at + 12, 4) <= size_of_val(self),
   |at| at + 16,
 ) == 12 + num_tables * 16))]
 pub struct Font {
