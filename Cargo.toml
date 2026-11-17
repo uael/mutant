@@ -1,22 +1,14 @@
 [package]
 name = "mutant"
 version = "0.1.0"
-edition = "2021"
-build = "build.rs"
-
-[lib]
-crate-type = ["staticlib"]
+edition = "2024"
+rust-version = "1.100"
 
 [dependencies]
 mutant-derive = { path = "derive" }
 
-[features]
-doctest = []
-
-[dev-dependencies]
-loop-code = "0.5.2"
-futures = "0.3.30"
-rand = "0.8.5"
+[workspace]
+members = ["derive"]
 
 [profile.release]
 lto = true
