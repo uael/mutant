@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use xshell::{Shell, cmd};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "Transmutant project automation")]
+#[command(name = "xtask", about = "Puns project automation")]
 #[command(styles = clap_cargo::style::CLAP_STYLING)]
 #[clap(disable_version_flag = true, bin_name = "cargo xtask")]
 struct Cli {

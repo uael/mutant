@@ -26,7 +26,7 @@ jobs:
       - run: cargo build --release --example codegen
       # The full model check (`cargo test` runs a sample of it), optimized: the `model` profile is
       # the release one without LTO, which takes minutes to build it.
-      - run: cargo test --profile model -p transmutant-model -- --ignored
+      - run: cargo test --profile model -p puns-model -- --ignored
 
   clippy:
     name: Clippy
@@ -51,7 +51,7 @@ jobs:
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
       # A target without `std`: nothing may need it.
-      - run: cargo build -p transmutant --target thumbv7em-none-eabihf
+      - run: cargo build -p puns --target thumbv7em-none-eabihf
 
   fmt:
     name: Format
@@ -89,19 +89,19 @@ jobs:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
       # Tree borrows, then the default stacked borrows; the trybuild test is ignored under Miri.
-      - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests
+      - run: cargo +nightly-2026-11-17 miri test -p puns --tests
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-      - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests
+      - run: cargo +nightly-2026-11-17 miri test -p puns --tests
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
       # 32 bits: a smaller `usize`, a `u64` aligned to 4.
-      - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests --target i686-unknown-linux-gnu
+      - run: cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
       # The part of the model check that Miri affords (`miri_sample`, `dst`, the regressions):
       # about twenty minutes, so once, with tree borrows.
-      - run: cargo +nightly-2026-11-17 miri test -p transmutant-model
+      - run: cargo +nightly-2026-11-17 miri test -p puns-model
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
 

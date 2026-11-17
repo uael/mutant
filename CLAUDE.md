@@ -6,19 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```sh
 cargo build                          # Build all crates
-cargo build --all-targets            # Also tests and examples: rejections are only reported by a build
+cargo build --all-targets            # Also tests and examples: refusals are only reported by a build
 cargo test --all                     # All tests: unit, integration, compile-fail, doc tests (README included)
 cargo test --test api                # Run only one integration test file (also: enums, ethernet, str)
 cargo test --test api TESTNAME       # Run a single test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`
 cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, tree borrows
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests  # Miri, stacked borrows
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant --tests --target i686-unknown-linux-gnu  # 32 bits
-cargo test --profile model -p transmutant-model -- --ignored  # The full model check; `cargo test` runs a sample
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p transmutant-model  # The model check that Miri affords
-cargo build -p transmutant --target thumbv7em-none-eabihf  # A target without std
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, stacked borrows
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
+cargo test --profile model -p puns-model -- --ignored  # The full model check; `cargo test` runs a sample
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # The model check that Miri affords
+cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings) + format check
@@ -33,25 +33,26 @@ The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rus
 Miri, under which the trybuild test is ignored. Generate trybuild `.stderr` files with the pinned
 stable.
 
-Most rejections are panics of `const { .. }` blocks in generic functions, evaluated at
+Most refusals are panics of `const { .. }` blocks in generic functions, evaluated at
 monomorphization: `cargo check` does not report them, `cargo build` does. The trybuild test has a
 passing case (`tests/compile-pass/`) so that trybuild builds instead of checking.
 
 Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
-functions are in `transmutant/DESIGN.md`; compare before and after a change of the library.
+functions are in `puns/DESIGN.md`; compare before and after a change of the library.
 
 ## Architecture
 
-**transmutant** is safe transmutation checked at compile time: the layout and the valid values of
-a type are a `const` value (`Data::LAYOUT`), compared by ordinary `const fn` code, and only what
-could not be proven is checked at run time. **`transmutant/DESIGN.md` is the design** (goal,
-what stable Rust gives, architecture, soundness, what is not done yet): read it before changing
+**puns** is type punning proven at compile time: the layout and the valid values of a type are a
+`const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it
+compiles to nothing), **checked** (only what could not be proven is checked at run time) or
+**refused** (it does not compile). **`puns/DESIGN.md` is the design** (goal, what stable Rust
+gives, architecture, soundness, what is not done yet): read it before changing
 the library, and keep it, the crate docs and `README.md` in step with the code.
 
-- **`transmutant/`** — the library (`#![no_std]`)
-- **`transmutant-derive/`** — `#[derive(Data)]`, re-exported as `transmutant::Data`
-- **`transmutant-model/`** — model check of the analysis against oracles that do not use it (not
-  published; uses the test-only `verdict` feature of `transmutant`), with `fakecore/`, a `core`
+- **`puns/`** — the library (`#![no_std]`)
+- **`puns-derive/`** — `#[derive(Pun)]`, re-exported as `puns::Pun`
+- **`puns-model/`** — model check of the analysis against oracles that do not use it (not
+  published; uses the test-only `verdict` feature of `puns`), with `fakecore/`, a `core`
   that lies, for what the derive must not trust
 - **`xtask/`** — dev automation (fmt, lint)
 
@@ -61,8 +62,8 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 
 - Config: `release-plz.toml`
 - Workflow: `.github/workflows/release-plz.yml`
-- Only `transmutant` and `transmutant-derive` are published; `xtask`, `transmutant-model` and `fakecore` are excluded
-- `transmutant` owns the changelog and git tags (`v{{ version }}`); `transmutant-derive` has no changelog or tags of its own
+- Only `puns` and `puns-derive` are published; `xtask`, `puns-model` and `fakecore` are excluded
+- `puns` owns the changelog and git tags (`v{{ version }}`); `puns-derive` has no changelog or tags of its own
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
 - `release_always = false`: nothing is published by an ordinary push, only by merging a release PR (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the first release PR
 
@@ -80,7 +81,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) — release-plz
 |------|------|---------|
 | `fix:` | patch | `fix: reject packed structs whose tail is aligned` |
 | `feat:` | minor | `feat: patterns other than str from the derive` |
-| `feat!:` / `BREAKING CHANGE:` | major | `feat!: rename unpack to parse` |
+| `feat!:` / `BREAKING CHANGE:` | major | `feat!: rename unpack to from_head` |
 | `docs:`, `ci:`, `chore:`, `refactor:`, `test:`, `style:` | none | `ci: pin the Miri nightly` |
 
 ## Code Style

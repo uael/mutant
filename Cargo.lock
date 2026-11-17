@@ -186,6 +186,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "puns"
+version = "0.1.0"
+dependencies = [
+ "puns-derive",
+ "trybuild",
+]
+
+[[package]]
+name = "puns-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "puns-model"
+version = "0.0.0"
+dependencies = [
+ "fakecore",
+ "puns",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -326,31 +351,6 @@ name = "toml_writer"
 version = "1.2.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
-
-[[package]]
-name = "transmutant"
-version = "0.1.0"
-dependencies = [
- "transmutant-derive",
- "trybuild",
-]
-
-[[package]]
-name = "transmutant-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "transmutant-model"
-version = "0.0.0"
-dependencies = [
- "fakecore",
- "transmutant",
-]
 
 [[package]]
 name = "trybuild"

@@ -1,0 +1,41 @@
+error[E0080]: evaluation panicked:
+              cannot pun: no value of the source is valid for the target.
+              This is at byte 0 of the target.
+
+   --> src/lib.rs
+    |
+    |   const TRY: () = Self::require(Need { head: false, fallible: true, reference: false });
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<puns::num::u8c<2>, bool>::TRY` failed inside this call
+    |
+note: inside `puns::Plan::<u8c<2>, bool>::require`
+ --> src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |           ^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_pun::<u8c<2>, bool>`
+ --> tests/compile-fail/try_never_succeeds.rs:3:11
+  |
+3 |   let _ = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
