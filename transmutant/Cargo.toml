@@ -16,5 +16,8 @@ exclude = ["CLAUDE.md"]
 [dependencies]
 transmutant-derive = { version = "=0.1.0", path = "../transmutant-derive" }
 
+[dev-dependencies]
+trybuild = "1"
+
 [lints]
 workspace = true
