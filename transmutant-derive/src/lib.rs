@@ -308,6 +308,8 @@ struct FieldInfo<'a> {
   ty: &'a Type,
   vis: &'a Visibility,
   options: Options,
+  /// Its offset in the struct, as a constant expression.
+  offset: TokenStream,
 }
 
 /// Compile `expr` to the operations of a postfix expression.
@@ -385,8 +387,8 @@ fn compile(
   let op = quote!(#root::layout::Op);
   let load = |member: &Member, ops: &mut Vec<TokenStream>| {
     let field = fields.iter().find(|field| &field.member == member)?;
-    let ty = field.ty;
-    ops.push(quote!(#op::load::<#ty>(::core::mem::offset_of!(Self, #member))));
+    let (ty, offset) = (field.ty, &field.offset);
+    ops.push(quote!(#op::load::<#ty>(#offset)));
     Some(())
   };
   match expr {
@@ -647,7 +649,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     Fields::Unnamed(fields) => Some(&fields.unnamed),
     Fields::Unit => None,
   };
-  let fields = fields
+  let mut fields = fields
     .into_iter()
     .flatten()
     .enumerate()
@@ -660,10 +662,31 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         ty: &field.ty,
         vis: &field.vis,
         options: parse_options(&field.attrs)?,
+        offset: TokenStream::new(),
       })
     })
     .collect::<Result<Vec<_>>>()?;
   let count = fields.len();
+
+  // The offsets of the fields. Not with `offset_of!`, which is read from wherever `::core` leads
+  // (`extern crate other as core;` makes it another crate): with `repr(C)` and
+  // `repr(transparent)`, they are what these representations specify, from the sizes and
+  // alignments of the fields; otherwise the struct is `Sized` and they are found by projecting a
+  // pointer to an uninitialized value (`&raw const (*p).field`), which the language does.
+  for (i, field) in fields.iter_mut().enumerate() {
+    let member = &field.member;
+    field.offset = match () {
+      // The field that is not zero-sized is at 0; zero-sized ones have no bytes to be anywhere.
+      () if repr.transparent => quote!(0),
+      () if repr.c => quote!(<Self as __DataOffsets>::OFFSETS[#i]),
+      () => quote!({
+        let value = #root::layout::Layout::uninit::<Self>();
+        let start: *const Self = value.as_ptr();
+        // SAFETY: a place in the value, which is not read.
+        unsafe { (&raw const (*start).#member).byte_offset_from(start) as usize }
+      }),
+    };
+  }
 
   // Only the layout of `repr(C)` and `repr(transparent)` is known without the size of the fields.
   let sized = !(repr.c || repr.transparent);
@@ -683,26 +706,39 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let where_clause = &generics.where_clause;
 
   // Layout of the fields.
-  let mut layouts = vec![];
-  for (i, field) in fields.iter().enumerate() {
-    let (member, ty) = (&field.member, field.ty);
-    let offset = match fields.get(i.wrapping_sub(1)) {
-      // The last field may be unsized, in which case `offset_of!` does not want it.
-      _ if sized || i + 1 < count => quote!(::core::mem::offset_of!(Self, #member)),
-      Some(previous) if repr.c => {
-        let (previous_member, previous_ty) = (&previous.member, previous.ty);
-        let end = quote!(
-          ::core::mem::offset_of!(Self, #previous_member)
-            + #root::layout::Layout::size_align::<#previous_ty>().0
-        );
-        let align = quote!(<#ty as #root::Data>::LAYOUT.align());
-        repr.packed.as_ref().map_or_else(
-          || quote!(#root::layout::Layout::tail_offset(#end, #align)),
-          |pack| quote!(#root::layout::Layout::tail_offset_packed(#end, #align, #pack)),
-        )
+  let offsets_trait = repr.c.then(|| {
+    // `repr(C)`: each field at the first offset after the previous one that its alignment allows
+    // (or `packed(N)` allows).
+    let steps = fields.iter().enumerate().map(|(i, field)| {
+      let ty = field.ty;
+      let align = quote!(<#ty as #root::Data>::LAYOUT.align());
+      let offset = repr.packed.as_ref().map_or_else(
+        || quote!(#root::layout::Layout::tail_offset(end, #align)),
+        |pack| quote!(#root::layout::Layout::tail_offset_packed(end, #align, #pack)),
+      );
+      // The last field may be unsized: nothing comes after it.
+      let end = (i + 1 < count)
+        .then(|| quote!(end = offsets[#i] + #root::layout::Layout::size_align::<#ty>().0;));
+      quote!(offsets[#i] = #offset; #end)
+    });
+    quote! {
+      trait __DataOffsets {
+        const OFFSETS: [::core::primitive::usize; #count];
       }
-      _ => quote!(0),
-    };
+
+      impl #impl_generics __DataOffsets for #this #where_clause {
+        #[allow(unused_assignments, unused_mut)]
+        const OFFSETS: [::core::primitive::usize; #count] = {
+          let (mut offsets, mut end) = ([0; #count], 0);
+          #(#steps)*
+          offsets
+        };
+      }
+    }
+  });
+  let mut layouts = vec![];
+  for field in &fields {
+    let (offset, ty) = (&field.offset, field.ty);
     layouts.push(field.options.valid.as_ref().map_or_else(
       || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
       |ranges| {
@@ -888,6 +924,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
       #(#walk_lists)*
 
+      #offsets_trait
+
       // SAFETY: the layout comes from the compiler, field by field.
       unsafe impl #impl_generics #root::Data for #this #where_clause {
         type Elem = ();
@@ -1039,15 +1077,36 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let names = data.variants.iter().map(|variant| &variant.ident).collect::<Vec<_>>();
   let count = names.len();
 
-  // A `repr(C)` struct for each variant, which starts with the tag unless the enum is `repr(C)`.
+  // A `repr(C)` struct for each variant (RFC 2195), which starts with the tag unless the enum is
+  // `repr(C)`: their layouts, from the sizes and alignments of the fields. Not measured from
+  // structs declared here, which would hold a marker of the generic parameters, `PhantomData`,
+  // named by a path that `extern crate other as core;` can lead elsewhere.
   let shadows = (0..count).map(|i| format_ident!("__DataVariant{}", i)).collect::<Vec<_>>();
-  let first = usize::from(!repr.c);
-  let sizes = shadows.iter().map(|shadow| {
-    quote!((
-      #root::layout::Layout::size_align::<#shadow #ty_generics>().0,
-      #root::layout::Layout::size_align::<#shadow #ty_generics>().1,
-    ))
-  });
+  let shapes = (0..count).map(|i| format_ident!("V{}", i)).collect::<Vec<_>>();
+  let usize = quote!(::core::primitive::usize);
+  let (shape_decls, shape_defs): (Vec<_>, Vec<_>) = data
+    .variants
+    .iter()
+    .zip(&shapes)
+    .map(|(variant, shape)| {
+      let n = variant.fields.len();
+      let fields = variant.fields.iter().map(|field| {
+        let ty = &field.ty;
+        quote!(#root::layout::Layout::size_align::<#ty>())
+      });
+      let start = if repr.c {
+        quote!((0, 1))
+      } else {
+        quote!((<#tag as #root::Data>::LAYOUT.size(), <#tag as #root::Data>::LAYOUT.align()))
+      };
+      let ty = quote!(([#usize; #n], (#usize, #usize)));
+      (
+        quote!(const #shape: #ty;),
+        quote!(const #shape: #ty = #root::layout::Layout::repr_c(#start, [#(#fields),*]);),
+      )
+    })
+    .unzip();
+  let sizes = shapes.iter().map(|shape| quote!(<Self as __DataShapes>::#shape.1));
   let sizes = quote!([#(#sizes),*]);
   let tag_layout = quote!(<#tag as #root::Data>::LAYOUT);
   // Where the fields of the variants are.
@@ -1055,19 +1114,18 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
     if repr.c { quote!(#root::layout::Enum::fields(&#tag_layout, &#sizes)) } else { quote!(0) };
   let (mut items, mut variants) = (vec![], vec![]);
   for (i, variant) in data.variants.iter().enumerate() {
-    let (shadow, name) = (&shadows[i], &names[i]);
-    let types = variant.fields.iter().map(|field| &field.ty).collect::<Vec<_>>();
-    let head = (!repr.c).then(|| quote!(#tag,));
-    let markers =
-      (0..types.len()).map(|j| format_ident!("__DataVariant{}Field{}", i, j)).collect::<Vec<_>>();
+    let (shadow, name, shape) = (&shadows[i], &names[i], &shapes[i]);
+    let markers = (0..variant.fields.len())
+      .map(|j| format_ident!("__DataVariant{}Field{}", i, j))
+      .collect::<Vec<_>>();
     let mut layouts = vec![];
     for (j, field) in variant.fields.iter().enumerate() {
       let options = parse_options(&field.attrs)?;
       if options.len.is_some() || options.regions.is_some() {
         return Err(Error::new(field.span(), "the fields of an enum are sized"));
       }
-      let (ty, index) = (&field.ty, Index::from(first + j));
-      let offset = quote!(#fields + ::core::mem::offset_of!(#shadow #ty_generics, #index));
+      let ty = &field.ty;
+      let offset = quote!(#fields + <Self as __DataShapes>::#shape.0[#j]);
       layouts.push(options.valid.as_ref().map_or_else(
         || quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
         |ranges| {
@@ -1102,11 +1160,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
     );
     items.push(quote! {
       // As visible as the enum, so that it can be named by its implementation of `Data`.
-      #[repr(C)]
       #[allow(dead_code, non_camel_case_types)]
-      #vis struct #shadow #impl_generics(
-        #head #(#types,)* ::core::marker::PhantomData<#this>
-      ) #where_clause;
+      #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
       // SAFETY: the variant of the layout of the enum.
       unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
@@ -1159,9 +1214,17 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
 
       #(#items)*
 
-      // SAFETY: the layout is the one that RFC 2195 specifies, made from what the compiler tells
-      // of a `repr(C)` struct for each variant; it is checked against the size and the alignment
-      // of the enum.
+      trait __DataShapes {
+        #(#shape_decls)*
+      }
+
+      impl #impl_generics __DataShapes for #this #where_clause {
+        #(#shape_defs)*
+      }
+
+      // SAFETY: the layout is the one that RFC 2195 specifies, made from the sizes and alignments
+      // of the fields of each variant; it is checked against the size and the alignment of the
+      // enum.
       unsafe impl #impl_generics #root::Data for #this #where_clause {
         type Elem = ();
         type Fields = ();

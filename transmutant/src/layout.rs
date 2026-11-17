@@ -541,6 +541,35 @@ impl Layout {
   pub const PIN: (fn(Rule), fn(Op), fn(Field), fn(Enum), fn(Variant)) =
     (pin::<Rule>, pin::<Op>, pin::<Field>, pin::<Enum>, pin::<Variant>);
 
+  /// An uninitialized `T`, whose fields `#[derive(Data)]` finds the offsets of.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn uninit<T>() -> mem::MaybeUninit<T> {
+    mem::MaybeUninit::uninit()
+  }
+
+  /// The layout of a `repr(C)` struct whose fields have the given sizes and alignments, after
+  /// what `start` (an end offset and an alignment) says is before them: the offsets of the
+  /// fields, and the size and alignment of the struct. For the variants of enums with fields,
+  /// whose layout RFC 2195 specifies in these terms.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn repr_c<const N: usize>(
+    start: (usize, usize),
+    fields: [(usize, usize); N],
+  ) -> ([usize; N], (usize, usize)) {
+    let (mut offsets, (mut end, mut align), mut i) = ([0; N], start, 0);
+    while i < N {
+      offsets[i] = tail_offset(end, fields[i].1, usize::MAX);
+      end = offsets[i] + fields[i].0;
+      if fields[i].1 > align {
+        align = fields[i].1;
+      }
+      i += 1;
+    }
+    (offsets, (tail_offset(end, align, usize::MAX), align))
+  }
+
   /// Size and alignment of `T`, for `#[derive(Data)]`.
   #[doc(hidden)]
   #[must_use]
