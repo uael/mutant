@@ -1,0 +1,57 @@
+error: this expression needs a stack of 9 values, and the one of the evaluator has 8: name what it computes with `let`, or compute it in another order (`a + b + c` needs 2, `a + (b + c)` needs 3)
+ --> tests/compile-fail/rule_limits.rs:5:14
+  |
+5 | #[pun(assert(a + (a + (a + (a + (a + (a + (a + (a + a))))))) > 0))]
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: this expression of a `walk` has 61 operations, at most 56
+  --> tests/compile-fail/rule_limits.rs:12:40
+   |
+12 |   #[pun(assert(walk(0, |at| at < 4, |at| at + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
+   |  ________________________________________^
+13 | |   + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1) == 4))]
+   | |_________________________________________________________________^
+
+error: this expression, which walks, has 74 operations, at most 72
+  --> tests/compile-fail/rule_limits.rs:20:14
+   |
+20 |   #[pun(assert(walk(0, |at| at < 4, |at| at + 1) == a + a + a + a + a + a + a + a + a + a + a + a
+   |  ______________^
+21 | |   + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a + a))]
+   | |_________________________________________________________________________________________________^
+
+error: too many variables: an expression has at most 4 at once (its `let`s, and the parameters of its `walk`s)
+  --> tests/compile-fail/rule_limits.rs:28:64
+   |
+28 | #[pun(assert({ let b = 1; let c = 2; let d = 3; let e = 4; let f = 5; a + b + c + d + e + f > 0 }))]
+   |                                                                ^
+
+error[E0080]: evaluation panicked: a rule reads the integer fields of its struct, and this field is not an integer: read its bytes with `le(offset, size)` or `be(offset, size)`
+  --> tests/compile-fail/rule_limits.rs:35:14
+   |
+33 | #[derive(puns::Pun)]
+   |          --------- in this derive macro expansion
+34 | #[repr(C)]
+35 | #[pun(size = magic)]
+   |              ^^^^^ evaluation of `_::<impl puns::Pun for NotAnInteger>::LAYOUT::{constant#1}` failed inside this call
+   |
+note: inside `Op::load::<[u8; 2]>`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/layout.rs
+   |
+   | /       panic!(
+   | |         "a rule reads the integer fields of its struct, and this field is not an integer: read \
+   | |          its bytes with `le(offset, size)` or `be(offset, size)`"
+   | |       )
+   | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/compile-fail/rule_limits.rs:33:10
+   |
+33 | #[derive(puns::Pun)]
+   |          ^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

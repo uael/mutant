@@ -342,6 +342,87 @@ struct FieldInfo<'a> {
   offset: TokenStream,
 }
 
+/// The limits of the evaluator, which `layout::check_rules` checks again: the depth of its stack,
+/// the number of variables of an expression, the number of operations of an expression that
+/// walks, and of each expression of a walk.
+const STACK: usize = 8;
+const VARIABLES: usize = 4;
+const WALK_OPS: usize = 72;
+const WALK_INNER_OPS: usize = 56;
+
+/// `tokens`, located at `span`: so that an error in what they compute is reported there. What
+/// their names resolve to does not change.
+fn located(tokens: TokenStream, span: Span) -> TokenStream {
+  tokens
+    .into_iter()
+    .map(|mut token| {
+      if let proc_macro2::TokenTree::Group(group) = &token {
+        let mut located = proc_macro2::Group::new(group.delimiter(), located(group.stream(), span));
+        located.set_span(group.span().located_at(span));
+        token = proc_macro2::TokenTree::Group(located);
+      } else {
+        token.set_span(token.span().located_at(span));
+      }
+      token
+    })
+    .collect()
+}
+
+/// What an operation takes off the stack of the evaluator, and what it puts on it.
+fn effect(op: &TokenStream) -> (usize, usize) {
+  // Its name is the first after `Op::`.
+  let tokens = op.clone().into_iter().collect::<Vec<_>>();
+  let name = tokens.windows(4).find_map(|window| match window {
+    [
+      proc_macro2::TokenTree::Ident(op),
+      proc_macro2::TokenTree::Punct(_),
+      proc_macro2::TokenTree::Punct(_),
+      proc_macro2::TokenTree::Ident(name),
+    ] if op == "Op" => Some(name.to_string()),
+    _ => None,
+  });
+  match name.as_deref() {
+    Some("Lit" | "load" | "Size" | "Get") => (0, 1),
+    Some("At" | "Not" | "Let" | "Walk") => (1, 1),
+    Some("Select") => (3, 1),
+    Some("Set") => (1, 0),
+    _ => (2, 1),
+  }
+}
+
+/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator, and
+/// are at most `most` (if any).
+fn limits(
+  ops: &[TokenStream],
+  spanned: &impl ToTokens,
+  most: Option<usize>,
+  what: &str,
+) -> Result<()> {
+  if let Some(most) = most.filter(|most| ops.len() > *most) {
+    return Err(Error::new_spanned(
+      spanned,
+      format!("{what} has {} operations, at most {most}", ops.len()),
+    ));
+  }
+  let (mut depth, mut deepest) = (0usize, 0);
+  for op in ops {
+    let (pops, pushes) = effect(op);
+    depth = depth.saturating_sub(pops) + pushes;
+    deepest = deepest.max(depth);
+  }
+  if deepest > STACK {
+    return Err(Error::new_spanned(
+      spanned,
+      format!(
+        "this expression needs a stack of {deepest} values, and the one of the evaluator has \
+         {STACK}: name what it computes with `let`, or compute it in another order \
+         (`a + b + c` needs 2, `a + (b + c)` needs 3)"
+      ),
+    ));
+  }
+  Ok(())
+}
+
 /// The type of a value of an expression, as Rust types it, where every integer is a `u128`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ty {
@@ -386,8 +467,14 @@ struct Scope {
 impl Scope {
   fn declare(&mut self, name: &Ident, ty: Ty) -> Result<u8> {
     let index = self.names.len() as u8;
-    if index >= 4 {
-      return Err(Error::new(name.span(), "too many variables in an expression"));
+    if usize::from(index) >= VARIABLES {
+      return Err(Error::new(
+        name.span(),
+        format!(
+          "too many variables: an expression has at most {VARIABLES} at once (its `let`s, and the \
+           parameters of its `walk`s)"
+        ),
+      ));
     }
     self.names.push((name.clone(), index, ty));
     Ok(index)
@@ -473,10 +560,11 @@ fn compile(
   scope: &mut Scope,
 ) -> Result<Ty> {
   let op = quote!(#root::layout::Op);
-  let load = |member: &Member, ops: &mut Vec<TokenStream>| {
+  // A field, where it is named: if it is not an integer, the error is there.
+  let load = |member: &Member, span: Span, ops: &mut Vec<TokenStream>| {
     let field = fields.iter().find(|field| &field.member == member)?;
     let (ty, offset) = (field.ty, &field.offset);
-    ops.push(quote!(#op::load::<#ty>(#offset)));
+    ops.push(located(quote!(#op::load::<#ty>(#offset)), span));
     Some(())
   };
   // An integer, of what `expr` holds.
@@ -543,12 +631,13 @@ fn compile(
       if path
         .path
         .get_ident()
-        .is_some_and(|ident| load(&Member::Named(ident.clone()), ops).is_some()) =>
+        .is_some_and(|ident| load(&Member::Named(ident.clone()), ident.span(), ops).is_some()) =>
     {
       Ty::Int
     }
     Expr::Field(field) if matches!(&*field.base, Expr::Path(path) if path.path.is_ident("self")) => {
-      load(&field.member, ops).ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
+      load(&field.member, field.span(), ops)
+        .ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
       Ty::Int
     }
     // `!`: bitwise on an integer, logical on a `bool`.
@@ -648,6 +737,7 @@ fn compile(
         scope.walking = false;
         scope.names.truncate(visible);
         expect(compiled?, ty, body)?;
+        limits(&program, body, Some(WALK_INNER_OPS), "this expression of a `walk`")?;
         programs.push(program);
       }
       let (cond, next) = (&programs[0], &programs[1]);
@@ -917,6 +1007,8 @@ fn expression(expr: &Expr, ty: Ty, fields: &[FieldInfo], root: &TokenStream) -> 
   if scope.walks.len() > 1 {
     return Err(Error::new(expr.span(), "an expression can only have one `walk`"));
   }
+  let walks = (!scope.walks.is_empty()).then_some(WALK_OPS);
+  limits(&ops, expr, walks, "this expression, which walks,")?;
   Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk: scope.walks.pop() })
 }
 

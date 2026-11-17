@@ -1676,7 +1676,12 @@ impl Op {
   /// If `T` is not an integer.
   #[must_use]
   pub const fn load<T: crate::Pun>(offset: usize) -> Self {
-    let Some(spec) = T::LAYOUT.as_integer() else { panic!("not an integer field") };
+    let Some(spec) = T::LAYOUT.as_integer() else {
+      panic!(
+        "a rule reads the integer fields of its struct, and this field is not an integer: read \
+         its bytes with `le(offset, size)` or `be(offset, size)`"
+      )
+    };
     Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }
   }
 
