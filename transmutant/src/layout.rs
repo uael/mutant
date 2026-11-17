@@ -1197,19 +1197,12 @@ impl Layout {
       return false;
     }
     match (self.kind, other.kind) {
+      // What a scalar requires, and what it is known to be: a layout that only requires what
+      // another guarantees (`valid(..)` on a `u8`, and a `bool`) is not the same.
       (Kind::Scalar(a), Kind::Scalar(b)) => {
         a.size == b.size
-          && match (a.valid, b.valid) {
-            (Valid::Uninit, Valid::Uninit) | (Valid::Any, Valid::Any) => true,
-            (Valid::In(x), Valid::In(y)) => {
-              let mut i = 0;
-              while i < x.len() && i < y.len() && x[i].0 == y[i].0 && x[i].1 == y[i].1 {
-                i += 1;
-              }
-              a.endian.equals(b.endian) && x.len() == y.len() && i == x.len()
-            }
-            _ => false,
-          }
+          && same_valid(a.valid, b.valid, a.endian, b.endian)
+          && same_valid(a.known, b.known, a.endian, b.endian)
       }
       (Kind::Array(a, n), Kind::Array(b, m)) => n == m && a.equals(b),
       (Kind::Slice(a), Kind::Slice(b)) => a.equals(b),
@@ -1253,6 +1246,25 @@ impl Layout {
       }
       _ => false,
     }
+  }
+}
+
+/// Whatever two sets of valid values of scalars of the same size are the same.
+#[expect(
+  clippy::many_single_char_names,
+  reason = "`a` and `x` are of one scalar, `b` and `y` the same of the other"
+)]
+const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> bool {
+  match (a, b) {
+    (Valid::Uninit, Valid::Uninit) | (Valid::Any, Valid::Any) => true,
+    (Valid::In(x), Valid::In(y)) => {
+      let mut i = 0;
+      while i < x.len() && i < y.len() && x[i].0 == y[i].0 && x[i].1 == y[i].1 {
+        i += 1;
+      }
+      endian_a.equals(endian_b) && x.len() == y.len() && i == x.len()
+    }
+    _ => false,
   }
 }
 
