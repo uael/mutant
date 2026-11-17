@@ -42,9 +42,13 @@ use syn::{
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, costs what the
 /// arithmetic costs, and fails (as a rule that does not hold) on overflow.
 ///
-/// It means what the same Rust expression means where every integer is a `u128`: `as u8` (or
-/// `u16`, `u32`, `u64`, `usize`) keeps the low bits, `as u128` keeps everything, and a cast to
-/// any other type is refused.
+/// It means what the same Rust expression means where every integer is a `u128`, and is typed as
+/// Rust types it: arithmetic is on integers, `&&`, `||` and the condition of an `if` are `bool`s,
+/// an `assert` is a `bool`, and a `size`, a `len` or a region is an integer. Rust has no
+/// truthiness: `flags & 1` is not an assertion, `flags & 1 != 0` is. So:
+/// - `!` is a bitwise not on an integer (`!3` is `0xffff..fffc`), a logical one on a `bool`;
+/// - `as u8` (or `u16`, `u32`, `u64`, `usize`) keeps the low bits, `as u128` keeps everything,
+///   `true as u8` is `1`, and a cast to any other type is refused.
 ///
 /// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
 /// once), `if EXPR { EXPR } else { EXPR }`.
@@ -316,11 +320,41 @@ struct FieldInfo<'a> {
   offset: TokenStream,
 }
 
-/// Compile `expr` to the operations of a postfix expression.
+/// The type of a value of an expression, as Rust types it, where every integer is a `u128`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ty {
+  Int,
+  Bool,
+}
+
+impl Ty {
+  const fn name(self) -> &'static str {
+    match self {
+      Ty::Int => "an integer",
+      Ty::Bool => "a `bool`",
+    }
+  }
+}
+
+/// `Ok` if `found` is `expected`, else an error at what `spanned` is.
+fn expect(found: Ty, expected: Ty, spanned: &impl ToTokens) -> Result<()> {
+  if found == expected {
+    return Ok(());
+  }
+  let hint = match expected {
+    Ty::Int => "`EXPR as u8` is `0` or `1`",
+    Ty::Bool => "Rust has no truthiness: write `EXPR != 0`",
+  };
+  Err(Error::new_spanned(
+    spanned,
+    format!("expected {}, found {} ({hint})", expected.name(), found.name()),
+  ))
+}
+
 /// The variables of an expression: its `let`s, and the parameters of the closures of a `walk`.
 #[derive(Default)]
 struct Scope {
-  names: Vec<(Ident, u8)>,
+  names: Vec<(Ident, u8, Ty)>,
   /// In a closure of a `walk`.
   walking: bool,
   /// For each `walk`: the number of operations of the longest of its two expressions.
@@ -328,17 +362,22 @@ struct Scope {
 }
 
 impl Scope {
-  fn declare(&mut self, name: &Ident) -> Result<u8> {
+  fn declare(&mut self, name: &Ident, ty: Ty) -> Result<u8> {
     let index = self.names.len() as u8;
     if index >= 4 {
       return Err(Error::new(name.span(), "too many variables in an expression"));
     }
-    self.names.push((name.clone(), index));
+    self.names.push((name.clone(), index, ty));
     Ok(index)
   }
 
-  fn get(&self, name: &Ident) -> Option<u8> {
-    self.names.iter().rev().find(|(declared, _)| declared == name).map(|(_, index)| *index)
+  fn get(&self, name: &Ident) -> Option<(u8, Ty)> {
+    self
+      .names
+      .iter()
+      .rev()
+      .find(|(declared, ..)| declared == name)
+      .map(|(_, index, ty)| (*index, *ty))
   }
 }
 
@@ -349,7 +388,7 @@ fn compile_block(
   root: &TokenStream,
   ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
-) -> Result<()> {
+) -> Result<Ty> {
   let (op, visible) = (quote!(#root::layout::Op), scope.names.len());
   let Some((last, statements)) = block.stmts.split_last() else {
     return Err(Error::new(block.span(), "a block has a value"));
@@ -369,25 +408,26 @@ fn compile_block(
     let Some(syn::LocalInit { expr, diverge: None, .. }) = &local.init else {
       return Err(Error::new(local.span(), "expected `let name = EXPR;`"));
     };
-    compile(expr, fields, root, ops, scope)?;
-    let index = scope.declare(name)?;
+    let ty = compile(expr, fields, root, ops, scope)?;
+    let index = scope.declare(name, ty)?;
     ops.push(quote!(#op::Set(#index)));
   }
   let syn::Stmt::Expr(value, None) = last else {
     return Err(Error::new(last.span(), "a block ends with its value"));
   };
-  compile(value, fields, root, ops, scope)?;
+  let ty = compile(value, fields, root, ops, scope)?;
   scope.names.truncate(visible);
-  Ok(())
+  Ok(ty)
 }
 
+/// Compile `expr` to the operations of a postfix expression: returns its type.
 fn compile(
   expr: &Expr,
   fields: &[FieldInfo],
   root: &TokenStream,
   ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
-) -> Result<()> {
+) -> Result<Ty> {
   let op = quote!(#root::layout::Op);
   let load = |member: &Member, ops: &mut Vec<TokenStream>| {
     let field = fields.iter().find(|field| &field.member == member)?;
@@ -395,21 +435,28 @@ fn compile(
     ops.push(quote!(#op::load::<#ty>(#offset)));
     Some(())
   };
-  match expr {
+  // An integer, of what `expr` holds.
+  let int = |expr: &Expr, ops: &mut Vec<TokenStream>, scope: &mut Scope| {
+    let ty = compile(expr, fields, root, ops, scope)?;
+    expect(ty, Ty::Int, expr)
+  };
+  Ok(match expr {
     Expr::Paren(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     Expr::Group(expr) => compile(&expr.expr, fields, root, ops, scope)?,
     // `as` to an unsigned integer: the bits that it has, as in Rust.
     Expr::Cast(cast) => {
       let mask = cast_mask(&cast.ty, &op)?;
-      compile(&cast.expr, fields, root, ops, scope)?;
-      if let Some(mask) = mask {
+      let ty = compile(&cast.expr, fields, root, ops, scope)?;
+      if let (Some(mask), Ty::Int) = (mask, ty) {
         ops.push(quote!(#op::Lit(#mask)));
         ops.push(quote!(#op::And));
       }
+      Ty::Int
     }
     Expr::Lit(ExprLit { lit: Lit::Bool(lit), .. }) => {
       let value = u128::from(lit.value);
       ops.push(quote!(#op::Lit(#value)));
+      Ty::Bool
     }
     Expr::Block(block) => compile_block(&block.block, fields, root, ops, scope)?,
     // `if COND { EXPR } else { EXPR }`
@@ -417,54 +464,79 @@ fn compile(
       let Some((_, otherwise)) = &branch.else_branch else {
         return Err(Error::new(branch.span(), "an `if` has an `else`"));
       };
-      compile(&branch.cond, fields, root, ops, scope)?;
-      compile_block(&branch.then_branch, fields, root, ops, scope)?;
-      compile(otherwise, fields, root, ops, scope)?;
+      let cond = compile(&branch.cond, fields, root, ops, scope)?;
+      expect(cond, Ty::Bool, &branch.cond)?;
+      let then = compile_block(&branch.then_branch, fields, root, ops, scope)?;
+      let other = compile(otherwise, fields, root, ops, scope)?;
+      expect(other, then, otherwise)?;
       ops.push(quote!(#op::Select));
+      then
     }
     // A variable.
     Expr::Path(path) if path.path.get_ident().is_some_and(|ident| scope.get(ident).is_some()) => {
-      let index = path.path.get_ident().and_then(|ident| scope.get(ident));
+      let Some((index, ty)) = path.path.get_ident().and_then(|ident| scope.get(ident)) else {
+        unreachable!()
+      };
       ops.push(quote!(#op::Get(#index)));
+      ty
     }
     Expr::Path(path)
       if path
         .path
         .get_ident()
-        .is_some_and(|ident| load(&Member::Named(ident.clone()), ops).is_some()) => {}
+        .is_some_and(|ident| load(&Member::Named(ident.clone()), ops).is_some()) =>
+    {
+      Ty::Int
+    }
     Expr::Field(field) if matches!(&*field.base, Expr::Path(path) if path.path.is_ident("self")) => {
       load(&field.member, ops).ok_or_else(|| Error::new(field.member.span(), "no such field"))?;
+      Ty::Int
     }
+    // `!`: bitwise on an integer, logical on a `bool`.
     Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_)) => {
-      compile(&unary.expr, fields, root, ops, scope)?;
-      ops.push(quote!(#op::Not));
+      let ty = compile(&unary.expr, fields, root, ops, scope)?;
+      match ty {
+        Ty::Int => {
+          ops.push(quote!(#op::Lit(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff)));
+          ops.push(quote!(#op::Xor));
+        }
+        Ty::Bool => ops.push(quote!(#op::Not)),
+      }
+      ty
     }
     Expr::Binary(binary) => {
-      let name = match binary.op {
-        BinOp::Add(_) => "Add",
-        BinOp::Sub(_) => "Sub",
-        BinOp::Mul(_) => "Mul",
-        BinOp::Div(_) => "Div",
-        BinOp::Rem(_) => "Rem",
-        BinOp::BitAnd(_) => "And",
-        BinOp::BitOr(_) => "Or",
-        BinOp::BitXor(_) => "Xor",
-        BinOp::Shl(_) => "Shl",
-        BinOp::Shr(_) => "Shr",
-        BinOp::Eq(_) => "Eq",
-        BinOp::Ne(_) => "Ne",
-        BinOp::Lt(_) => "Lt",
-        BinOp::Le(_) => "Le",
-        BinOp::Gt(_) => "Gt",
-        BinOp::Ge(_) => "Ge",
-        BinOp::And(_) => "Both",
-        BinOp::Or(_) => "Either",
+      // The name of the operation, the type of its operands (`None`: any, but the same), whatever
+      // it compares.
+      let (name, operands, compares) = match binary.op {
+        BinOp::Add(_) => ("Add", Some(Ty::Int), false),
+        BinOp::Sub(_) => ("Sub", Some(Ty::Int), false),
+        BinOp::Mul(_) => ("Mul", Some(Ty::Int), false),
+        BinOp::Div(_) => ("Div", Some(Ty::Int), false),
+        BinOp::Rem(_) => ("Rem", Some(Ty::Int), false),
+        BinOp::Shl(_) => ("Shl", Some(Ty::Int), false),
+        BinOp::Shr(_) => ("Shr", Some(Ty::Int), false),
+        BinOp::BitAnd(_) => ("And", None, false),
+        BinOp::BitOr(_) => ("Or", None, false),
+        BinOp::BitXor(_) => ("Xor", None, false),
+        BinOp::Eq(_) => ("Eq", None, true),
+        BinOp::Ne(_) => ("Ne", None, true),
+        BinOp::Lt(_) => ("Lt", None, true),
+        BinOp::Le(_) => ("Le", None, true),
+        BinOp::Gt(_) => ("Gt", None, true),
+        BinOp::Ge(_) => ("Ge", None, true),
+        BinOp::And(_) => ("Both", Some(Ty::Bool), false),
+        BinOp::Or(_) => ("Either", Some(Ty::Bool), false),
         _ => return Err(Error::new(binary.op.span(), "unsupported operator")),
       };
-      compile(&binary.left, fields, root, ops, scope)?;
-      compile(&binary.right, fields, root, ops, scope)?;
+      let left = compile(&binary.left, fields, root, ops, scope)?;
+      if let Some(ty) = operands {
+        expect(left, ty, &binary.left)?;
+      }
+      let right = compile(&binary.right, fields, root, ops, scope)?;
+      expect(right, left, &binary.right)?;
       let name = Ident::new(name, binary.op.span());
       ops.push(quote!(#op::#name));
+      if compares { Ty::Bool } else { left }
     }
     // `size_of_val(self)`
     Expr::Call(call)
@@ -474,29 +546,32 @@ fn compile(
         && matches!(&call.args[0], Expr::Path(path) if path.path.is_ident("self")) =>
     {
       ops.push(quote!(#op::Size));
+      Ty::Int
     }
     // `crc32(start, end)`, `sum16(start, end)`: over the bytes of the value.
     Expr::Call(call)
       if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) =>
     {
-      compile(&call.args[0], fields, root, ops, scope)?;
-      compile(&call.args[1], fields, root, ops, scope)?;
+      int(&call.args[0], ops, scope)?;
+      int(&call.args[1], ops, scope)?;
       ops.push(if is_call(call, "crc32") { quote!(#op::Crc32) } else { quote!(#op::Sum16) });
+      Ty::Int
     }
     // `le(offset, size)`, `be(offset, size)`: an integer, anywhere in the value.
     Expr::Call(call) if call.args.len() == 2 && (is_call(call, "le") || is_call(call, "be")) => {
-      compile(&call.args[0], fields, root, ops, scope)?;
+      int(&call.args[0], ops, scope)?;
       let (size, big) = (&call.args[1], is_call(call, "be"));
       ops.push(quote!(#op::At { size: #size, big: #big }));
+      Ty::Int
     }
     // `walk(START, |at| COND, |at| NEXT)`: `START`, replaced by `NEXT` for as long as `COND`.
     Expr::Call(call) if call.args.len() == 3 && is_call(call, "walk") => {
       if scope.walking {
         return Err(Error::new(call.span(), "a `walk` cannot be in a `walk`"));
       }
-      compile(&call.args[0], fields, root, ops, scope)?;
+      int(&call.args[0], ops, scope)?;
       let (mut var, mut programs) = (0, vec![]);
-      for closure in [&call.args[1], &call.args[2]] {
+      for (closure, ty) in [(&call.args[1], Ty::Bool), (&call.args[2], Ty::Int)] {
         let parameter = match closure {
           Expr::Closure(closure) if closure.inputs.len() == 1 => match &closure.inputs[0] {
             syn::Pat::Ident(pat) => Some((&pat.ident, &closure.body)),
@@ -508,12 +583,12 @@ fn compile(
           return Err(Error::new(closure.span(), "expected `|name| EXPR`"));
         };
         let (visible, mut program) = (scope.names.len(), vec![]);
-        var = scope.declare(name)?;
+        var = scope.declare(name, Ty::Int)?;
         scope.walking = true;
         let compiled = compile(body, fields, root, &mut program, scope);
         scope.walking = false;
         scope.names.truncate(visible);
-        compiled?;
+        expect(compiled?, ty, body)?;
         programs.push(program);
       }
       let (cond, next) = (&programs[0], &programs[1]);
@@ -523,11 +598,14 @@ fn compile(
         cond: const { &[#(#cond),*] },
         next: const { &[#(#next),*] },
       }));
+      Ty::Int
     }
     // Anything else must be a constant.
-    expr => ops.push(quote!(#op::Lit((#expr) as u128))),
-  }
-  Ok(())
+    expr => {
+      ops.push(quote!(#op::Lit((#expr) as u128)));
+      Ty::Int
+    }
+  })
 }
 
 /// What `as TYPE` keeps of a `u128`: `None` for `u128`, the mask of the bits of another unsigned
@@ -617,18 +695,20 @@ struct Expression {
   walk: Option<usize>,
 }
 
-fn expression(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<Expression> {
+/// Compile an expression whose value is a `ty`.
+fn expression(expr: &Expr, ty: Ty, fields: &[FieldInfo], root: &TokenStream) -> Result<Expression> {
   let (mut ops, mut scope) = (vec![], Scope::default());
-  compile(expr, fields, root, &mut ops, &mut scope)?;
+  let found = compile(expr, fields, root, &mut ops, &mut scope)?;
+  expect(found, ty, expr)?;
   if scope.walks.len() > 1 {
     return Err(Error::new(expr.span(), "an expression can only have one `walk`"));
   }
   Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk: scope.walks.pop() })
 }
 
-/// An expression that is not the one of an `assert`: it cannot `walk`.
+/// An expression that is not the one of an `assert`, an integer: it cannot `walk`.
 fn plain(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<TokenStream> {
-  let expression = expression(expr, fields, root)?;
+  let expression = expression(expr, Ty::Int, fields, root)?;
   match expression.walk {
     Some(_) => Err(Error::new(expr.span(), "`walk` is for `assert`")),
     None => Ok(expression.ops),
@@ -796,7 +876,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   // The rules that walk: their index, their number of operations and the one of their walk.
   let mut walks = vec![];
   for assert in &options.asserts {
-    let Expression { ops, len, walk } = expression(assert, &fields, &root)?;
+    let Expression { ops, len, walk } = expression(assert, Ty::Bool, &fields, &root)?;
     let index = rules.len();
     rules.push(walk.map_or_else(
       || quote!(#rule::Assert(#ops)),

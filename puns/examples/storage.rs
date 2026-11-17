@@ -53,7 +53,7 @@ use puns::{
 #[derive(Pun)]
 #[repr(C)]
 // What a page leaves to the B-tree, once its reserved bytes are taken out, is at least 480 bytes.
-#[pun(assert(reserved_space <= 32 || page_size + (page_size == 1) * 65535 - reserved_space >= 480))]
+#[pun(assert(reserved_space <= 32 || page_size + (page_size == 1) as u128 * 65535 - reserved_space >= 480))]
 #[pun(get(page_bytes: u32 = page_size + (page_size == 1) as u128 * 65535))]
 pub struct SqliteHeader {
   /// `SQLite format 3\0`.
@@ -95,9 +95,9 @@ pub struct SqliteHeader {
 /// when that count is valid, which it is when "version valid for" is the change counter.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(assert(size_of_val(self) % (page_size + (page_size == 1) * 65535) == 0))]
+#[pun(assert(size_of_val(self) % (page_size + (page_size == 1) as u128 * 65535) == 0))]
 #[pun(assert(be(92, 4) != be(24, 4)
-  || be(28, 4) * (page_size + (page_size == 1) * 65535) == size_of_val(self)))]
+  || be(28, 4) * (page_size + (page_size == 1) as u128 * 65535) == size_of_val(self)))]
 pub struct Sqlite {
   pub magic: u128bec<0x5351_4c69_7465_2066_6f72_6d61_7420_3300>,
   #[pun(valid(1, 512, 1024, 2048, 4096, 8192, 16384, 32768))]
