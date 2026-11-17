@@ -83,7 +83,12 @@ impl Spec {
   /// `ranges` are inclusive and must be sorted, disjoint and non-adjacent; this is checked at
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
-    let size = size_of::<T>();
+    Self { size: size_of::<T>(), endian, valid: Valid::Any }.with_ranges(ranges)
+  }
+
+  /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
+  pub const fn with_ranges(self, ranges: &'static [(u128, u128)]) -> Self {
+    let (size, endian) = (self.size, self.endian);
     assert!(size >= 1 && size <= 16, "a constrained scalar must be 1 to 16 bytes wide");
     assert!(!ranges.is_empty(), "a scalar must have at least one valid value");
     let max = max_value(size);
@@ -220,7 +225,9 @@ pub(crate) enum Kind {
   Scalar(Spec),
   Array(&'static Layout, usize),
   Slice(&'static Layout),
-  Struct(&'static [Field]),
+  Struct(&'static [Field], &'static [Rule]),
+  /// A tail of bytes that a [`Dfa`] accepts.
+  Pattern(&'static Dfa),
 }
 
 /// A field of a struct, see [`Layout::structure`].
@@ -232,12 +239,41 @@ pub struct Field {
   pub(crate) index: usize,
   /// Number of constrained scalars declared before this field in the struct.
   pub(crate) leaf: usize,
+  /// The layout is a scalar that accepts less than the type of the field does.
+  pub(crate) restricted: bool,
 }
 
 impl Field {
   #[inline]
   pub const fn new(offset: usize, layout: &'static Layout) -> Self {
-    Self { offset, layout, index: 0, leaf: 0 }
+    Self { offset, layout, index: 0, leaf: 0, restricted: false }
+  }
+
+  /// A scalar field that only accepts some of the values of its type, see
+  /// [`Layout::restricted`].
+  #[inline]
+  pub const fn restricted(offset: usize, layout: &'static Layout) -> Self {
+    assert!(matches!(layout.kind, Kind::Scalar(_)), "only scalar fields can be restricted");
+    Self { offset, layout, index: 0, leaf: 0, restricted: true }
+  }
+
+  /// The specification of a restricted field.
+  #[doc(hidden)]
+  pub const fn restriction(&self) -> Option<Spec> {
+    match self.layout.kind {
+      Kind::Scalar(spec) if self.restricted => Some(spec),
+      _ => None,
+    }
+  }
+
+  #[doc(hidden)]
+  pub const fn offset(&self) -> usize {
+    self.offset
+  }
+
+  #[doc(hidden)]
+  pub const fn leaf(&self) -> usize {
+    self.leaf
   }
 }
 
@@ -252,9 +288,12 @@ pub struct Layout {
   /// Size of an element of the tail slice, `0` if the type is `Sized`.
   pub(crate) tail: usize,
   pub(crate) unsized_: bool,
-  /// Number of constrained scalars (array and slice elements are counted once).
+  /// Number of things that validation may have to check: constrained scalars, patterns, and
+  /// structs with rules (array and slice elements are counted once).
   pub(crate) leaves: usize,
   pub(crate) uniform: Uniform,
+  /// Whatever a struct of the layout has rules.
+  pub(crate) has_rules: bool,
 }
 
 /// What [`validate`](crate::validate) has to do for a type.
@@ -263,7 +302,8 @@ pub(crate) enum Shape {
   Scalar(Spec),
   Array(usize),
   Slice,
-  Struct,
+  Struct(&'static [Rule]),
+  Pattern(&'static Dfa),
 }
 
 /// Round `value` up to a multiple of `align` (a power of two).
@@ -304,19 +344,67 @@ impl Layout {
         Valid::Any => Uniform::Any,
         Valid::In(_) => Uniform::No,
       },
+      has_rules: false,
+    }
+  }
+
+  /// Same scalar, that only accepts the values of `ranges` (see [`Spec::ranges`]), which must
+  /// all be valid for the scalar.
+  pub const fn restricted(&self, ranges: &'static [(u128, u128)]) -> Self {
+    let Kind::Scalar(spec) = self.kind else { panic!("only scalars can be restricted") };
+    let new = spec.with_ranges(ranges);
+    let mut i = 0;
+    while i < ranges.len() {
+      assert!(
+        spec.contains(ranges[i].0) && spec.contains(ranges[i].1),
+        "restricted to values that are not valid for the type"
+      );
+      if let Valid::In(old) = spec.valid {
+        assert!(
+          matches!(crate::analysis::relate_ranges(ranges, old), crate::analysis::Rel::Subset),
+          "restricted to values that are not valid for the type"
+        );
+      }
+      i += 1;
+    }
+    Self {
+      kind: Kind::Scalar(new),
+      leaves: new.is_constrained() as usize,
+      uniform: if new.is_constrained() { Uniform::No } else { self.uniform },
+      ..*self
+    }
+  }
+
+  /// Layout of an unsized type made of bytes that `dfa` accepts, such as `str`.
+  pub const fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
+    // SAFETY: the caller gives the probe of a type whose pointers have a slice length.
+    unsafe { ptr::verify::<T>(probe) };
+    // SAFETY: the metadata of `probe` is a small slice length.
+    assert!(unsafe { mem::size_of_val_raw(probe) } == ptr::PROBE_LEN, "not a byte string");
+    dfa.check();
+    Self {
+      kind: Kind::Pattern(dfa),
+      size: 0,
+      align: 1,
+      tail: 1,
+      unsized_: true,
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
     }
   }
 
   /// Layout of a type the size and alignment of `T` whose bytes are all padding.
   pub const fn padding<T>() -> Self {
     Self {
-      kind: Kind::Struct(&[]),
+      kind: Kind::Struct(&[], &[]),
       size: size_of::<T>(),
       align: align_of::<T>(),
       tail: 0,
       unsized_: false,
       leaves: 0,
       uniform: Uniform::Pad,
+      has_rules: false,
     }
   }
 
@@ -334,6 +422,7 @@ impl Layout {
       unsized_: false,
       leaves: elem.leaves,
       uniform: elem.uniform,
+      has_rules: elem.has_rules,
     }
   }
 
@@ -350,24 +439,30 @@ impl Layout {
       unsized_: true,
       leaves: elem.leaves,
       uniform: elem.uniform,
+      has_rules: elem.has_rules,
     }
   }
 
   /// Layout of the struct `T`.
   ///
   /// - `probe` is `T::PROBE`,
-  /// - `fields` are the fields of `T` as returned by [`Layout::sort_fields`].
+  /// - `fields` are the fields of `T` as returned by [`Layout::sort_fields`],
+  /// - `rules` are what values of `T` must satisfy beyond the validity of their fields.
   ///
   /// The size and alignment of `T` come from the compiler. If the last field is unsized, so is
   /// `T`, and the way the compiler sizes `T` is checked against the model used by this crate.
-  pub const fn structure<T: ?Sized>(probe: *const T, fields: &'static [Field]) -> Self {
-    let (mut i, mut end, mut leaves) = (0, 0, 0);
+  pub const fn structure<T: ?Sized>(
+    probe: *const T, fields: &'static [Field], rules: &'static [Rule],
+  ) -> Self {
+    let (mut i, mut end, mut leaves) = (0, 0, (!rules.is_empty()) as usize);
+    let mut has_rules = !rules.is_empty();
     let (mut all_any, mut all_pad) = (true, true);
     let mut tail: Option<&Field> = None;
     while i < fields.len() {
       let field = &fields[i];
       assert!(tail.is_none(), "only the last field of a struct can be unsized");
       leaves += field.layout.leaves;
+      has_rules |= field.layout.has_rules;
       if field.layout.unsized_ {
         assert!(field.offset >= end, "fields must not overlap");
         tail = Some(field);
@@ -390,21 +485,33 @@ impl Layout {
           (_, true) => Uniform::Pad,
           _ => Uniform::No,
         };
-        Self { kind: Kind::Struct(fields), size, align, tail: 0, unsized_: false, leaves, uniform }
+        check_rules(rules, end, false);
+        Self {
+          kind: Kind::Struct(fields, rules),
+          size,
+          align,
+          tail: 0,
+          unsized_: false,
+          leaves,
+          uniform,
+          has_rules,
+        }
       }
       Some(field) => {
         // SAFETY: the tail of `T` is a slice (the tail of its last field is).
         unsafe { ptr::verify::<T>(probe) };
         // SAFETY: the metadata of `probe` is a small slice length.
         let align = unsafe { mem::align_of_val_raw(probe) };
+        check_rules(rules, end, true);
         let this = Self {
-          kind: Kind::Struct(fields),
+          kind: Kind::Struct(fields, rules),
           size: field.offset + field.layout.size,
           align,
           tail: field.layout.tail,
           unsized_: true,
           leaves,
           uniform: Uniform::No,
+          has_rules,
         };
         // Check the size model against the compiler.
         let mut len = 0;
@@ -486,7 +593,7 @@ impl Layout {
   /// Offset of the field declared at `index`.
   #[doc(hidden)]
   pub const fn field(&self, index: usize) -> &Field {
-    let Kind::Struct(fields) = self.kind else { panic!("not a struct") };
+    let Kind::Struct(fields, _) = self.kind else { panic!("not a struct") };
     let mut i = 0;
     while i < fields.len() {
       if fields[i].index == index {
@@ -513,8 +620,47 @@ impl Layout {
       Kind::Scalar(spec) => Shape::Scalar(spec),
       Kind::Array(_, len) => Shape::Array(len),
       Kind::Slice(_) => Shape::Slice,
-      Kind::Struct(_) => Shape::Struct,
+      Kind::Struct(_, rules) => Shape::Struct(rules),
+      Kind::Pattern(dfa) => Shape::Pattern(dfa),
     }
+  }
+
+  /// Rules of a struct.
+  #[inline]
+  pub(crate) const fn rules(&self) -> &'static [Rule] {
+    match self.kind {
+      Kind::Struct(_, rules) => rules,
+      _ => &[],
+    }
+  }
+
+  /// The rule that tells how long a value is from its first bytes, if any: the first `Size` or
+  /// `Len` rule of the type, or else of its last field, and so on.
+  pub(crate) const fn length_rule(&self) -> Option<LengthRule> {
+    let (mut layout, mut base) = (self, 0);
+    loop {
+      let Kind::Struct(fields, rules) = layout.kind else { return None };
+      let mut i = 0;
+      while i < rules.len() {
+        match rules[i] {
+          Rule::Size(ops) => return Some(LengthRule { base, elements: false, ops }),
+          Rule::Len(ops) => return Some(LengthRule { base, elements: true, ops }),
+          _ => {}
+        }
+        i += 1;
+      }
+      if fields.is_empty() || !layout.unsized_ {
+        return None;
+      }
+      let last = &fields[fields.len() - 1];
+      (layout, base) = (last.layout, base + last.offset);
+    }
+  }
+
+  /// Offset of the first byte of the tail slice (the size of a `Sized` type).
+  #[inline]
+  pub(crate) const fn head(&self) -> usize {
+    self.size
   }
 
   /// Whatever the all-zeros bit pattern is valid.
@@ -523,7 +669,7 @@ impl Layout {
       Kind::Scalar(spec) => spec.contains(0),
       Kind::Array(elem, len) => len == 0 || elem.zeroable(),
       Kind::Slice(elem) => elem.zeroable(),
-      Kind::Struct(fields) => {
+      Kind::Struct(fields, _) => {
         let mut i = 0;
         while i < fields.len() {
           if !fields[i].layout.zeroable() {
@@ -533,6 +679,496 @@ impl Layout {
         }
         true
       }
+      Kind::Pattern(dfa) => dfa.states[0].accept,
     }
   }
+
+  /// Whatever two layouts describe the same thing.
+  pub(crate) const fn equals(&self, other: &Layout) -> bool {
+    if self.size != other.size
+      || self.align != other.align
+      || self.tail != other.tail
+      || self.unsized_ != other.unsized_
+    {
+      return false;
+    }
+    match (self.kind, other.kind) {
+      (Kind::Scalar(a), Kind::Scalar(b)) => {
+        a.size == b.size
+          && match (a.valid, b.valid) {
+            (Valid::Uninit, Valid::Uninit) | (Valid::Any, Valid::Any) => true,
+            (Valid::In(x), Valid::In(y)) => {
+              let mut i = 0;
+              while i < x.len() && i < y.len() && x[i].0 == y[i].0 && x[i].1 == y[i].1 {
+                i += 1;
+              }
+              a.endian.equals(b.endian) && x.len() == y.len() && i == x.len()
+            }
+            _ => false,
+          }
+      }
+      (Kind::Array(a, n), Kind::Array(b, m)) => n == m && a.equals(b),
+      (Kind::Slice(a), Kind::Slice(b)) => a.equals(b),
+      (Kind::Struct(a, ra), Kind::Struct(b, rb)) => {
+        if a.len() != b.len() || ra.len() != rb.len() {
+          return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+          if a[i].offset != b[i].offset || !a[i].layout.equals(b[i].layout) {
+            return false;
+          }
+          i += 1;
+        }
+        let mut i = 0;
+        while i < ra.len() {
+          if !ra[i].equals(&rb[i]) {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      (Kind::Pattern(a), Kind::Pattern(b)) => a.id == b.id,
+      _ => false,
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// `Dfa`
+
+/// A deterministic finite automaton over bytes: the language of an unsized type like `str`.
+///
+/// The first state is the initial one. At most 64 states.
+#[derive(Debug)]
+pub struct Dfa {
+  /// Two automata with the same `id` must be the same.
+  pub id: u32,
+  pub states: &'static [DfaState],
+}
+
+#[derive(Debug)]
+pub struct DfaState {
+  /// Whatever a value can end in this state.
+  pub accept: bool,
+  /// `(first byte, last byte, next state)`, sorted and disjoint.
+  pub edges: &'static [(u8, u8, u8)],
+}
+
+impl Dfa {
+  /// UTF-8, as of the Unicode standard (table 3-7, "well-formed UTF-8 byte sequences").
+  pub const UTF8: &'static Dfa = &Dfa {
+    id: 1,
+    states: &[
+      // 0: between two characters.
+      DfaState {
+        accept: true,
+        edges: &[
+          (0x00, 0x7f, 0),
+          (0xc2, 0xdf, 1),
+          (0xe0, 0xe0, 4),
+          (0xe1, 0xec, 2),
+          (0xed, 0xed, 5),
+          (0xee, 0xef, 2),
+          (0xf0, 0xf0, 6),
+          (0xf1, 0xf3, 3),
+          (0xf4, 0xf4, 7),
+        ],
+      },
+      // 1, 2, 3: that many continuation bytes to go.
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 0)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 1)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 2)] },
+      // 4: after `E0`, no overlong encoding.
+      DfaState { accept: false, edges: &[(0xa0, 0xbf, 1)] },
+      // 5: after `ED`, no surrogate.
+      DfaState { accept: false, edges: &[(0x80, 0x9f, 1)] },
+      // 6: after `F0`, no overlong encoding.
+      DfaState { accept: false, edges: &[(0x90, 0xbf, 2)] },
+      // 7: after `F4`, nothing above `U+10FFFF`.
+      DfaState { accept: false, edges: &[(0x80, 0x8f, 2)] },
+    ],
+  };
+
+  const fn check(&self) {
+    assert!(!self.states.is_empty() && self.states.len() <= 64, "a DFA has 1 to 64 states");
+    let mut i = 0;
+    while i < self.states.len() {
+      let (edges, mut j) = (self.states[i].edges, 0);
+      while j < edges.len() {
+        assert!(edges[j].0 <= edges[j].1 && (edges[j].2 as usize) < self.states.len());
+        assert!(j == 0 || edges[j - 1].1 < edges[j].0, "DFA edges must be sorted and disjoint");
+        j += 1;
+      }
+      i += 1;
+    }
+  }
+
+  /// States reached from the states of `set` (a bit for each) with a byte of `lo..=hi`, and
+  /// whatever every such byte leads somewhere from every state of `set`.
+  pub(crate) const fn step(&self, set: u64, lo: u8, hi: u8) -> (u64, bool) {
+    let (mut next, mut total, mut state) = (0, true, 0);
+    while state < self.states.len() {
+      if set & (1 << state) != 0 {
+        // `need` is the first byte of `lo..=hi` that no edge covers so far.
+        let (edges, mut need, mut i) = (self.states[state].edges, lo as u16, 0);
+        while i < edges.len() && need <= hi as u16 {
+          let (first, last, to) = edges[i];
+          if last as u16 >= need && first <= hi {
+            total &= first as u16 <= need;
+            next |= 1 << to;
+            need = last as u16 + 1;
+          }
+          i += 1;
+        }
+        total &= need > hi as u16;
+      }
+      state += 1;
+    }
+    (next, total)
+  }
+
+  /// Whatever a value can end in every state of `set`.
+  pub(crate) const fn accepts(&self, set: u64) -> bool {
+    let mut state = 0;
+    while state < self.states.len() {
+      if set & (1 << state) != 0 && !self.states[state].accept {
+        return false;
+      }
+      state += 1;
+    }
+    true
+  }
+
+  /// Every state that can be reached from the initial one.
+  pub(crate) const fn reachable(&self) -> u64 {
+    let mut set = 1;
+    loop {
+      let next = set | self.step(set, 0, 0xff).0;
+      if next == set {
+        return set;
+      }
+      set = next;
+    }
+  }
+
+  /// Whatever the automaton accepts the `len` bytes at `ptr`.
+  ///
+  /// # Safety
+  /// `ptr` must be valid for reads of `len` initialized bytes.
+  #[inline]
+  pub(crate) const unsafe fn matches(&self, ptr: *const u8, len: usize) -> bool {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    if self.id == Self::UTF8.id {
+      return core::str::from_utf8(bytes).is_ok();
+    }
+    let (mut state, mut i) = (0, 0);
+    'bytes: while i < len {
+      let (edges, mut j) = (self.states[state].edges, 0);
+      while j < edges.len() {
+        if edges[j].0 <= bytes[i] && bytes[i] <= edges[j].1 {
+          state = edges[j].2 as usize;
+          i += 1;
+          continue 'bytes;
+        }
+        j += 1;
+      }
+      return false;
+    }
+    self.states[state].accept
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// `Rule`
+
+/// An operation of a postfix expression over the scalar fields of a struct, see [`Rule`].
+///
+/// Expressions are evaluated on `u128`; an overflow, an underflow or a division by zero makes the
+/// rule that holds the expression fail.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Op {
+  /// Push a constant.
+  Lit(u128),
+  /// Push the unsigned integer of `size` bytes at `offset` in the struct.
+  Load { offset: usize, size: u8, big: bool },
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Rem,
+  And,
+  Or,
+  Xor,
+  Shl,
+  Shr,
+  Eq,
+  Ne,
+  Lt,
+  Le,
+  Gt,
+  Ge,
+  /// `&&`
+  Both,
+  /// `||`
+  Either,
+  /// `!`, on a boolean.
+  Not,
+}
+
+impl Op {
+  /// Push the value of the field of type `T` at `offset`.
+  pub const fn load<T: crate::Scalar>(offset: usize) -> Self {
+    let spec = T::SPEC;
+    assert!(spec.size >= 1 && spec.size <= 16, "not an integer field");
+    Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }
+  }
+
+  const fn equals(&self, other: &Op) -> bool {
+    match (*self, *other) {
+      (Op::Lit(a), Op::Lit(b)) => a == b,
+      (Op::Load { offset: a, size: b, big: c }, Op::Load { offset: x, size: y, big: z }) => {
+        a == x && b == y && c == z
+      }
+      (Op::Lit(_) | Op::Load { .. }, _) | (_, Op::Lit(_) | Op::Load { .. }) => false,
+      // Other operations hold no data.
+      (a, b) => a.code() == b.code(),
+    }
+  }
+
+  const fn code(self) -> u8 {
+    // SAFETY-free: the discriminant of a variant without data, by exhaustion.
+    match self {
+      Op::Lit(_) => 0,
+      Op::Load { .. } => 1,
+      Op::Add => 2,
+      Op::Sub => 3,
+      Op::Mul => 4,
+      Op::Div => 5,
+      Op::Rem => 6,
+      Op::And => 7,
+      Op::Or => 8,
+      Op::Xor => 9,
+      Op::Shl => 10,
+      Op::Shr => 11,
+      Op::Eq => 12,
+      Op::Ne => 13,
+      Op::Lt => 14,
+      Op::Le => 15,
+      Op::Gt => 16,
+      Op::Ge => 17,
+      Op::Both => 18,
+      Op::Either => 19,
+      Op::Not => 20,
+    }
+  }
+}
+
+/// Something that values of a struct must satisfy, beyond the validity of their fields.
+///
+/// Rules are checked when a value is made from something else (`try_transmute*`, `unpack`), and
+/// tell `unpack` how long a value is. They are not invariants that unsafe code may rely on: safe
+/// code can write to the fields of a struct.
+#[derive(Copy, Clone, Debug)]
+pub enum Rule {
+  /// The size in bytes of the value is the result of the expression.
+  Size(&'static [Op]),
+  /// The number of elements of the tail slice of the value is the result of the expression.
+  Len(&'static [Op]),
+  /// The expression is true.
+  Assert(&'static [Op]),
+  /// The tail of the value starts with a region of as many bytes as the result of the
+  /// expression (`None`: what remains). Regions follow each other, in the order of the rules.
+  Region(Option<&'static [Op]>),
+}
+
+impl Rule {
+  const fn ops(&self) -> Option<&'static [Op]> {
+    match *self {
+      Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => Some(ops),
+      Rule::Region(None) => None,
+    }
+  }
+
+  const fn equals(&self, other: &Rule) -> bool {
+    let same_kind = matches!(
+      (self, other),
+      (Rule::Size(_), Rule::Size(_))
+        | (Rule::Len(_), Rule::Len(_))
+        | (Rule::Assert(_), Rule::Assert(_))
+        | (Rule::Region(_), Rule::Region(_))
+    );
+    match (self.ops(), other.ops()) {
+      (None, None) => same_kind,
+      (Some(a), Some(b)) => {
+        let mut i = 0;
+        while i < a.len() && i < b.len() && a[i].equals(&b[i]) {
+          i += 1;
+        }
+        same_kind && a.len() == b.len() && i == a.len()
+      }
+      _ => false,
+    }
+  }
+}
+
+/// See [`Layout::length_rule`].
+#[derive(Copy, Clone)]
+pub(crate) struct LengthRule {
+  /// Offset of the struct that has the rule.
+  pub(crate) base: usize,
+  /// The expression is a number of elements of the tail slice, rather than the size in bytes of
+  /// the struct.
+  pub(crate) elements: bool,
+  pub(crate) ops: &'static [Op],
+}
+
+/// Depth of the stack of [`eval`].
+const STACK: usize = 16;
+
+/// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
+const fn check_rules(rules: &[Rule], head: usize, unsized_: bool) {
+  let mut i = 0;
+  while i < rules.len() {
+    assert!(
+      unsized_ || !matches!(rules[i], Rule::Len(_) | Rule::Region(_)),
+      "this rule is about the tail of an unsized struct"
+    );
+    if let Some(ops) = rules[i].ops() {
+      let (mut depth, mut j) = (0usize, 0);
+      while j < ops.len() {
+        match ops[j] {
+          Op::Lit(_) => depth += 1,
+          Op::Load { offset, size, .. } => {
+            assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
+            depth += 1;
+          }
+          Op::Not => assert!(depth >= 1, "malformed expression"),
+          _ => {
+            assert!(depth >= 2, "malformed expression");
+            depth -= 1;
+          }
+        }
+        assert!(depth <= STACK, "expression is too deep");
+        j += 1;
+      }
+      assert!(depth == 1, "malformed expression");
+    }
+    i += 1;
+  }
+}
+
+/// Evaluate a postfix expression over the struct at `base`.
+///
+/// # Safety
+/// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
+/// reads of the sized fields of such a struct, initialized.
+#[inline(always)]
+pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8) -> Option<u128> {
+  let (mut stack, mut depth, mut i) = ([0u128; STACK], 0, 0);
+  while i < ops.len() {
+    match ops[i] {
+      Op::Lit(value) => {
+        stack[depth] = value;
+        depth += 1;
+      }
+      Op::Load { offset, size, big } => {
+        let endian = if big { Endian::Big } else { Endian::Little };
+        // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
+        stack[depth] = unsafe { load(base.add(offset), size as usize, endian) };
+        depth += 1;
+      }
+      Op::Not => stack[depth - 1] = (stack[depth - 1] == 0) as u128,
+      op => {
+        let (a, b) = (stack[depth - 2], stack[depth - 1]);
+        let value = match op {
+          Op::Add => a.checked_add(b),
+          Op::Sub => a.checked_sub(b),
+          Op::Mul => a.checked_mul(b),
+          Op::Div => a.checked_div(b),
+          Op::Rem => a.checked_rem(b),
+          Op::And => Some(a & b),
+          Op::Or => Some(a | b),
+          Op::Xor => Some(a ^ b),
+          Op::Shl => if b < 128 { Some(a << b) } else { None },
+          Op::Shr => if b < 128 { Some(a >> b) } else { None },
+          Op::Eq => Some((a == b) as u128),
+          Op::Ne => Some((a != b) as u128),
+          Op::Lt => Some((a < b) as u128),
+          Op::Le => Some((a <= b) as u128),
+          Op::Gt => Some((a > b) as u128),
+          Op::Ge => Some((a >= b) as u128),
+          Op::Both => Some((a != 0 && b != 0) as u128),
+          Op::Either => Some((a != 0 || b != 0) as u128),
+          Op::Lit(_) | Op::Load { .. } | Op::Not => None,
+        };
+        let Some(value) = value else { return None };
+        depth -= 1;
+        stack[depth - 1] = value;
+      }
+    }
+    i += 1;
+  }
+  Some(stack[0])
+}
+
+/// Bounds of a range of valid values of an integer of the size of `T`, for `#[data(valid(..))]`.
+#[doc(hidden)]
+pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -> (u128, u128) {
+  let start = match start {
+    Some(start) => start,
+    None => 0,
+  };
+  let end = match end {
+    Some(end) if inclusive => end,
+    Some(end) => {
+      assert!(end > start, "empty range");
+      end - 1
+    }
+    None => max_value(size_of::<T>()),
+  };
+  assert!(start <= end, "empty range");
+  (start, end)
+}
+
+/// Sort and merge inclusive ranges; returns the ranges and their count.
+#[doc(hidden)]
+pub const fn merge_ranges<const N: usize>(
+  mut ranges: [(u128, u128); N],
+) -> ([(u128, u128); N], usize) {
+  let mut i = 1;
+  while i < N {
+    let mut j = i;
+    while j > 0 && ranges[j - 1].0 > ranges[j].0 {
+      ranges.swap(j - 1, j);
+      j -= 1;
+    }
+    i += 1;
+  }
+  let (mut merged, mut len, mut i) = ([(0, 0); N], 0, 0);
+  while i < N {
+    if len > 0 && (ranges[i].0 <= merged[len - 1].1 || ranges[i].0 - merged[len - 1].1 == 1) {
+      if ranges[i].1 > merged[len - 1].1 {
+        merged[len - 1].1 = ranges[i].1;
+      }
+    } else {
+      merged[len] = ranges[i];
+      len += 1;
+    }
+    i += 1;
+  }
+  (merged, len)
+}
+
+/// The bits of a value of at most 16 bytes, as a native-endian unsigned integer.
+///
+/// # Safety
+/// Every byte of `value` must be initialized.
+#[doc(hidden)]
+pub const unsafe fn bits_of<T>(value: &T) -> u128 {
+  assert!(size_of::<T>() <= 16, "a fieldless enum cannot be larger than 16 bytes");
+  // SAFETY: guaranteed by the caller.
+  unsafe { load((value as *const T).cast(), size_of::<T>(), Endian::NATIVE) }
 }

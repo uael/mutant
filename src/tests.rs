@@ -1,5 +1,5 @@
 use crate::analysis::{Exact, analyze, mutable};
-use crate::layout::{Endian, Field, Layout, Spec};
+use crate::layout::{Endian, Spec};
 use crate::{Data, Scalar};
 use core::num::NonZero;
 
@@ -49,37 +49,15 @@ scalar!(GeLe(u32) = Little [(0x100, 0xffff_ffff)]);
 scalar!(GeBe(u32) = Big [(0x100, 0xffff_ffff)]);
 scalar!(Enum3(u32) = Little [(0x01010101, 0x01010101), (0x02020202, 0x02020202), (0x03030303, 0x03030303)]);
 
-/// `#[repr(C)] struct { a: A, b: B }`, by hand until the derive is back.
+#[derive(Data)]
 #[repr(C)]
+#[data(crate)]
 struct Pair<A, B: ?Sized>(A, B);
-unsafe impl<A: Data, B: ?Sized + Data> Data for Pair<A, B> {
-  const PROBE: *const Self = B::PROBE as *const Self;
-  const LAYOUT: Layout = Layout::structure::<Self>(
-    Self::PROBE,
-    const {
-      &Layout::sort_fields([
-        Field::new(0, &A::LAYOUT),
-        Field::new(crate::layout::tail_offset(size_of::<A>(), B::LAYOUT.align(), usize::MAX), &B::LAYOUT),
-      ])
-    },
-  );
-}
 
-/// `#[repr(C, packed)] struct { a: A, b: B }`.
+#[derive(Data)]
 #[repr(C, packed)]
+#[data(crate)]
 struct Packed<A, B>(A, B);
-unsafe impl<A: Data, B: Data> Data for Packed<A, B> {
-  const PROBE: *const Self = core::ptr::null();
-  const LAYOUT: Layout = Layout::structure::<Self>(
-    Self::PROBE,
-    const {
-      &Layout::sort_fields([
-        Field::new(0, &A::LAYOUT),
-        Field::new(crate::layout::tail_offset(size_of::<A>(), B::LAYOUT.align(), 1), &B::LAYOUT),
-      ])
-    },
-  );
-}
 
 #[test]
 fn scalars() {

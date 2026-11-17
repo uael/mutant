@@ -24,7 +24,7 @@
 //! The cost of an analysis is therefore proportional to the number of fields of the types, not to
 //! their size.
 
-use crate::layout::{Kind, Layout, Spec, Uniform, Valid, max_value};
+use crate::layout::{Dfa, Kind, Layout, Spec, Uniform, Valid, max_value};
 
 // -------------------------------------------------------------------------------------------------
 // `Cursor`
@@ -40,6 +40,8 @@ pub(crate) enum RunKind {
   Any,
   /// A constrained scalar.
   Atom(Spec),
+  /// Bytes, until the end, that an automaton accepts.
+  Pattern(&'static Dfa),
 }
 
 /// Consecutive bytes of the same nature: `start..end` are offsets from the root of the layout.
@@ -78,6 +80,8 @@ struct Repeat {
   end: usize,
   /// The repetition is a run of identical bytes rather than an array or a slice.
   run: bool,
+  /// What tells an array or a slice from another: its depth in the layout and its offset.
+  id: (usize, usize),
 }
 
 /// Forward-only iterator over the runs of a layout.
@@ -120,7 +124,10 @@ impl Cursor {
           let index = (pos - frame.base) / elem.size;
           self.push(elem, frame.base + index * elem.size, frame.leaf);
         }
-        Kind::Struct(fields) => {
+        Kind::Pattern(dfa) => {
+          return Run { kind: RunKind::Pattern(dfa), start: frame.base, end, leaf: frame.leaf };
+        }
+        Kind::Struct(fields, _) => {
           // Skip the fields that end before `pos`.
           let mut i = frame.field;
           while i < fields.len() {
@@ -166,13 +173,13 @@ impl Cursor {
       };
       // The next frame is the element the cursor is in.
       if !aligned || self.stack[i + 1].base == pos {
-        out[len] = Repeat { stride: elem.size, end, run: false };
+        out[len] = Repeat { stride: elem.size, end, run: false, id: (i, frame.base) };
         len += 1;
       }
       i += 1;
     }
-    if !matches!(run.kind, RunKind::Atom(_)) {
-      out[len] = Repeat { stride: 1, end: run.end, run: true };
+    if matches!(run.kind, RunKind::Pad | RunKind::Any) {
+      out[len] = Repeat { stride: 1, end: run.end, run: true, id: (usize::MAX, 0) };
       len += 1;
     }
     len
@@ -246,6 +253,20 @@ pub(crate) struct Relation {
 impl Relation {
   const NEW: Self = Self { uninit: None, disjoint: None, partial: None, marks: Marks::NONE };
 
+  /// The thing at `leaf`, which is at `pos`, has to be checked at run time.
+  const fn mark(&mut self, leaf: usize, pos: usize) {
+    self.marks.set(leaf);
+    if self.partial.is_none() {
+      self.partial = Some(pos);
+    }
+  }
+
+  const fn uninit(&mut self, pos: usize) {
+    if self.uninit.is_none() {
+      self.uninit = Some(pos);
+    }
+  }
+
   /// Every value of the source is a valid value of the target.
   pub(crate) const fn infallible(&self) -> bool {
     self.uninit.is_none() && self.disjoint.is_none() && self.partial.is_none()
@@ -266,6 +287,20 @@ const fn relate_range(
 ) -> bool {
   while pos < end {
     let (run_a, run_b) = (a.run_at(pos), b.run_at(pos));
+    // Patterns go on until the end.
+    if let RunKind::Pattern(dfa) = run_b.kind {
+      pattern_target(a, dfa, run_b.leaf, pos, end, out);
+      return true;
+    }
+    if let RunKind::Pattern(_) = run_a.kind {
+      // The bytes of a pattern are initialized: enough for a target without constraint.
+      if !(matches!(run_b.kind, RunKind::Pad | RunKind::Any) && run_b.end >= end) {
+        // Else, give up on proving anything: everything is checked at run time.
+        out.marks = Marks::ALL;
+        out.partial = Some(pos);
+      }
+      return true;
+    }
     match find_skip(a, b, pos, end, &run_a, &run_b) {
       Skip::No => {}
       Skip::To { period, next } => {
@@ -284,8 +319,8 @@ const fn relate_range(
       RunKind::Pad => pos = stop,
       // Unconstrained bytes accept everything but padding.
       RunKind::Any => {
-        if matches!(run_a.kind, RunKind::Pad) && out.uninit.is_none() {
-          out.uninit = Some(pos);
+        if matches!(run_a.kind, RunKind::Pad) {
+          out.uninit(pos);
         }
         pos = min(run_a.end, stop);
       }
@@ -294,17 +329,10 @@ const fn relate_range(
         assert!(run_b.start == pos && run_b.end <= end);
         let (pieces, len) = gather(a, run_b.start, run_b.end);
         match atom_relation(&pieces, len, &spec) {
-          None => {
-            if out.uninit.is_none() {
-              out.uninit = Some(pos);
-            }
-          }
+          None => out.uninit(pos),
           Some(Rel::Subset) => {}
           Some(rel) => {
-            out.marks.set(run_b.leaf);
-            if out.partial.is_none() {
-              out.partial = Some(pos);
-            }
+            out.mark(run_b.leaf, pos);
             if matches!(rel, Rel::Disjoint) && out.disjoint.is_none() {
               out.disjoint = Some(pos);
             }
@@ -312,10 +340,13 @@ const fn relate_range(
         }
         pos = run_b.end;
       }
+      RunKind::Pattern(_) => unreachable!(),
     }
   }
   false
 }
+
+const NO: Repeat = Repeat { stride: 0, end: 0, run: false, id: (0, 0) };
 
 enum Skip {
   No,
@@ -333,7 +364,6 @@ enum Skip {
 const fn find_skip(
   a: &Cursor, b: &Cursor, pos: usize, end: usize, run_a: &Run, run_b: &Run,
 ) -> Skip {
-  const NO: Repeat = Repeat { stride: 0, end: 0, run: false };
   let (mut repeats_a, mut repeats_b) = ([NO; MAX_DEPTH + 1], [NO; MAX_DEPTH + 1]);
   let len_b = b.repeats(pos, run_b, true, &mut repeats_b);
   if len_b == 0 {
@@ -383,7 +413,7 @@ const fn lcm(a: usize, b: usize) -> Option<usize> {
 
 /// Relation of a set of values `A` with a set of values `B`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Rel {
+pub enum Rel {
   /// `A ⊆ B`
   Subset,
   /// Neither.
@@ -427,7 +457,8 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
   while i < len {
     match pieces[i].kind {
       RunKind::Pad => return None,
-      RunKind::Any => {}
+      // Whatever a pattern accepts is initialized, and that is all that is made of it here.
+      RunKind::Any | RunKind::Pattern(_) => {}
       RunKind::Atom(_) => all_any = false,
     }
     i += 1;
@@ -455,7 +486,7 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
 }
 
 /// Relation of two sorted lists of disjoint and non-adjacent ranges.
-const fn relate_ranges(a: &[(u128, u128)], b: &[(u128, u128)]) -> Rel {
+pub(crate) const fn relate_ranges(a: &[(u128, u128)], b: &[(u128, u128)]) -> Rel {
   let (mut subset, mut meets, mut i) = (true, false, 0);
   while i < a.len() {
     let ((lo, hi), mut inside, mut j) = (a[i], false, 0);
@@ -684,6 +715,245 @@ const fn box_meets(lo: &[u8; 16], hi: &[u8; 16], size: usize, start: u128, end: 
 }
 
 // -------------------------------------------------------------------------------------------------
+// Patterns
+
+/// Relate what `a` has from `pos` with the pattern `dfa`, which is the thing at `leaf` of the
+/// target: the automaton is run over the runs of `a`, with a set of states.
+///
+/// Arrays and slices of `a` are skipped as soon as an element leaves the set of states as it
+/// found it.
+const fn pattern_target(
+  a: &mut Cursor, dfa: &'static Dfa, leaf: usize, mut pos: usize, end: usize, out: &mut Relation,
+) {
+  // The automaton is in one of the states of `set`.
+  let mut set = 1u64;
+  // The `set` at the start of the previous element of the repetitions of `a`.
+  let mut memo = [((0, 0), 0u64); MAX_DEPTH + 1];
+  let mut memo_len = 0;
+  let mut budget = 1usize << 12;
+  'runs: while pos < end {
+    if budget == 0 {
+      return out.mark(leaf, pos);
+    }
+    budget -= 1;
+    let run = a.run_at(pos);
+    let mut repeats = [NO; MAX_DEPTH + 1];
+    let (len, mut i) = (a.repeats(pos, &run, true, &mut repeats), 0);
+    while i < len {
+      let repeat = repeats[i];
+      i += 1;
+      if repeat.run {
+        continue;
+      }
+      // A slice can end before any of its elements.
+      if repeat.end == usize::MAX && !dfa.accepts(set) {
+        return out.mark(leaf, pos);
+      }
+      let mut j = 0;
+      while j < memo_len && !(memo[j].0.0 == repeat.id.0 && memo[j].0.1 == repeat.id.1) {
+        j += 1;
+      }
+      if j < memo_len && memo[j].1 == set {
+        // An element changes nothing: neither will the next ones.
+        if repeat.end >= end {
+          return;
+        }
+        pos = repeat.end;
+        continue 'runs;
+      }
+      memo[j] = (repeat.id, set);
+      if j == memo_len {
+        memo_len += 1;
+      }
+    }
+    let stop = min(run.end, end);
+    match run.kind {
+      RunKind::Pad => return out.uninit(pos),
+      RunKind::Any => {
+        // Any byte, `stop - pos` times, or until it changes nothing.
+        let mut steps = 0;
+        while steps < stop - pos {
+          let (next, total) = dfa.step(set, 0, 0xff);
+          // The source can end anywhere if nothing bounds the analysis.
+          if !total || steps > 256 || (end == usize::MAX && !dfa.accepts(next)) {
+            return out.mark(leaf, pos);
+          }
+          if next == set {
+            break;
+          }
+          (set, steps) = (next, steps + 1);
+        }
+      }
+      RunKind::Atom(spec) => {
+        // Each box of the scalar goes through the automaton on its own.
+        let Valid::In(ranges) = spec.valid else { panic!("not an atom") };
+        let (mut result, mut r) = (0, 0);
+        while r < ranges.len() {
+          let (mut t, count) = (0, box_count(ranges[r].0, ranges[r].1, spec.size));
+          while t < count {
+            if let Some((lo, hi)) = digit_box(ranges[r].0, ranges[r].1, spec.size, t) {
+              let (mut states, mut byte) = (set, pos - run.start);
+              while byte < stop - run.start {
+                let digit = if spec.endian.is_little() { spec.size - 1 - byte } else { byte };
+                let (next, total) = dfa.step(states, lo[digit], hi[digit]);
+                if !total {
+                  return out.mark(leaf, pos);
+                }
+                (states, byte) = (next, byte + 1);
+              }
+              result |= states;
+            }
+            t += 1;
+          }
+          r += 1;
+        }
+        set = result;
+      }
+      RunKind::Pattern(source) => {
+        // The source may be anywhere in its own pattern if it started before.
+        let from = if run.start == pos { 1 } else { source.reachable() };
+        if !pattern_product(source, from, dfa, set) {
+          out.mark(leaf, pos);
+        }
+        return;
+      }
+    }
+    pos = stop;
+  }
+  // The source ends here.
+  if end != usize::MAX && !dfa.accepts(set) {
+    out.mark(leaf, pos);
+  }
+}
+
+/// Whatever every string that the automaton `a` accepts from one of the states `from_a` is
+/// accepted by the automaton `b` from any of the states `from_b`.
+const fn pattern_product(a: &Dfa, from_a: u64, b: &Dfa, from_b: u64) -> bool {
+  // For each state of `a`, the states of `b` it can be paired with.
+  let (mut seen, mut done) = ([0u64; 64], [0u64; 64]);
+  let mut state = 0;
+  while state < a.states.len() {
+    if from_a & (1 << state) != 0 {
+      seen[state] = from_b;
+    }
+    state += 1;
+  }
+  loop {
+    let (mut changed, mut state) = (false, 0);
+    while state < a.states.len() {
+      let todo = seen[state] & !done[state];
+      if todo != 0 {
+        (done[state], changed) = (done[state] | todo, true);
+        if a.states[state].accept && !b.accepts(todo) {
+          return false;
+        }
+        let (edges, mut i) = (a.states[state].edges, 0);
+        while i < edges.len() {
+          let (next, total) = b.step(todo, edges[i].0, edges[i].1);
+          if !total {
+            return false;
+          }
+          seen[edges[i].2 as usize] |= next;
+          i += 1;
+        }
+      }
+      state += 1;
+    }
+    if !changed {
+      return true;
+    }
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Rules
+
+/// Mark the structs of `target`, which is at `base` in the target and whose first leaf is `leaf`,
+/// whose rules the `source` does not prove.
+///
+/// A rule is not a property of bytes: it is only proven by the same rule, in the same struct, at
+/// the same place of the source.
+const fn mark_rules(
+  source: &'static Layout, target: &'static Layout, base: usize, leaf: usize, out: &mut Relation,
+) {
+  if !target.has_rules || covered(source, base, target) {
+    return;
+  }
+  match target.kind {
+    Kind::Struct(fields, rules) => {
+      if !rules.is_empty() {
+        out.mark(leaf + target.leaves - 1, base);
+      }
+      let mut i = 0;
+      while i < fields.len() {
+        mark_rules(source, fields[i].layout, base + fields[i].offset, leaf + fields[i].leaf, out);
+        i += 1;
+      }
+    }
+    // Elements share their leaves: either they are all proven at once (`covered`), or none is.
+    Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
+    Kind::Scalar(_) | Kind::Pattern(_) => {}
+  }
+}
+
+const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: &mut Relation) {
+  if !target.has_rules {
+    return;
+  }
+  match target.kind {
+    Kind::Struct(fields, rules) => {
+      if !rules.is_empty() {
+        out.mark(leaf + target.leaves - 1, base);
+      }
+      let mut i = 0;
+      while i < fields.len() {
+        mark_all_rules(fields[i].layout, base + fields[i].offset, leaf + fields[i].leaf, out);
+        i += 1;
+      }
+    }
+    Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
+    Kind::Scalar(_) | Kind::Pattern(_) => {}
+  }
+}
+
+/// Whatever `source` has, at `offset`, the very thing that `target` is.
+const fn covered(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
+  if offset == 0 {
+    if source.equals(target) {
+      return true;
+    }
+    // As many of the same elements, or more.
+    let same = match (source.kind, target.kind) {
+      (Kind::Array(a, n), Kind::Array(b, m)) => n >= m && a.equals(b),
+      (Kind::Slice(a), Kind::Slice(b) | Kind::Array(b, _)) => a.equals(b),
+      _ => false,
+    };
+    if same {
+      return true;
+    }
+  }
+  match source.kind {
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        let field = &fields[i];
+        let inside = field.layout.is_dynamic() || offset < field.offset + field.layout.size;
+        if offset >= field.offset && inside {
+          return covered(field.layout, offset - field.offset, target);
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Array(elem, len) => {
+      elem.size > 0 && offset / elem.size < len && covered(elem, offset % elem.size, target)
+    }
+    Kind::Slice(elem) => elem.size > 0 && covered(elem, offset % elem.size, target),
+    Kind::Scalar(_) | Kind::Pattern(_) => false,
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
 // `Fit`
 
 /// Whatever sources and targets have the same extent.
@@ -777,11 +1047,11 @@ pub(crate) const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis 
   let fit = fit(a, b);
   // No source fits, even truncated: there is nothing to relate.
   let hopeless = matches!(fit.exact, Exact::Never(_)) && !fit.shrink;
-  Analysis {
-    fit,
-    relation: if hopeless { Relation::NEW } else { relate(a, b, fit.end) },
-    aligned: b.align <= a.align,
+  let mut relation = if hopeless { Relation::NEW } else { relate(a, b, fit.end) };
+  if !hopeless {
+    mark_rules(a, b, 0, 0, &mut relation);
   }
+  Analysis { fit, relation, aligned: b.align <= a.align }
 }
 
 /// Whatever any value written through a `&mut` to the target `b` leaves a valid source `a`.

@@ -1,19 +1,59 @@
-//! Work in progress: see `DESIGN.md`.
+//! ***Safe transmutation, checked at compile time. Even for dynamically sized types.***
+//!
+//! ```
+//! use mutant::Data;
+//!
+//! #[derive(Data, Debug, PartialEq)]
+//! #[repr(C)]
+//! struct Position {
+//!   x: u8,
+//!   visible: bool,
+//! }
+//!
+//! // Every `Position` is two initialized bytes: nothing is checked, nothing is compiled.
+//! assert_eq!(mutant::transmute_ref::<_, [u8; 2]>(&Position { x: 7, visible: true }), &[7, 1]);
+//!
+//! // Not every pair of bytes is a `Position`: only the `bool` is checked.
+//! assert_eq!(mutant::try_transmute_ref(&[7u8, 1]), Ok(&Position { x: 7, visible: true }));
+//! assert_eq!(mutant::try_transmute_ref::<_, Position>(&[7u8, 2]), Err(mutant::Error::Validity));
+//! ```
+//!
+//! What cannot be valid does not compile:
+//!
+//! ```compile_fail
+//! // A `&mut u8` would let anything be written to the `bool`.
+//! let _: &mut u8 = mutant::transmute_mut(&mut true);
+//! ```
+//!
+//! See `DESIGN.md` for how it works.
 #![cfg_attr(not(test), no_std)]
 
 mod analysis;
 pub mod layout;
+pub mod num;
 mod ptr;
 #[cfg(test)]
 mod tests;
+mod validate;
 
-use layout::{Layout, Spec};
+pub use mutant_derive::Data;
+
+use analysis::{Analysis, Exact, Marks, analyze, mutable};
+use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
+use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
+use validate::{Checks, validate};
+
+// -------------------------------------------------------------------------------------------------
+// Traits
 
 /// Leaf types: integers and the like, see [`Spec`].
 ///
+/// This is what `#[derive(Data)]` implements for enums without fields.
+///
 /// # Safety
 /// `SPEC` must describe every valid value of `Self`, and nothing more.
-pub unsafe trait Scalar: Copy {
+pub unsafe trait Scalar {
   const SPEC: Spec;
 }
 
@@ -22,6 +62,12 @@ pub unsafe trait Scalar: Copy {
 /// # Safety
 /// Not meant to be implemented by hand: use `#[derive(Data)]`.
 pub unsafe trait Data {
+  /// Type of the elements of an array or of a slice, `()` otherwise.
+  #[doc(hidden)]
+  type Elem: Data;
+  /// First field of a struct, `()` otherwise.
+  #[doc(hidden)]
+  type Fields: Fields;
   /// A null pointer to `Self`, whose slice length is [`ptr::PROBE_LEN`] if `Self` is unsized.
   /// It must be made with `as` casts only: this is what the pointer tricks are checked against.
   #[doc(hidden)]
@@ -30,46 +76,625 @@ pub unsafe trait Data {
   const LAYOUT: Layout;
 }
 
+/// A field of a struct, and the ones after it: a list at the type level, for validation.
+///
+/// # Safety
+/// Implemented by `#[derive(Data)]`.
+#[doc(hidden)]
+pub unsafe trait Fields {
+  type Type: ?Sized + Data;
+  type Next: Fields;
+  /// Where the field is in the target, given where the struct is.
+  type Path<P: Path>: Path;
+  /// `None` at the end of the list.
+  const FIELD: Option<Field>;
+}
+
+/// Where something is in a target, for validation.
+#[doc(hidden)]
+pub trait Path {
+  /// Index of its first leaf.
+  const LEAF: usize;
+}
+
+#[doc(hidden)]
+pub struct Root;
+
+#[doc(hidden)]
+pub struct At<P, F: ?Sized>(PhantomData<P>, PhantomData<F>);
+
+impl Path for Root {
+  const LEAF: usize = 0;
+}
+
+impl<P: Path, F: ?Sized + Fields> Path for At<P, F> {
+  const LEAF: usize = P::LEAF
+    + match F::FIELD {
+      Some(field) => field.leaf(),
+      None => 0,
+    };
+}
+
+// SAFETY: the end of every list.
+unsafe impl Fields for () {
+  type Type = ();
+  type Next = ();
+  type Path<P: Path> = P;
+  const FIELD: Option<Field> = None;
+}
+
+// SAFETY: `SPEC` describes the type.
 unsafe impl<T: Scalar> Data for T {
+  type Elem = ();
+  type Fields = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
 }
 
+// SAFETY: an array is its elements.
 unsafe impl<T: Data, const N: usize> Data for [T; N] {
+  type Elem = T;
+  type Fields = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
 }
 
+// SAFETY: a slice is its elements.
 unsafe impl<T: Data> Data for [T] {
+  type Elem = T;
+  type Fields = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
   const LAYOUT: Layout = Layout::slice::<T>(Self::PROBE, &T::LAYOUT);
 }
 
+// SAFETY: a `str` is bytes that are UTF-8.
+unsafe impl Data for str {
+  type Elem = ();
+  type Fields = ();
+  const PROBE: *const Self = <[u8] as Data>::PROBE as *const str;
+  const LAYOUT: Layout = Layout::pattern::<str>(Self::PROBE, Dfa::UTF8);
+}
+
+// SAFETY: `ManuallyDrop<T>` is a `T`.
+unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
+  type Elem = T::Elem;
+  type Fields = T::Fields;
+  const PROBE: *const Self = T::PROBE as *const Self;
+  const LAYOUT: Layout = T::LAYOUT;
+}
+
 macro_rules! impl_any {
   ($($ty:ty)+) => {$(
+    // SAFETY: every bit pattern is valid.
     unsafe impl Scalar for $ty {
       const SPEC: Spec = Spec::any::<$ty>();
     }
   )+};
 }
 
-impl_any!(u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64);
+impl_any!(() u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64);
 
-unsafe impl Scalar for bool {
-  const SPEC: Spec = Spec::ranges::<bool>(layout::Endian::NATIVE, &[(0, 1)]);
+// SAFETY: no byte.
+unsafe impl<T: ?Sized> Scalar for PhantomData<T> {
+  const SPEC: Spec = Spec::any::<Self>();
 }
 
+// SAFETY: 0 or 1.
+unsafe impl Scalar for bool {
+  const SPEC: Spec = Spec::ranges::<bool>(Endian::NATIVE, &[(0, 1)]);
+}
+
+// SAFETY: a Unicode scalar value.
 unsafe impl Scalar for char {
-  const SPEC: Spec =
-    Spec::ranges::<char>(layout::Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10FFFF)]);
+  const SPEC: Spec = Spec::ranges::<char>(Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10FFFF)]);
 }
 
 macro_rules! impl_non_zero {
   ($($ty:ident)+) => {$(
+    // SAFETY: anything but 0.
     unsafe impl Scalar for core::num::NonZero<$ty> {
-      const SPEC: Spec = Spec::ranges::<$ty>(layout::Endian::NATIVE, &[(1, $ty::MAX as u128)]);
+      const SPEC: Spec = Spec::ranges::<$ty>(Endian::NATIVE, &[(1, $ty::MAX as u128)]);
+    }
+
+    // SAFETY: `None` is 0, this is documented.
+    unsafe impl Scalar for Option<core::num::NonZero<$ty>> {
+      const SPEC: Spec = Spec::any::<$ty>();
     }
   )+};
 }
 
 impl_non_zero!(u8 u16 u32 u64 u128 usize);
+
+// -------------------------------------------------------------------------------------------------
+// `Error`
+
+/// Why a value cannot be seen as another type.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Error {
+  /// The address of the value is not a multiple of the alignment of the target.
+  Alignment,
+  /// The size of the value is not a size that the target can have.
+  Size,
+  /// The value is not a valid target: a scalar is out of its valid values, a string is not
+  /// UTF-8, a rule does not hold...
+  Validity,
+}
+
+impl core::fmt::Display for Error {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.write_str(match self {
+      Error::Alignment => "value is not aligned for the target type",
+      Error::Size => "value has not the size of the target type",
+      Error::Validity => "value is not valid for the target type",
+    })
+  }
+}
+
+impl core::error::Error for Error {}
+
+// -------------------------------------------------------------------------------------------------
+// `Plan`
+
+/// What is known at compile time of a transmutation from `S` to `D`.
+struct Plan<S: ?Sized, D: ?Sized>(PhantomData<S>, PhantomData<D>);
+
+/// What a function requires of a transmutation.
+#[derive(Copy, Clone)]
+struct Need {
+  /// The target may be smaller than the source.
+  truncate: bool,
+  /// What is not proven is checked at run time.
+  fallible: bool,
+  /// The target is behind a reference.
+  reference: bool,
+}
+
+const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
+                       where the source is not), and could be written through the `&mut`";
+
+impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
+  const ANALYSIS: Analysis = analyze(&S::LAYOUT, &D::LAYOUT);
+
+  const MUTABLE: bool = mutable(&S::LAYOUT, &D::LAYOUT, &Self::ANALYSIS.fit);
+
+  /// Fail to compile if the transmutation does not meet the `need`.
+  const fn require(need: Need) {
+    let Analysis { fit, relation, aligned } = Self::ANALYSIS;
+    match fit.exact {
+      Exact::Always => {}
+      Exact::Sometimes if need.fallible => {}
+      Exact::Sometimes => Message::new(
+        "the size of the source may not be a size of the target, depending on the length of \
+         its slice.\nUse `try_transmute_ref` or `try_transmute_mut` to check it at run time",
+      )
+      .panic(),
+      Exact::Never(_) if need.truncate && fit.shrink => {}
+      Exact::Never(why) if fit.shrink && !need.fallible => Message::new(why)
+        .str(".\nUse `truncate` or `truncate_ref` to ignore the end of the source")
+        .panic(),
+      Exact::Never(why) => Message::new(why).panic(),
+    }
+    if let Some(offset) = relation.uninit {
+      Message::new("a byte that the target requires to be initialized is padding in the source")
+        .at(offset)
+        .panic();
+    }
+    if let Some(offset) = relation.disjoint {
+      Message::new("no value of the source is valid for the target").at(offset).panic();
+    }
+    if let (Some(offset), false) = (relation.partial, need.fallible) {
+      Message::new(
+        "some values of the source are not valid for the target, or do not prove one of its \
+         rules.\nUse a `try_*` function to check them at run time",
+      )
+      .at(offset)
+      .panic();
+    }
+    if need.reference && !aligned && !need.fallible {
+      Message::new(
+        "the target has a greater alignment than the source.\nUse `try_transmute_ref` or \
+         `try_transmute_mut` to check the address at run time",
+      )
+      .panic();
+    }
+  }
+
+  const BY_VALUE: () = Self::require(Need { truncate: false, fallible: false, reference: false });
+  const BY_REF: () = Self::require(Need { truncate: false, fallible: false, reference: true });
+  const BY_MUT: () = {
+    Self::BY_REF;
+    if !Self::MUTABLE {
+      Message::new(MUTABLE).panic();
+    }
+  };
+  const TRUNCATE: () = Self::require(Need { truncate: true, fallible: false, reference: false });
+  const TRUNCATE_REF: () =
+    Self::require(Need { truncate: true, fallible: false, reference: true });
+  const TRY: () = Self::require(Need { truncate: false, fallible: true, reference: false });
+  const TRY_REF: () = Self::require(Need { truncate: false, fallible: true, reference: true });
+  const TRY_MUT: () = {
+    Self::TRY_REF;
+    if !Self::MUTABLE {
+      Message::new(MUTABLE).panic();
+    }
+  };
+  /// `S` is `[u8]`, of which a prefix is taken.
+  const UNPACK: () = Self::require(Need { truncate: true, fallible: true, reference: true });
+
+  /// Pointer to the target at `source`, when there is nothing to check (`BY_REF`,
+  /// `TRUNCATE_REF`).
+  #[inline(always)]
+  const fn cast(source: *const S) -> *const D {
+    let (head, stride, exact) = const {
+      // The slice length of the target is `head + len * stride`, exactly or rounded down.
+      let (source, target) = (S::LAYOUT, D::LAYOUT);
+      match (target.stride(), Self::ANALYSIS.fit.exact) {
+        (0, _) => (0, 0, true),
+        (by, Exact::Always) => ((source.head() - target.head()) / by, source.stride() / by, true),
+        _ => (0, 0, false),
+      }
+    };
+    let len = if exact {
+      head + ptr::metadata(source) * stride
+    } else {
+      let (layout, target) = const { (S::LAYOUT, D::LAYOUT) };
+      let extent = layout.head() + ptr::metadata(source) * layout.stride();
+      (extent - target.head()) / target.stride()
+    };
+    ptr::from_raw_parts::<D>(source.cast(), len)
+  }
+
+  /// Pointer to the target at `source`, with every check that could not be made at compile
+  /// time (`TRY`, `TRY_REF`).
+  #[inline(always)]
+  const fn try_cast(source: *const S) -> Result<*const D, Error> {
+    let (layout, target) = const { (S::LAYOUT, D::LAYOUT) };
+    let addr = source.cast::<u8>();
+    if const { !Self::ANALYSIS.aligned } && !ptr::is_aligned(addr, target.align()) {
+      return Err(Error::Alignment);
+    }
+    // The size of a value that exists: no overflow.
+    let extent = layout.head() + ptr::metadata(source) * layout.stride();
+    if extent < target.head() {
+      return Err(Error::Size);
+    }
+    let rest = extent - target.head();
+    let len = match target.stride() {
+      0 if rest == 0 => 0,
+      stride if stride != 0 && rest % stride == 0 => rest / stride,
+      _ => return Err(Error::Size),
+    };
+    // A target of greater alignment may end with more padding than the source has room for.
+    if const { D::LAYOUT.is_dynamic() && D::LAYOUT.align() > S::LAYOUT.align() } {
+      match (target.size_of_val(len), layout.size_of_val(ptr::metadata(source))) {
+        (Some(needed), Some(available)) if needed <= available => {}
+        _ => return Err(Error::Size),
+      }
+    }
+    let target = ptr::from_raw_parts::<D>(addr, len);
+    // SAFETY: the target is in the bounds of the source, which is a valid `S`: what the target
+    // reads of it is initialized, since the analysis found no padding under it.
+    if !unsafe { validate::<Self, Root, D>(target) } {
+      return Err(Error::Validity);
+    }
+    Ok(target)
+  }
+}
+
+impl<S: ?Sized + Data, D: ?Sized + Data> Checks for Plan<S, D> {
+  const MARKS: Marks = Self::ANALYSIS.relation.marks;
+}
+
+/// A compile-time error message, without `format!`.
+struct Message {
+  bytes: [u8; 512],
+  len: usize,
+}
+
+impl Message {
+  const fn new(what: &str) -> Self {
+    Self { bytes: [0; 512], len: 0 }.str("\ncannot transmute: ").str(what)
+  }
+
+  const fn str(mut self, str: &str) -> Self {
+    let (bytes, mut i) = (str.as_bytes(), 0);
+    while i < bytes.len() && self.len < self.bytes.len() {
+      self.bytes[self.len] = bytes[i];
+      (self.len, i) = (self.len + 1, i + 1);
+    }
+    self
+  }
+
+  /// Add the offset of what is wrong.
+  const fn at(self, offset: usize) -> Self {
+    let (mut digits, mut len, mut value) = ([0; 20], 0, offset);
+    loop {
+      len += 1;
+      digits[20 - len] = b'0' + (value % 10) as u8;
+      value /= 10;
+      if value == 0 {
+        break;
+      }
+    }
+    // SAFETY: ASCII digits.
+    let digits = unsafe { core::str::from_utf8_unchecked(digits.split_at(20 - len).1) };
+    self.str(".\nThis is at byte ").str(digits).str(" of the target")
+  }
+
+  const fn panic(self) -> ! {
+    let this = self.str(".\n");
+    // SAFETY: a concatenation of `str`s (only cut if too long, and messages are ASCII).
+    panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// By value
+
+/// Reinterpret a value as a value of another type of the same size.
+///
+/// This compiles if every value of `S` is a valid `D`, and then costs nothing.
+///
+/// ```
+/// assert_eq!(mutant::transmute::<[bool; 2], u16>([true, true]), 0x0101);
+/// ```
+///
+/// ```compile_fail
+/// // Not every `u8` is a `bool`.
+/// let _: bool = mutant::transmute(2u8);
+/// ```
+#[inline(always)]
+pub const fn transmute<S: Data + Copy, D: Data + Copy>(value: S) -> D {
+  const { Plan::<S, D>::BY_VALUE };
+  // SAFETY: checked at compile time.
+  unsafe { transmute_unchecked(value) }
+}
+
+/// Reinterpret the first bytes of a value as a value of a smaller type.
+///
+/// ```
+/// assert_eq!(mutant::truncate::<[u8; 4], [u8; 2]>([1, 2, 3, 4]), [1, 2]);
+/// ```
+#[inline(always)]
+pub const fn truncate<S: Data + Copy, D: Data + Copy>(value: S) -> D {
+  const { Plan::<S, D>::TRUNCATE };
+  // SAFETY: checked at compile time.
+  unsafe { transmute_unchecked(value) }
+}
+
+/// Reinterpret a value as a value of another type of the same size, if it is a valid one.
+///
+/// Only what could not be proven at compile time is checked.
+///
+/// ```
+/// assert_eq!(mutant::try_transmute::<u8, bool>(1), Ok(true));
+/// assert_eq!(mutant::try_transmute::<u8, bool>(2), Err(mutant::Error::Validity));
+/// ```
+#[inline]
+pub const fn try_transmute<S: Data + Copy, D: Data + Copy>(value: S) -> Result<D, Error> {
+  const { Plan::<S, D>::TRY };
+  // SAFETY: `value` is a valid `S` of the size of `D`; nothing is assumed of its alignment.
+  if !unsafe { validate::<Plan<S, D>, Root, D>((&raw const value).cast()) } {
+    return Err(Error::Validity);
+  }
+  // SAFETY: just validated.
+  Ok(unsafe { transmute_unchecked(value) })
+}
+
+/// # Safety
+/// `D` must not be larger than `S`, and the first bytes of `value` must be a valid `D`.
+#[inline(always)]
+const unsafe fn transmute_unchecked<S: Copy, D: Copy>(value: S) -> D {
+  union Transmute<S: Copy, D: Copy> {
+    source: S,
+    target: D,
+  }
+  // SAFETY: guaranteed by the caller.
+  unsafe { Transmute { source: value }.target }
+}
+
+// -------------------------------------------------------------------------------------------------
+// By reference
+
+/// Reinterpret a reference as a reference to another type.
+///
+/// This compiles if every value of `S` is a valid `D` of the same size, whatever the length of
+/// its slice if it has one, and if `D` has no greater alignment. It then costs nothing.
+///
+/// ```
+/// let bytes: &[u8] = mutant::transmute_ref(&[0x0102u16, 0x0304][..]);
+/// assert_eq!(bytes.len(), 4);
+/// let text: &[u8] = mutant::transmute_ref("héllo");
+/// assert_eq!(text.len(), 6);
+/// ```
+#[inline(always)]
+pub const fn transmute_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> &D {
+  const { Plan::<S, D>::BY_REF };
+  // SAFETY: checked at compile time.
+  unsafe { &*Plan::<S, D>::cast(value) }
+}
+
+/// Reinterpret a mutable reference as a mutable reference to another type.
+///
+/// On top of what [`transmute_ref`] requires, every value of `D` must be a valid `S`: anything
+/// can be written through the result.
+///
+/// ```
+/// let mut value = 0x0102u16;
+/// mutant::transmute_mut::<_, [u8; 2]>(&mut value)[0] = 0x02;
+/// assert!(value == 0x0202 || value == 0x0102);
+/// ```
+#[inline(always)]
+pub const fn transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(value: &mut S) -> &mut D {
+  const { Plan::<S, D>::BY_MUT };
+  let source: *mut S = value;
+  // SAFETY: checked at compile time.
+  unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() }
+}
+
+/// Reinterpret a reference as a reference to a type that covers the start of the value.
+///
+/// If the target has a slice, it takes as many elements as fit.
+///
+/// ```
+/// let head: &[u8; 2] = mutant::truncate_ref(&[1u8, 2, 3]);
+/// assert_eq!(head, &[1, 2]);
+/// let pairs: &[[u8; 2]] = mutant::truncate_ref(&[1u8, 2, 3, 4, 5]);
+/// assert_eq!(pairs, &[[1, 2], [3, 4]]);
+/// ```
+#[inline(always)]
+pub const fn truncate_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> &D {
+  const { Plan::<S, D>::TRUNCATE_REF };
+  // SAFETY: checked at compile time.
+  unsafe { &*Plan::<S, D>::cast(value) }
+}
+
+/// Reinterpret a reference as a reference to another type, if the value is a valid one.
+///
+/// Only what could not be proven at compile time is checked: the size if it depends on a slice
+/// length, the address if the target has a greater alignment, and the scalars, strings and rules
+/// of the target that the source does not guarantee.
+///
+/// ```
+/// assert_eq!(mutant::try_transmute_ref::<[u8], str>(b"caf\xc3\xa9"), Ok("café"));
+/// assert!(mutant::try_transmute_ref::<[u8], str>(b"caf\xc3").is_err());
+/// ```
+///
+/// This is a `const fn`, but a target of greater alignment than the source cannot be made at
+/// compile time, where addresses are not known.
+#[inline]
+pub const fn try_transmute_ref<S: ?Sized + Data, D: ?Sized + Data>(value: &S) -> Result<&D, Error> {
+  const { Plan::<S, D>::TRY_REF };
+  match Plan::<S, D>::try_cast(value) {
+    // SAFETY: validated.
+    Ok(target) => Ok(unsafe { &*target }),
+    Err(error) => Err(error),
+  }
+}
+
+/// Reinterpret a mutable reference as a mutable reference to another type, if the value is a
+/// valid one.
+///
+/// See [`try_transmute_ref`] and [`transmute_mut`].
+#[inline]
+pub const fn try_transmute_mut<S: ?Sized + Data, D: ?Sized + Data>(
+  value: &mut S,
+) -> Result<&mut D, Error> {
+  const { Plan::<S, D>::TRY_MUT };
+  let source: *mut S = value;
+  match Plan::<S, D>::try_cast(source) {
+    // SAFETY: validated.
+    Ok(target) => Ok(unsafe { &mut *target.cast_mut() }),
+    Err(error) => Err(error),
+  }
+}
+
+/// The bytes of a value that has no padding.
+#[inline(always)]
+pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
+  transmute_ref(value)
+}
+
+// -------------------------------------------------------------------------------------------------
+// Parsing
+
+/// Take a `D` from the start of `bytes`: returns it and what remains.
+///
+/// A `Sized` target takes its size. An unsized one takes what its `size` or `len` rule says
+/// (see `#[derive(Data)]`), or else as many elements of its slice as there are.
+///
+/// ```
+/// use mutant::Data;
+/// use mutant::num::u16be;
+///
+/// #[derive(Data)]
+/// #[repr(C)]
+/// #[data(size = length)]
+/// struct Chunk {
+///   kind: u8,
+///   length: u16be,
+///   data: [u8],
+/// }
+///
+/// let (chunk, rest) = mutant::unpack::<Chunk>(&[7, 0, 5, b'h', b'i', 1, 2, 3]).unwrap();
+/// assert_eq!((chunk.kind, &chunk.data, rest), (7, &b"hi"[..], &[1, 2, 3][..]));
+/// ```
+#[inline]
+pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
+  const { Plan::<[u8], D>::UNPACK };
+  let (layout, rule) = const { (D::LAYOUT, D::LAYOUT.length_rule()) };
+  let (head, stride) = (layout.head(), layout.stride());
+  if bytes.len() < head {
+    return Err(Error::Size);
+  }
+  if const { D::LAYOUT.align() > 1 } && !ptr::is_aligned(bytes.as_ptr(), layout.align()) {
+    return Err(Error::Alignment);
+  }
+  let len = match rule {
+    _ if stride == 0 => 0,
+    None => (bytes.len() - head) / stride,
+    Some(rule) => {
+      // SAFETY: the sized fields of the target are in the first `head` bytes.
+      let Some(value) = (unsafe { eval(rule.ops, bytes.as_ptr().add(rule.base)) }) else {
+        return Err(Error::Validity);
+      };
+      // From the size of the struct that has the rule, down to a number of elements.
+      let before = (head - rule.base) as u128;
+      let len = match () {
+        _ if rule.elements => value,
+        _ if value >= before && (value - before) % stride as u128 == 0 => {
+          (value - before) / stride as u128
+        }
+        _ => return Err(Error::Validity),
+      };
+      if len > ((bytes.len() - head) / stride) as u128 {
+        return Err(Error::Size);
+      }
+      len as usize
+    }
+  };
+  // With its trailing padding, if any.
+  let size = match layout.size_of_val(len) {
+    Some(size) if size <= bytes.len() => size,
+    _ => return Err(Error::Size),
+  };
+  let target = ptr::from_raw_parts::<D>(bytes.as_ptr(), len);
+  // SAFETY: the target is in the bounds of `bytes`, which are initialized.
+  if !unsafe { validate::<Plan<[u8], D>, Root, D>(target) } {
+    return Err(Error::Validity);
+  }
+  // SAFETY: validated.
+  Ok((unsafe { &*target }, bytes.split_at(size).1))
+}
+
+/// The bytes of the `index`th region of the tail of a struct, see `#[derive(Data)]`.
+///
+/// Regions are not something that the type system knows of: if the fields of `value` tell of
+/// regions that do not fit in its tail, they are cut short.
+#[doc(hidden)]
+#[inline]
+pub const fn region<S: ?Sized + Data>(value: &S, index: usize) -> &[u8] {
+  let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.head(), S::LAYOUT.rules()) };
+  let bytes = as_bytes(value);
+  let tail = bytes.split_at(head).1;
+  let (mut start, mut count, mut i) = (0, 0, 0);
+  while i < rules.len() {
+    if let Rule::Region(ops) = rules[i] {
+      let rest = tail.len() - start;
+      let size = match ops {
+        // SAFETY: `bytes` are the bytes of a struct of this layout.
+        Some(ops) => match unsafe { eval(ops, bytes.as_ptr()) } {
+          Some(size) if size <= rest as u128 => size as usize,
+          _ => rest,
+        },
+        None => rest,
+      };
+      if count == index {
+        return tail.split_at(start).1.split_at(size).0;
+      }
+      (start, count) = (start + size, count + 1);
+    }
+    i += 1;
+  }
+  panic!("no such region")
+}
