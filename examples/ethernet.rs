@@ -28,6 +28,9 @@
 //! | the bits of a MAC address (group, local)             | `get(multicast: bool = ..)`            |
 //! | a frame carries more bytes than its packet (padding) | `unpack` returns what remains          |
 //! | the protocol of a packet tells what it carries       | `tag(Protocol = u8c<17>)`              |
+//! | IPv6 extension headers, chained by "next header"     | a payload that has a payload           |
+//! | a checksum over a whole message (ICMP)               | `assert(sum16(0, size_of_val(self)))`  |
+//! | label stacks, sessions, lengths in other units       | `get(..)`, `size = length * 8 + ..`    |
 //! | a frame is one thing or another                      | an enum of references ([`AnyFrame`])   |
 #![deny(unsafe_code)]
 
@@ -218,7 +221,8 @@ pub struct Ipv4<P: ?Sized + Tag<Protocol> = [u8]> {
   pub data: [u8],
 }
 
-/// An IPv6 packet. (Extension headers would be more payloads that have a payload.)
+/// An IPv6 packet. Its extension headers are payloads that have a payload ([`HopByHop`],
+/// [`Fragment`]).
 #[derive(Data)]
 #[repr(C)]
 #[data(tag(EtherType = u16bec<0x86dd>))]
@@ -250,6 +254,45 @@ pub struct Ipv6<P: ?Sized + Tag<Protocol> = [u8]> {
 #[derive(Data, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Protocol(pub u8);
+
+/// The hop-by-hop options of IPv6, and what follows them: an extension header, whose size is in
+/// its second byte, in units of 8 bytes that do not count the first 8.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<0>))]
+pub struct HopByHop<P: ?Sized + Tag<Protocol> = [u8]> {
+  pub next_header: P::Tag,
+  pub length: u8,
+  #[data(regions(options = length * 8 + 6, payload: P))]
+  pub data: [u8],
+}
+
+/// The fragment header of IPv6, and the fragment.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<44>))]
+#[data(get(offset: u16 = offset_flags >> 3, more: bool = offset_flags & 1 != 0))]
+pub struct Fragment<P: ?Sized + Tag<Protocol> = [u8]> {
+  pub next_header: P::Tag,
+  pub reserved: u8,
+  /// Offset of the fragment in units of 8 bytes (13 bits), reserved (2 bits), "more" (1 bit).
+  pub offset_flags: u16be,
+  pub identification: u32be,
+  pub payload: P,
+}
+
+/// An ICMP message: its checksum is the one of the whole message, whatever its size.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(Protocol = u8c<1>))]
+#[data(assert(sum16(0, size_of_val(self)) == 0xffff))]
+pub struct Icmp {
+  pub kind: u8,
+  pub code: u8,
+  pub checksum: u16be,
+  pub rest: [u8; 4],
+  pub data: [u8],
+}
 
 /// An IPv4 option that has a length (all but "end of options" and "no operation").
 #[derive(Data)]
@@ -312,6 +355,45 @@ pub struct Pause {
   pub padding: [u8c<0>; 42],
 }
 
+/// An MPLS label stack entry, and what follows it: another entry, unless it is the bottom of
+/// the stack.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x8847>))]
+#[data(get(label: u32 = entry >> 12, bottom: bool = entry & 0x100 != 0, time_to_live: u8 = entry & 0xff))]
+pub struct Mpls {
+  /// Label (20 bits), traffic class (3 bits), bottom of stack (1 bit), time to live (8 bits).
+  pub entry: u32be,
+  pub payload: [u8],
+}
+
+/// A PPPoE session frame: the size of what it carries is in its header.
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x8864>))]
+#[data(size = length + 6)]
+pub struct Pppoe {
+  /// Version 1, type 1.
+  pub version_type: u8c<0x11>,
+  pub code: u8c<0>,
+  pub session: u16be,
+  pub length: u16be,
+  pub payload: [u8],
+}
+
+/// An IEEE 802.1X frame (EAP over LAN).
+#[derive(Data)]
+#[repr(C)]
+#[data(tag(EtherType = u16bec<0x888e>))]
+#[data(size = length + 4)]
+pub struct Eapol {
+  #[data(valid(1..=3))]
+  pub version: u8,
+  pub kind: u8,
+  pub length: u16be,
+  pub body: [u8],
+}
+
 /// LLDP: a sequence of [`Tlv`]s.
 #[derive(Data)]
 #[repr(transparent)]
@@ -336,12 +418,18 @@ pub struct Tlv {
 pub enum AnyFrame<'a> {
   Udp(&'a Frame<Ipv4<Udp>>),
   Tcp(&'a Frame<Ipv4<Tcp>>),
+  Icmp(&'a Frame<Ipv4<Icmp>>),
   Ipv4(&'a Frame<Ipv4>),
   Udp6(&'a Frame<Ipv6<Udp>>),
+  Options6(&'a Frame<Ipv6<HopByHop>>),
+  Fragment6(&'a Frame<Ipv6<Fragment>>),
   Ipv6(&'a Frame<Ipv6>),
   Arp(&'a Frame<Arp>),
   Pause(&'a Frame<Pause>),
   Lldp(&'a Frame<Lldp>),
+  Mpls(&'a Frame<Mpls>),
+  Pppoe(&'a Frame<Pppoe>),
+  Eapol(&'a Frame<Eapol>),
   Tagged(&'a Frame<Vlan>),
   ServiceTagged(&'a Frame<ServiceVlan>),
   Length(&'a Frame8023),
@@ -384,6 +472,29 @@ const UDP6: [u8; 53] = [
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x30, 0x39, 0x00, 0x35, 0x00, 0x0d, 0x30, 0x1f,
   0x68, 0x65, 0x6c, 0x6c, 0x6f,
+];
+
+/// An IPv4 packet, as bytes: an ICMP echo request of an odd size.
+const ECHO: [u8; 33] = [
+  0x45, 0x00, 0x00, 0x21, 0x00, 0x03, 0x00, 0x00, 0x40, 0x01, 0x66, 0xd7, 0x0a, 0x00, 0x00, 0x01,
+  0x0a, 0x00, 0x00, 0x02, 0x08, 0x00, 0xe5, 0xf9, 0x12, 0x34, 0x00, 0x01, 0x70, 0x69, 0x6e, 0x67,
+  0x21,
+];
+
+/// An IPv6 packet, as bytes: hop-by-hop options (a padding of 6 bytes), then a UDP datagram.
+const OPTIONS6: [u8; 61] = [
+  0x60, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x40, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x11, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00,
+  0x30, 0x39, 0x00, 0x35, 0x00, 0x0d, 0x30, 0x1f, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+];
+
+/// An IPv6 packet, as bytes: the first fragment of a UDP datagram.
+const FRAGMENT6: [u8; 56] = [
+  0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2c, 0x40, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x11, 0x00, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef,
+  0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74,
 ];
 
 /// LLDP, as bytes: a chassis, a port, a time to live, the end.
@@ -581,6 +692,57 @@ pub fn main() {
   assert!(try_transmute_ref::<_, Frame<Ipv6>>(&corrupted[..]).is_err());
   assert!(try_transmute_ref::<_, Frame<Ipv4>>(&datagram6[..]).is_err());
 
+  // ---- ICMP: a checksum over the whole message, of any size.
+  let echo = frame(0x0800, &ECHO);
+  let ip: &Frame<Ipv4<Icmp>> = try_transmute_ref(&echo[..]).unwrap();
+  let icmp = ip.payload.payload().unwrap();
+  assert_eq!((icmp.kind, icmp.code, &icmp.data), (8, 0, &b"ping!"[..]));
+  let mut corrupted_echo = echo.clone();
+  corrupted_echo[14 + 32] ^= 1;
+  let ip: &Frame<Ipv4<Icmp>> = try_transmute_ref(&corrupted_echo[..]).unwrap();
+  assert_eq!(ip.payload.payload().err(), Some(Error::Validity));
+
+  // ---- IPv6 extension headers: each tells what follows it, and how long it is.
+  let options6 = frame(0x86dd, &OPTIONS6);
+  let ip6: &Frame<Ipv6<HopByHop<Udp>>> = try_transmute_ref(&options6[..]).unwrap();
+  let extension = ip6.payload.payload().unwrap();
+  assert_eq!(extension.options(), [1, 4, 0, 0, 0, 0]);
+  assert_eq!(extension.payload().unwrap().payload, *b"hello");
+  // It is not a datagram right after the header, nor options followed by a segment.
+  assert!(try_transmute_ref::<_, Frame<Ipv6<Udp>>>(&options6[..]).is_err());
+  let ip6: &Frame<Ipv6<HopByHop<Tcp>>> = try_transmute_ref(&options6[..]).unwrap();
+  assert_eq!(ip6.payload.payload().err(), Some(Error::Validity));
+  // Options that are longer than the packet.
+  let mut long = options6.clone();
+  long[14 + 41] = 2;
+  let ip6: &Frame<Ipv6<HopByHop>> = try_transmute_ref(&long[..]).unwrap();
+  assert_eq!(ip6.payload.payload().err(), Some(Error::Validity));
+  let fragment6 = frame(0x86dd, &FRAGMENT6);
+  let ip6: &Frame<Ipv6<Fragment>> = try_transmute_ref(&fragment6[..]).unwrap();
+  let fragment = ip6.payload.payload().unwrap();
+  assert_eq!((fragment.next_header, fragment.offset(), fragment.more()), (Protocol(17), 0, true));
+  assert_eq!((fragment.identification.get(), &fragment.payload), (0xdead_beef, &b"fragment"[..]));
+
+  // ---- MPLS: a stack of labels, down to its bottom.
+  let mpls = frame(0x8847, &[&[0x00, 0x01, 0x00, 0x40, 0x00, 0x02, 0x01, 0x3f][..], &UDP].concat());
+  let top = &try_transmute_ref::<_, Frame<Mpls>>(&mpls[..]).unwrap().payload;
+  assert_eq!((top.label(), top.bottom(), top.time_to_live()), (16, false, 64));
+  let (next, rest) = unpack::<Mpls>(&top.payload).unwrap();
+  assert_eq!((next.label(), next.bottom(), next.time_to_live(), rest.len()), (32, true, 63, 0));
+  assert!(try_transmute_ref::<_, Ipv4<Udp>>(&next.payload).is_ok());
+
+  // ---- PPPoE and 802.1X: a length in the header, and the padding of the frame after it.
+  let mut pppoe = frame(0x8864, &[0x11, 0, 0, 7, 0, 4, 0xc0, 0x21, 9, 1]);
+  pppoe.resize(60, 0);
+  assert_eq!(try_transmute_ref::<_, Frame<Pppoe>>(&pppoe[..]).err(), Some(Error::Validity));
+  let (session, padding) = unpack::<Frame<Pppoe>>(&pppoe).unwrap();
+  assert_eq!((session.payload.session.get(), &session.payload.payload), (7, &[0xc0, 0x21, 9, 1][..]));
+  assert_eq!(padding.len(), 36);
+  let eapol = frame(0x888e, &[2, 1, 0, 0]);
+  let start: &Frame<Eapol> = try_transmute_ref(&eapol[..]).unwrap();
+  assert_eq!((start.payload.version, start.payload.kind, start.payload.body.len()), (2, 1, 0));
+  assert!(try_transmute_ref::<_, Frame<Eapol>>(&frame(0x888e, &[4, 1, 0, 0])[..]).is_err());
+
   // ---- MAC control, and LLDP: values that tell their type and their length.
   let pause = frame(0x8808, &[&[0, 1, 0, 100][..], &[0; 42]].concat());
   assert_eq!(try_transmute_ref::<_, Frame<Pause>>(&pause[..]).unwrap().payload.quanta.get(), 100);
@@ -604,12 +766,27 @@ pub fn main() {
       Ok(tcp) => format!("TCP to port {}", tcp.destination_port),
       Err(error) => format!("TCP, but {error}"),
     },
+    Ok(AnyFrame::Icmp(frame)) => match frame.payload.payload() {
+      Ok(icmp) => format!("ICMP {}", icmp.kind),
+      Err(error) => format!("ICMP, but {error}"),
+    },
     Ok(AnyFrame::Ipv4(frame)) => format!("IPv4, protocol {}", frame.payload.protocol.0),
     Ok(AnyFrame::Udp6(frame)) => format!("UDP over IPv6, {} hops left", frame.payload.hop_limit),
+    Ok(AnyFrame::Options6(frame)) => match frame.payload.payload() {
+      Ok(options) => format!("IPv6 options, then protocol {}", options.next_header.0),
+      Err(error) => format!("IPv6 options, but {error}"),
+    },
+    Ok(AnyFrame::Fragment6(frame)) => match frame.payload.payload() {
+      Ok(fragment) => format!("IPv6 fragment {:#x}", fragment.identification),
+      Err(error) => format!("IPv6 fragment, but {error}"),
+    },
     Ok(AnyFrame::Ipv6(frame)) => format!("IPv6, next header {}", frame.payload.next_header.0),
     Ok(AnyFrame::Arp(frame)) => format!("ARP {:?}", { frame.payload.operation }),
     Ok(AnyFrame::Pause(frame)) => format!("pause for {}", frame.payload.quanta),
     Ok(AnyFrame::Lldp(frame)) => format!("LLDP, {} bytes", frame.payload.0.len()),
+    Ok(AnyFrame::Mpls(frame)) => format!("MPLS label {}", frame.payload.label()),
+    Ok(AnyFrame::Pppoe(frame)) => format!("PPPoE session {}", frame.payload.session),
+    Ok(AnyFrame::Eapol(frame)) => format!("802.1X, version {}", frame.payload.version),
     Ok(AnyFrame::Tagged(frame)) => format!("VLAN {}", frame.payload.id()),
     Ok(AnyFrame::ServiceTagged(frame)) => format!("service VLAN {}", frame.payload.id()),
     Ok(AnyFrame::Length(frame)) => format!("802.3, {} bytes", frame.payload().len()),
@@ -618,8 +795,15 @@ pub fn main() {
   };
   assert_eq!(describe(&frame(0x0800, &UDP)), "UDP to port 53");
   assert_eq!(describe(&frame(0x0800, &TCP)), "TCP to port 80");
+  assert_eq!(describe(&echo), "ICMP 8");
+  assert_eq!(describe(&corrupted_echo), "ICMP, but value is not valid for the target type");
   assert_eq!(describe(&ping), "IPv4, protocol 253");
   assert_eq!(describe(&datagram6), "UDP over IPv6, 64 hops left");
+  assert_eq!(describe(&options6), "IPv6 options, then protocol 17");
+  assert_eq!(describe(&long), "IPv6 options, but value is not valid for the target type");
+  assert_eq!(describe(&fragment6), "IPv6 fragment 0xdeadbeef");
+  assert_eq!(describe(&mpls), "MPLS label 16");
+  assert_eq!(describe(&eapol), "802.1X, version 2");
   assert_eq!(describe(&frame(0x0806, &ARP)), "ARP Request");
   assert_eq!(describe(&pause), "pause for 100");
   assert_eq!(describe(&lldp), "LLDP, 19 bytes");
@@ -636,6 +820,8 @@ pub fn main() {
   padded.resize(60, 0);
   let Ok((AnyFrame::Udp(frame), padding)) = AnyFrame::unpack(&padded) else { panic!() };
   assert_eq!((frame.payload.total_length.get(), padding.len()), (41, 5));
+  let Ok((AnyFrame::Pppoe(frame), padding)) = AnyFrame::unpack(&pppoe) else { panic!() };
+  assert_eq!((frame.payload.length.get(), padding.len()), (4, 36));
 
   println!("ok");
 }

@@ -5,12 +5,19 @@
 //! not compiled, and one that is comes down to a load and a comparison.
 
 use crate::analysis::Marks;
-use crate::layout::{Rule, Shape, eval};
-use crate::{Data, Fields, Path, ptr};
+use crate::layout::{Enum, Kind, Rule, Shape, eval, load};
+use crate::{Data, Fields, Path, Root, Variants, ptr};
 
 /// The things of a target that have to be checked.
 pub(crate) trait Checks {
   const MARKS: Marks;
+}
+
+/// Everything.
+struct All;
+
+impl Checks for All {
+  const MARKS: Marks = Marks::ALL;
 }
 
 /// Whatever the marked things of the `T` at `ptr` are valid. `P` tells where `T` is in the target.
@@ -33,6 +40,34 @@ pub(crate) const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Data>(ptr: *
           && (const { !rules_marked::<C, P, T>() } || check_rules(ptr, rules))
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
+      Shape::Enum(layout) => validate_enum::<T>(ptr, layout),
+    }
+  }
+}
+
+/// Whatever the enum at `ptr` has the tag of one of its variants, and what that variant
+/// requires of its fields: all of it, as nothing is known of what is in an enum.
+#[inline(always)]
+const unsafe fn validate_enum<T: ?Sized + Data>(ptr: *const T, layout: &Enum) -> bool {
+  let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
+  // SAFETY: the tag, and what any of the variants requires to be initialized, is: this is
+  // checked by the analysis.
+  unsafe {
+    let tag = load(ptr.cast::<u8>().add(layout.tag.offset), spec.size, spec.endian);
+    validate_variants::<T, T::Variants>(ptr, tag)
+  }
+}
+
+/// Validate the fields of the variant of the enum at `ptr`, among `V` and the ones after it,
+/// whose tag is `tag`.
+const unsafe fn validate_variants<T: ?Sized + Data, V: Variants>(ptr: *const T, tag: u128) -> bool {
+  let Some(expected) = (const { V::TAG }) else { return false };
+  // SAFETY: guaranteed by the caller.
+  unsafe {
+    if tag == expected {
+      validate_fields::<All, Root, T, V::Fields>(ptr)
+    } else {
+      validate_variants::<T, V::Next>(ptr, tag)
     }
   }
 }

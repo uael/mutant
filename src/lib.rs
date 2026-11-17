@@ -24,6 +24,7 @@
 //!   values. See [`num`] for integers of a given byte order (`u16be`) or value (`u16bec<V>`).
 //! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
 //!   padding, and what each of their bytes can be.
+//! - Enums with fields (`repr(C)`, `repr(u8)`...): their tag, and what each variant is made of.
 //! - `str`: bytes that are UTF-8.
 //! - What `#[derive(Data)]` is told: values that a field can take, sizes and lengths that are in
 //!   a field, assertions over fields. See [`macro@Data`], and `examples/ethernet.rs`.
@@ -63,6 +64,68 @@
 //!
 //! ```compile_fail
 //! let _: &u32 = transmutant::transmute_ref(&[0u8; 4]);
+//! ```
+//!
+//! # Enums with fields
+//!
+//! An enum is known by its tag: a variant proves the variant of the same tag, and nothing else
+//! proves an enum.
+//!
+//! ```
+//! use transmutant::Data;
+//!
+//! #[derive(Data, Debug, PartialEq, Clone, Copy)]
+//! #[repr(u8)]
+//! enum Shape {
+//!   Circle { radius: u16 },
+//!   Rect(u8, bool),
+//! }
+//!
+//! #[derive(Data, Debug, PartialEq, Clone, Copy)]
+//! #[repr(u8)]
+//! enum Drawing {
+//!   Circle { radius: u16 },
+//!   Rect(u8, u8),
+//!   Nothing,
+//! }
+//!
+//! // Every `Shape` is a `Drawing`, variant by variant: nothing is checked.
+//! assert_eq!(transmutant::transmute::<_, Drawing>(Shape::Rect(3, true)), Drawing::Rect(3, 1));
+//! // Not every `Drawing` is a `Shape`.
+//! assert_eq!(transmutant::try_transmute(Drawing::Rect(3, 1)), Ok(Shape::Rect(3, true)));
+//! assert!(transmutant::try_transmute::<_, Shape>(Drawing::Rect(3, 2)).is_err());
+//! assert!(transmutant::try_transmute::<_, Shape>(Drawing::Nothing).is_err());
+//! // Bytes are a `Shape` if they start with one of its tags, then are what that variant holds.
+//! assert_eq!(transmutant::try_transmute([1u8, 3, 1, 0]), Ok(Shape::Rect(3, true)));
+//! assert!(transmutant::try_transmute::<_, Shape>([1u8, 3, 2, 0]).is_err());
+//! assert!(transmutant::try_transmute::<_, Shape>([2u8, 0, 0, 0]).is_err());
+//! ```
+//!
+//! A `Shape` is not 4 bytes: the byte after the tag of a `Circle` is padding, and nothing tells a
+//! `Circle` from a `Rect` at compile time.
+//!
+//! ```compile_fail
+//! # use transmutant::Data;
+//! # #[derive(Data, Clone, Copy)] #[repr(u8)] enum Shape { Circle { radius: u16 }, Rect(u8, bool) }
+//! let _: [u8; 4] = transmutant::transmute(Shape::Rect(3, true));
+//! ```
+//!
+//! Neither can a `Drawing` be written where a `Shape` is:
+//!
+//! ```compile_fail
+//! # use transmutant::Data;
+//! # #[derive(Data, Clone, Copy)] #[repr(u8)] enum Shape { Circle { radius: u16 }, Rect(u8, bool) }
+//! # #[derive(Data, Clone, Copy)] #[repr(u8)] enum Drawing { Circle { radius: u16 }, Rect(u8, u8), Nothing }
+//! let mut shape = Shape::Rect(3, true);
+//! let _: &mut Drawing = transmutant::transmute_mut(&mut shape);
+//! ```
+//!
+//! The layout of an enum with fields that has no `repr` is not specified, and cannot be told on
+//! stable Rust: `#[derive(Data)]` asks for one.
+//!
+//! ```compile_fail
+//! #[derive(transmutant::Data)]
+//! enum Unspecified { A(u8), B(u16) }
 //! ```
 //!
 //! These are errors of the monomorphization of the functions: `cargo build` reports them,
@@ -112,6 +175,9 @@ pub unsafe trait Data {
   /// First field of a struct, `()` otherwise.
   #[doc(hidden)]
   type Fields: Fields;
+  /// First variant of an enum with fields, `()` otherwise.
+  #[doc(hidden)]
+  type Variants: Variants;
   /// A null pointer to `Self`, whose slice length is [`ptr::PROBE_LEN`] if `Self` is unsized.
   /// It must be made with `as` casts only: this is what the pointer tricks are checked against.
   #[doc(hidden)]
@@ -179,6 +245,26 @@ pub unsafe trait Fields {
   const FIELD: Option<Field>;
 }
 
+/// A variant of an enum with fields, and the ones after it: a list at the type level.
+///
+/// # Safety
+/// Implemented by `#[derive(Data)]`.
+#[doc(hidden)]
+pub unsafe trait Variants {
+  /// First field of the variant.
+  type Fields: Fields;
+  type Next: Variants;
+  /// The tag of the variant, `None` at the end of the list.
+  const TAG: Option<u128>;
+}
+
+// SAFETY: the end of every list.
+unsafe impl Variants for () {
+  type Fields = ();
+  type Next = ();
+  const TAG: Option<u128> = None;
+}
+
 /// Where something is in a target, for validation.
 #[doc(hidden)]
 pub trait Path {
@@ -216,6 +302,7 @@ unsafe impl Fields for () {
 unsafe impl<T: Scalar> Data for T {
   type Elem = ();
   type Fields = ();
+  type Variants = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
 }
@@ -224,6 +311,7 @@ unsafe impl<T: Scalar> Data for T {
 unsafe impl<T: Data, const N: usize> Data for [T; N] {
   type Elem = T;
   type Fields = ();
+  type Variants = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
 }
@@ -232,22 +320,27 @@ unsafe impl<T: Data, const N: usize> Data for [T; N] {
 unsafe impl<T: Data> Data for [T] {
   type Elem = T;
   type Fields = ();
+  type Variants = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
-  const LAYOUT: Layout = Layout::slice::<T>(Self::PROBE, &T::LAYOUT);
+  // SAFETY: the probe of a slice.
+  const LAYOUT: Layout = unsafe { Layout::slice::<T>(Self::PROBE, &T::LAYOUT) };
 }
 
 // SAFETY: a `str` is bytes that are UTF-8.
 unsafe impl Data for str {
   type Elem = ();
   type Fields = ();
+  type Variants = ();
   const PROBE: *const Self = <[u8] as Data>::PROBE as *const str;
-  const LAYOUT: Layout = Layout::pattern::<str>(Self::PROBE, Dfa::UTF8);
+  // SAFETY: the probe of a `str`, which is the one of a slice.
+  const LAYOUT: Layout = unsafe { Layout::pattern::<str>(Self::PROBE, Dfa::UTF8) };
 }
 
 // SAFETY: `ManuallyDrop<T>` is a `T`.
 unsafe impl<T: ?Sized + Data> Data for ManuallyDrop<T> {
   type Elem = T::Elem;
   type Fields = T::Fields;
+  type Variants = T::Variants;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
 }
@@ -274,16 +367,20 @@ macro_rules! tuple {
     unsafe impl<$($all: Data),+> Data for ($($all,)+) {
       type Elem = ();
       type Fields = TupleField<Self, 0>;
+      type Variants = ();
       const PROBE: *const Self = core::ptr::null();
-      const LAYOUT: Layout = Layout::structure::<Self>(
-        Self::PROBE,
-        const {
-          &Layout::sort_fields([
-            $(Field::new(core::mem::offset_of!(Self, $index), &$all::LAYOUT)),+
-          ])
-        },
-        &[],
-      );
+      // SAFETY: a tuple of `Sized` things is `Sized`.
+      const LAYOUT: Layout = unsafe {
+        Layout::structure::<Self>(
+          Self::PROBE,
+          const {
+            &Layout::sort_fields([
+              $(Field::new(core::mem::offset_of!(Self, $index), &$all::LAYOUT)),+
+            ])
+          },
+          &[],
+        )
+      };
     }
   };
 }

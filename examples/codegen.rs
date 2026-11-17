@@ -8,7 +8,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use transmutant::num::{u16be, u16bec, u32bec};
-use transmutant::{Data, transmute, transmute_ref, try_transmute, try_transmute_ref, unpack};
+use transmutant::{Data, Tag, transmute, transmute_ref, try_transmute, try_transmute_ref, unpack};
 
 
 #[derive(Data)] #[repr(C)]
@@ -23,17 +23,19 @@ pub struct Header { pub magic: u32bec<0xcafebabe>, pub kind: Kind, pub flag: boo
 #[derive(Data)] #[repr(C)] #[data(size = length)]
 pub struct Udp { pub source: u16be, pub destination: u16be, pub length: u16be, pub checksum: u16be, pub payload: [u8] }
 
-pub trait Payload: Data { type EtherType: Data + Copy; }
 #[derive(Data)] #[repr(C)]
-pub struct Frame<P: ?Sized + Payload = [u8]> { pub dst: [u8; 6], pub src: [u8; 6], pub ether_type: P::EtherType, pub payload: P }
-impl Payload for [u8] { type EtherType = u16be; }
-#[derive(Data)] #[repr(C)] #[data(size = total_length)]
+pub struct Frame<P: ?Sized + Tag<u16be> = [u8]> { pub dst: [u8; 6], pub src: [u8; 6], pub ether_type: P::Tag, pub payload: P }
+#[derive(Data)] #[repr(C)] #[data(size = total_length, tag(u16be = u16bec<0x0800>))]
 pub struct Ipv4<P: ?Sized + Data = [u8]> {
   #[data(valid(0x45..=0x4f))] pub version_ihl: u8, pub tos: u8, pub total_length: u16be, pub id: u16be, pub frag: u16be,
   pub ttl: u8, pub protocol: u8, pub checksum: u16be, pub source: [u8; 4], pub destination: [u8; 4],
   #[data(regions(options = (version_ihl & 0x0f) * 4 - 20, payload))] pub data: P,
 }
-impl<P: ?Sized + Data> Payload for Ipv4<P> { type EtherType = u16bec<0x0800>; }
+
+#[derive(Data, Clone, Copy)] #[repr(u8)]
+pub enum Shape { Circle { radius: u16 }, Rect(u8, bool), Empty }
+#[derive(Data, Clone, Copy)] #[repr(u8)]
+pub enum Drawing { Circle { radius: u16 }, Rect(u8, u8), Empty, Line(u8, u8) = 9 }
 
 // Nothing to check.
 #[unsafe(no_mangle)] pub fn position_bytes(p: &Position) -> &[u8; 2] { transmute_ref(p) }
@@ -51,5 +53,10 @@ impl<P: ?Sized + Data> Payload for Ipv4<P> { type EtherType = u16bec<0x0800>; }
 #[unsafe(no_mangle)] pub fn ipv4(b: &[u8]) -> Option<&Frame<Ipv4>> { unpack::<Frame<Ipv4>>(b).ok().map(|(u, _)| u) }
 #[unsafe(no_mangle)] pub fn options(p: &Ipv4) -> &[u8] { p.options() }
 #[unsafe(no_mangle)] pub fn bools(b: &[u8]) -> Option<&[bool]> { try_transmute_ref(b).ok() }
+// Enums with fields: nothing when every variant is one of the target, else the tag, then what
+// the variant of that tag requires.
+#[unsafe(no_mangle)] pub fn shapes_drawings(s: &[Shape]) -> &[Drawing] { transmute_ref(s) }
+#[unsafe(no_mangle)] pub fn drawing_shape(d: &Drawing) -> Option<&Shape> { try_transmute_ref(d).ok() }
+#[unsafe(no_mangle)] pub fn bytes_shape(b: &[u8; 4]) -> Option<Shape> { try_transmute(*b).ok() }
 
 fn main() {}

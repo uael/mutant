@@ -3,7 +3,8 @@
 ## Goal
 
 Safe transmutation checked at compile time, on stable Rust, between any two "plain data" types:
-structs and enums of any `repr`, tuples, arrays, slices and slice-tailed structs, `str`, with
+structs of any `repr`, enums (of any `repr` without fields, of a specified one with fields),
+tuples, arrays, slices and slice-tailed structs, `str`, with
 
 - a **compile error** when a conversion can never be valid,
 - **no code at all** when it is always valid,
@@ -43,6 +44,10 @@ therefore out. This is what both previous attempts ran into.
   (read from the compiler, whatever its `repr`);
 - **struct**: fields at their actual offsets (any `repr`: the offsets come from the compiler);
   bytes that no field covers are padding. A struct may have **rules** (see below);
+- **enum** with fields: a tag (a scalar whose valid values are the tags of the variants), and
+  for each variant a struct of its fields. The representations that Rust specifies (`repr(C)`,
+  `repr(u8)`..., RFC 2195) are made of `repr(C)` structs, which the derive declares and asks the
+  compiler for; the result is checked against the size and the alignment of the enum;
 - **array** and **slice**: an element layout and a count (or none);
 - **pattern**: a tail of bytes that a DFA accepts. `str` is the UTF-8 automaton (8 states).
 
@@ -63,7 +68,13 @@ both trees in lockstep (a product automaton), with what keeps it cheap:
   once and the rest is skipped. Two slice tails, which never end, are settled in one period;
 - **patterns** are run with sets of states over the runs of the other side, each box of a scalar
   on its own; a repetition is left as soon as one of its elements changes nothing to the set.
-  Two patterns are compared by a product of their automata.
+  Two patterns are compared by a product of their automata;
+- **enums** are related variant by variant: each variant of the source with the variant of the
+  target that has its tag (none: that variant is not valid), as two structs. What an enum
+  requires of its bytes depends on its tag, so nothing but an enum proves an enum: from
+  anything else, the tag is related as a scalar (a source that never holds a tag is an error),
+  the bytes that some variant needs must be initialized, and the rest is checked at run time.
+  As a source, an enum is known by its tag and by the bytes that every variant initializes.
 
 It answers:
 
@@ -95,6 +106,9 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `unpack::<Frame<Ipv4>>(&[u8])`                     | 43 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 19 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | a loop of one `cmp` per byte               |
+| `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
+| `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
+| `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
 
 ### 4. Rules: what is not a property of bytes
 
@@ -142,8 +156,9 @@ loop for the first operations, and a local variable per stack slot rather than a
 
 Soundness rests on one distinction (`Spec::valid` and `Spec::known`):
 
-- what a type **guarantees**, whatever safe code does: `bool`, enums, `NonZero`, `str`, and
-  library types with a private field and a checked constructor (`u16bec<V>`, `u8in<MIN, MAX>`);
+- what a type **guarantees**, whatever safe code does: `bool`, enums (with or without fields),
+  `NonZero`, `str`, and library types with a private field and a checked constructor
+  (`u16bec<V>`, `u8in<MIN, MAX>`);
 - what a struct merely **requires** of what it is made from: `#[data(valid(..))]` on a plain
   field, and rules. Safe code can write any value to a `pub version: u8`.
 
@@ -163,18 +178,19 @@ The tests pass under Miri, with strict provenance and with tree borrows.
 
 ## Not done yet
 
-- **Enums with fields, as data** (enums of references are views, see above). In the engine: a source enum is analysed variant by variant, a target
-  enum by relating what the source has under the tag, then each variant it can select.
-  `repr(C)` and `repr(u8)`... enums have a specified layout (RFC 2195). `repr(Rust)` ones do not,
-  and stable Rust cannot name it, but it can be *observed* in const evaluation from a sample of
-  each variant: field offsets by matching on the sample; the tag by "transplanting" bytes of one
+- **Enums with fields and no `repr`** (the derive asks for `repr(C)` or `repr(u8)`...; enums
+  without fields are supported whatever their `repr`). Their layout is not specified, and stable
+  Rust cannot name it, but it can be *observed* in const evaluation from a sample of each
+  variant: field offsets by matching on the sample; the tag by "transplanting" bytes of one
   variant over another and matching again. Probed on 1.100: this finds the niche of
   `enum { A(u8, bool), B(u8), C }` (the `bool` byte, values 2 and 3) and the tag of a directly
   tagged enum. An experiment that goes wrong is a compile error (const evaluation rejects invalid
   tags), never undefined behavior. One thing cannot be observed: the *width* of a direct tag
   (its high bytes are zero in every variant, and const evaluation refuses to read bytes that may
-  be padding); those bytes would be "must be zero" in a target and "may be uninitialized" in a
-  source, which is sound either way.
+  be padding). The engine is ready for it (a niche is a tag whose variants have ranges of
+  values); what is missing is a sample of every field type, and the experiments.
+- An enum made from something that is not an enum is always checked at run time, even when
+  every value of the source happens to be valid.
 - Patterns other than `str`: the engine takes any DFA of at most 64 states, but there is no way
   to declare one from the derive.
 - `default()`: building a value from the defaults of its fields (literals, sizes).

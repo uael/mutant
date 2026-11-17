@@ -261,6 +261,89 @@ pub(crate) enum Kind {
   Struct(&'static [Field], &'static [Rule]),
   /// A tail of bytes that a [`Dfa`] accepts.
   Pattern(&'static Dfa),
+  /// A tag, and the fields of the variant that the tag tells.
+  Enum(&'static Enum),
+}
+
+/// Layout of an enum with fields, see [`Layout::enumeration`].
+#[derive(Debug)]
+pub struct Enum {
+  /// A scalar whose valid values are the tags of the variants.
+  pub(crate) tag: Field,
+  pub(crate) variants: &'static [Variant],
+  /// Size and alignment that the representation of the enum specifies.
+  pub(crate) specified: (usize, usize),
+}
+
+impl Enum {
+  /// The enum that `repr(C)` and `repr(u8)` (or any other integer) specify: a tag, which is a
+  /// scalar whose valid values are the tags of the `variants`, then one of the `shadows`, the
+  /// `repr(C)` structs of the fields of each variant, of which the sizes and alignments are
+  /// given.
+  ///
+  /// With `repr(C)`, the tag is `outside`: the fields of a variant are at the offset of the
+  /// shadows (`fields`) plus their offset in the shadow of the variant. Without, the tag is the
+  /// first field of each shadow.
+  pub const fn new(
+    tag: &'static Layout, outside: bool, shadows: &[(usize, usize)],
+    fields: usize, variants: &'static [Variant],
+  ) -> Self {
+    let (mut size, mut align, mut i) = (0, 1, 0);
+    while i < shadows.len() {
+      if shadows[i].0 > size {
+        size = shadows[i].0;
+      }
+      if shadows[i].1 > align {
+        align = shadows[i].1;
+      }
+      i += 1;
+    }
+    let specified = if outside {
+      assert!(fields == Self::fields(tag, shadows), "not where the fields of the variants are");
+      let align = if tag.align > align { tag.align } else { align };
+      (tail_offset(fields + size, align, usize::MAX), align)
+    } else {
+      assert!(fields == 0, "not where the fields of the variants are");
+      (tail_offset(size, align, usize::MAX), align)
+    };
+    Self { tag: Field::new(0, tag), variants, specified }
+  }
+
+  /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
+  /// `shadows` (see [`Enum::new`]).
+  pub const fn fields(tag: &Layout, shadows: &[(usize, usize)]) -> usize {
+    let (mut align, mut i) = (1, 0);
+    while i < shadows.len() {
+      if shadows[i].1 > align {
+        align = shadows[i].1;
+      }
+      i += 1;
+    }
+    tail_offset(tag.size, align, usize::MAX)
+  }
+}
+
+/// A variant of an enum with fields, see [`Layout::enumeration`].
+#[derive(Copy, Clone, Debug)]
+pub struct Variant {
+  /// Value of the tag.
+  pub(crate) tag: u128,
+  /// The enum when it is this variant: a struct of its fields, in which the tag is padding.
+  pub(crate) layout: &'static Layout,
+}
+
+impl Variant {
+  /// - `tag` is what the tag of the enum is for this variant, as an integer of native endianness,
+  /// - `layout` is the [`Layout::variant`] of its fields.
+  pub const fn new(tag: u128, layout: &'static Layout) -> Self {
+    Self { tag, layout }
+  }
+
+  /// Fields, by offset from the start of the enum.
+  pub(crate) const fn fields(&self) -> &'static [Field] {
+    let Kind::Struct(fields, _) = self.layout.kind else { panic!("not a variant") };
+    fields
+  }
 }
 
 /// A field of a struct, see [`Layout::structure`].
@@ -337,6 +420,7 @@ pub(crate) enum Shape {
   Slice,
   Struct(&'static [Rule]),
   Pattern(&'static Dfa),
+  Enum(&'static Enum),
 }
 
 /// Round `value` up to a multiple of `align` (a power of two).
@@ -411,7 +495,11 @@ impl Layout {
   }
 
   /// Layout of an unsized type made of bytes that `dfa` accepts, such as `str`.
-  pub const fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
+  ///
+  /// # Safety
+  /// `probe` must be a pointer to a type whose pointers have a slice length, which is
+  /// `PROBE_LEN` (see `Data::PROBE`).
+  pub const unsafe fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
     // SAFETY: the caller gives the probe of a type whose pointers have a slice length.
     unsafe { ptr::verify::<T>(probe) };
     // SAFETY: the metadata of `probe` is a small slice length.
@@ -462,7 +550,10 @@ impl Layout {
   }
 
   /// Layout of `[T]`.
-  pub const fn slice<T>(probe: *const [T], elem: &'static Layout) -> Self {
+  ///
+  /// # Safety
+  /// The length of `probe` must be `PROBE_LEN` (see `Data::PROBE`).
+  pub const unsafe fn slice<T>(probe: *const [T], elem: &'static Layout) -> Self {
     assert!(!elem.unsized_ && elem.size == size_of::<T>());
     // SAFETY: `[T]` is a slice.
     unsafe { ptr::verify::<[T]>(probe) };
@@ -486,7 +577,11 @@ impl Layout {
   ///
   /// The size and alignment of `T` come from the compiler. If the last field is unsized, so is
   /// `T`, and the way the compiler sizes `T` is checked against the model used by this crate.
-  pub const fn structure<T: ?Sized>(
+  ///
+  /// # Safety
+  /// If `T` is unsized, its tail must be a slice, and the slice length of `probe` must be
+  /// `PROBE_LEN` (see `Data::PROBE`).
+  pub const unsafe fn structure<T: ?Sized>(
     probe: *const T, fields: &'static [Field], rules: &'static [Rule],
   ) -> Self {
     let (mut i, mut end, mut leaves) = (0, 0, (!rules.is_empty()) as usize);
@@ -570,6 +665,156 @@ impl Layout {
           len += 1;
         }
         this
+      }
+    }
+  }
+
+  /// Layout of a variant of the enum `T`: its `fields`, as returned by [`Layout::sort_fields`],
+  /// with their offsets from the start of the enum.
+  pub const fn variant<T>(fields: &'static [Field]) -> Self {
+    let (mut i, mut leaves, mut has_rules) = (0, 0, false);
+    while i < fields.len() {
+      leaves += fields[i].layout.leaves;
+      has_rules |= fields[i].layout.has_rules;
+      i += 1;
+    }
+    Self {
+      kind: Kind::Struct(fields, &[]),
+      size: size_of::<T>(),
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves,
+      uniform: Uniform::No,
+      has_rules,
+    }
+  }
+
+  /// Layout of the enum with fields `T`, whose representation must be one that Rust specifies
+  /// (`repr(C)`, `repr(u8)`...): a tag at `tag.offset`, then the fields of a variant.
+  ///
+  /// What is known of such an enum is its tag, and which of its bytes are initialized; what it
+  /// requires is checked as a whole, at run time, unless the source is an enum whose variants
+  /// each prove the variant of the same tag.
+  pub const fn enumeration<T>(layout: &'static Enum) -> Self {
+    let (size, tag) = (size_of::<T>(), &layout.tag);
+    let Kind::Scalar(spec) = tag.layout.kind else { panic!("the tag of an enum is a scalar") };
+    // An `align(N)` on the enum is the only thing that the shadows do not tell.
+    assert!(
+      align_of::<T>() >= layout.specified.1
+        && size == tail_offset(layout.specified.0, align_of::<T>(), usize::MAX),
+      "the enum is not laid out as its representation specifies"
+    );
+    assert!(spec.is_integer() && tag.offset + spec.size <= size, "tag out of bounds");
+    let mut i = 0;
+    while i < layout.variants.len() {
+      let variant = &layout.variants[i];
+      assert!(spec.contains(variant.tag), "not a value of the tag");
+      let (fields, mut j, mut end) = (variant.fields(), 0, 0);
+      assert!(variant.layout.size == size, "not a variant of this enum");
+      while j < fields.len() {
+        let field = &fields[j];
+        assert!(!field.layout.unsized_, "the fields of an enum are sized");
+        if field.layout.size > 0 {
+          let field_end = field.offset + field.layout.size;
+          assert!(field.offset >= end && field_end <= size, "fields overlap or are out of bounds");
+          assert!(
+            field_end <= tag.offset || field.offset >= tag.offset + spec.size,
+            "a field overlaps the tag"
+          );
+          end = field_end;
+        }
+        j += 1;
+      }
+      let mut j = 0;
+      while j < i {
+        assert!(layout.variants[j].tag != variant.tag, "two variants have the same tag");
+        j += 1;
+      }
+      i += 1;
+    }
+    Self {
+      kind: Kind::Enum(layout),
+      size,
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: 1,
+      uniform: Uniform::No,
+      // What the fields of the variants require is a matter of the enum as a whole.
+      has_rules: false,
+    }
+  }
+
+  /// The tag of the `variant`th variant of an enum.
+  #[doc(hidden)]
+  pub const fn variant_tag(&self, variant: usize) -> u128 {
+    let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
+    layout.variants[variant].tag
+  }
+
+  /// The `index`th field, as declared, of the `variant`th variant of an enum.
+  #[doc(hidden)]
+  pub const fn variant_field(&self, variant: usize, index: usize) -> &Field {
+    let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
+    let (fields, mut i) = (layout.variants[variant].fields(), 0);
+    while i < fields.len() {
+      if fields[i].index == index {
+        return &fields[i];
+      }
+      i += 1;
+    }
+    panic!("no such field")
+  }
+
+  /// Whatever the bytes from `offset` are initialized, and where bytes that may be otherwise
+  /// start: in every value of the layout (`always`), or in some.
+  ///
+  /// This does not look into arrays whose elements are not all one or the other: their bytes
+  /// are not known to be initialized (`always`), or are all required to be (not `always`).
+  pub(crate) const fn segment(&self, offset: usize, always: bool) -> (bool, usize) {
+    match self.uniform {
+      Uniform::Any => return (true, self.size),
+      Uniform::Pad => return (false, self.size),
+      Uniform::No => {}
+    }
+    match self.kind {
+      Kind::Scalar(spec) => (!matches!(spec.valid, Valid::Uninit), self.size),
+      Kind::Pattern(_) | Kind::Slice(_) => panic!("not sized"),
+      Kind::Array(..) => (!always, self.size),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          let field = &fields[i];
+          if offset < field.offset {
+            // Padding before the field.
+            return (false, field.offset);
+          }
+          if offset < field.offset + field.layout.size {
+            let (init, end) = field.layout.segment(offset - field.offset, always);
+            return (init, field.offset + end);
+          }
+          i += 1;
+        }
+        (false, self.size)
+      }
+      Kind::Enum(layout) => {
+        let (start, end) = (layout.tag.offset, layout.tag.offset + layout.tag.layout.size);
+        if offset >= start && offset < end {
+          return (true, end);
+        }
+        // The same in every variant up to `stop`.
+        let (mut i, mut every, mut some) = (0, true, false);
+        let mut stop = if offset < start { start } else { self.size };
+        while i < layout.variants.len() {
+          let (init, end) = layout.variants[i].layout.segment(offset, always);
+          (every, some) = (every && init, some || init);
+          if end < stop {
+            stop = end;
+          }
+          i += 1;
+        }
+        (if always { every } else { some }, stop)
       }
     }
   }
@@ -671,6 +916,7 @@ impl Layout {
       Kind::Slice(_) => Shape::Slice,
       Kind::Struct(_, rules) => Shape::Struct(rules),
       Kind::Pattern(dfa) => Shape::Pattern(dfa),
+      Kind::Enum(layout) => Shape::Enum(layout),
     }
   }
 
@@ -786,6 +1032,24 @@ impl Layout {
         true
       }
       Kind::Pattern(dfa) => dfa.states[0].accept,
+      // The variant whose tag is 0, if any.
+      Kind::Enum(layout) => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].tag == 0 {
+            let (fields, mut j) = (layout.variants[i].fields(), 0);
+            while j < fields.len() {
+              if !fields[j].layout.zeroable() {
+                return false;
+              }
+              j += 1;
+            }
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
     }
   }
 
@@ -836,6 +1100,23 @@ impl Layout {
         true
       }
       (Kind::Pattern(a), Kind::Pattern(b)) => a.id == b.id,
+      (Kind::Enum(a), Kind::Enum(b)) => {
+        if a.tag.offset != b.tag.offset
+          || !a.tag.layout.equals(b.tag.layout)
+          || a.variants.len() != b.variants.len()
+        {
+          return false;
+        }
+        let mut i = 0;
+        while i < a.variants.len() {
+          let (x, y) = (&a.variants[i], &b.variants[i]);
+          if x.tag != y.tag || !x.layout.equals(y.layout) {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
       _ => false,
     }
   }

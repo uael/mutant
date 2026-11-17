@@ -88,11 +88,24 @@ struct Repeat {
 pub(crate) struct Cursor {
   stack: [Frame; MAX_DEPTH],
   depth: usize,
+  /// The layout is the one of the target: a byte that is only initialized in some of the
+  /// variants of an enum is then to be initialized, rather than known not to be.
+  target: bool,
 }
 
 impl Cursor {
-  pub(crate) const fn new(root: &'static Layout) -> Self {
-    Self { stack: [Frame { layout: root, base: 0, leaf: 0, field: 0 }; MAX_DEPTH], depth: 1 }
+  pub(crate) const fn new(root: &'static Layout, target: bool) -> Self {
+    let frame = Frame { layout: root, base: 0, leaf: 0, field: 0 };
+    Self { stack: [frame; MAX_DEPTH], depth: 1, target }
+  }
+
+  /// The enum that the last run is of, if any, with its offset and its leaf.
+  const fn enumeration(&self) -> Option<(&'static Layout, usize, usize)> {
+    let frame = &self.stack[self.depth - 1];
+    match frame.layout.kind {
+      Kind::Enum(_) => Some((frame.layout, frame.base, frame.leaf)),
+      _ => None,
+    }
   }
 
   const fn push(&mut self, layout: &'static Layout, base: usize, leaf: usize) {
@@ -126,6 +139,19 @@ impl Cursor {
         }
         Kind::Pattern(dfa) => {
           return Run { kind: RunKind::Pattern(dfa), start: frame.base, end, leaf: frame.leaf };
+        }
+        Kind::Enum(variants) => {
+          let Kind::Scalar(spec) = variants.tag.layout.kind else { panic!() };
+          let (offset, tag) = (pos - frame.base, variants.tag.offset);
+          if offset >= tag && offset < tag + spec.size {
+            let kind = if spec.is_constrained() { RunKind::Atom(spec) } else { RunKind::Any };
+            let (start, end) = (frame.base + tag, frame.base + tag + spec.size);
+            return Run { kind, start, end, leaf: frame.leaf };
+          }
+          // What follows, for as long as it is known to be initialized or not.
+          let (init, stop) = layout.segment(offset, !self.target);
+          let kind = if init { RunKind::Any } else { RunKind::Pad };
+          return Run { kind, start: pos, end: frame.base + stop, leaf: 0 };
         }
         Kind::Struct(fields, _) => {
           // Skip the fields that end before `pos`.
@@ -276,7 +302,7 @@ impl Relation {
 /// Relate the first `end` bytes (`usize::MAX`: all of them, however many) of `a` and `b`.
 pub(crate) const fn relate(a: &'static Layout, b: &'static Layout, end: usize) -> Relation {
   let mut relation = Relation::NEW;
-  let (mut a, mut b) = (Cursor::new(a), Cursor::new(b));
+  let (mut a, mut b) = (Cursor::new(a, false), Cursor::new(b, true));
   relate_range(&mut a, &mut b, 0, end, &mut relation);
   relation
 }
@@ -294,7 +320,8 @@ const fn relate_range(
     }
     if let RunKind::Pattern(_) = run_a.kind {
       // The bytes of a pattern are initialized: enough for a target without constraint.
-      if !(matches!(run_b.kind, RunKind::Pad | RunKind::Any) && run_b.end >= end) {
+      let free = matches!(run_b.kind, RunKind::Pad | RunKind::Any) && run_b.end >= end;
+      if !free || b.enumeration().is_some() {
         // Else, give up on proving anything: everything is checked at run time.
         out.marks = Marks::ALL;
         out.partial = Some(pos);
@@ -312,6 +339,20 @@ const fn relate_range(
         relate_range(a, b, pos, pos + period, out);
         return true;
       }
+    }
+    // What an enum requires of its fields depends on its tag: it is proven as a whole, by an
+    // enum, or not at all.
+    if let Some((enum_b, base_b, leaf)) = b.enumeration() {
+      if let Some((enum_a, base_a, _)) = a.enumeration()
+        && base_a == pos
+        && base_b == pos
+        && relate_enums(enum_a, enum_b, pos, leaf, out)
+      {
+        pos += enum_b.size;
+        continue;
+      }
+      // Else, what follows only tells whatever the enum can be checked at run time.
+      out.mark(leaf, pos);
     }
     let stop = min(run_b.end, end);
     match run_b.kind {
@@ -344,6 +385,58 @@ const fn relate_range(
     }
   }
   false
+}
+
+/// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: the variants of `a`
+/// with the ones of `b` that have the same tag.
+///
+/// Returns `false`, having done nothing, if their tags are not at the same place.
+const fn relate_enums(
+  a: &'static Layout, b: &'static Layout, pos: usize, leaf: usize, out: &mut Relation,
+) -> bool {
+  if a.equals(b) {
+    return true;
+  }
+  let (Kind::Enum(enum_a), Kind::Enum(enum_b)) = (a.kind, b.kind) else { panic!() };
+  let (Kind::Scalar(tag_a), Kind::Scalar(tag_b)) = (enum_a.tag.layout.kind, enum_b.tag.layout.kind)
+  else {
+    panic!()
+  };
+  if a.size < b.size
+    || enum_a.tag.offset != enum_b.tag.offset
+    || tag_a.size != tag_b.size
+    || !tag_a.endian.equals(tag_b.endian)
+  {
+    return false;
+  }
+  // Whatever some variants of `a` are, and some are not, valid for `b`.
+  let (mut some, mut all, mut i) = (false, true, 0);
+  while i < enum_a.variants.len() {
+    let (from, mut j) = (&enum_a.variants[i], 0);
+    while j < enum_b.variants.len() && enum_b.variants[j].tag != from.tag {
+      j += 1;
+    }
+    i += 1;
+    if j == enum_b.variants.len() {
+      // Not a tag of `b`.
+      all = false;
+      continue;
+    }
+    let to = &enum_b.variants[j];
+    let mut relation = relate(from.layout, to.layout, b.size);
+    mark_rules(from.layout, to.layout, 0, 0, &mut relation);
+    if let Some(offset) = relation.uninit {
+      out.uninit(pos + offset);
+    }
+    (some, all) = (some || relation.disjoint.is_none(), all && relation.infallible());
+  }
+  if !all {
+    out.mark(leaf, pos);
+  }
+  if !some && out.disjoint.is_none() {
+    out.disjoint = Some(pos);
+  }
+  true
 }
 
 const NO: Repeat = Repeat { stride: 0, end: 0, run: false, id: (0, 0) };
@@ -903,7 +996,7 @@ const fn mark_rules(
     }
     // Elements share their leaves: either they are all proven at once (`covered`), or none is.
     Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
-    Kind::Scalar(_) | Kind::Pattern(_) => {}
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => {}
   }
 }
 
@@ -923,7 +1016,7 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
       }
     }
     Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
-    Kind::Scalar(_) | Kind::Pattern(_) => {}
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => {}
   }
 }
 
@@ -960,7 +1053,7 @@ const fn covered(source: &'static Layout, offset: usize, target: &'static Layout
       elem.size > 0 && offset / elem.size < len && covered(elem, offset % elem.size, target)
     }
     Kind::Slice(elem) => elem.size > 0 && covered(elem, offset % elem.size, target),
-    Kind::Scalar(_) | Kind::Pattern(_) => false,
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => false,
   }
 }
 

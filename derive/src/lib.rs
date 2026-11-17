@@ -53,6 +53,11 @@ use syn::{
 ///
 /// Enums without fields, of any `repr`: their valid values are read from the compiler.
 ///
+/// Enums with fields whose layout is specified: `repr(C)`, `repr(u8)` (or any other integer), or
+/// both. Every field must be `Data`, and can have the `valid` option. What is known of such an
+/// enum is its tag; making one out of anything but itself checks the tag, then what the fields
+/// of the variant require.
+///
 /// Enums whose variants each hold a reference, such as
 /// `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`, are not data but *views* of
 /// data that is one thing or another. For them, two functions are generated, which try the
@@ -78,6 +83,8 @@ struct Repr {
   transparent: bool,
   /// `N` of `packed(N)`.
   packed: Option<TokenStream>,
+  /// `u8`, `i32`...
+  int: Option<Ident>,
 }
 
 fn parse_repr(attrs: &[Attribute]) -> Result<Repr> {
@@ -101,6 +108,12 @@ fn parse_repr(attrs: &[Attribute]) -> Result<Repr> {
         let content;
         syn::parenthesized!(content in meta.input);
         content.parse::<TokenStream>()?;
+      } else if let Some(ident) = meta.path.get_ident() {
+        const INTS: [&str; 12] =
+          ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize"];
+        if INTS.iter().any(|int| ident == int) {
+          repr.int = Some(ident.clone());
+        }
       }
       Ok(())
     })?;
@@ -618,12 +631,17 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       unsafe impl #impl_generics #root::Data for #this #where_clause {
         type Elem = ();
         type Fields = #first;
+        type Variants = ();
         const PROBE: *const Self = #probe;
-        const LAYOUT: #root::layout::Layout = #root::layout::Layout::structure::<Self>(
-          Self::PROBE,
-          const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
-          const { &[#(#rules),*] },
-        );
+        // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
+        // is a slice.
+        const LAYOUT: #root::layout::Layout = unsafe {
+          #root::layout::Layout::structure::<Self>(
+            Self::PROBE,
+            const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
+            const { &[#(#rules),*] },
+          )
+        };
       }
 
       #accessors
@@ -697,14 +715,11 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
       }
     });
   }
+  if data.variants.iter().any(|variant| !matches!(variant.fields, Fields::Unit)) {
+    return derive_tagged(input, data, &root);
+  }
   let mut variants = vec![];
   for variant in &data.variants {
-    if !matches!(variant.fields, Fields::Unit) {
-      return Err(Error::new(
-        variant.fields.span(),
-        "`Data` cannot be derived for enums with fields yet",
-      ));
-    }
     let variant = &variant.ident;
     // SAFETY (of the generated code): an enum without fields has no padding.
     variants.push(quote!(unsafe { #root::layout::bits_of(&Self::#variant) }));
@@ -724,5 +739,185 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         )
       };
     }
+  })
+}
+
+/// An enum with fields, of a specified layout (RFC 2195): the offsets of the fields are the ones
+/// of `repr(C)` structs, which the compiler is asked for.
+fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
+  let repr = parse_repr(&input.attrs)?;
+  if !repr.c && repr.int.is_none() {
+    return Err(Error::new(
+      input.ident.span(),
+      "the layout of an enum with fields is not specified: `Data` can be derived for it with \
+       `#[repr(u8)]` (or another integer), `#[repr(C)]`, or both",
+    ));
+  }
+  let (ident, vis) = (&input.ident, &input.vis);
+  let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+  let this = quote!(#ident #ty_generics);
+  let mut generics = input.generics.clone();
+  let predicates = &mut generics.make_where_clause().predicates;
+  for field in data.variants.iter().flat_map(|variant| &variant.fields) {
+    let ty = &field.ty;
+    predicates.push(parse_quote!(#ty: #root::Data));
+  }
+  let where_clause = &generics.where_clause;
+
+  // The tag: an enum without fields of the same variants.
+  let tag = format_ident!("__DataTag");
+  let tag_repr = match &repr.int {
+    Some(int) => quote!(#int),
+    None => quote!(C),
+  };
+  let tags = data.variants.iter().map(|variant| {
+    let (name, discriminant) = (&variant.ident, variant.discriminant.as_ref().map(|(_, expr)| expr));
+    let discriminant = discriminant.map(|expr| quote!(= #expr));
+    quote!(#name #discriminant)
+  });
+  let names = data.variants.iter().map(|variant| &variant.ident).collect::<Vec<_>>();
+  let count = names.len();
+
+  // A `repr(C)` struct for each variant, which starts with the tag unless the enum is `repr(C)`.
+  let shadows = (0..count).map(|i| format_ident!("__DataVariant{}", i)).collect::<Vec<_>>();
+  let first = usize::from(!repr.c);
+  let sizes = shadows.iter().map(|shadow| {
+    quote!((
+      ::core::mem::size_of::<#shadow #ty_generics>(),
+      ::core::mem::align_of::<#shadow #ty_generics>(),
+    ))
+  });
+  let sizes = quote!([#(#sizes),*]);
+  let tag_layout = quote!(<#tag as #root::Data>::LAYOUT);
+  // Where the fields of the variants are.
+  let fields = match repr.c {
+    true => quote!(#root::layout::Enum::fields(&#tag_layout, &#sizes)),
+    false => quote!(0),
+  };
+  let (mut items, mut variants) = (vec![], vec![]);
+  for (i, variant) in data.variants.iter().enumerate() {
+    let (shadow, name) = (&shadows[i], &names[i]);
+    let types = variant.fields.iter().map(|field| &field.ty).collect::<Vec<_>>();
+    let head = (!repr.c).then(|| quote!(#tag,));
+    let markers =
+      (0..types.len()).map(|j| format_ident!("__DataVariant{}Field{}", i, j)).collect::<Vec<_>>();
+    let mut layouts = vec![];
+    for (j, field) in variant.fields.iter().enumerate() {
+      let options = parse_options(&field.attrs)?;
+      if options.len.is_some() || options.regions.is_some() {
+        return Err(Error::new(field.span(), "the fields of an enum are sized"));
+      }
+      let (ty, index) = (&field.ty, Index::from(first + j));
+      let offset = quote!(#fields + ::core::mem::offset_of!(#shadow #ty_generics, #index));
+      layouts.push(match &options.valid {
+        Some(ranges) => {
+          let ranges = valid_ranges(ranges, ty, root);
+          quote!(#root::layout::Field::restricted(
+            #offset,
+            const { &<#ty as #root::Data>::LAYOUT.restricted(#ranges) },
+          ))
+        }
+        None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Data>::LAYOUT)),
+      });
+      let (marker, next) = (&markers[j], match markers.get(j + 1) {
+        Some(marker) => quote!(#marker #ty_generics),
+        None => quote!(()),
+      });
+      items.push(quote! {
+        #[allow(non_camel_case_types)]
+        #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+        // SAFETY: the field of the layout of the variant.
+        unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
+          type Type = #ty;
+          type Next = #next;
+          type Path<__P: #root::Path> = #root::At<__P, Self>;
+          const FIELD: ::core::option::Option<#root::layout::Field> =
+            ::core::option::Option::Some(*<#this as #root::Data>::LAYOUT.variant_field(#i, #j));
+        }
+      });
+    }
+    let (fields, next) = (
+      match markers.first() {
+        Some(marker) => quote!(#marker #ty_generics),
+        None => quote!(()),
+      },
+      match shadows.get(i + 1) {
+        Some(shadow) => quote!(#shadow #ty_generics),
+        None => quote!(()),
+      },
+    );
+    items.push(quote! {
+      // As visible as the enum, so that it can be named by its implementation of `Data`.
+      #[repr(C)]
+      #[allow(dead_code, non_camel_case_types)]
+      #vis struct #shadow #impl_generics(
+        #head #(#types,)* ::core::marker::PhantomData<#this>
+      ) #where_clause;
+
+      // SAFETY: the variant of the layout of the enum.
+      unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
+        type Fields = #fields;
+        type Next = #next;
+        const TAG: ::core::option::Option<::core::primitive::u128> =
+          ::core::option::Option::Some(<#this as #root::Data>::LAYOUT.variant_tag(#i));
+      }
+    });
+    variants.push(quote!(#root::layout::Variant::new(
+      // SAFETY (of the generated code): an enum without fields has no padding.
+      unsafe { #root::layout::bits_of(&#tag::#name) },
+      const {
+        &#root::layout::Layout::variant::<Self>(
+          const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
+        )
+      },
+    )));
+  }
+  let (first, outside) = (&shadows[0], repr.c);
+
+  Ok(quote! {
+    const _: () = {
+      #[repr(#tag_repr)]
+      #[derive(Clone, Copy)]
+      #[allow(dead_code, non_camel_case_types, clippy::enum_variant_names)]
+      enum #tag { #(#tags),* }
+
+      // SAFETY: the valid values are the ones of the variants, read from the compiler.
+      unsafe impl #root::Scalar for #tag {
+        const SPEC: #root::layout::Spec = {
+          let merged: &'static ([(u128, u128); #count], usize) = const {
+            // SAFETY: an enum without fields has no padding.
+            &#root::layout::sorted_ranges([#(unsafe { #root::layout::bits_of(&#tag::#names) }),*])
+          };
+          #root::layout::Spec::ranges::<Self>(
+            #root::layout::Endian::NATIVE,
+            merged.0.split_at(merged.1).0,
+          )
+        };
+      }
+
+      #(#items)*
+
+      // SAFETY: the layout is the one that RFC 2195 specifies, made from what the compiler tells
+      // of a `repr(C)` struct for each variant; it is checked against the size and the alignment
+      // of the enum.
+      unsafe impl #impl_generics #root::Data for #this #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = #first #ty_generics;
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout = #root::layout::Layout::enumeration::<Self>(
+          const {
+            &#root::layout::Enum::new(
+              &#tag_layout,
+              #outside,
+              &#sizes,
+              #fields,
+              const { &[#(#variants),*] },
+            )
+          },
+        );
+      }
+    };
   })
 }
