@@ -98,3 +98,37 @@ fn and_or_compute_the_left_side_first() {
   assert!(puns::from_bytes::<LeftFirst>(&[11, 0xca, 0xfe]).is_err());
   assert!(puns::from_bytes::<LeftFirst>(&[8, 0xca, 0xfe]).is_ok());
 }
+
+/// A name that ends with a zero, and whose end matters only for some flags: what a `let` binds is
+/// computed, whether it is used or not, as in Rust.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert({
+  let end = walk(1, |at| be(at, 1) != 0, |at| at + 1);
+  flags & 2 == 0 || end + 1 == size_of_val(self)
+}))]
+struct Named {
+  flags: u8,
+  name: [u8],
+}
+
+/// A `let` in the branch of an `if` that is not taken is not computed.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(if flags & 4 != 0 { let x = be(1, 1); x == 0 } else { true }))]
+struct Branch {
+  flags: u8,
+  rest: [u8],
+}
+
+#[test]
+fn what_a_let_binds_is_computed() {
+  assert!(puns::from_bytes::<Named>(&[0, b'a', 0]).is_ok());
+  assert!(puns::from_bytes::<Named>(&[2, b'a', 0]).is_ok());
+  // No end: the walk fails, whatever the flags.
+  assert!(puns::from_bytes::<Named>(&[2, b'a']).is_err());
+  assert!(puns::from_bytes::<Named>(&[0, b'a']).is_err());
+  assert!(puns::from_bytes::<Branch>(&[0]).is_ok());
+  assert!(puns::from_bytes::<Branch>(&[4, 0]).is_ok());
+  assert!(puns::from_bytes::<Branch>(&[4]).is_err());
+}

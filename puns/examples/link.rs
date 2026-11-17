@@ -280,7 +280,7 @@ pub const T3: u128 = 0x5000_a001_f001_0000;
 /// There is no CRC-16 in the expressions. A walk computes it, a byte per step, with a state of
 /// `offset << 24 | crc`. A CRC is linear, so the table of a byte is the XOR of four tables of
 /// four entries, `T[x] = T[x & 3] ^ T[x & 12] ^ T[x & 48] ^ T[x & 192]`, each packed in a
-/// constant. The step is 48 operations: as many as a walk allows. This is the current way, until
+/// constant. The step is 49 operations, of the 56 a walk allows. This is the current way, until
 /// a function for it is built in.
 #[derive(Pun)]
 #[repr(C)]

@@ -67,7 +67,9 @@ use syn::{
 /// an array, which `le` and `be` read; it calls no method and no function but the ones below.
 ///
 /// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
-/// once), `if EXPR { EXPR } else { EXPR }`.
+/// once, `let name: u128` or `let name: bool` if the type is written), `if EXPR { EXPR } else {
+/// EXPR }`. As in Rust, what a `let` binds is computed whether it is used or not: a block fails if
+/// one of its `let`s does.
 ///
 /// It can also read the value beyond its fields, where `start`, `end` and `offset` are
 /// expressions that count bytes from the start of the value:
@@ -405,7 +407,7 @@ fn compile_block(
   ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
 ) -> Result<Ty> {
-  let (op, visible) = (quote!(#root::layout::Op), scope.names.len());
+  let (op, visible, mut lets) = (quote!(#root::layout::Op), scope.names.len(), vec![]);
   let Some((last, statements)) = block.stmts.split_last() else {
     return Err(Error::new(block.span(), "a block has a value"));
   };
@@ -413,11 +415,12 @@ fn compile_block(
     let syn::Stmt::Local(local) = statement else {
       return Err(Error::new(statement.span(), "expected `let name = EXPR;`"));
     };
-    let name = match &local.pat {
-      syn::Pat::Ident(pat) => &pat.ident,
-      syn::Pat::Type(pat) if matches!(&*pat.pat, syn::Pat::Ident(_)) => match &*pat.pat {
-        syn::Pat::Ident(pat) => &pat.ident,
-        _ => unreachable!(),
+    // `name`, or `name: TYPE`.
+    let (name, annotation) = match &local.pat {
+      syn::Pat::Ident(pat) => (&pat.ident, None),
+      syn::Pat::Type(typed) => match &*typed.pat {
+        syn::Pat::Ident(pat) => (&pat.ident, Some(&*typed.ty)),
+        pat => return Err(Error::new(pat.span(), "expected a name")),
       },
       pat => return Err(Error::new(pat.span(), "expected a name")),
     };
@@ -425,13 +428,34 @@ fn compile_block(
       return Err(Error::new(local.span(), "expected `let name = EXPR;`"));
     };
     let ty = compile(expr, fields, root, ops, scope)?;
+    if let Some(annotation) = annotation {
+      let named = match annotation {
+        Type::Path(path) if path.path.is_ident("u128") => Some(Ty::Int),
+        Type::Path(path) if path.path.is_ident("bool") => Some(Ty::Bool),
+        _ => None,
+      };
+      if named != Some(ty) {
+        return Err(Error::new_spanned(
+          annotation,
+          format!(
+            "the values of a rule are `u128`s and `bool`s: this one is a `{}`",
+            if ty == Ty::Int { "u128" } else { "bool" }
+          ),
+        ));
+      }
+    }
     let index = scope.declare(name, ty)?;
     ops.push(quote!(#op::Set(#index)));
+    lets.push(index);
   }
   let syn::Stmt::Expr(value, None) = last else {
     return Err(Error::new(last.span(), "a block ends with its value"));
   };
   let ty = compile(value, fields, root, ops, scope)?;
+  // What the `let`s bind is computed, as in Rust: the block fails if one of them does.
+  if let Some(mask) = lets.iter().map(|index| 1u8 << index).reduce(|a, b| a | b) {
+    ops.push(quote!(#op::Let(#mask)));
+  }
   scope.names.truncate(visible);
   Ok(ty)
 }

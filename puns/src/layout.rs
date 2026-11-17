@@ -1611,6 +1611,11 @@ pub enum Op {
   Set(u8),
   /// Push the `index`th variable.
   Get(u8),
+  /// Make the value on top fail if one of the variables of a mask (a bit for each) could not be
+  /// computed: what a `let` binds is computed, as in Rust, whether it is used or not. At the end
+  /// of the block of the `let`s, so that a block that is not computed (in a branch of an `if`
+  /// that is not taken) does not fail.
+  Let(u8),
   /// Replace a value by what it becomes when, for as long as the expression `cond` is true of
   /// it, it is replaced by the expression `next`. In both, the value is the variable `var`.
   ///
@@ -1685,17 +1690,29 @@ impl Op {
         a == x && b == y && c == z
       }
       (Op::At { size: a, big: b }, Op::At { size: x, big: y }) => a == x && b == y,
-      (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) => a == b,
+      (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) | (Op::Let(a), Op::Let(b)) => a == b,
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
       }
       (
-        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+        Op::Lit(_)
+        | Op::Load { .. }
+        | Op::At { .. }
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Let(_)
+        | Op::Walk { .. },
         _,
       )
       | (
         _,
-        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+        Op::Lit(_)
+        | Op::Load { .. }
+        | Op::At { .. }
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Let(_)
+        | Op::Walk { .. },
       ) => false,
       // Other operations hold no data.
       (a, b) => a.code() == b.code(),
@@ -1734,6 +1751,7 @@ impl Op {
       Op::Set(_) => 26,
       Op::Get(_) => 27,
       Op::Walk { .. } => 28,
+      Op::Let(_) => 29,
     }
   }
 }
@@ -1844,8 +1862,8 @@ const STACK: usize = 8;
 const VARIABLES: usize = 4;
 /// An expression that has a [`Op::Walk`] is, as each expression of the walk, of at most that
 /// many operations: they are counted with types, see `validate::check_walks`.
-const WALK_OPS: usize = 64;
-const WALK_INNER_OPS: usize = 48;
+const WALK_OPS: usize = 72;
+const WALK_INNER_OPS: usize = 56;
 
 /// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
 const fn check_rules(rules: &[Rule], head: usize) {
@@ -1891,6 +1909,10 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
       Op::Get(index) => {
         assert!((index as usize) < VARIABLES && defined & (1 << index) != 0, "no such variable");
         depth += 1;
+      }
+      Op::Let(mask) => {
+        assert!(depth >= 1, "malformed expression");
+        assert!(mask != 0 && defined & mask == mask, "no such variable");
       }
       Op::Walk { var, cond, next } => {
         assert!(depth >= 1, "malformed expression");
@@ -2073,6 +2095,11 @@ impl Machine {
         self.set_variable(index, self.slot(depth - 1));
         self.depth -= 1;
       }
+      Op::Let(mask) => {
+        if self.unknown & mask != 0 {
+          self.set(depth - 1, None);
+        }
+      }
       Op::Not => {
         if !self.has_failed(depth - 1) {
           self.set(depth - 1, Some((self.get(depth - 1) == 0) as u128));
@@ -2219,6 +2246,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     | Op::Select
     | Op::Set(_)
     | Op::Get(_)
+    | Op::Let(_)
     | Op::Walk { .. } => None,
   }
 }

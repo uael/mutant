@@ -35,7 +35,7 @@
 //!
 //! - DNS: a message checks the name of its first question only. Checking every name and the
 //!   fixed part of every record is one walk over the message whose step is 61 operations; an
-//!   expression of a walk has at most 48. A name, and a record whose name is not a single
+//!   expression of a walk has at most 56. A name, and a record whose name is not a single
 //!   pointer, cannot be `from_head`ed from a stream: their size is only found by walking them, and a
 //!   `size` rule cannot walk. Name compression is followed, but a name is not decompressed:
 //!   that would be a copy, not a view of the bytes.

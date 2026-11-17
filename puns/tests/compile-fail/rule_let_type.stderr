@@ -1,0 +1,5 @@
+error: the values of a rule are `u128`s and `bool`s: this one is a `u128`
+ --> tests/compile-fail/rule_let_type.rs:4:25
+  |
+4 | #[pun(assert({ let sum: u8 = a + b; sum == 0 }))]
+  |                         ^^

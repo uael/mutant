@@ -36,7 +36,7 @@
 //!   every offset after them. `OPTIONAL` elements and `CHOICE`s are a type each: a chain of
 //!   [`Then`] is one sequence of types.
 //! - Protocol Buffers: a varint of any length, or a message made of fields of any form, is a walk
-//!   over its bytes whose step is 208 operations; an expression of a walk has at most 48 (planned:
+//!   over its bytes whose step is 208 operations; an expression of a walk has at most 56 (planned:
 //!   more). Here, each form of a field is a struct (varints of 1 or 2 bytes, lengths of 1 or 2
 //!   bytes), and an enum of references tells them apart; nested messages are bytes.
 //! - MessagePack and CBOR: a single item is a head of one of a few forms: a struct each, and an

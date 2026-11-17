@@ -38,7 +38,7 @@
 //!   a struct of its own, and an enum of references tells them apart. This is the current way;
 //!   with `be` in `size` (planned), each is one struct.
 //! - CoAP: that the options are well formed, up to the payload marker, is a walk over them whose
-//!   step is 75 operations; an expression of a walk has at most 48 (planned: more). So a payload
+//!   step is 75 operations; an expression of a walk has at most 56 (planned: more). So a payload
 //!   marker without a payload is not rejected by the message, and options are checked one by one
 //!   by use code. The option numbers are sums of the deltas before them: state carried along a
 //!   sequence, which use code keeps.

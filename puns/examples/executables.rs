@@ -33,7 +33,7 @@
 //!   themselves are found by offsets that use code follows.
 //! - PE: the checksum of the image, the import and export tables (addresses that are relative
 //!   to where sections are loaded, not to the file) are not views of the bytes as they are.
-//! - Java: the constant pool is walked in one rule of 64 operations, the most an expression that
+//! - Java: the constant pool is walked in one rule of 65 operations, near the 72 an expression that
 //!   walks may have. Fields and methods are counts of things that have attributes of their own
 //!   sizes, counted as well: a walk inside a walk, which is not allowed, so they are not checked.
 //!   The text of a `CONSTANT_Utf8` is "modified UTF-8", which is not `str`, and no other text
@@ -42,7 +42,7 @@
 //!   not `be(..)`: each length is a struct, and an enum of references tells them apart. This is
 //!   the current way; with `be` in `size` (planned), it is one struct. [`SmallModule`] checks
 //!   that sections fill a module by a walk that reads sizes of 1 or 2 bytes only (below 16 KiB):
-//!   a third byte makes the step of the walk longer than the 48 operations it may have, and so
+//!   a third byte makes the step of the walk longer than the 56 operations it may have, and so
 //!   would checking that the sections are in order (79). With longer walks (planned), it is any
 //!   module.
 #![deny(unsafe_code)]

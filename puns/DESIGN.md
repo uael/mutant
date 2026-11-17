@@ -192,7 +192,8 @@ last bytes are the CRC of what is before" is an assertion. A checksum that cover
 holds them all: the IPv4 packet.
 
 An expression can name what it computes and choose (`{ let header = ..; .. }`,
-`if .. { .. } else { .. }`), and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
+`if .. { .. } else { .. }`; what a `let` binds is computed, as in Rust, whether it is used or not),
+and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
 `START` becomes when it is replaced by `NEXT` for as long as `COND` is true of it. This is how
 what lies at an offset that depends on what is before is reached: the checksum of UDP, TCP and
 ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each of which tells
