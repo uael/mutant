@@ -92,7 +92,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)         |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
-| `unpack::<Frame<Ipv4>>(&[u8])`                     | 35 instructions, no loop, no call          |
+| `unpack::<Frame<Ipv4>>(&[u8])`                     | 43 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 19 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | a loop of one `cmp` per byte               |
 
