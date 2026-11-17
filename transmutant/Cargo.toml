@@ -1,0 +1,8 @@
+[package]
+name = "transmutant"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.100"
+
+[dependencies]
+transmutant-derive = { path = "../transmutant-derive" }
