@@ -909,7 +909,7 @@ pub fn main() {
   let (extension, _) = unpack::<TlsExtension>(extensions.items()).unwrap();
   assert_eq!(try_transmute_ref::<_, ServerName>(&extension.data).err(), Some(Error::Validity));
   // A record too long for TLS.
-  let mut long = vec![23, 3, 3, 0x48, 0x01];
+  let mut long = vec![23u8, 3, 3, 0x48, 0x01];
   long.resize(5 + 0x4801, 0);
   assert_eq!(try_transmute_ref::<_, Record>(&long[..]).err(), Some(Error::Validity));
 
