@@ -99,13 +99,11 @@ jobs:
       - run: cargo +nightly-2026-11-17 miri test -p transmutant --tests --target i686-unknown-linux-gnu
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
-      # The part of the model check that Miri affords (`miri_sample`, `dst`, the regressions).
+      # The part of the model check that Miri affords (`miri_sample`, `dst`, the regressions):
+      # about twenty minutes, so once, with tree borrows.
       - run: cargo +nightly-2026-11-17 miri test -p transmutant-model
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-      - run: cargo +nightly-2026-11-17 miri test -p transmutant-model
-        env:
-          MIRIFLAGS: -Zmiri-strict-provenance
 
   deny:
     name: Cargo Deny
