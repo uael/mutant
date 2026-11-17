@@ -962,6 +962,31 @@ fn valid_ranges(
   })
 }
 
+/// Require `ty: Pun` of `generics`, unless they do already: a bound written twice is one that
+/// clippy sees twice, at the span of the one that the user wrote.
+fn bound(generics: &mut syn::Generics, ty: &Type, root: &TokenStream) {
+  let pun = |bounds: &Punctuated<syn::TypeParamBound, Token![+]>| {
+    bounds.iter().any(|bound| {
+      matches!(bound, syn::TypeParamBound::Trait(bound)
+        if bound.path.segments.last().is_some_and(|segment| segment.ident == "Pun"))
+    })
+  };
+  let name = ty.to_token_stream().to_string();
+  // `<T: Pun>`
+  if generics.type_params().any(|param| param.ident == name && pun(&param.bounds)) {
+    return;
+  }
+  // `where T: Pun`
+  let clause = generics.make_where_clause();
+  let written = clause.predicates.iter().any(|predicate| {
+    matches!(predicate, syn::WherePredicate::Type(predicate)
+      if predicate.bounded_ty.to_token_stream().to_string() == name && pun(&predicate.bounds))
+  });
+  if !written {
+    clause.predicates.push(parse_quote!(#ty: #root::Pun));
+  }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Structs
 
@@ -1020,17 +1045,15 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   // Only the layout of `repr(C)` and `repr(transparent)` is known without the size of the fields.
   let sized = !(repr.c || repr.transparent);
   let mut generics = input.generics.clone();
-  let predicates = &mut generics.make_where_clause().predicates;
   for field in &fields {
-    let ty = field.ty;
-    predicates.push(parse_quote!(#ty: #root::Pun));
+    bound(&mut generics, field.ty, &root);
     // What a region is read as.
     for ty in field.options.regions.iter().flatten().filter_map(|region| region.ty.as_ref()) {
-      predicates.push(parse_quote!(#ty: #root::Pun));
+      bound(&mut generics, ty, &root);
     }
   }
   if sized {
-    predicates.push(parse_quote!(#this: ::core::marker::Sized));
+    generics.make_where_clause().predicates.push(parse_quote!(#this: ::core::marker::Sized));
   }
   let where_clause = &generics.where_clause;
 
@@ -1387,10 +1410,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
   let mut generics = input.generics.clone();
-  let predicates = &mut generics.make_where_clause().predicates;
   for field in data.variants.iter().flat_map(|variant| &variant.fields) {
-    let ty = &field.ty;
-    predicates.push(parse_quote!(#ty: #root::Pun));
+    bound(&mut generics, &field.ty, root);
   }
   let where_clause = &generics.where_clause;
 

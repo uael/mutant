@@ -9,10 +9,6 @@
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
 )]
-#![expect(
-  clippy::trait_duplication_in_bounds,
-  reason = "`#[derive(Pun)]` bounds the type of a field by `Pun` again, here a payload `P: Pun`"
-)]
 
 use puns::{
   Pun, Tag, from_head, from_tail, head_ref,

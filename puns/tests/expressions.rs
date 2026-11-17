@@ -185,3 +185,35 @@ fn getters_are_rust() {
   assert!(puns::from_bytes::<Generic<u8>>(&[2]).unwrap().is_two());
   assert!(!puns::from_bytes::<Generic<u8>>(&[3]).unwrap().is_two());
 }
+
+/// Bounds that the derive needs, written by the user: they are not repeated, which clippy would
+/// see (`trait_duplication_in_bounds`).
+#[derive(Pun)]
+#[repr(C)]
+struct Bounded<T: Pun, U>
+where
+  U: puns::Pun,
+{
+  value: T,
+  other: U,
+  again: T,
+}
+
+#[derive(Pun, Clone, Copy)]
+#[repr(u8)]
+enum Choice<T: Pun + Copy> {
+  A(T),
+  B(T, T),
+}
+
+#[test]
+fn bounds_are_not_repeated() {
+  let bounded = puns::from_bytes::<Bounded<u8, bool>>(&[1, 1, 2]).unwrap();
+  assert_eq!((bounded.value, bounded.other, bounded.again), (1, true, 2));
+  assert!(matches!(puns::try_pun::<_, Choice<bool>>([1u8, 1, 0]), Ok(Choice::B(true, false))));
+  assert!(matches!(puns::try_pun::<_, Choice<bool>>([0u8, 1, 0]), Ok(Choice::A(true))));
+  for choice in [Choice::A(true), Choice::B(false, true)] {
+    let same: Choice<bool> = puns::pun(choice);
+    assert!(puns::try_pun::<_, Choice<u8>>(same).is_ok());
+  }
+}
