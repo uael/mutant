@@ -1,6 +1,6 @@
 //! Parts of a value: its first bytes (`head`), its last bytes (`tail`).
 
-use puns::{Pun, head, head_ref, num::u16be, pun_ref, tail, tail_ref};
+use puns::{Pun, head, head_mut, head_ref, num::u16be, pun_ref, tail, tail_mut, tail_ref};
 
 #[derive(Pun, Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -74,4 +74,51 @@ fn head_and_tail_in_const() {
   const PAIR: [u8; 2] = tail([1u8, 2, 3]);
   const FIRST: [u8; 2] = head([1u8, 2, 3]);
   assert_eq!((*LAST, PAIR, FIRST), (3, [2, 3], [1, 2]));
+}
+
+/// A header, then a payload that nothing else depends on.
+#[derive(Pun, Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+struct Message {
+  header: Distinct,
+  payload: [u8; 3],
+  shape: Shape,
+}
+
+#[test]
+fn mutable_parts() {
+  let mut words = [1u16, 2, 3];
+  *head_mut::<_, u16>(&mut words) = 7;
+  *tail_mut::<_, u16>(&mut words) = 9;
+  assert_eq!(words, [7, 2, 9]);
+  tail_mut::<_, [u8; 4]>(&mut words).fill(0);
+  assert_eq!(words, [7, 0, 0]);
+  // As many elements as fit.
+  let mut bytes = [0u8; 7];
+  head_mut::<[u8], [[u8; 2]]>(&mut bytes[..]).fill([1, 2]);
+  assert_eq!(bytes, [1, 2, 1, 2, 1, 2, 0]);
+  let mut record = RECORD;
+  *head_mut::<Record, u8>(&mut record) = 3;
+  *tail_mut::<Record, u16be>(&mut record) = u16be::new(0x0304);
+  assert_eq!(record, Record { kind: 3, flag: true, value: u16be::new(0x0304) });
+  // What a rule or an enum does not depend on.
+  let mut message =
+    Message { header: Distinct { a: 1, b: 2 }, payload: [0; 3], shape: Shape::Rect(1, true) };
+  let shape = tail_mut::<Message, Shape>(&mut message);
+  *shape = Shape::Circle { radius: 9 };
+  assert_eq!(message.shape, Shape::Circle { radius: 9 });
+  let mut shapes = [Shape::Rect(1, true), Shape::Circle { radius: 3 }];
+  *tail_mut::<_, Shape>(&mut shapes) = Shape::Rect(2, false);
+  *head_mut::<_, Shape>(&mut shapes) = Shape::Circle { radius: 4 };
+  assert_eq!(shapes, [Shape::Circle { radius: 4 }, Shape::Rect(2, false)]);
+}
+
+#[test]
+fn mutable_parts_in_const() {
+  const WORDS: [u16; 2] = {
+    let mut words = [1u16, 2];
+    *tail_mut::<_, u16>(&mut words) = 5;
+    words
+  };
+  assert_eq!(WORDS, [1, 5]);
 }

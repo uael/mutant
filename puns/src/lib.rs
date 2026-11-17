@@ -239,7 +239,8 @@ struct ReadmeDoctests;
 use core::{marker::PhantomData, mem::ManuallyDrop};
 
 use analysis::{
-  Analysis, Exact, Marks, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze, analyze_tail, mutable,
+  Analysis, Exact, MUTABLE, Marks, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze, analyze_tail,
+  mutable, mutable_part,
 };
 use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
 pub use layout::{crc32, sum16};
@@ -659,9 +660,6 @@ impl Need {
   const TRY_REF: Need = Need { fallible: true, ..Need::REF };
 }
 
-const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
-                       where the source is not), and could be written through the `&mut`";
-
 /// Why a pun of which `analysis` is the analysis does not meet the `need`, if it does not.
 const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
   let Analysis { fit, relation, aligned, shift } = *analysis;
@@ -765,6 +763,8 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const HEAD_REF: () = Self::require(Self::check(Need::PART_REF));
   const TAIL: () = Self::require(Self::check_tail(Need::PART));
   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+  const HEAD_MUT: () = Self::require(Self::check_head_mut());
+  const TAIL_MUT: () = Self::require(Self::check_tail_mut());
   const TRY: () = Self::require(Self::check(Need::TRY));
   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
   const FROM_TAIL: () = Self::require(Self::check_from_tail());
@@ -780,6 +780,31 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
     }
     Self::check(Need::TRY_REF)
   }
+
+  /// Why a `&mut` to the first bytes of the source cannot be handed out, if it cannot: what a
+  /// `&` cannot, and what [`mutable_part`] refuses.
+  const fn check_head_mut() -> Option<Message> {
+    if let Some(message) = Self::check(Need::PART_REF) {
+      return Some(message);
+    }
+    match mutable_part(&S::LAYOUT, &D::LAYOUT, &Self::ANALYSIS.fit, 0) {
+      Some(why) => Some(Message::new(why)),
+      None => None,
+    }
+  }
+
+  /// Why a `&mut` to the last bytes of the source cannot be handed out, if it cannot.
+  const fn check_tail_mut() -> Option<Message> {
+    if let Some(message) = Self::check_tail(Need::PART_REF) {
+      return Some(message);
+    }
+    let Analysis { fit, shift, .. } = Self::TAIL_ANALYSIS;
+    match mutable_part(&S::LAYOUT, &D::LAYOUT, &fit, shift) {
+      Some(why) => Some(Message::new(why)),
+      None => None,
+    }
+  }
+
   const TRY_MUT: () = {
     let () = Self::TRY_REF;
     if !Self::MUTABLE {
@@ -1107,6 +1132,80 @@ pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
   const { Plan::<S, D>::TAIL_REF };
   // SAFETY: checked at compile time.
   unsafe { &*Plan::<S, D>::tail_cast(value) }
+}
+
+/// Reinterpret a mutable reference as a mutable reference to a type that covers the start of the
+/// value.
+///
+/// On top of what [`head_ref`] requires, whatever is written through the result must leave a
+/// valid `S`: every value of `D` must be valid for the bytes it covers, and nothing of `S`
+/// outside of them may depend on them. So a source is refused if a rule of one of its structs
+/// (a size, a length, an assertion, a region) holds over those bytes, or if one of its enums is
+/// only partly covered (its tag in, its fields out, or the reverse).
+///
+/// ```
+/// let mut words = [0x0102u16, 0x0304];
+/// *puns::head_mut::<_, u16>(&mut words) = 7;
+/// assert_eq!(words, [7, 0x0304]);
+/// let mut bytes = [0u8; 5];
+/// puns::head_mut::<_, [[u8; 2]]>(&mut bytes[..]).fill([1, 2]);
+/// assert_eq!(bytes, [1, 2, 1, 2, 0]);
+/// ```
+///
+/// ```compile_fail
+/// // A `u8` can be 2, which is not a `bool`.
+/// let _: &mut u8 = puns::head_mut(&mut [true, false]);
+/// ```
+///
+/// ```compile_fail
+/// #[derive(puns::Pun)]
+/// #[repr(u8)]
+/// enum Shape {
+///   Circle { radius: u16 },
+///   Rect(u8, bool),
+/// }
+///
+/// // The tag of the shape, without what it tells of.
+/// let _: &mut u8 = puns::head_mut(&mut Shape::Rect(1, true));
+/// ```
+#[inline(always)]
+pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D {
+  const { Plan::<S, D>::HEAD_MUT };
+  let source: *mut S = value;
+  // SAFETY: checked at compile time.
+  unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() }
+}
+
+/// Reinterpret a mutable reference as a mutable reference to a type that covers the end of the
+/// value.
+///
+/// On top of what [`tail_ref`] requires, whatever is written through the result must leave a
+/// valid `S`, as for [`head_mut`].
+///
+/// ```
+/// let mut words = [0x0102u16, 0x0304, 0x0506];
+/// *puns::tail_mut::<_, [u16; 2]>(&mut words) = [7, 8];
+/// assert_eq!(words, [0x0102, 7, 8]);
+/// ```
+///
+/// ```compile_fail
+/// #[derive(puns::Pun)]
+/// #[repr(C)]
+/// #[pun(assert(a < b))]
+/// struct Ordered {
+///   a: u8,
+///   b: u8,
+/// }
+///
+/// // Writing `b` could break the rule.
+/// let _: &mut u8 = puns::tail_mut(&mut Ordered { a: 1, b: 2 });
+/// ```
+#[inline(always)]
+pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D {
+  const { Plan::<S, D>::TAIL_MUT };
+  let source: *mut S = value;
+  // SAFETY: checked at compile time.
+  unsafe { &mut *Plan::<S, D>::tail_cast(source).cast_mut() }
 }
 
 /// Reinterpret a reference as a reference to another type, if the value is a valid one.

@@ -1,7 +1,7 @@
 use core::num::NonZero;
 
 use crate::{
-  Pun, Scalar,
+  Plan, Pun, Scalar,
   analysis::{Exact, analyze, analyze_tail, mutable},
   layout::{Endian, Spec},
 };
@@ -235,3 +235,98 @@ fn huge_tails_cost_nothing() {
   assert_eq!(tail::<[Pair<u8, u16>; N], [u16; 2 * N - 1]>(), "uninit at 3 from 2");
   assert_eq!(tail::<[Pair<u8, u16>; N], Pair<u16, [Pair<u8, u16>; N - 1]>>(), "infallible from 2");
 }
+
+#[derive(Pun)]
+#[repr(u8)]
+#[pun(crate)]
+#[expect(dead_code, reason = "only given to the analysis")]
+enum Shape {
+  Circle(u16),
+  Rect(u8, bool),
+}
+
+/// An enum without padding.
+#[derive(Pun)]
+#[repr(u8)]
+#[pun(crate)]
+#[expect(dead_code, reason = "only given to the analysis")]
+enum Code {
+  Short(u8, u16),
+  Long([u8; 3]),
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a != b))]
+struct Distinct {
+  a: u8,
+  b: u8,
+}
+
+/// Whatever a `&mut` to the first (or with `tail`, the last) bytes of `S` as a `D` compiles: `ok`,
+/// or why not, in a word.
+fn part_mut<S: ?Sized + Pun, D: ?Sized + Pun>(tail: bool) -> String {
+  let message = if tail { Plan::<S, D>::check_tail_mut() } else { Plan::<S, D>::check_head_mut() };
+  let Some(message) = message else { return "ok".into() };
+  let text = core::str::from_utf8(&message.bytes[..message.len]).unwrap();
+  let word = match () {
+    () if text.contains("a rule of the source") => "rule",
+    () if text.contains("an enum of the source") => "enum",
+    () if text.contains("a string of the source") => "string",
+    () if text.contains("could be written through") => "written",
+    () if text.contains("is padding") => "padding",
+    () => text,
+  };
+  word.into()
+}
+
+#[test]
+fn mutable_parts() {
+  // The reverse inclusion, over the bytes that are covered.
+  assert_eq!(part_mut::<[u16; 2], u16>(false), "ok");
+  assert_eq!(part_mut::<[bool; 2], u8>(false), "written");
+  assert_eq!(part_mut::<[bool; 2], bool>(false), "ok");
+  assert_eq!(part_mut::<[bool; 2], bool>(true), "ok");
+  assert_eq!(part_mut::<Packed<u8, NzLe>, u8>(false), "ok");
+  assert_eq!(part_mut::<Packed<u8, NzLe>, [u8; 2]>(true), "written");
+  // A scalar that is only partly covered: what is written may not be valid with the rest.
+  assert_eq!(part_mut::<Packed<u8, NzLe>, [u8; 2]>(false), "written");
+  assert_eq!(part_mut::<Pair<u8, NzLe>, [u8; 2]>(false), "padding");
+  assert_eq!(part_mut::<GeLe, [u8; 3]>(true), "written");
+  assert_eq!(part_mut::<Pair<u16, u8>, [u8; 3]>(false), "ok");
+  assert_eq!(part_mut::<Pair<u8, u16>, [u8; 3]>(false), "padding");
+  assert_eq!(part_mut::<Pair<u16, u8>, u8>(true), "padding");
+  assert_eq!(part_mut::<[u16; 3], [u16; 2]>(true), "ok");
+  // Enums: whole, or not at all.
+  assert_eq!(part_mut::<Shape, u8>(false), "enum");
+  assert_eq!(part_mut::<Code, [u8; 2]>(true), "enum");
+  assert_eq!(part_mut::<Shape, [u8; 2]>(true), "padding");
+  assert_eq!(part_mut::<[Shape; 2], Shape>(false), "ok");
+  assert_eq!(part_mut::<[Shape; 2], Shape>(true), "ok");
+  assert_eq!(part_mut::<[Shape; 2], [Shape; 2]>(true), "ok");
+  assert_eq!(part_mut::<[Code; 2], [u8; 2]>(true), "enum");
+  assert_eq!(part_mut::<[Code; 2], [u8; 6]>(false), "enum");
+  assert_eq!(part_mut::<[Code; 2], Code>(true), "ok");
+  assert_eq!(part_mut::<Pair<Shape, u16>, u16>(true), "ok");
+  // Rules: nothing that the `&mut` covers.
+  assert_eq!(part_mut::<Pair<u8, Distinct>, u8>(false), "ok");
+  assert_eq!(part_mut::<Pair<Distinct, u8>, u8>(false), "rule");
+  assert_eq!(part_mut::<Pair<Distinct, u8>, u8>(true), "ok");
+  assert_eq!(part_mut::<Pair<u8, Distinct>, u8>(true), "rule");
+  assert_eq!(part_mut::<Distinct, Distinct>(false), "rule");
+  assert_eq!(part_mut::<[Distinct; 3], [u8; 1]>(true), "rule");
+  // Strings: whole, or not at all.
+  assert_eq!(part_mut::<str, str>(false), "ok");
+  assert_eq!(part_mut::<str, [u8]>(false), "written");
+  assert_eq!(part_mut::<Pair<u8, str>, u8>(false), "ok");
+  assert_eq!(part_mut::<Pair<u8, str>, Pair<u8, [u8]>>(false), "written");
+  // A target that takes as many elements as fit may end within an enum.
+  assert_eq!(part_mut::<[Code], [[u8; 3]]>(false), "enum");
+  assert_eq!(part_mut::<[Code], [[u8; 2]]>(false), "written");
+  // The source is unsized.
+  assert_eq!(part_mut::<[u8], u8>(true), TAIL_UNSIZED);
+}
+
+const TAIL_UNSIZED: &str = "\ncannot pun: the source is unsized: where its last bytes start \
+                            depends on its length, which is only known at run time.\nUse \
+                            `from_tail` to take a value from the end of bytes";

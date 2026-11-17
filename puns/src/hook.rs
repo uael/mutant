@@ -19,6 +19,8 @@ pub struct Verdict {
   pub head_ref: bool,
   pub tail: bool,
   pub tail_ref: bool,
+  pub head_mut: bool,
+  pub tail_mut: bool,
   pub try_pun_ref: bool,
   pub pun_mut: bool,
   pub try_pun_mut: bool,
@@ -55,6 +57,8 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
     head_ref: ok::<S, D>(Need::PART_REF),
     tail: Plan::<S, D>::check_tail(Need::PART).is_none(),
     tail_ref: Plan::<S, D>::check_tail(Need::PART_REF).is_none(),
+    head_mut: Plan::<S, D>::check_head_mut().is_none(),
+    tail_mut: Plan::<S, D>::check_tail_mut().is_none(),
     try_pun_ref: ok::<S, D>(Need::TRY_REF),
     pun_mut: ok::<S, D>(Need::REF) && mutable,
     try_pun_mut: ok::<S, D>(Need::TRY_REF) && mutable,
@@ -158,6 +162,28 @@ pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
   }
   // SAFETY: as in `head_ref`, which would compile.
   Some(unsafe { &*Plan::<S, D>::cast(value) })
+}
+
+/// [`head_mut`](crate::head_mut), if it compiles.
+#[must_use]
+pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
+  if const { !verdict::<S, D>().head_mut } {
+    return None;
+  }
+  let source: *mut S = value;
+  // SAFETY: as in `head_mut`, which would compile.
+  Some(unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() })
+}
+
+/// [`tail_mut`](crate::tail_mut), if it compiles.
+#[must_use]
+pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
+  if const { !verdict::<S, D>().tail_mut } {
+    return None;
+  }
+  let source: *mut S = value;
+  // SAFETY: as in `tail_mut`, which would compile.
+  Some(unsafe { &mut *Plan::<S, D>::tail_cast(source).cast_mut() })
 }
 
 /// [`from_head`](crate::from_head), if it compiles.

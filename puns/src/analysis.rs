@@ -1327,3 +1327,171 @@ pub const fn analyze_tail(a: &'static Layout, b: &'static Layout) -> Analysis {
 pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
   !matches!(fit.exact, Exact::Never(_)) && relate(b, a, fit.end, Checked::No).infallible()
 }
+
+pub const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
+                           where the source is not), and could be written through the `&mut`";
+pub const PART_RULE: &str = "a rule of the source (a size, a length, an assertion, a region) \
+                             holds over bytes that the `&mut` covers, and could stop holding when \
+                             they are written";
+pub const PART_ENUM: &str = "an enum of the source is only partly covered by the `&mut`: what its \
+                             tag says of the bytes on one side depends on the other";
+pub const PART_PATTERN: &str = "a string of the source is only partly covered by the `&mut`: what \
+                                is written must be valid with what follows it";
+
+/// Whatever any value written through a `&mut` to the target `b`, which covers the bytes of `a`
+/// from `shift` (as many as `fit` tells), leaves a valid source `a`: why not, if it does not.
+///
+/// What is written is any value of `b`, so `b` must be included in what `a` accepts over those
+/// bytes (the reverse relation, as [`mutable`] requires of the whole). And nothing of `a` outside
+/// those bytes may depend on them: a rule of a struct that holds over them, an enum of which they
+/// are only a part (its tag on one side, fields on the other), or a string that goes on after
+/// them. This is conservative: such a source is refused even if no value of `b` would break it.
+pub const fn mutable_part(
+  a: &'static Layout,
+  b: &'static Layout,
+  fit: &Fit,
+  shift: usize,
+) -> Option<&'static str> {
+  if !fit.shrink {
+    // Refused by the analysis of the reference already.
+    return Some(MUTABLE);
+  }
+  let end = shift.saturating_add(fit.end);
+  if let Some(why) = cut(a, 0, shift, end) {
+    return Some(why);
+  }
+  // A target that takes as many elements as fit may end anywhere in the source: within an enum
+  // or a string, which `cut` cannot see without an end.
+  if end == usize::MAX && !matches!(fit.exact, Exact::Always) && is_tagged(a) {
+    return Some(PART_ENUM);
+  }
+  if relate_at(b, shift, a, 0, shift, end, Checked::No).infallible() { None } else { Some(MUTABLE) }
+}
+
+/// Why something of `layout`, which is at `base`, depends on the bytes `lo..hi` (`hi` may be
+/// `usize::MAX`) but does not lie within them, if something does: see [`mutable_part`].
+const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Option<&'static str> {
+  let end = if layout.is_dynamic() { usize::MAX } else { base + layout.size };
+  if end <= lo || base >= hi || base == end {
+    return None;
+  }
+  match layout.kind {
+    Kind::Scalar(_) => None,
+    Kind::Struct(fields, rules) => {
+      if !rules.is_empty() {
+        return Some(PART_RULE);
+      }
+      let mut i = 0;
+      while i < fields.len() {
+        if let Some(why) = cut(fields[i].layout, base + fields[i].offset, lo, hi) {
+          return Some(why);
+        }
+        i += 1;
+      }
+      None
+    }
+    Kind::Enum(enumeration) => {
+      if base < lo || end > hi {
+        return Some(PART_ENUM);
+      }
+      // Within the bytes: a variant is written whole, but some may have rules.
+      let mut i = 0;
+      while i < enumeration.variants.len() {
+        if has_rules(enumeration.variants[i].layout) {
+          return Some(PART_RULE);
+        }
+        i += 1;
+      }
+      None
+    }
+    Kind::Pattern(_) => {
+      if base < lo || hi != usize::MAX {
+        Some(PART_PATTERN)
+      } else {
+        None
+      }
+    }
+    Kind::Array(elem, _) | Kind::Slice(elem) => {
+      if elem.size == 0 {
+        return None;
+      }
+      if has_rules(elem) {
+        // Some element is covered, if only in part: its rules hold over what is covered.
+        return Some(PART_RULE);
+      }
+      if !is_tagged(elem) {
+        return None;
+      }
+      // Only the elements at either end of the bytes may be cut.
+      let count = match layout.kind {
+        Kind::Array(_, count) => count,
+        _ => usize::MAX,
+      };
+      let first = if lo > base { (lo - base) / elem.size } else { 0 };
+      if first < count
+        && let Some(why) = cut(elem, base + first * elem.size, lo, hi)
+      {
+        return Some(why);
+      }
+      if hi != usize::MAX {
+        let last = (hi - 1 - base) / elem.size;
+        if last < count
+          && last != first
+          && let Some(why) = cut(elem, base + last * elem.size, lo, hi)
+        {
+          return Some(why);
+        }
+      }
+      None
+    }
+  }
+}
+
+/// Whatever a struct of `layout` has rules, the variants of its enums included.
+const fn has_rules(layout: &'static Layout) -> bool {
+  match layout.kind {
+    _ if layout.has_rules => true,
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        if has_rules(fields[i].layout) {
+          return true;
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Array(elem, _) | Kind::Slice(elem) => has_rules(elem),
+    Kind::Enum(enumeration) => {
+      let mut i = 0;
+      while i < enumeration.variants.len() {
+        if has_rules(enumeration.variants[i].layout) {
+          return true;
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Scalar(_) | Kind::Pattern(_) => false,
+  }
+}
+
+/// Whatever `layout` has an enum with fields or a pattern: bytes whose validity depends on other
+/// bytes.
+const fn is_tagged(layout: &'static Layout) -> bool {
+  match layout.kind {
+    Kind::Enum(_) | Kind::Pattern(_) => true,
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        if is_tagged(fields[i].layout) {
+          return true;
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Array(elem, _) | Kind::Slice(elem) => is_tagged(elem),
+    Kind::Scalar(_) => false,
+  }
+}
