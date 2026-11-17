@@ -10,12 +10,8 @@ error[E0080]: evaluation panicked:
 note: inside `transmutant::Plan::<[u8; 4], u32>::require`
  --> src/lib.rs
   |
-  | /       Message::new(
-  | |         "the target has a greater alignment than the source.\nUse `try_transmute_ref` or \
-  | |          `try_transmute_mut` to check the address at run time",
-  | |       )
-  | |       .panic();
-  | |______________^
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
 note: inside `transmutant::Message::panic`
  --> $RUST/core/src/panic.rs
   |

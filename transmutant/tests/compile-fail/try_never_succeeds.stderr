@@ -10,8 +10,8 @@ error[E0080]: evaluation panicked:
 note: inside `transmutant::Plan::<u8c<2>, bool>::require`
  --> src/lib.rs
   |
-  |       Message::new("no value of the source is valid for the target").at(offset).panic();
-  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
 note: inside `transmutant::Message::panic`
  --> $RUST/core/src/panic.rs
   |

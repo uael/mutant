@@ -10,10 +10,8 @@ error[E0080]: evaluation panicked:
 note: inside `transmutant::Plan::<HoldsPlain, HoldsReadsPadding>::require`
  --> src/lib.rs
   |
-  | /       Message::new("a byte that the target requires to be initialized is padding in the source")
-  | |         .at(offset)
-  | |         .panic();
-  | |________________^
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
 note: inside `transmutant::Message::panic`
  --> $RUST/core/src/panic.rs
   |

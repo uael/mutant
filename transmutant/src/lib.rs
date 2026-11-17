@@ -135,6 +135,9 @@
 #![cfg_attr(not(test), no_std)]
 
 mod analysis;
+#[cfg(feature = "verdict")]
+#[doc(hidden)]
+pub mod hook;
 pub mod layout;
 pub mod num;
 mod ptr;
@@ -569,48 +572,62 @@ impl<S: ?Sized + Data, D: ?Sized + Data> Plan<S, D> {
 
   /// Fail to compile if the transmutation does not meet the `need`.
   const fn require(need: Need) {
+    if let Some(message) = Self::check(need) {
+      message.panic();
+    }
+  }
+
+  /// Why the transmutation does not meet the `need`, if it does not.
+  const fn check(need: Need) -> Option<Message> {
     let Analysis { fit, relation, aligned } = Self::ANALYSIS;
     match fit.exact {
       _ if need.truncate && fit.shrink => {}
-      _ if need.truncate => Message::new(
-        "the source can be smaller than the target (if it has a slice, it may be empty)",
-      )
-      .panic(),
+      _ if need.truncate => {
+        return Some(Message::new(
+          "the source can be smaller than the target (if it has a slice, it may be empty)",
+        ));
+      }
       Exact::Always => {}
       Exact::Sometimes if need.fallible => {}
-      Exact::Sometimes => Message::new(
-        "the size of the source may not be a size of the target, depending on the length of \
-         its slice.\nUse `try_transmute_ref` or `try_transmute_mut` to check it at run time",
-      )
-      .panic(),
-      Exact::Never(why) if fit.shrink => Message::new(why)
-        .str(".\nUse `truncate` or `truncate_ref` to ignore the end of the source")
-        .panic(),
-      Exact::Never(why) => Message::new(why).panic(),
+      Exact::Sometimes => {
+        return Some(Message::new(
+          "the size of the source may not be a size of the target, depending on the length of \
+           its slice.\nUse `try_transmute_ref` or `try_transmute_mut` to check it at run time",
+        ));
+      }
+      Exact::Never(why) if fit.shrink => {
+        return Some(
+          Message::new(why)
+            .str(".\nUse `truncate` or `truncate_ref` to ignore the end of the source"),
+        );
+      }
+      Exact::Never(why) => return Some(Message::new(why)),
     }
     if let Some(offset) = relation.uninit {
-      Message::new("a byte that the target requires to be initialized is padding in the source")
-        .at(offset)
-        .panic();
+      return Some(
+        Message::new("a byte that the target requires to be initialized is padding in the source")
+          .at(offset),
+      );
     }
     if let Some(offset) = relation.disjoint {
-      Message::new("no value of the source is valid for the target").at(offset).panic();
+      return Some(Message::new("no value of the source is valid for the target").at(offset));
     }
     if let (Some(offset), false) = (relation.partial, need.fallible) {
-      Message::new(
-        "some values of the source are not valid for the target, or do not prove one of its \
-         rules.\nUse a `try_*` function to check them at run time",
-      )
-      .at(offset)
-      .panic();
+      return Some(
+        Message::new(
+          "some values of the source are not valid for the target, or do not prove one of its \
+           rules.\nUse a `try_*` function to check them at run time",
+        )
+        .at(offset),
+      );
     }
     if need.reference && !aligned && !need.fallible {
-      Message::new(
+      return Some(Message::new(
         "the target has a greater alignment than the source.\nUse `try_transmute_ref` or \
          `try_transmute_mut` to check the address at run time",
-      )
-      .panic();
+      ));
     }
+    None
   }
 
   const BY_VALUE: () = Self::require(Need { truncate: false, fallible: false, reference: false });
@@ -951,6 +968,60 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 // -------------------------------------------------------------------------------------------------
 // Parsing
 
+/// The body of [`unpack`], after its compile-time check: a macro rather than a function, so that
+/// `hook::unpack` shares it without changing the code of `unpack`.
+macro_rules! unpack {
+  ($d:ident, $bytes:ident) => {{
+    let (layout, rule) = const { ($d::LAYOUT, $d::LAYOUT.length_rule()) };
+    let (head, stride) = (layout.head(), layout.stride());
+    if $bytes.len() < head {
+      return Err(Error::Size);
+    }
+    if const { $d::LAYOUT.align() > 1 } && !ptr::is_aligned($bytes.as_ptr(), layout.align()) {
+      return Err(Error::Alignment);
+    }
+    let len = match rule {
+      _ if stride == 0 => 0,
+      // As many elements as fit, trailing padding included.
+      None => match $bytes.len() & !(layout.align() - 1) {
+        room if room >= head => (room - head) / stride,
+        _ => return Err(Error::Size),
+      },
+      Some(rule) => {
+        // SAFETY: the sized fields of the target are in the first `head` bytes.
+        let Some(value) = (unsafe { eval(rule.ops, $bytes.as_ptr().add(rule.base), 0) }) else {
+          return Err(Error::Validity);
+        };
+        // From the size of the struct that has the rule, down to a number of elements.
+        let before = (head - rule.base) as u128;
+        let len = match () {
+          () if rule.elements => value,
+          () if value >= before && (value - before).is_multiple_of(stride as u128) => {
+            (value - before) / stride as u128
+          }
+          () => return Err(Error::Validity),
+        };
+        if len > (($bytes.len() - head) / stride) as u128 {
+          return Err(Error::Size);
+        }
+        len as usize
+      }
+    };
+    // With its trailing padding, if any.
+    let size = match layout.size_of_val(len) {
+      Some(size) if size <= $bytes.len() => size,
+      _ => return Err(Error::Size),
+    };
+    let target = ptr::from_raw_parts::<$d>($bytes.as_ptr(), len);
+    // SAFETY: the target is in the bounds of `$bytes`, which are initialized.
+    if !unsafe { validate::<Plan<[u8], $d>, Root, $d>(target) } {
+      return Err(Error::Validity);
+    }
+    // SAFETY: validated.
+    Ok((unsafe { &*target }, $bytes.split_at(size).1))
+  }};
+}
+
 /// Take a `D` from the start of `bytes`: returns it and what remains.
 ///
 /// A `Sized` target takes its size. An unsized one takes what its `size` or `len` rule says
@@ -980,53 +1051,14 @@ pub const fn as_bytes<S: ?Sized + Data>(value: &S) -> &[u8] {
 #[inline]
 pub const fn unpack<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
   const { Plan::<[u8], D>::TRY_REF };
-  let (layout, rule) = const { (D::LAYOUT, D::LAYOUT.length_rule()) };
-  let (head, stride) = (layout.head(), layout.stride());
-  if bytes.len() < head {
-    return Err(Error::Size);
-  }
-  if const { D::LAYOUT.align() > 1 } && !ptr::is_aligned(bytes.as_ptr(), layout.align()) {
-    return Err(Error::Alignment);
-  }
-  let len = match rule {
-    _ if stride == 0 => 0,
-    // As many elements as fit, trailing padding included.
-    None => match bytes.len() & !(layout.align() - 1) {
-      room if room >= head => (room - head) / stride,
-      _ => return Err(Error::Size),
-    },
-    Some(rule) => {
-      // SAFETY: the sized fields of the target are in the first `head` bytes.
-      let Some(value) = (unsafe { eval(rule.ops, bytes.as_ptr().add(rule.base), 0) }) else {
-        return Err(Error::Validity);
-      };
-      // From the size of the struct that has the rule, down to a number of elements.
-      let before = (head - rule.base) as u128;
-      let len = match () {
-        () if rule.elements => value,
-        () if value >= before && (value - before).is_multiple_of(stride as u128) => {
-          (value - before) / stride as u128
-        }
-        () => return Err(Error::Validity),
-      };
-      if len > ((bytes.len() - head) / stride) as u128 {
-        return Err(Error::Size);
-      }
-      len as usize
-    }
-  };
-  // With its trailing padding, if any.
-  let size = match layout.size_of_val(len) {
-    Some(size) if size <= bytes.len() => size,
-    _ => return Err(Error::Size),
-  };
-  let target = ptr::from_raw_parts::<D>(bytes.as_ptr(), len);
-  // SAFETY: the target is in the bounds of `bytes`, which are initialized.
-  if !unsafe { validate::<Plan<[u8], D>, Root, D>(target) } {
-    return Err(Error::Validity);
-  }
-  // SAFETY: validated.
-  Ok((unsafe { &*target }, bytes.split_at(size).1))
+  unpack!(D, bytes)
+}
+
+/// [`unpack`], without the compile-time check that `Plan::<[u8], D>::TRY_REF` holds, which the
+/// caller must make (`hook::unpack`).
+#[cfg(feature = "verdict")]
+const fn unpack_unchecked<D: ?Sized + Data>(bytes: &[u8]) -> Result<(&D, &[u8]), Error> {
+  unpack!(D, bytes)
 }
 
 /// The bytes of the `index`th region of the tail of a struct, see `#[derive(Data)]`.
