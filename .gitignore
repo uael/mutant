@@ -1,2 +1,58 @@
-/target/
-/Cargo.lock
+# Ignore everything
+*
+
+# Git
+# !.git and !.git/** are needed for release-plz, which uses the `ignore` crate
+# to copy the repo to a temp dir. Without these, the deny-all `*` pattern
+# causes .git internals to be skipped, breaking the copy. (release-plz#1961)
+!.git
+!.git/**
+!.gitignore
+
+# Project
+!README.md
+!CHANGELOG.md
+!LICENSE-*
+!deny.toml
+!release-plz.toml
+!.github/
+!.github/workflows/
+!.github/**/*.yml
+
+# Rust
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain
+!rustfmt.toml
+!clippy.toml
+!.cargo/
+!.cargo/config.toml
+!transmutant/
+!transmutant/Cargo.toml
+!transmutant/DESIGN.md
+!transmutant/benches/
+!transmutant/examples/
+!transmutant/src/
+!transmutant/tests/
+!transmutant/tests/compile-fail/
+!transmutant/tests/compile-fail/*.stderr
+!transmutant/tests/compile-pass/
+!transmutant/**/*.rs
+!transmutant-derive/
+!transmutant-derive/Cargo.toml
+!transmutant-derive/src/
+!transmutant-derive/**/*.rs
+
+# Rust (xtask)
+!xtask/
+!xtask/Cargo.toml
+!xtask/src/
+!xtask/**/*.rs
+
+# Claude
+!CLAUDE.md
+!transmutant/CLAUDE.md
+!.claude/
+!.claude/settings.json
+!.claude/commands/
+!.claude/**/*.md
