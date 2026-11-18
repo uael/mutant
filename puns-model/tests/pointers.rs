@@ -99,3 +99,19 @@ fn pointers_in_is_validate_in() {
   println!("{compared} images compared");
   assert!(compared > if cfg!(miri) { 20 } else { 1_000 });
 }
+
+/// `puns::copy_in` copies the bytes that the oracle says a value holds, and no other, on every
+/// image that `validate_in` accepts: a sample of the types (every type in `pointers_full.rs`).
+/// Under Miri, an enum whose variants hold different bytes, and one mask.
+#[test]
+fn copy_in_is_the_oracle() {
+  use puns_model::pointers::check_copy_in;
+  let masks: &[u8] = if cfg!(miri) { &[0xff] } else { &[0x01, 0x80, 0xff] };
+  let mut compared = check_copy_in::<Tree>(masks);
+  if !cfg!(miri) {
+    compared += check_copy_in::<MaybeByte>(masks) + check_copy_in::<Wood>(masks);
+    compared += check_copy_in::<Flags>(masks) + check_copy_in::<ToByteBe>(masks);
+  }
+  println!("{compared} images compared");
+  assert!(compared > if cfg!(miri) { 20 } else { 1_000 });
+}

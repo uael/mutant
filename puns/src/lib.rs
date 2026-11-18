@@ -102,7 +102,8 @@
 //! buffer of them with [`validate_in`]: each value from its layout, its pointers handed to the
 //! crate's [`Visit`], which follows them as its scheme says; and walks the pointers of a value
 //! known to be valid (to copy it, or to move it in its buffer) with [`pointers_in`], which hands
-//! the visitor the same pointers and checks nothing.
+//! the visitor the same pointers and checks nothing; and copies such a value, its initialized
+//! bytes only, with [`copy_in`].
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.
@@ -140,7 +141,7 @@ pub use relative::SelfRelative;
 pub use relative::sized_probe as __sized_probe;
 use validate::{Checks, validate};
 pub use visit::{
-  Invalid, Pointee, Visit, pointers_elems_in, pointers_in, validate_elems_in, validate_in,
+  Invalid, Pointee, Visit, copy_in, pointers_elems_in, pointers_in, validate_elems_in, validate_in,
 };
 
 // -------------------------------------------------------------------------------------------------
