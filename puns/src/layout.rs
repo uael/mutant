@@ -2006,7 +2006,7 @@ impl Op {
 /// use puns::layout::Crc;
 ///
 /// // CRC-32C (Castagnoli, iSCSI, SCTP), CRC-16/MODBUS, CRC-16/XMODEM, CRC-15/CAN.
-/// const CASTAGNOLI: Crc = Crc::new(32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff);
+/// static CASTAGNOLI: Crc = Crc::new(32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff);
 /// assert_eq!(CASTAGNOLI.check(b"123456789"), 0xe306_9283);
 /// assert_eq!(Crc::new(16, 0x8005, 0xffff, true, 0).check(b"123456789"), 0x4b37);
 /// assert_eq!(Crc::new(16, 0x1021, 0, false, 0).check(b"123456789"), 0x31c3);
@@ -2029,9 +2029,12 @@ impl Crc {
   /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
   pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
 
+  /// Its tables are 32 KiB: a `Crc` is meant to be a constant, made in const evaluation.
+  ///
   /// # Panics
   /// If `width` is not 1 to 64, or a parameter has more bits than that.
   #[must_use]
+  #[expect(clippy::large_stack_arrays, reason = "made in const evaluation, as a constant")]
   pub const fn new(width: u32, poly: u64, init: u64, reflect: bool, xorout: u64) -> Self {
     assert!(width >= 1 && width <= 64, "a CRC has 1 to 64 bits");
     let mask = u64::MAX >> (64 - width);
