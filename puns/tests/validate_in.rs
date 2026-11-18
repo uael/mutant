@@ -2,7 +2,9 @@
 //! aim at, each pointer handed to a visitor. What each kind of layout answers (scalars, structs
 //! and their rules, enums and niches, unions, `MaybeUninit`, `Option` and `Result`, pointers),
 //! where an error is, and that no input makes them read out of the bytes or panic (under Miri on
-//! every target of CI).
+//! every target of CI). And `pointers_in` and `pointers_elems_in`: on what `validate_in` accepts,
+//! the same pointers, in the same order. And `copy_in`: the bytes that a value holds initialized,
+//! and no other, from a source whose other bytes are uninitialized.
 
 #[path = "support/relative.rs"]
 #[expect(dead_code, reason = "what the model check uses, and these tests do not")]
@@ -58,6 +60,20 @@ fn check<T: Pun>(bytes: &[u8], at: usize) -> (Result<(), Stop>, Vec<Handed>) {
 
 fn ok<T: Pun>(bytes: &[u8], at: usize) -> Result<(), Stop> {
   check::<T>(bytes, at).0
+}
+
+/// `check::<T>`, and if `validate_in` accepts the bytes, the pointers that `pointers_in` hands over
+/// on them, which must be the same.
+fn walk<T: Pun>(bytes: &[u8], at: usize) -> (Result<(), Stop>, Vec<Handed>) {
+  let (result, handed) = check::<T>(bytes, at);
+  if result.is_ok() {
+    let mut record = Record::default();
+    // SAFETY: `validate_in` accepted the bytes as a `T` at `at`, in bounds.
+    let walked = unsafe { puns::pointers_in::<T, Record>(bytes.as_ptr(), at, &mut record) };
+    assert_eq!(walked, Ok(()), "{}: at {at}", core::any::type_name::<T>());
+    assert_eq!(record.pointers, handed, "{}: at {at}", core::any::type_name::<T>());
+  }
+  (result, handed)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -175,10 +191,10 @@ fn pointers_are_handed_over() {
   let mut bytes = vec![5, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1];
   let all =
     vec![(1, Aim::Text, false), (5, Aim::Sequence { align: 4 }, false), (9, Aim::One, true)];
-  assert_eq!(check::<Node>(&bytes, 0), (Ok(()), all.clone()));
+  assert_eq!(walk::<Node>(&bytes, 0), (Ok(()), all.clone()));
   // `next` null: not handed over.
   bytes[9] = 0;
-  assert_eq!(check::<Node>(&bytes, 0), (Ok(()), all[..2].to_vec()));
+  assert_eq!(walk::<Node>(&bytes, 0), (Ok(()), all[..2].to_vec()));
   // `flag` is 2: the pointers before it were handed over.
   bytes[13] = 2;
   assert_eq!(check::<Node>(&bytes, 0), (Err(Stop::Invalid(13)), all[..2].to_vec()));
@@ -188,14 +204,69 @@ fn pointers_are_handed_over() {
   // A pointer of offset zero: one whose offset may be zero is one, handed over (its scheme
   // says what it aims at); one whose offset is a `NonZero` is not valid there.
   let here = [1u8, 0, 0, 0, 0, 1, 0, 0, 0];
-  assert_eq!(check::<Tree>(&here, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
+  assert_eq!(walk::<Tree>(&here, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
   assert_eq!(check::<Strict>(&[0; 4], 0), (Err(Stop::Invalid(0)), vec![]));
-  assert_eq!(check::<Strict>(&[4, 0, 0, 0], 0), (Ok(()), vec![(0, Aim::One, false)]));
+  assert_eq!(walk::<Strict>(&[4, 0, 0, 0], 0), (Ok(()), vec![(0, Aim::One, false)]));
   // The pointers of the variant that the tag tells, and only those.
   let node = [1u8, 4, 0, 0, 0, 8, 0, 0, 0];
-  assert_eq!(check::<Tree>(&node, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
+  assert_eq!(walk::<Tree>(&node, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
   let leaf = [0u8, 1, 0, 0, 0, 1, 0, 0, 0];
-  assert_eq!(check::<Tree>(&leaf, 0), (Ok(()), vec![]));
+  assert_eq!(walk::<Tree>(&leaf, 0), (Ok(()), vec![]));
+}
+
+/// `pointers_in` checks nothing, and hands over what `validate_in` does: the pointers of the
+/// variant that the tag tells, not a null one that may be, in order, and an error of the visitor
+/// ends the walk. It reads only what `validate_in` reads: the bytes that the variant does not
+/// hold are uninitialized here.
+#[test]
+fn pointers_in_hands_over_the_same() {
+  use puns::layout::Aim;
+  let mut node = MaybeUninit::<[u8; 9]>::uninit();
+  let mut leaf = MaybeUninit::<[u8; 9]>::uninit();
+  // SAFETY: the bytes of a `Tree::Node` that are written, then those of a `Tree::Leaf`: the tag
+  // and the `bool`; the rest stays uninitialized.
+  unsafe {
+    node.as_mut_ptr().cast::<[u8; 9]>().write([1, 4, 0, 0, 0, 8, 0, 0, 0]);
+    leaf.as_mut_ptr().cast::<[u8; 2]>().write([0, 1]);
+  }
+  let mut record = Record::default();
+  // SAFETY: the bytes of a `Tree` that `validate_in` accepts (above, `node` and `leaf`); the
+  // uninitialized ones are those it does not read.
+  unsafe {
+    puns::pointers_in::<Tree, _>(node.as_ptr().cast(), 0, &mut record).expect("no refusal");
+    assert_eq!(record.pointers, vec![(1, Aim::One, false), (5, Aim::One, false)]);
+    puns::pointers_in::<Tree, _>(leaf.as_ptr().cast(), 0, &mut record).expect("no refusal");
+    assert_eq!(record.pointers.len(), 2);
+  }
+  // The error of the visitor ends the walk: the second pointer is not handed over.
+  let bytes = [5, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1];
+  let mut record = Record { refuse: Some(5), ..Record::default() };
+  // SAFETY: a `Node` that `validate_in` accepts (`pointers_are_handed_over`).
+  let walked = unsafe { puns::pointers_in::<Node, _>(bytes.as_ptr(), 0, &mut record) };
+  assert_eq!((walked, record.pointers), (Err(Stop::Refused(5)), vec![(1, Aim::Text, false)]));
+  // At any alignment: the same `Node` one byte further.
+  let mut later = vec![0];
+  later.extend_from_slice(&bytes);
+  let (result, handed) = walk::<Node>(&later, 1);
+  assert_eq!(result, Ok(()));
+  assert_eq!(handed.iter().map(|p| p.0).collect::<Vec<_>>(), [2, 6, 10]);
+  // An array of values with pointers, and their elements.
+  let pair = [1u8, 4, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+  let (_, handed) = walk::<[Tree; 2]>(&pair, 0);
+  assert_eq!(handed.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 5]);
+  let mut record = Record::default();
+  // SAFETY: two `Tree`s, which `validate_elems_in` accepts.
+  unsafe {
+    assert_eq!(puns::validate_elems_in::<Tree, _>(&pair, 0, 2, &mut Record::default()), Ok(()));
+    puns::pointers_elems_in::<Tree, _>(pair.as_ptr(), 0, 2, &mut record).expect("no refusal");
+  }
+  assert_eq!(record.pointers.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 5]);
+  // Elements without pointers are not looked at, whatever their count.
+  // SAFETY: no byte is read of them.
+  unsafe {
+    puns::pointers_elems_in::<bool, _>(core::ptr::null(), 0, usize::MAX, &mut record)
+      .expect("nothing");
+  }
 }
 
 /// The elements one after the other: by blocks without pointers, one by one with.
@@ -263,11 +334,17 @@ fn any_input() {
       0 => usize::MAX / (1 + (rng.next() % 3) as usize),
       _ => (rng.next() % 8) as usize,
     };
-    let one = check::<T>(bytes, at).0;
+    let one = walk::<T>(bytes, at).0;
     let mut record = Record::default();
     let many = puns::validate_elems_in::<T, _>(bytes, at, count, &mut record);
     if many.is_ok() && count > 0 {
       assert_eq!(one, Ok(()), "{}: at {at}, {count}", core::any::type_name::<T>());
+      // The same pointers, from `pointers_elems_in`.
+      let mut walked = Record::default();
+      // SAFETY: `validate_elems_in` accepted the `count` values, in bounds.
+      unsafe { puns::pointers_elems_in::<T, _>(bytes.as_ptr(), at, count, &mut walked) }
+        .expect("no refusal");
+      assert_eq!(walked.pointers, record.pointers, "{}: at {at}", core::any::type_name::<T>());
     }
   }
   let mut rng = Rng(0x1234_5678_9abc_def1);
@@ -284,7 +361,43 @@ fn any_input() {
     all::<Tree>(&mut rng, &bytes);
     all::<[NonZero<u16>; 3]>(&mut rng, &bytes);
     all::<()>(&mut rng, &bytes);
+    // `copy_in` of what is accepted (not of a union, which it refuses).
+    let at = (rng.next() % (len as u64 + 1)) as usize;
+    copied::<bool>(&bytes, at);
+    copied::<Span>(&bytes, at);
+    copied::<Shape>(&bytes, at);
+    copied::<Option<bool>>(&bytes, at);
+    copied::<Node>(&bytes, at);
+    copied::<Tree>(&bytes, at);
+    copied::<[NonZero<u16>; 3]>(&bytes, at);
+    copied::<()>(&bytes, at);
   }
+}
+
+/// If `validate_in` accepts a `T` at `at`: `copy_in` of it into bytes all `0xee` makes a `T` that
+/// `validate_in` accepts too, with the same pointers (at the same places in the value), every byte
+/// either the source's or `0xee`.
+fn copied<T: Pun>(bytes: &[u8], at: usize) {
+  let (result, handed) = check::<T>(bytes, at);
+  if result.is_err() {
+    return;
+  }
+  let size = size_of::<T>();
+  let mut dst = vec![0xee; size];
+  // SAFETY: `validate_in` accepted a `T` at `at`, in bounds; `dst` holds `size` bytes.
+  unsafe { puns::copy_in::<T>(bytes[at..].as_ptr(), dst.as_mut_ptr()) };
+  let name = core::any::type_name::<T>();
+  for (i, byte) in dst.iter().enumerate() {
+    assert!(*byte == bytes[at + i] || *byte == 0xee, "{name}: at {at}, byte {i}");
+  }
+  // The bytes of the pointers handed over are left to the caller.
+  for &(p, ..) in &handed {
+    assert_eq!(dst[p - at], 0xee, "{name}: at {at}, the pointer at {p}");
+  }
+  let (again, moved) = check::<T>(&dst, 0);
+  assert_eq!(again, Ok(()), "{name}: at {at}");
+  let shifted: Vec<Handed> = handed.into_iter().map(|(p, aim, null)| (p - at, aim, null)).collect();
+  assert_eq!(moved, shifted, "{name}: at {at}");
 }
 
 /// No value.
@@ -377,4 +490,83 @@ fn the_verdict_is_the_one_of_try_pun_ref() {
   agree::<Result<u8, bool>>(puns::as_bytes(&Err::<u8, bool>(true)));
   agree::<u8in<1, 3>>(&[2]);
   agree::<Option<NonZero<u32>>>(&9u32.to_ne_bytes());
+}
+
+// -------------------------------------------------------------------------------------------------
+// `copy_in`
+
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+struct Padded {
+  a: u8,
+  b: u32,
+}
+
+#[derive(Pun, Clone, Copy)]
+#[repr(u8)]
+#[expect(dead_code, reason = "read as bytes")]
+enum Two {
+  Small(u8),
+  Big(u32),
+}
+
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+struct Mixed {
+  two: Two,
+  padded: [Padded; 2],
+  maybe: Option<bool>,
+  any: MaybeUninit<u16>,
+}
+
+/// The bytes of `value` that `copy_in` copies into memory of `fill` bytes: read whole, as a
+/// `&[u8]`, which Miri refuses if one of them is uninitialized.
+fn copy_of<T: Pun>(value: &T, fill: u8) -> Vec<u8> {
+  let mut dst = vec![fill; size_of::<T>()];
+  // SAFETY: a valid `T` (padding and the other variants uninitialized); `dst` is its size.
+  unsafe { puns::copy_in::<T>(core::ptr::from_ref(value).cast(), dst.as_mut_ptr()) };
+  dst
+}
+
+/// A value on the stack, whose padding and other variants are uninitialized: `copy_in` copies
+/// its scalars, tags and the fields of its variants, and leaves every other byte of the
+/// destination as it was (here, read whole).
+#[test]
+fn copy_in_copies_the_value_and_nothing_else() {
+  let b = 0x0102_0304_u32.to_ne_bytes();
+  let padded = Padded { a: 9, b: 0x0102_0304 };
+  assert_eq!(copy_of(&padded, 0), [&[9, 0, 0, 0][..], &b].concat());
+  assert_eq!(copy_of(&padded, 0xaa), [&[9, 0xaa, 0xaa, 0xaa][..], &b].concat());
+  // The other variant is uninitialized: only the tag and the field of `Small`.
+  assert_eq!(copy_of(&Two::Small(7), 0), [0, 7, 0, 0, 0, 0, 0, 0]);
+  assert_eq!(copy_of(&Two::Big(0x0102_0304), 0xaa), [&[1, 0xaa, 0xaa, 0xaa][..], &b].concat());
+  // Nested: an enum, an array of padded structs, a niche, bytes that may be uninitialized.
+  let mixed = Mixed {
+    two: Two::Small(5),
+    padded: [padded, Padded { a: 8, b: 0x0102_0304 }],
+    maybe: None,
+    any: MaybeUninit::uninit(),
+  };
+  let copy = copy_of(&mixed, 0xaa);
+  let at = |offset: usize| copy[offset];
+  assert_eq!((at(0), at(1), at(2)), (0, 5, 0xaa));
+  let p = core::mem::offset_of!(Mixed, padded);
+  assert_eq!(&copy[p..p + 8], [&[9, 0xaa, 0xaa, 0xaa][..], &b].concat());
+  assert_eq!(&copy[p + 8..p + 16], [&[8, 0xaa, 0xaa, 0xaa][..], &b].concat());
+  assert_eq!(at(core::mem::offset_of!(Mixed, maybe)), 2);
+  let any = core::mem::offset_of!(Mixed, any);
+  assert_eq!(&copy[any..any + 2], [0xaa, 0xaa]);
+  // What is copied is the value.
+  assert!(puns::validate_in::<Mixed, Record>(&copy, 0, &mut Record::default()).is_ok());
+  // Pointers are left to the caller (bytes that `validate_in` accepted), but a null one, whose
+  // zeros are copied.
+  let mut node = [5u8, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1];
+  let a = 0xaa;
+  for (next, copied) in [(3, [a, a, a, a]), (0, [0, 0, 0, 0])] {
+    node[9] = next;
+    let mut dst = [a; 14];
+    // SAFETY: a `Node` that `validate_in` accepts (`pointers_are_handed_over`), `dst` its size.
+    unsafe { puns::copy_in::<Node>(node.as_ptr(), dst.as_mut_ptr()) };
+    assert_eq!(dst, [&[5, a, a, a, a, a, a, a, a][..], &copied, &[1]].concat()[..]);
+  }
 }

@@ -407,10 +407,20 @@ impl Follow<'_> {
   }
 }
 
-impl puns::Visit for Follow<'_> {
-  type Error = Stop;
+/// What a pointer of the tests aims at, found by [`Follow::target`].
+enum Target {
+  /// One value at a position.
+  One(usize),
+  /// A sequence: its first element, its length.
+  Sequence(usize, usize),
+  /// Text, valid UTF-8.
+  Text,
+}
 
-  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Stop> {
+impl Follow<'_> {
+  /// What the pointer `P` at `at` aims at, from its layout only (`as_pointer`), and checked as its
+  /// scheme says: in the bytes, aligned, a length that is one; a text of UTF-8.
+  fn target<P: ?Sized + Pun>(&mut self, at: usize) -> Result<Target, Stop> {
     let pointer = const { P::LAYOUT.as_pointer() }.expect("a pointer is handed over");
     assert_eq!(pointer.scheme(), crate::relative::SCHEME, "a pointer of the tests");
     let (width, endian) = (pointer.width(), pointer.endian());
@@ -429,21 +439,69 @@ impl puns::Visit for Follow<'_> {
         if !to.is_multiple_of(pointer.align()) {
           return Err(Stop::Pointer(at));
         }
-        puns::validate_in::<puns::Pointee<P>, Self>(self.bytes, to, self)
+        Ok(Target::One(to))
       }
       puns::layout::Aim::Sequence { align } => {
         if !to.is_multiple_of(align) {
           return Err(Stop::Pointer(at));
         }
-        let len = self.length(to, width, endian)?;
-        puns::validate_elems_in::<puns::Pointee<P>, Self>(self.bytes, to, len, self)
+        Ok(Target::Sequence(to, self.length(to, width, endian)?))
       }
       puns::layout::Aim::Text => {
         let len = self.length(to, width, endian)?;
         let text =
           self.bytes.get(to..).and_then(|rest| rest.get(..len)).ok_or(Stop::Pointer(at))?;
-        std::str::from_utf8(text).map(|_| ()).map_err(|_| Stop::Pointer(at))
+        std::str::from_utf8(text).map(|_| Target::Text).map_err(|_| Stop::Pointer(at))
       }
+    }
+  }
+}
+
+impl puns::Visit for Follow<'_> {
+  type Error = Stop;
+
+  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Stop> {
+    match self.target::<P>(at)? {
+      Target::One(to) => puns::validate_in::<puns::Pointee<P>, Self>(self.bytes, to, self),
+      Target::Sequence(to, len) => {
+        puns::validate_elems_in::<puns::Pointee<P>, Self>(self.bytes, to, len, self)
+      }
+      Target::Text => Ok(()),
+    }
+  }
+}
+
+/// A visitor that follows the pointers of the tests as [`Follow`] does, and records each pointer
+/// handed over (its position, its type), with `validate_in` (`trusted` false) or with
+/// `pointers_in` (`trusted` true, for bytes that `validate_in` accepted, every pointer followed).
+struct Trace<'b> {
+  follow: Follow<'b>,
+  trusted: bool,
+  seen: Vec<(usize, &'static str)>,
+}
+
+impl puns::Visit for Trace<'_> {
+  type Error = Stop;
+
+  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Stop> {
+    self.seen.push((at, core::any::type_name::<P>()));
+    let target = self.follow.target::<P>(at)?;
+    let (bytes, trusted) = (self.follow.bytes, self.trusted);
+    match (target, trusted) {
+      (Target::One(to), false) => puns::validate_in::<puns::Pointee<P>, Self>(bytes, to, self),
+      (Target::Sequence(to, len), false) => {
+        puns::validate_elems_in::<puns::Pointee<P>, Self>(bytes, to, len, self)
+      }
+      // SAFETY: the bytes that `validate_in` accepted, every pointer followed (`trace`): what
+      // the pointer aims at is a valid value, in the bytes.
+      (Target::One(to), true) => unsafe {
+        puns::pointers_in::<puns::Pointee<P>, Self>(bytes.as_ptr(), to, self)
+      },
+      // SAFETY: as above, `len` valid values.
+      (Target::Sequence(to, len), true) => unsafe {
+        puns::pointers_elems_in::<puns::Pointee<P>, Self>(bytes.as_ptr(), to, len, self)
+      },
+      (Target::Text, _) => Ok(()),
     }
   }
 }
@@ -527,6 +585,135 @@ pub fn check_validate<T: Model>(masks: &[u8]) -> usize {
         let mut follow = Follow { bytes: &bytes[..len], fuel: VALIDATE_FUEL };
         let result = puns::validate_in::<T, Follow<'_>>(&bytes[..len], region.root(), &mut follow);
         assert_eq!(result, Err(Stop::Invalid(region.root())), "{}: cut at {len}", name::<T>());
+      }
+    }
+  }
+  compared
+}
+
+/// The pointers of the `T` at `at` of `bytes` and of everything they aim at, in the order handed
+/// over, by `validate_in` and, if it accepts the bytes, by `pointers_in`: `None` if it does not
+/// (or runs out of fuel).
+///
+/// # Panics
+/// If `pointers_in` does not hand over the same pointers, in the same order, or fails.
+fn trace<T: Model>(bytes: &[u8], at: usize, what: &str) -> Option<()> {
+  let follow = |bytes| Follow { bytes, fuel: VALIDATE_FUEL };
+  let mut checked = Trace { follow: follow(bytes), trusted: false, seen: vec![] };
+  puns::validate_in::<T, Trace<'_>>(bytes, at, &mut checked).ok()?;
+  let mut trusted = Trace { follow: follow(bytes), trusted: true, seen: vec![] };
+  // SAFETY: `validate_in` accepted the bytes as a `T` at `at`, and every pointer that it handed
+  // over was followed, and what it aims at accepted, in turn.
+  let walked = unsafe { puns::pointers_in::<T, Trace<'_>>(bytes.as_ptr(), at, &mut trusted) };
+  assert_eq!(walked, Ok(()), "{}: {what}: `pointers_in` fails", name::<T>());
+  assert_eq!(trusted.seen, checked.seen, "{}: {what}: other pointers", name::<T>());
+  Some(())
+}
+
+/// `puns::pointers_in` hands over the pointers that `validate_in` hands over, in the same order.
+///
+/// On every image that `validate_in` accepts, following them through the buffer: the values of
+/// the corpus of `T`, and every copy of one with one byte changed by one of `masks` that is still
+/// valid (padding and gaps included). Returns how many images were compared.
+///
+/// # Panics
+/// If they do not agree on one of them.
+#[must_use]
+pub fn check_pointers_in<T: Model>(masks: &[u8]) -> usize {
+  let mut compared = 0;
+  for region in T::corpus() {
+    let image = image(&region);
+    for fill in [0, 0xa5] {
+      let bytes = initialized(&image, fill);
+      assert!(trace::<T>(&bytes, region.root(), "the corpus").is_some(), "the corpus is valid");
+      compared += 1;
+      for at in 0..bytes.len() {
+        for &mask in masks {
+          let mut changed = bytes.clone();
+          changed[at] ^= mask;
+          let what = format!("{mask:#x} at {at}");
+          compared += usize::from(trace::<T>(&changed, region.root(), &what).is_some());
+        }
+      }
+    }
+  }
+  compared
+}
+
+/// Marks in `data` the bytes of the value at `at`, which `desc` describes, that `copy_in` copies:
+/// those that it holds initialized (its scalars, the tag of an enum and the fields of its
+/// variant), but the bytes of its pointers, except a null one; not what the pointers aim at. The
+/// oracle of [`check_copy_in`].
+///
+/// # Panics
+/// If the bytes are not a value of `desc` (the caller validated them).
+fn data(desc: &Desc, bytes: &[u8], at: usize, out: &mut [bool]) {
+  let fields = match desc {
+    Desc::Plain { size, .. } => {
+      out[at..at + size].fill(true);
+      return;
+    }
+    // The bytes of a pointer are left to the caller, but those of a null one (zeros).
+    Desc::Pointer { nullable, .. } => {
+      if *nullable && bytes[at..at + 4] == [0; 4] {
+        out[at..at + 4].fill(true);
+      }
+      return;
+    }
+    Desc::Struct { fields, .. } => fields,
+    Desc::Enum { variants, .. } => {
+      out[at] = true;
+      &variants.iter().find(|(tag, _)| *tag == bytes[at]).expect("a valid tag").1
+    }
+  };
+  for (offset, field) in fields {
+    data(field, bytes, at + offset, out);
+  }
+}
+
+/// `puns::copy_in` copies the bytes that the oracle says a value holds initialized but its
+/// pointers, and no other.
+///
+/// On every image that `validate_in` accepts (following the pointers through the buffer): the
+/// values of the corpus of `T`, and every copy of one with one byte changed by one of `masks`
+/// that is still valid. The root is copied into bytes all `0x00`, then all `0xee`: a byte of the
+/// value is the source's, every other one what it was. Returns how many images were compared.
+///
+/// # Panics
+/// If a byte is not so.
+#[must_use]
+pub fn check_copy_in<T: Model>(masks: &[u8]) -> usize {
+  let one = |bytes: &[u8], at: usize, what: &str| -> bool {
+    let mut follow = Follow { bytes, fuel: VALIDATE_FUEL };
+    if puns::validate_in::<T, Follow<'_>>(bytes, at, &mut follow).is_err() {
+      return false;
+    }
+    let mut held = vec![false; size_of::<T>()];
+    data(&T::desc(), &bytes[at..], 0, &mut held);
+    for fill in [0x00, 0xee] {
+      let mut dst = vec![fill; size_of::<T>()];
+      // SAFETY: `validate_in` accepted a `T` at `at`, every pointer followed; `dst` is its size.
+      unsafe { puns::copy_in::<T>(bytes[at..].as_ptr(), dst.as_mut_ptr()) };
+      for (i, &byte) in dst.iter().enumerate() {
+        let expected = if held[i] { bytes[at + i] } else { fill };
+        assert_eq!(byte, expected, "{}: {what}: byte {i}", name::<T>());
+      }
+    }
+    true
+  };
+  let mut compared = 0;
+  for region in T::corpus() {
+    let image = image(&region);
+    for fill in [0, 0xa5] {
+      let bytes = initialized(&image, fill);
+      assert!(one(&bytes, region.root(), "the corpus"), "the corpus is valid");
+      compared += 1;
+      for at in 0..bytes.len() {
+        for &mask in masks {
+          let mut changed = bytes.clone();
+          changed[at] ^= mask;
+          compared += usize::from(one(&changed, region.root(), &format!("{mask:#x} at {at}")));
+        }
       }
     }
   }

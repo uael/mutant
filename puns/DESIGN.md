@@ -756,12 +756,53 @@ left a field out would leave it unchecked (compile-fail `validate_lists_not_the_
 walked field by field, so that its pointers are handed over in order with the checks of the rest
 (a visitor whose queue is full stops the walk where it is).
 
+**The walk of the pointers of a valid value.** `pointers_in::<T, V>(base, at, visit)` (and
+`pointers_elems_in` for `count` values) hands the visitor the pointers of a `T` known to be valid,
+the same calls that `validate_in` makes on the same bytes, in the same order, and checks nothing:
+for a crate that copies a value with what it aims at, or moves it in its buffer and re-aims its
+pointers, where validating again would cost a check of every scalar for nothing. It is `unsafe`:
+the bytes at `base + at` hold a `T` as `validate_in` accepts one (what `validate_in` reads of them
+is initialized and valid; padding, and what the variant does not hold, may be uninitialized,
+since neither is read), at any alignment. It reads the tags of enums (niches included, as
+`validate_in` does: `variants` and `follow_variants` choose the variant by the same test) and the
+offsets of pointers that may be null, nothing else, and goes by the same lists of types (`listed`)
+and refuses the same unions. A type without pointers is not walked at all.
+
+**The copy of a valid value.** `copy_in::<T>(src, dst)` copies the bytes that a valid `T` holds
+initialized, but those of its pointers: each scalar (one that may be uninitialized,
+`MaybeUninit`, is none), the tag of each enum and the fields of the variant that it tells. A
+pointer that may be null and whose bytes are all zero is no pointer: its zeros are copied. The
+others are the pointers that `pointers_in` hands over, in the same order, and their bytes are left
+to the caller, who writes their offsets: re-aimed for where the copy is, or aimed at copies of
+their targets (copying them first would write them twice). Bytes of a valid `T` that may be
+uninitialized (padding, the bytes of the variants that it is not, fields that may be
+uninitialized) are never read from `src` nor written to `dst`, whose bytes there keep what they
+held. It is for a crate that writes values into a buffer of initialized bytes (a region that hands
+out its bytes as a `&[u8]`), where a typed copy would leave padding uninitialized and a copy of the
+bytes would copy the source's, uninitialized on the stack. A part without such bytes and without
+pointers (`is_plain`) is copied whole, at once; the rest is walked by the same lists of types as
+`validate_in` (`listed`), choosing the variant by the same test, so that it compiles to a few moves
+per type: 3 instructions for a struct of a `bool` and a pointer, 8 for an enum of an `i64` or two
+pointers, 19 for a struct of a `u32` and an enum of four variants (x86-64), against 29 for the code
+that `nearest` generated per type for the last. A union does not compile there (`copy_in_union`):
+which of its fields it is, and so which bytes are initialized, cannot be told.
+
 The model check holds it to the oracle of pointers (below): with a visitor that follows the
 pointers of the tests through their buffer, `validate_in` accepts exactly what the oracle accepts,
 on the corpus and on every copy with one byte changed, padding and gaps included
-(`check_validate`; a sample on a push, every type and every mask of one bit with `full`).
+(`check_validate`; a sample on a push, every type and every mask of one bit with `full`); and on
+every image that it accepts, `pointers_in`, following the pointers in turn, hands over the same
+pointers (position and type) in the same order (`check_pointers_in`, the same sample and the same
+`full`); and `copy_in` writes the bytes that the oracle says the value holds (its scalars, the tag
+and the fields of its variant, a null pointer; not the bytes of the other pointers), and only
+those, into bytes of two fills (`check_copy_in`, the same sample and the same `full`).
 `tests/validate_in.rs` gives each kind its answer, the positions of errors, and random bytes,
-positions and counts (some that overflow) under Miri on every target of CI.
+positions and counts (some that overflow) under Miri on every target of CI; and on what
+`validate_in` accepts there, that `pointers_in` and `pointers_elems_in` hand over the same
+pointers, at any alignment, with the bytes that they need not read uninitialized; and that
+`copy_in` of a value on the stack (padding and the other variant uninitialized) into memory that
+is then read whole as a `&[u8]` copies its value and nothing else, and of random accepted bytes a
+value that `validate_in` accepts again.
 
 ### 10. Enums without `repr` (`discover.rs`)
 
@@ -949,6 +990,15 @@ counts as imprecise what is refused by design: a target of another size, a seque
 as something else, a check that would be behind a pointer.
 
 ## Not done yet
+
+- **One walk to copy a value and hand its pointers.** A deep copy is `copy_in` then `pointers_in`
+  on the same value: the tag of an enum is read and its variant chosen twice, about 2 instructions
+  per enum value (`nearest`'s compaction of a tree of 2^12 leaves: 401,330 instructions against
+  393,080 for its former generated code; a table of structs is cheaper than before). One walk
+  would hand the pointers to the visitor during the copy, but the visitor of a deep copy allocates
+  the targets, which can move the buffer under the copy: it would have to keep the pointers aside
+  until the walk ends. A prototype that did so on a stack of its own was twice as slow (an
+  indirect call and a push and a pop per pointer).
 
 - **Checks behind pointers**: `try_view_ref` checks the value it is given, and asks of what that
   value points to what `view_ref` does. Checking behind pointers is a walk of the buffer with the
