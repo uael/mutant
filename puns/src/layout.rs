@@ -63,6 +63,9 @@ pub struct Spec {
   /// This is `valid`, but for fields that are restricted by `#[pun(valid(..))]`: nothing
   /// prevents safe code from writing any value of the type of the field to it.
   pub(crate) known: Valid,
+  /// Whatever its bits are the value of an unsigned integer, which rules read. Not those of a
+  /// signed or floating-point number, a `bool`, a `char` or an enum.
+  pub(crate) number: bool,
 }
 
 /// Greatest value of an unsigned integer of `size` bytes.
@@ -76,7 +79,8 @@ impl Spec {
   #[inline]
   #[must_use]
   pub const fn any<T>() -> Self {
-    Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any }
+    let size = size_of::<T>();
+    Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
   }
 
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
@@ -84,7 +88,7 @@ impl Spec {
   #[must_use]
   pub const fn uninit<T>() -> Self {
     let (size, endian) = (size_of::<T>(), Endian::NATIVE);
-    Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit }
+    Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit, number: true }
   }
 
   /// A scalar the size of `T` whose value, read as an unsigned integer in `endian` byte order,
@@ -94,7 +98,8 @@ impl Spec {
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
   #[must_use]
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
-    Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }.with_ranges(ranges)
+    let size = size_of::<T>();
+    Self { size, endian, valid: Valid::Any, known: Valid::Any, number: true }.with_ranges(ranges)
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
@@ -104,7 +109,7 @@ impl Spec {
   /// adjacent or out of the bounds of the scalar.
   #[must_use]
   pub const fn with_ranges(self, ranges: &'static [(u128, u128)]) -> Self {
-    let (size, endian) = (self.size, self.endian);
+    let size = self.size;
     assert!(size >= 1 && size <= 16, "a constrained scalar must be 1 to 16 bytes wide");
     assert!(!ranges.is_empty(), "a scalar must have at least one valid value");
     let max = max_value(size);
@@ -120,7 +125,15 @@ impl Spec {
     }
     let full = ranges.len() == 1 && ranges[0].0 == 0 && ranges[0].1 == max;
     let valid = if full { Valid::Any } else { Valid::In(ranges) };
-    Self { size, endian, valid, known: valid }
+    Self { valid, known: valid, ..self }
+  }
+
+  /// Same as `self`, for a scalar whose bits are not the value of an unsigned integer: a signed
+  /// or floating-point number, a `bool`, a `char`, an enum. The expressions of `#[pun(..)]`,
+  /// which compute on unsigned integers, do not read it.
+  #[must_use]
+  pub const fn not_a_number(self) -> Self {
+    Self { number: false, ..self }
   }
 
   /// Whatever `T` has no size, for `#[derive(Pun)]`.
@@ -134,7 +147,7 @@ impl Spec {
   #[doc(hidden)]
   #[must_use]
   pub const fn native_ranges<T>(ranges: &'static [(u128, u128)]) -> Self {
-    Self::ranges::<T>(Endian::NATIVE, ranges)
+    Self::ranges::<T>(Endian::NATIVE, ranges).not_a_number()
   }
 
   /// [`sorted_ranges`], for `#[derive(Pun)]`.
@@ -1480,13 +1493,14 @@ impl Layout {
     }
   }
 
-  /// The specification of the integer that the type is, if it is one: an initialized scalar of 1
-  /// to 16 bytes, or a struct whose only field (but for the ones without size) is one.
+  /// The specification of the unsigned integer that the type is, if it is one: an initialized
+  /// scalar of 1 to 16 bytes whose bits are its value, or a struct whose only field (but for the
+  /// ones without size) is one.
   #[doc(hidden)]
   #[must_use]
   pub const fn as_integer(&self) -> Option<Spec> {
     match self.kind {
-      Kind::Scalar(spec) if spec.is_integer() && spec.size >= 1 => Some(spec),
+      Kind::Scalar(spec) if spec.is_integer() && spec.number && spec.size >= 1 => Some(spec),
       Kind::Struct(fields, _) if !self.unsized_ => {
         let (mut inner, mut i): (Option<&Layout>, usize) = (None, 0);
         while i < fields.len() {
@@ -1677,14 +1691,14 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 /// A deterministic finite automaton over bytes: the language of an unsized type like `str`.
 ///
 /// The first state is the initial one. At most 64 states.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Dfa {
   /// Two automata with the same `id` must be the same.
   pub id: u32,
   pub states: &'static [DfaState],
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DfaState {
   /// Whatever a value can end in this state.
   pub accept: bool,
@@ -1726,6 +1740,97 @@ impl Dfa {
       DfaState { accept: false, edges: &[(0x80, 0x8f, 2)] },
     ],
   };
+
+  /// ASCII: bytes below `0x80`.
+  pub const ASCII: &'static Dfa =
+    &Dfa { id: 2, states: &[DfaState { accept: true, edges: &[(0x00, 0x7f, 0)] }] };
+
+  /// Decimal digits, `0` to `9`.
+  pub const DIGITS: &'static Dfa =
+    &Dfa { id: 3, states: &[DfaState { accept: true, edges: &[(b'0', b'9', 0)] }] };
+
+  /// Octal digits, `0` to `7`.
+  pub const OCTAL: &'static Dfa =
+    &Dfa { id: 4, states: &[DfaState { accept: true, edges: &[(b'0', b'7', 0)] }] };
+
+  /// Hexadecimal digits, of either case.
+  pub const HEX: &'static Dfa = &Dfa {
+    id: 5,
+    states: &[DfaState {
+      accept: true,
+      edges: &[(b'0', b'9', 0), (b'A', b'F', 0), (b'a', b'f', 0)],
+    }],
+  };
+
+  /// UTF-8 without `U+0000` (the strings of MQTT).
+  pub const UTF8_NO_NUL: &'static Dfa = &Dfa {
+    id: 6,
+    states: &[
+      DfaState {
+        accept: true,
+        edges: &[
+          (0x01, 0x7f, 0),
+          (0xc2, 0xdf, 1),
+          (0xe0, 0xe0, 4),
+          (0xe1, 0xec, 2),
+          (0xed, 0xed, 5),
+          (0xee, 0xef, 2),
+          (0xf0, 0xf0, 6),
+          (0xf1, 0xf3, 3),
+          (0xf4, 0xf4, 7),
+        ],
+      },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 0)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 1)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 2)] },
+      DfaState { accept: false, edges: &[(0xa0, 0xbf, 1)] },
+      DfaState { accept: false, edges: &[(0x80, 0x9f, 1)] },
+      DfaState { accept: false, edges: &[(0x90, 0xbf, 2)] },
+      DfaState { accept: false, edges: &[(0x80, 0x8f, 2)] },
+    ],
+  };
+
+  /// Whatever two automata have the same states and edges (what their `id`s do not prove).
+  pub(crate) const fn same(&self, other: &Dfa) -> bool {
+    if self.states.len() != other.states.len() {
+      return false;
+    }
+    let mut state = 0;
+    while state < self.states.len() {
+      let (ours, theirs) = (&self.states[state], &other.states[state]);
+      if ours.accept != theirs.accept || ours.edges.len() != theirs.edges.len() {
+        return false;
+      }
+      let mut edge = 0;
+      while edge < ours.edges.len() {
+        let (first, second) = (ours.edges[edge], theirs.edges[edge]);
+        if first.0 != second.0 || first.1 != second.1 || first.2 != second.2 {
+          return false;
+        }
+        edge += 1;
+      }
+      state += 1;
+    }
+    true
+  }
+
+  /// Whatever the automaton accepts `bytes`, by its states and edges alone.
+  pub(crate) const fn accepts_bytes(&self, bytes: &[u8]) -> bool {
+    let (mut state, mut i) = (0, 0);
+    'bytes: while i < bytes.len() {
+      let (edges, mut j) = (self.states[state].edges, 0);
+      while j < edges.len() {
+        if edges[j].0 <= bytes[i] && bytes[i] <= edges[j].1 {
+          state = edges[j].2 as usize;
+          i += 1;
+          continue 'bytes;
+        }
+        j += 1;
+      }
+      return false;
+    }
+    self.states[state].accept
+  }
 
   const fn check(&self) {
     assert!(!self.states.is_empty() && self.states.len() <= 64, "a DFA has 1 to 64 states");
@@ -1800,20 +1905,7 @@ impl Dfa {
     if self.id == Self::UTF8.id {
       return core::str::from_utf8(bytes).is_ok();
     }
-    let (mut state, mut i) = (0, 0);
-    'bytes: while i < len {
-      let (edges, mut j) = (self.states[state].edges, 0);
-      while j < edges.len() {
-        if edges[j].0 <= bytes[i] && bytes[i] <= edges[j].1 {
-          state = edges[j].2 as usize;
-          i += 1;
-          continue 'bytes;
-        }
-        j += 1;
-      }
-      return false;
-    }
-    self.states[state].accept
+    self.accepts_bytes(bytes)
   }
 }
 
@@ -1823,9 +1915,11 @@ impl Dfa {
 /// An operation of a postfix expression over the scalar fields of a struct, see [`Rule`].
 ///
 /// Expressions are evaluated on `u128`. What cannot be computed (an overflow, an underflow, a
-/// division by zero, a read out of the value) makes the rule that holds the expression fail,
-/// unless it is the side of a `&&` or of a `||` that the other side decides without:
-/// `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short.
+/// division by zero, a shift by 128 or more, a read out of the value) makes the rule that holds
+/// the expression fail, unless it is the right side of a `&&` or of a `||` that the left side
+/// decides without, as in Rust: `kind != 7 || be(40, 2) == 0` holds for a value that is not of
+/// kind 7, however short, and `be(40, 2) == 0 || kind != 7` fails for one that is too short.
+/// `<<` drops the bits that it shifts out, as in Rust.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
   /// Push a constant.
@@ -1843,11 +1937,27 @@ pub enum Op {
     size: u8,
     big: bool,
   },
+  /// Replace an offset by the variable-length integer of the `form` that is there in the value, or
+  /// with `length`, by its number of bytes.
+  Varint {
+    form: Varint,
+    length: bool,
+  },
   /// Replace two offsets by the CRC-32 (the one of Ethernet) of the bytes between them.
   Crc32,
   /// Replace two offsets by the ones' complement sum of the big-endian 16 bits words between
   /// them (the checksum of IP, before it is complemented).
   Sum16,
+  /// Replace two offsets by the CRC of the bytes between them.
+  Crc(&'static Crc),
+  /// Replace four offsets by the CRC of the bytes between the first two, the ones between the
+  /// last two taken as zeros (a CRC that covers the field that holds it).
+  CrcZeros(&'static Crc),
+  /// Replace two offsets by a checksum of the bytes between them.
+  Checksum(Checksum),
+  /// Replace two offsets by whatever the automaton accepts the bytes between them: a pattern
+  /// that a struct requires of them (which proves nothing of them, as any rule).
+  Matches(&'static Dfa),
   Add,
   Sub,
   Mul,
@@ -1877,11 +1987,17 @@ pub enum Op {
   Set(u8),
   /// Push the `index`th variable.
   Get(u8),
+  /// Make the value on top fail if one of the variables of a mask (a bit for each) could not be
+  /// computed: what a `let` binds is computed, as in Rust, whether it is used or not. At the end
+  /// of the block of the `let`s, so that a block that is not computed (in a branch of an `if`
+  /// that is not taken) does not fail.
+  Let(u8),
   /// Replace a value by what it becomes when, for as long as the expression `cond` is true of
   /// it, it is replaced by the expression `next`. In both, the value is the variable `var`.
   ///
   /// This is how what is at an offset that depends on what is before is reached: options, a
-  /// chain of headers. A value takes at most as many steps as it has bytes.
+  /// chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is the size of
+  /// the value in bytes: a step for each bit of the value, and for each bit of a `u128`.
   Walk {
     var: u8,
     cond: &'static [Op],
@@ -1889,7 +2005,129 @@ pub enum Op {
   },
 }
 
+/// The types of the constants of rules: unsigned integers, which they compute on.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+  message = "a constant of `#[pun(..)]` is an unsigned integer: `{Self}` is not one",
+  label = "`#[pun(..)]` computes on unsigned integers",
+  note = "an expression of `#[pun(..)]` means what it means in Rust, where every integer is a `u128`"
+)]
+pub trait Unsigned: Copy + seal::Unsigned {}
+
+/// Implemented by this crate only.
+mod seal {
+  pub trait Unsigned {}
+}
+
+impl seal::Unsigned for u8 {}
+impl seal::Unsigned for u16 {}
+impl seal::Unsigned for u32 {}
+impl seal::Unsigned for u64 {}
+impl seal::Unsigned for u128 {}
+impl seal::Unsigned for usize {}
+impl Unsigned for u8 {}
+impl Unsigned for u16 {}
+impl Unsigned for u32 {}
+impl Unsigned for u64 {}
+impl Unsigned for u128 {}
+impl Unsigned for usize {}
+
 impl Op {
+  /// [`Op::Matches`], of an automaton that is checked to be one.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn matches(dfa: &'static Dfa) -> Self {
+    dfa.check();
+    Op::Matches(dfa)
+  }
+
+  /// What `as usize` keeps of a value.
+  #[doc(hidden)]
+  pub const USIZE_MAX: u128 = usize::MAX as u128;
+
+  /// The value of a constant of a rule.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn constant<T: Unsigned>(value: &T) -> u128 {
+    // SAFETY: an unsigned integer is initialized, and has no padding.
+    unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
+  }
+
+  /// Whatever the expression `ops` may fail to be computed, from the values that what it reads
+  /// can take: the sizes of the fields, the bounds of the operands. For the `let`s of a block,
+  /// which [`Op::Let`] checks only if they may fail. Conservative: an expression that reads a
+  /// variable or the bytes of the value, or that walks, may fail.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn fallible(ops: &[Op]) -> bool {
+    // The least and the greatest value of each slot of the stack.
+    let (mut slots, mut depth, mut at) = ([(0u128, 0u128); STACK], 0usize, 0);
+    while at < ops.len() {
+      let (pops, value) = match ops[at] {
+        Op::Lit(value) => (0, (value, value)),
+        Op::Load { size, .. } => (0, (0, max_value(size as usize))),
+        Op::Size => (0, (0, usize::MAX as u128)),
+        Op::Let(_) => (1, slots[depth - 1]),
+        Op::Not | Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Both | Op::Either => {
+          (if matches!(ops[at], Op::Not) { 1 } else { 2 }, (0, 1))
+        }
+        Op::Select => {
+          let ((a, b), (c, d)) = (slots[depth - 2], slots[depth - 1]);
+          (3, (if a < c { a } else { c }, if b > d { b } else { d }))
+        }
+        op @ (Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Rem
+        | Op::And
+        | Op::Or
+        | Op::Xor
+        | Op::Shl
+        | Op::Shr) => {
+          let ((a, b), (c, d)) = (slots[depth - 2], slots[depth - 1]);
+          let value = match op {
+            Op::Add => match b.checked_add(d) {
+              Some(most) => (a + c, most),
+              None => return true,
+            },
+            Op::Sub if a >= d => (a - d, b - c),
+            Op::Mul => match b.checked_mul(d) {
+              Some(most) => (a * c, most),
+              None => return true,
+            },
+            Op::Div if c > 0 => (a / d, b / c),
+            Op::Rem if c > 0 => (0, if b < d { b } else { d - 1 }),
+            Op::And => (0, if b < d { b } else { d }),
+            Op::Or | Op::Xor => (0, u128::MAX >> (b | d).leading_zeros()),
+            Op::Shl if d < 128 => (0, u128::MAX),
+            Op::Shr if d < 128 => (a >> d, b >> c),
+            _ => return true,
+          };
+          (2, value)
+        }
+        Op::At { .. }
+        | Op::Varint { .. }
+        | Op::Crc32
+        | Op::Sum16
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
+        | Op::Matches(_)
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Walk { .. } => {
+          return true;
+        }
+      };
+      depth -= pops;
+      slots[depth] = value;
+      depth += 1;
+      at += 1;
+    }
+    false
+  }
+
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.
   ///
@@ -1897,7 +2135,13 @@ impl Op {
   /// If `T` is not an integer.
   #[must_use]
   pub const fn load<T: crate::Pun>(offset: usize) -> Self {
-    let Some(spec) = T::LAYOUT.as_integer() else { panic!("not an integer field") };
+    let Some(spec) = T::LAYOUT.as_integer() else {
+      panic!(
+        "a rule reads the unsigned integer fields of its struct, and this field is not one (a \
+         signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes \
+         with `le(offset, size)` or `be(offset, size)`"
+      )
+    };
     Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }
   }
 
@@ -1912,17 +2156,45 @@ impl Op {
         a == x && b == y && c == z
       }
       (Op::At { size: a, big: b }, Op::At { size: x, big: y }) => a == x && b == y,
-      (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) => a == b,
+      (Op::Varint { form: a, length: b }, Op::Varint { form: x, length: y }) => {
+        a as u8 == x as u8 && b == y
+      }
+      (Op::Crc(a), Op::Crc(b)) | (Op::CrcZeros(a), Op::CrcZeros(b)) => a.equals(b),
+      (Op::Checksum(a), Op::Checksum(b)) => a as u8 == b as u8,
+      (Op::Matches(a), Op::Matches(b)) => a.same(b),
+      (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) | (Op::Let(a), Op::Let(b)) => a == b,
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
       }
       (
-        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+        Op::Lit(_)
+        | Op::Load { .. }
+        | Op::At { .. }
+        | Op::Varint { .. }
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
+        | Op::Matches(_)
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Let(_)
+        | Op::Walk { .. },
         _,
       )
       | (
         _,
-        Op::Lit(_) | Op::Load { .. } | Op::At { .. } | Op::Set(_) | Op::Get(_) | Op::Walk { .. },
+        Op::Lit(_)
+        | Op::Load { .. }
+        | Op::At { .. }
+        | Op::Varint { .. }
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
+        | Op::Matches(_)
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Let(_)
+        | Op::Walk { .. },
       ) => false,
       // Other operations hold no data.
       (a, b) => a.code() == b.code(),
@@ -1961,7 +2233,203 @@ impl Op {
       Op::Set(_) => 26,
       Op::Get(_) => 27,
       Op::Walk { .. } => 28,
+      Op::Varint { .. } => 30,
+      Op::Crc(_) => 31,
+      Op::CrcZeros(_) => 32,
+      Op::Checksum(_) => 33,
+      Op::Matches(_) => 34,
+      Op::Let(_) => 29,
     }
+  }
+}
+
+/// A CRC of at most 64 bits, by the parameters of the catalogue of CRCs.
+///
+/// They are its `width`, its polynomial `poly` (without its high bit), the value `init` that the
+/// register starts with, whatever its bits are `reflect`ed (the bytes taken least significant bit
+/// first, and the result read so), and `xorout`, what the result is combined with by XOR.
+///
+/// ```
+/// use puns::layout::Crc;
+///
+/// // CRC-32C (Castagnoli, iSCSI, SCTP), CRC-16/MODBUS, CRC-16/XMODEM, CRC-15/CAN.
+/// const CASTAGNOLI: Crc = Crc::new(32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff);
+/// assert_eq!(CASTAGNOLI.check(b"123456789"), 0xe306_9283);
+/// assert_eq!(Crc::new(16, 0x8005, 0xffff, true, 0).check(b"123456789"), 0x4b37);
+/// assert_eq!(Crc::new(16, 0x1021, 0, false, 0).check(b"123456789"), 0x31c3);
+/// assert_eq!(Crc::new(15, 0x4599, 0, false, 0).check(b"123456789"), 0x059e);
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Crc {
+  width: u32,
+  poly: u64,
+  init: u64,
+  reflect: bool,
+  xorout: u64,
+  /// The register, after a byte: in its low bits if reflected, else in its high bits.
+  table: [u64; 256],
+}
+
+impl Crc {
+  /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
+  pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
+
+  /// # Panics
+  /// If `width` is not 1 to 64, or a parameter has more bits than that.
+  #[must_use]
+  pub const fn new(width: u32, poly: u64, init: u64, reflect: bool, xorout: u64) -> Self {
+    assert!(width >= 1 && width <= 64, "a CRC has 1 to 64 bits");
+    let mask = u64::MAX >> (64 - width);
+    assert!(
+      poly <= mask && init <= mask && xorout <= mask,
+      "a parameter has more bits than the CRC"
+    );
+    let (mut table, mut i) = ([0; 256], 0);
+    while i < 256 {
+      let mut register = if reflect { i as u64 } else { (i as u64) << 56 };
+      let mut bit = 0;
+      while bit < 8 {
+        register = match (reflect, register & 1, register >> 63) {
+          (true, 1, _) => (register >> 1) ^ (poly.reverse_bits() >> (64 - width)),
+          (true, ..) => register >> 1,
+          (false, _, 1) => (register << 1) ^ (poly << (64 - width)),
+          (false, ..) => register << 1,
+        };
+        bit += 1;
+      }
+      table[i] = register;
+      i += 1;
+    }
+    Self { width, poly, init, reflect, xorout, table }
+  }
+
+  /// The CRC of `bytes`.
+  #[must_use]
+  pub const fn check(&self, bytes: &[u8]) -> u64 {
+    self.compute(bytes, (0, 0))
+  }
+
+  /// The CRC of `bytes`, the ones in `zeros` taken as zeros.
+  const fn compute(&self, bytes: &[u8], zeros: (usize, usize)) -> u64 {
+    let (mut register, mut i) = if self.reflect {
+      (self.init.reverse_bits() >> (64 - self.width), 0)
+    } else {
+      (self.init << (64 - self.width), 0)
+    };
+    while i < bytes.len() {
+      let byte = if i >= zeros.0 && i < zeros.1 { 0 } else { bytes[i] };
+      register = if self.reflect {
+        self.table[((register ^ byte as u64) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        self.table[(((register >> 56) ^ byte as u64) & 0xff) as usize] ^ (register << 8)
+      };
+      i += 1;
+    }
+    if !self.reflect {
+      register >>= 64 - self.width;
+    }
+    register ^ self.xorout
+  }
+
+  const fn equals(&self, other: &Crc) -> bool {
+    self.width == other.width
+      && self.poly == other.poly
+      && self.init == other.init
+      && self.reflect == other.reflect
+      && self.xorout == other.xorout
+  }
+}
+
+/// A checksum of bytes, see [`Op::Checksum`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Checksum {
+  /// The sum of the bytes (not reduced: `% 256` makes it the one of a byte).
+  Sum,
+  /// Fletcher-16: two sums modulo 255, the second of the first, as `second << 8 | first`. It is
+  /// `0` over data that holds its ISO 8473 checksum (OSPF, IS-IS).
+  Fletcher16,
+  /// Adler-32 (zlib): two sums modulo 65521, the first starting at 1, as `second << 16 | first`.
+  Adler32,
+}
+
+impl Checksum {
+  /// The checksum of `bytes`.
+  const fn compute(self, bytes: &[u8]) -> u128 {
+    let (modulo, mut first, mut second, mut i) = match self {
+      Checksum::Sum => (0, 0u128, 0u128, 0),
+      Checksum::Fletcher16 => (255, 0, 0, 0),
+      Checksum::Adler32 => (65521, 1, 0, 0),
+    };
+    while i < bytes.len() {
+      first += bytes[i] as u128;
+      if modulo > 0 {
+        first %= modulo;
+        second = (second + first) % modulo;
+      }
+      i += 1;
+    }
+    match self {
+      Checksum::Sum => first,
+      Checksum::Fletcher16 => second << 8 | first,
+      Checksum::Adler32 => second << 16 | first,
+    }
+  }
+}
+
+/// A form of variable-length integer, see [`Op::Varint`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Varint {
+  /// Unsigned LEB128 (Protocol Buffers, WebAssembly, MQTT, DWARF): 7 bits a byte, the least
+  /// significant first, each byte but the last with its high bit set.
+  Leb128,
+  /// The variable-length integer of QUIC (RFC 9000): the two high bits of the first byte tell
+  /// its length (1, 2, 4 or 8 bytes), the rest is the value, big-endian.
+  Quic,
+  /// 7 bits a byte, the most significant first, each byte but the last with its high bit set
+  /// (the tag numbers and the arcs of object identifiers of ASN.1, MIDI).
+  Vlq,
+}
+
+impl Varint {
+  /// The value of the integer at `ptr`, and its number of bytes, of at most `size`: `None` if
+  /// it is not over by then, or does not fit in a `u128`.
+  ///
+  /// # Safety
+  /// `ptr` must be valid for reads of `size` initialized bytes.
+  #[inline]
+  const unsafe fn read(self, ptr: *const u8, size: usize) -> Option<(u128, usize)> {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, size) };
+    if matches!(self, Varint::Quic) {
+      if bytes.is_empty() {
+        return None;
+      }
+      let length = 1 << (bytes[0] >> 6);
+      if bytes.len() < length {
+        return None;
+      }
+      let (mut value, mut i) = ((bytes[0] & 0x3f) as u128, 1);
+      while i < length {
+        value = value << 8 | bytes[i] as u128;
+        i += 1;
+      }
+      return Some((value, length));
+    }
+    let (mut value, mut i) = (0u128, 0);
+    while i < bytes.len() {
+      let bits = (bytes[i] & 0x7f) as u128;
+      match self {
+        // 18 bytes are 126 bits: the 19th can only add 2, and there is no 20th.
+        Varint::Leb128 if i < 18 || (i == 18 && bits < 4) => value |= bits << (7 * i),
+        Varint::Vlq if value >> 121 == 0 => value = value << 7 | bits,
+        _ => return None,
+      }
+      i += 1;
+      if bytes[i - 1] & 0x80 == 0 {
+        return Some((value, i));
+      }
+    }
+    None
   }
 }
 
@@ -1999,18 +2467,20 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
   let mut i = 0;
   while i < ops.len() {
     match ops[i] {
-      Op::At { .. } | Op::Crc32 | Op::Sum16 => return true,
+      Op::At { .. }
+      | Op::Varint { .. }
+      | Op::Crc32
+      | Op::Sum16
+      | Op::Crc(_)
+      | Op::CrcZeros(_)
+      | Op::Checksum(_)
+      | Op::Matches(_) => return true,
       Op::Walk { cond, next, .. } if ops_read_bytes(cond) || ops_read_bytes(next) => return true,
       _ => {}
     }
     i += 1;
   }
   false
-}
-
-/// The operations of an expression can read the whole value, not only its sized fields.
-const fn reads_value(op: &Op) -> bool {
-  matches!(op, Op::Size | Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Walk { .. })
 }
 
 impl Rule {
@@ -2066,13 +2536,13 @@ pub(crate) struct LengthRule {
 }
 
 /// Depth of the stack of [`eval`].
-const STACK: usize = 8;
-/// Number of variables of an expression.
-const VARIABLES: usize = 4;
+const STACK: usize = 16;
+/// Number of variables of an expression (at most 8, a bit for each in [`Op::Let`]).
+const VARIABLES: usize = 8;
 /// An expression that has a [`Op::Walk`] is, as each expression of the walk, of at most that
 /// many operations: they are counted with types, see `validate::check_walks`.
-const WALK_OPS: usize = 64;
-const WALK_INNER_OPS: usize = 48;
+const WALK_OPS: usize = 72;
+const WALK_INNER_OPS: usize = 56;
 
 /// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
 const fn check_rules(rules: &[Rule], head: usize) {
@@ -2080,23 +2550,33 @@ const fn check_rules(rules: &[Rule], head: usize) {
   while i < rules.len() {
     if let Some(ops) = rules[i].ops() {
       let sizes = matches!(rules[i], Rule::Size(_) | Rule::Len(_));
-      let walks = matches!(rules[i], Rule::Walk(_));
-      assert!(!walks || ops.len() <= WALK_OPS, "an expression that walks is too long");
-      let walked = check_ops(ops, head, sizes, walks, 0);
-      assert!(walked == walks as usize, "a `walk`, and only one, is in a rule that walks");
+      let first = check_ops(ops, head, sizes, 0);
+      // The first walk of a rule that walks is applied by `validate::check_walks`, whose
+      // recursions over the operations are as long as these limits.
+      if let Rule::Walk(_) = rules[i] {
+        let Some(Op::Walk { cond, next, .. }) = first else {
+          panic!("a rule that walks has a walk")
+        };
+        assert!(ops.len() <= WALK_OPS, "an expression that walks is too long");
+        assert!(
+          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
+          "the expressions of a `walk` are too long"
+        );
+      }
     }
     i += 1;
   }
 }
 
-/// Check an expression, in which the variables of `defined` are (a bit for each): returns the
-/// number of [`Op::Walk`] that it has.
-const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut defined: u8) -> usize {
-  let (mut depth, mut walked, mut i) = (0usize, 0, 0);
+/// Check an expression, in which the variables of `defined` are (a bit for each): returns its
+/// first [`Op::Walk`], if any. With `sizes`, it is a size or a length, which cannot be computed
+/// from the size of the value.
+const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Option<Op> {
+  let (mut depth, mut first, mut i) = (0usize, None, 0);
   while i < ops.len() {
     assert!(
-      !(sizes && reads_value(&ops[i])),
-      "the size of a value cannot be defined from the value itself"
+      !(sizes && matches!(ops[i], Op::Size)),
+      "a size or a length cannot be computed from `size_of_val(self)`, which it defines"
     );
     match ops[i] {
       Op::Lit(_) | Op::Size => depth += 1,
@@ -2105,10 +2585,14 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
         assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
         depth += 1;
       }
-      Op::Not => assert!(depth >= 1, "malformed expression"),
+      Op::Not | Op::Varint { .. } => assert!(depth >= 1, "malformed expression"),
       Op::Select => {
         assert!(depth >= 3, "malformed expression");
         depth -= 2;
+      }
+      Op::CrcZeros(_) => {
+        assert!(depth >= 4, "malformed expression");
+        depth -= 3;
       }
       Op::Set(index) => {
         assert!(depth >= 1, "malformed expression");
@@ -2119,17 +2603,18 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
         assert!((index as usize) < VARIABLES && defined & (1 << index) != 0, "no such variable");
         depth += 1;
       }
+      Op::Let(mask) => {
+        assert!(depth >= 1, "malformed expression");
+        assert!(defined & mask == mask, "no such variable");
+      }
       Op::Walk { var, cond, next } => {
         assert!(depth >= 1, "malformed expression");
-        assert!(walks, "`walk` is for `assert`, and cannot be in another `walk`");
-        walked += 1;
+        if first.is_none() {
+          first = Some(ops[i]);
+        }
         assert!((var as usize) < VARIABLES, "too many variables in an expression");
-        assert!(
-          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
-          "the expressions of a `walk` are too long"
-        );
-        check_ops(cond, head, sizes, false, defined | 1 << var);
-        check_ops(next, head, sizes, false, defined | 1 << var);
+        check_ops(cond, head, sizes, defined | 1 << var);
+        check_ops(next, head, sizes, defined | 1 << var);
       }
       _ => {
         assert!(depth >= 2, "malformed expression");
@@ -2140,7 +2625,7 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
     i += 1;
   }
   assert!(depth == 1, "malformed expression");
-  walked
+  first
 }
 
 /// What evaluates an expression: a stack, and variables.
@@ -2150,36 +2635,59 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
 /// of the optimizer: the stack is not an array but a variable for each of its slots.
 #[derive(Copy, Clone)]
 pub(crate) struct Machine {
-  stack: (u128, u128, u128, u128, u128, u128, u128, u128),
-  variables: (u128, u128, u128, u128),
+  stack: Stack,
+  variables: Variables,
   depth: usize,
   /// A bit for each slot whose value could not be computed (an overflow, a read out of bounds).
-  failed: u8,
+  failed: u16,
   /// The same, for each variable.
   unknown: u8,
 }
 
+/// `slots!(Name: [0 1 2 ..] last)`: values in fields, one for each index, rather than in an array: so
+/// that the optimizer makes a variable of each, whatever the index asked for (see [`Machine`]).
+macro_rules! slots {
+  ($($name:ident: [$($index:tt)+] $last:tt)+) => {$(
+    #[derive(Copy, Clone)]
+    struct $name($(slots!(@u128 $index),)+ u128);
+
+    impl $name {
+      const NEW: Self = Self($(slots!(@zero $index),)+ 0);
+
+      // The last one is the one of any other index, which is not asked for: no other case.
+      #[inline(always)]
+      const fn get(&self, index: usize) -> u128 {
+        match index {
+          $($index => self.$index,)+
+          _ => self.$last,
+        }
+      }
+
+      #[inline(always)]
+      const fn set(&mut self, index: usize, value: u128) {
+        match index {
+          $($index => self.$index = value,)+
+          _ => self.$last = value,
+        }
+      }
+    }
+  )+};
+  (@u128 $index:tt) => { u128 };
+  (@zero $index:tt) => { 0 };
+}
+
+slots! {
+  Stack: [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14] 15
+  Variables: [0 1 2 3 4 5 6] 7
+}
+
 impl Machine {
-  pub(crate) const NEW: Self = Self {
-    stack: (0, 0, 0, 0, 0, 0, 0, 0),
-    variables: (0, 0, 0, 0),
-    depth: 0,
-    failed: 0,
-    unknown: 0,
-  };
+  pub(crate) const NEW: Self =
+    Self { stack: Stack::NEW, variables: Variables::NEW, depth: 0, failed: 0, unknown: 0 };
 
   #[inline(always)]
   const fn get(&self, slot: usize) -> u128 {
-    match slot {
-      0 => self.stack.0,
-      1 => self.stack.1,
-      2 => self.stack.2,
-      3 => self.stack.3,
-      4 => self.stack.4,
-      5 => self.stack.5,
-      6 => self.stack.6,
-      _ => self.stack.7,
-    }
+    self.stack.get(slot)
   }
 
   /// Set a slot to a value, or mark it as failed.
@@ -2188,16 +2696,7 @@ impl Machine {
     match value {
       Some(value) => {
         self.failed &= !(1 << slot);
-        match slot {
-          0 => self.stack.0 = value,
-          1 => self.stack.1 = value,
-          2 => self.stack.2 = value,
-          3 => self.stack.3 = value,
-          4 => self.stack.4 = value,
-          5 => self.stack.5 = value,
-          6 => self.stack.6 = value,
-          _ => self.stack.7 = value,
-        }
+        self.stack.set(slot, value);
       }
       None => self.failed |= 1 << slot,
     }
@@ -2218,12 +2717,7 @@ impl Machine {
     if self.unknown & (1 << index) != 0 {
       return None;
     }
-    Some(match index {
-      0 => self.variables.0,
-      1 => self.variables.1,
-      2 => self.variables.2,
-      _ => self.variables.3,
-    })
+    Some(self.variables.get(index as usize))
   }
 
   #[inline(always)]
@@ -2231,12 +2725,7 @@ impl Machine {
     match value {
       Some(value) => {
         self.unknown &= !(1 << index);
-        match index {
-          0 => self.variables.0 = value,
-          1 => self.variables.1 = value,
-          2 => self.variables.2 = value,
-          _ => self.variables.3 = value,
-        }
+        self.variables.set(index as usize, value);
       }
       None => self.unknown |= 1 << index,
     }
@@ -2300,10 +2789,28 @@ impl Machine {
         self.set_variable(index, self.slot(depth - 1));
         self.depth -= 1;
       }
+      Op::Let(mask) => {
+        if self.unknown & mask != 0 {
+          self.set(depth - 1, None);
+        }
+      }
       Op::Not => {
         if !self.has_failed(depth - 1) {
           self.set(depth - 1, Some((self.get(depth - 1) == 0) as u128));
         }
+      }
+      Op::Varint { form, length } => {
+        let offset = self.get(depth - 1);
+        let value = if !self.has_failed(depth - 1) && offset <= size as u128 {
+          // SAFETY: in the bounds of the value.
+          match unsafe { form.read(base.add(offset as usize), size - offset as usize) } {
+            Some((value, bytes)) => Some(if length { bytes as u128 } else { value }),
+            None => None,
+          }
+        } else {
+          None
+        };
+        self.set(depth - 1, value);
       }
       Op::At { size: width, big } => {
         let (offset, endian) =
@@ -2317,37 +2824,59 @@ impl Machine {
           self.set(depth - 1, None);
         }
       }
-      op @ (Op::Crc32 | Op::Sum16) => {
-        let (start, end) = (self.get(depth - 2), self.get(depth - 1));
-        let inside = start <= end && end <= size as u128;
-        let computed = inside && !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
-        self.depth -= 1;
-        if computed {
+      op @ (Op::Crc32
+      | Op::Sum16
+      | Op::Crc(_)
+      | Op::CrcZeros(_)
+      | Op::Checksum(_)
+      | Op::Matches(_)) => {
+        // The range, and the one taken as zeros (none but for `CrcZeros`).
+        let operands = if matches!(op, Op::CrcZeros(_)) { 4 } else { 2 };
+        let (start, end) = (self.get(depth - operands), self.get(depth - operands + 1));
+        let (zeros, to) =
+          if operands == 4 { (self.get(depth - 2), self.get(depth - 1)) } else { (0, 0) };
+        let inside = start <= end && end <= size as u128 && zeros <= to && to <= size as u128;
+        let mut computed = inside;
+        let mut i = 1;
+        while i <= operands {
+          computed &= !self.has_failed(depth - i);
+          i += 1;
+        }
+        self.depth -= operands - 1;
+        let value = if computed {
           // SAFETY: in the bounds of the value.
           let bytes = unsafe {
             core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
           };
-          let value =
-            if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
-          self.set(depth - 2, Some(value));
+          // Where the zeros are in `bytes` (in the value: they fit a `usize`).
+          let zeros = (zeros.saturating_sub(start) as usize, to.saturating_sub(start) as usize);
+          Some(match op {
+            Op::Crc32 => crc32(bytes) as u128,
+            Op::Sum16 => sum16(bytes) as u128,
+            Op::Crc(crc) | Op::CrcZeros(crc) => crc.compute(bytes, zeros) as u128,
+            Op::Checksum(checksum) => checksum.compute(bytes),
+            Op::Matches(dfa) => dfa.accepts_bytes(bytes) as u128,
+            _ => 0,
+          })
         } else {
-          self.set(depth - 2, None);
-        }
+          None
+        };
+        self.set(depth - operands, value);
       }
-      // What decides of `&&` and `||` is enough: the other side may have failed.
+      // As in Rust, the left side first: the right one only counts if the left one does not
+      // decide, and may then have failed.
       op @ (Op::Both | Op::Either) => {
-        let (a, b) = (self.get(depth - 2), self.get(depth - 1));
-        let (failed_a, failed_b) = (self.has_failed(depth - 2), self.has_failed(depth - 1));
         let decides = matches!(op, Op::Either) as u128;
+        let value = match self.slot(depth - 2) {
+          Some(a) if (a != 0) as u128 == decides => Some(decides),
+          Some(_) => match self.slot(depth - 1) {
+            Some(b) => Some((b != 0) as u128),
+            None => None,
+          },
+          None => None,
+        };
         self.depth -= 1;
-        if (!failed_a && (a != 0) as u128 == decides) || (!failed_b && (b != 0) as u128 == decides)
-        {
-          self.set(depth - 2, Some(decides));
-        } else if failed_a || failed_b {
-          self.set(depth - 2, None);
-        } else {
-          self.set(depth - 2, Some(1 - decides));
-        }
+        self.set(depth - 2, value);
       }
       // The value that is not selected may have failed.
       Op::Select => {
@@ -2359,8 +2888,15 @@ impl Machine {
         self.depth -= 2;
         self.set(depth - 3, value);
       }
-      // See `validate::check_walks`, which is what evaluates the expressions that walk.
-      Op::Walk { .. } => self.set(depth - 1, None),
+      // `validate::check_walks` applies the first walk of a rule that walks; this, any other.
+      Op::Walk { var, cond, next } => {
+        let value = match self.top() {
+          // SAFETY: guaranteed by the caller.
+          Some(start) => unsafe { self.walk(var, cond, next, start, base, size) },
+          None => None,
+        };
+        self.replace(value);
+      }
       op => {
         let computed = !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
         let value = binary(op, self.get(depth - 2), self.get(depth - 1));
@@ -2378,29 +2914,77 @@ impl Machine {
 ///
 /// # Safety
 /// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
-/// reads of the sized fields of such a struct, initialized. `size` is the size of the struct:
-/// unless the expression is the one of a `size` or `len` rule, `base` must be valid for reads of
-/// that many initialized bytes.
+/// reads of the sized fields of such a struct, and of `size` bytes, initialized. `size` is the
+/// size of the struct, or for a `size` or `len` rule, which tells it, what can be read.
 // Not in debug builds, where this would only make every struct that has rules slow to build.
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-  let mut machine = Machine::NEW;
-  macro_rules! unrolled {
-    ($($index:literal)+) => {$(
-      if $index < ops.len() {
-        // SAFETY: guaranteed by the caller.
-        unsafe { machine.apply(ops[$index], base, size) };
+  // SAFETY: guaranteed by the caller.
+  unsafe { Machine::NEW.run(ops, base, size) }
+}
+
+/// So that a walk ends: a step for each bit of a value of `size` bytes, and for each bit of a
+/// `u128`. (`size` is at most `isize::MAX`: adding 16 does not overflow.)
+#[inline(always)]
+pub(crate) const fn walk_limit(size: usize) -> usize {
+  (size + 16).saturating_mul(8)
+}
+
+impl Machine {
+  /// The value of the expression `ops`, evaluated by this machine.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  #[cfg_attr(not(debug_assertions), inline(always))]
+  const unsafe fn run(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
+    macro_rules! unrolled {
+      ($($index:literal)+) => {$(
+        if $index < ops.len() {
+          // SAFETY: guaranteed by the caller.
+          unsafe { self.apply(ops[$index], base, size) };
+        }
+      )+};
+    }
+    unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
+    let mut i = 24;
+    while i < ops.len() {
+      // SAFETY: guaranteed by the caller.
+      unsafe { self.apply(ops[i], base, size) };
+      i += 1;
+    }
+    self.result()
+  }
+
+  /// What `start` becomes when it is replaced by the value of `next` for as long as `cond` is
+  /// true of it, the variable `var` being it in both; `None` if it cannot be computed, or if it
+  /// takes more than [`walk_limit`] steps.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  const unsafe fn walk(
+    &self,
+    var: u8,
+    cond: &[Op],
+    next: &[Op],
+    start: u128,
+    base: *const u8,
+    size: usize,
+  ) -> Option<u128> {
+    let (mut state, mut steps, limit) = (start, 0, walk_limit(size));
+    loop {
+      // SAFETY: guaranteed by the caller.
+      match unsafe { self.enter(var, state).run(cond, base, size) } {
+        Some(0) => return Some(state),
+        Some(_) if steps < limit => steps += 1,
+        _ => return None,
       }
-    )+};
+      // SAFETY: guaranteed by the caller.
+      match unsafe { self.enter(var, state).run(next, base, size) } {
+        Some(next) => state = next,
+        None => return None,
+      }
+    }
   }
-  unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
-  let mut i = 24;
-  while i < ops.len() {
-    // SAFETY: guaranteed by the caller.
-    unsafe { machine.apply(ops[i], base, size) };
-    i += 1;
-  }
-  machine.result()
 }
 
 #[inline(always)]
@@ -2439,13 +3023,19 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     | Op::Size
     | Op::Not
     | Op::At { .. }
+    | Op::Varint { .. }
     | Op::Crc32
     | Op::Sum16
+    | Op::Crc(_)
+    | Op::CrcZeros(_)
+    | Op::Checksum(_)
+    | Op::Matches(_)
     | Op::Both
     | Op::Either
     | Op::Select
     | Op::Set(_)
     | Op::Get(_)
+    | Op::Let(_)
     | Op::Walk { .. } => None,
   }
 }

@@ -20,9 +20,10 @@
 //!
 //! What is not covered, and why:
 //!
-//! - MP4: the size of a box is of 4 or 8 bytes, as its first 4 bytes tell. A `size` rule reads
-//!   fields: each form is a struct, and an enum of references tells them apart. This is the
-//!   current way; with `be` in `size` (planned), it is one struct. Boxes inside boxes (`moov`,
+//! - MP4: the size of a box is of 4 or 8 bytes, as its first 4 bytes tell, or 0 for "to the end
+//!   of what holds it", which a `size` rule cannot tell (it is not in the box): each form is a
+//!   struct, of a payload of its type, and an enum of references tells them apart. Boxes inside
+//!   boxes (`moov`,
 //!   `trak`...) are read by use code, one level at a time: a box does not say what kind of box
 //!   its children are.
 //! - The samples themselves are compressed, or interleaved by tables that point anywhere in the

@@ -20,7 +20,7 @@
 //! | L2CAP in ACL data: both lengths agree           | `Acl<L2cap>`: the size of each is checked |
 //! | CAN: flags in the identifier, of 11 or 29 bits  | `get(..)`, `assert(..)`                   |
 //! | CAN FD: the 16 lengths that a DLC can tell      | `valid(0..=8, 12, 16, 20, 24, ..)`        |
-//! | Modbus RTU: a CRC-16 of the frame               | a `walk`, tables in constants             |
+//! | Modbus RTU: a CRC-16 of the frame               | `assert(crc::<16, 0x8005, ..>(..) == ..)` |
 //! | Modbus TCP: a protocol identifier of 0          | `u16bec<0>`, `size = length + 6`          |
 //! | Modbus registers, counted in bytes              | `len = byte_count / 2` on `[u16be]`       |
 //! | SLIP and PPP: escapes, where a frame ends       | `assert(walk(..) == ..)`                  |
@@ -265,38 +265,14 @@ pub struct CanFdFrame {
 // -------------------------------------------------------------------------------------------------
 // Modbus
 
-/// `T[0]`, `T[1]`, `T[2]`, `T[3]` of the byte table of CRC-16/MODBUS, 16 bits each.
-pub const T0: u128 = 0x0140_c181_c0c1_0000;
-/// `T[0]`, `T[4]`, `T[8]`, `T[12]`.
-pub const T1: u128 = 0x0500_c601_c301_0000;
-/// `T[0]`, `T[16]`, `T[32]`, `T[48]`.
-pub const T2: u128 = 0x1400_d801_cc01_0000;
-/// `T[0]`, `T[64]`, `T[128]`, `T[192]`.
-pub const T3: u128 = 0x5000_a001_f001_0000;
-
-/// A Modbus RTU frame: an address, a function, data, and the CRC-16 of all of it, least
+/// A Modbus RTU frame: an address, a function, data, and the CRC-16/MODBUS of all of it, least
 /// significant byte first; 4 to 256 bytes.
-///
-/// There is no CRC-16 in the expressions. A walk computes it, a byte per step, with a state of
-/// `offset << 24 | crc`. A CRC is linear, so the table of a byte is the XOR of four tables of
-/// four entries, `T[x] = T[x & 3] ^ T[x & 12] ^ T[x & 48] ^ T[x & 192]`, each packed in a
-/// constant. The step is 48 operations: as many as a walk allows. This is the current way, until
-/// a function for it is built in.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(size_of_val(self) >= 4 && size_of_val(self) <= 256))]
-#[pun(assert({
-  let state = walk(
-    0xffff,
-    |s| (s >> 24) < size_of_val(self) - 2,
-    |s| {
-      let x = s ^ be(s >> 24, 1);
-      (((s >> 8) ^ (T0 >> ((x & 3) * 16)) ^ (T1 >> ((x & 12) * 4)) ^ (T2 >> (x & 48))
-        ^ (T3 >> ((x & 192) / 4))) & 0xffff) | ((s | 0xff_ffff) + 1)
-    },
-  );
-  state & 0xffff == le(size_of_val(self) - 2, 2)
-}))]
+#[pun(assert(
+  crc::<16, 0x8005, 0xffff, true, 0>(0, size_of_val(self) - 2) == le(size_of_val(self) - 2, 2)
+))]
 #[pun(get(exception: bool = function & 0x80 != 0))]
 pub struct RtuFrame {
   /// 0 is broadcast; 248 to 255 are reserved.

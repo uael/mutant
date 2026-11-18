@@ -17,6 +17,7 @@
 //! | GPT: a sector size that the bytes do not tell  | a const parameter: `GptDisk<512>`            |
 //! | GPT: the entries are where the header says     | `le(S + 72, 8) * S`                          |
 //! | GPT: the CRC-32 of the partition entries       | `assert(crc32(start, ..) == le(S + 88, 4))`  |
+//! | GPT: the CRC-32 of the header, over itself      | `assert(crc32(S, .., S + 16, S + 20) == ..)` |
 //! | USB: descriptors of fixed lengths and types    | `u8c<18>`, `u8c<1>`                          |
 //! | USB: descriptors that fill a configuration     | `size = total_length`, `assert(walk(9, ..))` |
 //! | USB: the bit fields of an endpoint             | `get(input: bool = address & 0x80 != 0, ..)` |
@@ -25,11 +26,8 @@
 //!
 //! - SQLite: the pages themselves (B-tree pages, of cells at offsets that a page tells, of
 //!   varints) are more declarations, of the forms of `executables.rs` and `encodings.rs`.
-//! - GPT: the CRC of the header is over the header with its own field taken as 0. A CRC over
-//!   bytes that are not the bytes cannot be computed from them by the expressions (`crc32` reads
-//!   the value as it is), so it is not checked; the CRC of the partition entries is. The name of
-//!   a partition is UTF-16, for which there is no pattern yet: it is `[u16le; 36]`. The sector
-//!   size is not in the bytes: it is a const parameter, `GptDisk<512>`.
+//! - GPT: the name of a partition is UTF-16, for which the crate has no automaton: it is
+//!   `[u16le; 36]`. The sector size is not in the bytes: it is a const parameter, `GptDisk<512>`.
 //! - FAT: which of FAT12, FAT16 and FAT32 a volume is depends on its count of clusters, computed
 //!   from the fields of its BIOS parameter block: both kinds of boot sector are declared, and an
 //!   enum of references tells them apart. The FAT32 one reads that block with `le(..)`, since it
@@ -53,7 +51,7 @@ use puns::{
 #[derive(Pun)]
 #[repr(C)]
 // What a page leaves to the B-tree, once its reserved bytes are taken out, is at least 480 bytes.
-#[pun(assert(reserved_space <= 32 || page_size + (page_size == 1) * 65535 - reserved_space >= 480))]
+#[pun(assert(reserved_space <= 32 || page_size + (page_size == 1) as u128 * 65535 - reserved_space >= 480))]
 #[pun(get(page_bytes: u32 = page_size + (page_size == 1) as u128 * 65535))]
 pub struct SqliteHeader {
   /// `SQLite format 3\0`.
@@ -95,9 +93,9 @@ pub struct SqliteHeader {
 /// when that count is valid, which it is when "version valid for" is the change counter.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(assert(size_of_val(self) % (page_size + (page_size == 1) * 65535) == 0))]
+#[pun(assert(size_of_val(self) % (page_size + (page_size == 1) as u128 * 65535) == 0))]
 #[pun(assert(be(92, 4) != be(24, 4)
-  || be(28, 4) * (page_size + (page_size == 1) * 65535) == size_of_val(self)))]
+  || be(28, 4) * (page_size + (page_size == 1) as u128 * 65535) == size_of_val(self)))]
 pub struct Sqlite {
   pub magic: u128bec<0x5351_4c69_7465_2066_6f72_6d61_7420_3300>,
   #[pun(valid(1, 512, 1024, 2048, 4096, 8192, 16384, 32768))]
@@ -215,6 +213,8 @@ pub enum FatBoot<'a> {
   let start = le(S + 72, 8) * S;
   crc32(start, start + le(S + 80, 4) * le(S + 84, 4)) == le(S + 88, 4)
 }))]
+// The CRC of the header, its own field taken as zeros.
+#[pun(assert(crc32(S, S + le(S + 12, 4), S + 16, S + 20) == le(S + 16, 4)))]
 pub struct GptDisk<const S: usize>(pub [u8]);
 
 /// A partition entry: unused if its type is 0.
@@ -470,10 +470,12 @@ pub fn main() {
     bytes[at] = value;
     assert_eq!(try_pun_ref::<_, GptDisk<512>>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // The CRC of the header is not checked (see the top of this file): this is accepted.
-  let mut bytes = disk.clone();
-  bytes[512 + 16] ^= 1;
-  assert!(try_pun_ref::<_, GptDisk<512>>(&bytes[..]).is_ok());
+  // The CRC of the header, or a byte that it covers.
+  for at in [512 + 16, 512 + 40] {
+    let mut bytes = disk.clone();
+    bytes[at] ^= 1;
+    assert_eq!(try_pun_ref::<_, GptDisk<512>>(&bytes[..]).err(), Some(Error::Validity));
+  }
   // The sector size is a parameter: as sectors of 4096 bytes, this is not a GPT disk.
   assert_eq!(try_pun_ref::<_, GptDisk<4096>>(&disk[..]).err(), Some(Error::Validity));
   // An entry that ends before it starts.

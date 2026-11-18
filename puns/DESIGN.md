@@ -168,7 +168,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 362 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 363 instructions, two loops, no call       |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -184,23 +184,57 @@ fields to a constant postfix program (`layout::Op`):
 - `#[pun(assert(EXPR))]`: anything else (bit fields, relations between fields, a minimum size);
 - `#[pun(regions(a = EXPR, b))]`: consecutive regions of the tail, with an accessor for each.
 
+An expression means what the same Rust expression means where every integer (a field, a
+constant, a literal) is a `u128`, or is refused at compile time: never something else. The derive
+types it as Rust does (an integer or a `bool`: `!` is bitwise on one and logical on the other, an
+integer is not a condition), reads literals itself (no float, no negative number, no signed
+suffix), converts constants through a trait that only unsigned integer types implement, and makes
+`as uN` keep the low bits. Where Rust would panic (an overflow, a division by zero, a shift by
+128 or more), the rule fails; what Rust does not compute (the right side of a `&&` that the left
+side decides, the branch of an `if` that is not taken) cannot make it fail, and what it does (a
+`let`, used or not) can: a block ends with `Op::Let`, which fails it if one of its `let`s did,
+for the ones that its value may be computed without and that may fail, which const evaluation
+tells from the widths of what they read (`Op::fallible`), so that it usually costs nothing. The
+derive also counts what the evaluator has room for (the depth of its
+stack, the operations of a walk, the variables) and reports an excess at the expression, with the
+numbers; the evaluator checks it again.
+
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
-(the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
-last bytes are the CRC of what is before" is an assertion. A checksum that covers several layers
+(the frame check sequence of Ethernet, the checksum of IP), and variable-length integers:
+`leb128(offset)`, `quic(offset)` and `vlq(offset)`, and with `_len` the number of bytes of each
+(`Op::Varint`: an offset is replaced by what is there, as `be` does; a read never goes past the
+value). So a trailer is a region, and "the 4 last bytes are the CRC of what is before" is an
+assertion; an MQTT packet is `size = 1 + leb128_len(1) + leb128(1)`.
+
+Checksums other than these two are told by their parameters (`Op::Crc`, `Op::CrcZeros`,
+`Op::Checksum`): `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` is any CRC of up to 64
+bits, whose table of 256 entries (2 KiB) is made in const evaluation, once for each parameters;
+with two more offsets, the bytes between them are taken as zeros, for a CRC over the header that
+holds it (GPT). `fletcher16`, `adler32` and `sum` are the other checksums of the formats of the
+examples. As every read of the value, they are bounded by it: a range out of it fails. A size or a length reads the value too
+(not its size, which it defines): `from_head` evaluates it over the bytes that there are, which
+are initialized and in bounds whatever it reads, and the value it takes is then validated as a
+whole, the rule included, over its own bytes; a rule that reads beyond what it sizes fails there. A checksum that covers several layers
 (the one of UDP and TCP covers the addresses of the IP header) is an assertion of the struct that
 holds them all: the IPv4 packet.
 
 An expression can name what it computes and choose (`{ let header = ..; .. }`,
-`if .. { .. } else { .. }`), and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
+`if .. { .. } else { .. }`; what a `let` binds is computed, as in Rust, whether it is used or not),
+and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
 `START` becomes when it is replaced by `NEXT` for as long as `COND` is true of it. This is how
 what lies at an offset that depends on what is before is reached: the checksum of UDP, TCP and
 ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each of which tells
-what follows it and how long it is. A value is walked for at most as many steps as it has bytes.
+what follows it and how long it is; at the end of a string, in a `size`. A walk can be in any rule,
+in another walk, several in an expression. A walk takes at most a step for each bit of the value, plus
+128 (the bits of a `u128`), so that it ends: a walk over the bits of a field fits, whatever the
+size of the value.
 
-What cannot be computed (an overflow, a read out of the value) makes a rule fail, unless it is
-the side of a `&&` or `||` that the other side decides without: `protocol != 17 || be(..) == 0`
-holds for a packet that is not UDP, however short.
+What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
+the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
+`||` that the left side decides without, as Rust does not compute it: `protocol != 17 ||
+be(..) == 0` holds for a packet that is not UDP, however short. `<<` drops the bits that it
+shifts out, as Rust does.
 
 Two more options are not rules, but save the code that would otherwise be written by hand:
 
@@ -209,7 +243,8 @@ Two more options are not rules, but save the code that would otherwise be writte
   `struct Frame<P: ?Sized + Tag<EtherType> = [u8]> { .., ether_type: P::Tag, payload: P }`, and
   `Frame<Ipv4>` requires the EtherType of IPv4 while `Frame` takes any (bytes go with any tag);
 - `#[pun(get(name: Type = EXPR))]` generates a `const fn` getter, for bit fields. Here `EXPR`
-  is plain Rust, in which integer fields are `u128`: any function can be called;
+  is plain Rust, in which an integer field, wherever it is named, is its value as a `u128`: any
+  `const fn` can be called;
 - a region can be given a type, `regions(options = EXPR, payload: P)`: its accessor then returns
   a `&P`, if the bytes of the region are one. This is how a packet whose header has a variable
   size carries a typed payload;
@@ -221,15 +256,24 @@ Two more options are not rules, but save the code that would otherwise be writte
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
 are proven only by the same rule, in the same struct, at the same place of the source. The
-evaluator (`layout::eval`) is written so that a constant program compiles to its arithmetic: no
+evaluator (`layout::eval`) has a stack of 16 values and 8 variables, each a variable of the
+machine rather than an element of an array, reached by a `match` whose cases are all values (the
+last one is the default case: a `match` with one more case costs instructions); it is written so
+that a constant program compiles to its arithmetic: no
 loop for the first operations, and a local variable per stack slot rather than an array.
 
-An expression that walks holds two more expressions, which are evaluated in a loop: there, the
-operations are not left to the optimizer to find constant. They are constants of the instances
-of the functions that apply them (`validate::check_walks`), one instance per operation, reached
-by a recursion over a number that is a type. What is compiled is the loop and the arithmetic of
-both expressions, never an interpreter; and the list of the rules that walk is itself a type
-(`Pun::Walks`), so that a struct without any costs nothing more to compile.
+An expression that walks holds two more expressions, which are evaluated in a loop. The evaluator
+applies a walk as it applies anything else (`Machine::walk`): it runs both expressions in a loop,
+which the optimizer makes constant where it inlines the evaluator, at the first level of walks.
+The first walk of an `assert` is applied otherwise, where it must be fast (the IPv6 packet): there,
+the operations are not left to the optimizer to find constant. They are constants of the
+instances of the functions that apply them (`validate::check_walks`), one instance per operation,
+reached by a recursion over a number that is a type. What is compiled is the loop and the
+arithmetic of both expressions, never an interpreter; and the list of the rules that walk is
+itself a type (`Pun::Walks`), so that a struct without any costs nothing more to compile. The
+recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
+first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
+Both apply the same operations, with the same limit of steps.
 
 ### 5. What the type system enforces, and what it does not
 
@@ -360,13 +404,35 @@ night and on demand. See
   values); what is missing is a sample of every field type, and the experiments.
 - An enum made from something that is not an enum is always checked at run time, even when
   every value of the source happens to be valid.
-- Patterns other than `str`: the engine takes any DFA of at most 64 states, but there is no way
-  to declare one from the derive.
+- Patterns other than `str` as types: the engine takes any DFA of at most 64 states, as a type
+  that guarantees it, but such a type cannot come from the derive, whose fields safe code can
+  write: a struct requires a pattern of its bytes with a rule, `matches(DFA, start, end)`
+  (`Op::Matches`), proven only by the same rule, as any rule. Automata are compared by their
+  states and edges, not by their `id`, which a user can choose.
+- A byte order that a value tells (`EI_DATA` of ELF, the byte order mark of TIFF): a type has a
+  byte order of its own (`u32be`, `i16le`, `f64be`...), so this is a choice between two types,
+  which an enum of references makes.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
-- An arbitrary function in a rule (getters take any): it could only be called through a trait,
-  hence not in `const` contexts on stable. `crc32`, `sum16` and `walk` are built in for that
-  reason.
-- `walk` is for `assert`: once in an expression, not for sizes, lengths or regions.
+- A rule names the integer fields of its struct, not a field of a field (`header.length`) or an
+  element of an array (`magic[0]`), which it reads with `be` or `le` at their offsets. Loading
+  them would be sound if the offset were checked against the layout of the field (a scalar
+  there, of that size), as it is for the fields of the struct.
+- Rules compute on unsigned integers: a signed or floating-point field is refused, and read as
+  bits with `le` or `be`. A getter reads fields, not bytes: a value that only the bytes hold
+  (a variable-length integer) is decoded by use code.
+- A size that is not in the value: "to the end of what holds it" (an MP4 box of size 0).
+- Sums of types in sequences, and recursion: `OPTIONAL` and `CHOICE` of ASN.1, the containers of
+  CBOR and MessagePack. A chain of types (`Then<A, B>`) is one sequence of types.
+- An arbitrary function in a rule (getters take any). The validator is `const fn` code, generic
+  over the type it validates, and on stable 1.100 such code cannot call a function that the type
+  chooses: a call through a function pointer is refused ("function pointer calls are not allowed
+  in constant functions"), a trait method too (E0015, "cannot call non-const associated
+  function"), and const traits are unstable (E0658), all probed. A user function could only be
+  called if validation stopped being `const`, which every function of the crate is, or behind
+  a check that only runs outside of `const`, which stable Rust cannot tell. So what a rule
+  computes is built in, and described by data where it varies: walks, variable-length integers,
+  CRCs by their parameters, sums. The data is all the analysis sees, and it does not reason about
+  it (a rule is proven only by the same rule): a checksum only makes a check stricter.
 
 ## Limits
 
@@ -380,4 +446,6 @@ night and on demand. See
   the crate that validates it (validation recurses over the list of the variants).
 - `PhantomData<T>` is `Scalar` for any `T`, and deriving `Pun` exposes private fields: see
   "What the type system enforces" for which types must not derive `Pun`.
+- The evaluator of rules has a stack of 16 values and 8 variables (the derive says when an
+  expression needs more, and how much), and a walk takes at most `8 * size + 128` steps.
 - Unions are not planned.

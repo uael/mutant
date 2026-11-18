@@ -7,7 +7,7 @@
 use crate::{
   Count, Fields, Path, Pun, Root, Variants, Walks,
   analysis::Marks,
-  layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load},
+  layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
   ptr,
 };
 
@@ -259,7 +259,7 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
     return;
   };
   let Some(mut state) = machine.top() else { return };
-  let mut steps = 0;
+  let (mut steps, limit) = (0, walk_limit(size));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.
@@ -269,8 +269,7 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
       Some(_) => {}
       None => break None,
     }
-    // A value is not walked for more steps than it has bytes.
-    if steps == size {
+    if steps == limit {
       break None;
     }
     steps += 1;

@@ -15,7 +15,7 @@
 //! | the type of a chunk tells what its data is        | `tag(ChunkType = u32bec<0x4948_4452>)`    |
 //! | the bit depths that each color type allows        | `assert((color_type == 0 && ..) \|\| ..)` |
 //! | a PNG file: IHDR first, IEND last, right CRCs     | `assert(walk(8, ..) == ..)`               |
-//! | BMP: a signed height (negative: top-down)         | `valid(1..=0x7fff_ffff, 0x8000_0001..)`   |
+//! | BMP: a signed height (negative: top-down)         | `i32le`, `valid(1..=0x7fff_ffff, ..)`     |
 //! | BMP: rows padded to 4 bytes, in the file          | `assert(.. (bits_per_pixel * ..) ..)`     |
 //! | BMP: the header, the palette and the pixels       | `regions(dib_rest = .., palette = ..)`    |
 //! | font search fields, derived from the count        | `assert(search_range == 16 * walk(..))`   |
@@ -27,19 +27,18 @@
 //!   not a view of the bytes. The CRCs of PNG are checked; the Adler-32 at the end of the zlib
 //!   stream is in the compressed data, and is not.
 //! - The checksum of each font table is a sum of 32 bits words over the table that a record
-//!   points to: a walk over the records, inside of which is a walk over each table. A walk cannot
-//!   be in a walk, so it is not checked; neither are the tables themselves (more declarations of
-//!   the same kind).
-//! - BMP: there are no signed integers of a given byte order in `puns::num`, so the height
-//!   is a `u32le` whose valid values are those of an `i32` but 0 and -2^31, and its magnitude is
-//!   computed by hand.
+//!   points to (the one of `head` with a field taken as 0): a walk over the records, inside of
+//!   which is a walk over each table, which is not written here; neither are the tables
+//!   themselves (more declarations of the same kind).
+//! - BMP: the height is an `i32le`, but a rule computes on unsigned integers: the rule that
+//!   needs its magnitude reads its bits.
 #![deny(unsafe_code)]
 
 use core::marker::PhantomData;
 
 use puns::{
   Error, Pun, Tag, from_head,
-  num::{u8c, u16be, u16le, u16lec, u32be, u32bec, u32le, u64bec},
+  num::{i32le, u8c, u16be, u16le, u16lec, u32be, u32bec, u32le, u64bec},
   try_pun_ref,
 };
 
@@ -128,18 +127,15 @@ pub struct Png {
 #[repr(C)]
 #[pun(size = file_size)]
 #[pun(assert(pixel_offset >= 14 + dib_size))]
-// Rows of pixels, each padded to 4 bytes, fit in the file (when they are not compressed).
+// Rows of pixels, each padded to 4 bytes, fit in the file (when they are not compressed). A rule
+// computes on unsigned integers: it reads the bits of the height, two's complement, with `le`.
 #[pun(assert(compression != 0 || {
-  let rows = if height >> 31 != 0 { 0x1_0000_0000 - height } else { height };
+  let bits = le(22, 4);
+  let rows = if bits >> 31 != 0 { 0x1_0000_0000 - bits } else { bits };
   pixel_offset + (bits_per_pixel * width + 31) / 32 * 4 * rows <= file_size
 }))]
 // No more colors in the palette than the depth allows.
 #[pun(assert(bits_per_pixel > 8 || colors_used <= 1 << bits_per_pixel))]
-// (The magnitude of the height is computed without an `if`: see `top_down` and `rows`.)
-#[pun(get(
-  top_down: bool = height >> 31 != 0,
-  rows: u32 = (height ^ ((height >> 31) * 0xffff_ffff)) + (height >> 31),
-))]
 pub struct Bmp {
   pub magic: u16lec<0x4d42>,
   pub file_size: u32le,
@@ -149,9 +145,10 @@ pub struct Bmp {
   pub dib_size: u32le,
   #[pun(valid(1..=0x7fff_ffff))]
   pub width: u32le,
-  /// An `i32`, but 0 and -2^31.
+  /// Negative: the rows are from the top. Not 0, nor -2^31 (its bits are the ones that are
+  /// valid).
   #[pun(valid(1..=0x7fff_ffff, 0x8000_0001..))]
-  pub height: u32le,
+  pub height: i32le,
   pub planes: u16lec<1>,
   #[pun(valid(1, 4, 8, 16, 24, 32))]
   pub bits_per_pixel: u16le,
@@ -295,16 +292,13 @@ pub fn main() {
 
   // ---- BMP: a signed height, rows padded to 4 bytes.
   let (image, _) = from_head::<Bmp>(&BMP).unwrap();
-  assert_eq!(
-    (image.top_down(), image.rows(), image.width.get(), image.bits_per_pixel.get()),
-    (false, 2, 3, 24)
-  );
+  assert_eq!((image.height.get(), image.width.get(), image.bits_per_pixel.get()), (2, 3, 24));
   assert_eq!((image.dib_rest().len(), image.palette().len(), image.pixels().len()), (0, 0, 24));
   // Rows from the top: a height of -2.
   let mut top_down = BMP;
   top_down[22..26].copy_from_slice(&(-2i32).to_le_bytes());
   let image: &Bmp = try_pun_ref(&top_down[..]).unwrap();
-  assert_eq!((image.top_down(), image.rows()), (true, 2));
+  assert_eq!(image.height.get(), -2);
   // Three rows do not fit; 23 bits per pixel; a height of 0; a pixel offset in the header; a
   // size that is not the one of the file.
   for (at, value) in [(22, 3), (28, 23), (22, 0), (10, 40), (2, 0x4d)] {

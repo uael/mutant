@@ -2,7 +2,7 @@
 //!
 //! - `u16le`, `u32be`...: integers stored in a given byte order. They are byte arrays, hence have
 //!   no alignment requirement.
-//! - `i16le`, `i32be`...: signed integers, the same way.
+//! - `i16le`, `i32be`..., `f32le`, `f64be`...: signed and floating-point numbers, the same way.
 //! - `u8c<V>`, `u16lec<V>`, `u32bec<V>`...: integers whose only valid value is `V`: magic numbers,
 //!   type tags and the like.
 
@@ -197,6 +197,9 @@ macro_rules! numbers {
   ($($name:ident: $raw:ident[$size:literal] $endian:ident;)+) => {$(
     #[doc = concat!("A `", stringify!($raw), "` of ", stringify!($size), " bytes, most significant ")]
     #[doc = endian!($endian, "last (little-endian).", "first (big-endian).")]
+    ///
+    /// Its bits are not its value as an unsigned integer: the rules of `#[derive(Pun)]` do not read
+    /// it. Two are equal if their bytes are.
     #[expect(non_camel_case_types, reason = "named like the primitive numbers they stand for")]
     #[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
     #[repr(transparent)]
@@ -227,7 +230,7 @@ macro_rules! numbers {
 
     // SAFETY: a byte array.
     unsafe impl Scalar for $name {
-      const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian);
+      const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian).not_a_number();
     }
 
     impl From<$name> for $raw {
@@ -265,6 +268,12 @@ numbers! {
   i32be: i32[4] Big;
   i64le: i64[8] Little;
   i64be: i64[8] Big;
+  i128le: i128[16] Little;
+  i128be: i128[16] Big;
+  f32le: f32[4] Little;
+  f32be: f32[4] Big;
+  f64le: f64[8] Little;
+  f64be: f64[8] Big;
 }
 
 /// Signed integers are ordered by their value, whatever their bytes: what the offsets of
@@ -287,7 +296,7 @@ macro_rules! ordered {
   )+};
 }
 
-ordered!(i16le i16be i32le i32be i64le i64be);
+ordered!(i16le i16be i32le i32be i64le i64be i128le i128be);
 
 /// A `u8` that is `V`, and nothing else.
 #[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
