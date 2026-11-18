@@ -1,0 +1,30 @@
+error[E0275]: overflow evaluating the requirement `Ping<i32le>: Pun`
+  --> tests/compile-fail/generic_cycle.rs:23:3
+   |
+23 |   puns::view_ref(ping)
+   |   ^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: tests/compile-fail/../support/relative.rs
+   |
+   | macro_rules! pointer {
+   |
+note: required for `Opt<Ping<i32le>>` to implement `Pun`
+  --> tests/compile-fail/../support/relative.rs
+   |
+   |       puns::self_relative!(impl[$($param: Pun,)? O: Offset] $name<$($param,)? O>);
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                                           |
+   |                                           unsatisfied trait bound introduced here
+...
+   | / pointer! {
+   | |   /// A pointer to one `T`, or none: zero.
+   | |   Opt[T] T, Pointer::one::<T>(SCHEME, size_of::<O>(), O::ENDIAN).or_null()
+   | | }
+   | |_- in this macro invocation
+   = note: 3 redundant requirements hidden
+   = note: required for `Ping<i32le>` to implement `Pun`
+note: required by a bound in `view_ref`
+  --> src/lib.rs
+   |
+   | pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
+   |                             ^^^ required by this bound in `view_ref`

@@ -80,7 +80,6 @@
 //! - `executables.rs`: ELF, PE/COFF, Mach-O, Java class files, WebAssembly.
 //! - `storage.rs`: SQLite, FAT, GPT, USB descriptors.
 //! - `encodings.rs`: DER (SNMP, Kerberos), Protocol Buffers, MessagePack, CBOR, text fields.
-//! - `ir.rs` (feature `nearest`): a compiler IR that is its own file format, see below.
 //!
 //! # What deriving `Pun` means
 //!
@@ -240,113 +239,12 @@
 //! enum Unspecified { A(u8), B(u16) }
 //! ```
 //!
-//! # Regions of `nearest`
+//! # Self-relative pointers
 //!
-//! With the feature `nearest`, the types of a region of the crate
-//! [`nearest`](https://docs.rs/nearest) are `Pun` types: a region keeps a value and everything it
-//! points to in one buffer, whose pointers (`Near<T, O>`) are distances, so that its bytes are
-//! the value wherever they are. `#[derive(Pun)]` goes after `#[flat]`, and the module
-//! `puns::nearest` has:
-//!
-//! - offsets of a given byte order (`Near<T, i32le>`): with numbers of a given byte order as
-//!   fields, the bytes of a region are the same on every machine, a file format;
-//! - loaders (`puns::nearest::view`, `from_bytes`) that check bytes from outside and read them
-//!   in place, with what the derive is told of the types (`valid(..)`, `assert(..)`);
-//! - [`view_ref`]: a value of a region read as another type, the next version of a format say,
-//!   with everything it points to proven at compile time.
-//!
-//! ```
-//! # #[cfg(feature = "nearest")] {
-//! use nearest::{Near, Region, flat};
-//! use puns::{
-//!   Pun,
-//!   num::{i32le, u16le, u32lec},
-//! };
-//!
-//! /// A list of points with a name: a file whose bytes are the same on every machine.
-//! #[flat]
-//! #[derive(Pun, Debug, PartialEq)]
-//! #[pun(assert(visible <= total))]
-//! struct Shape {
-//!   magic: u32lec<0x5348_5031>,
-//!   total: u16le,
-//!   visible: u16le,
-//!   name: Near<str, i32le>,
-//!   points: Near<[Point], i32le>,
-//! }
-//!
-//! #[flat]
-//! #[derive(Pun, Debug, PartialEq)]
-//! struct Point {
-//!   x: u16le,
-//!   y: u16le,
-//!   on: bool,
-//! }
-//!
-//! let point = |x, y, on| Point { x: u16le::new(x), y: u16le::new(y), on };
-//! let shape = Region::new(Shape::new(
-//!   u32lec::new(),
-//!   u16le::new(2),
-//!   u16le::new(1),
-//!   "line",
-//!   [point(0, 0, true), point(3, 4, false)],
-//! ));
-//!
-//! // Saved: the bytes of the region. Loaded: the same bytes, checked.
-//! let file = shape.as_bytes().unwrap().to_vec();
-//! assert_eq!(file[..8], [0x31, 0x50, 0x48, 0x53, 2, 0, 1, 0]);
-//! let loaded = puns::nearest::from_bytes::<Shape>(&file).unwrap();
-//! assert_eq!((&*loaded.name, loaded.points[1].y.get()), ("line", 4));
-//!
-//! // Bytes that are not a shape are refused, where they stop being one: a wrong magic number,
-//! // a rule that does not hold, a `bool` that is 2 in a point, a file cut short.
-//! let invalid = |at: usize, byte: u8| {
-//!   let mut bad = file.clone();
-//!   bad[at] = byte;
-//!   puns::nearest::from_bytes::<Shape>(&bad).err()
-//! };
-//! assert_eq!(invalid(0, 0), Some(nearest::Error::Invalid(0)));
-//! assert_eq!(invalid(6, 3), Some(nearest::Error::Invalid(0)));
-//! assert_eq!(invalid(file.len() - 1, 2), Some(nearest::Error::Invalid(file.len() - 1)));
-//! assert!(puns::nearest::from_bytes::<Shape>(&file[..file.len() - 1]).is_err());
-//!
-//! /// The next version: a point is on, off or selected. It reads the files of the first one
-//! /// as they are, which is proven when this compiles.
-//! #[flat]
-//! #[derive(Pun)]
-//! struct Shape2 {
-//!   magic: u32lec<0x5348_5031>,
-//!   total: u16le,
-//!   visible: u16le,
-//!   name: Near<str, i32le>,
-//!   points: Near<[Point2], i32le>,
-//! }
-//!
-//! #[flat]
-//! #[derive(Pun)]
-//! struct Point2 {
-//!   x: u16le,
-//!   y: u16le,
-//!   state: u8,
-//! }
-//!
-//! let next: &Shape2 = puns::view_ref(&*loaded);
-//! assert_eq!((&*next.name, next.points[0].state, next.points[1].state), ("line", 1, 0));
-//! # }
-//! ```
-//!
-//! What a pointer aims at is not a property of its bytes, so no other function makes a value
-//! that holds one, from bytes or from another value, and none gives a `&mut` to one:
-//!
-//! ```compile_fail
-//! # #[cfg(not(feature = "nearest"))]
-//! # compile_error!("with the feature `nearest`");
-//! use nearest::Near;
-//!
-//! let _ = puns::from_bytes::<Option<Near<u32>>>(&[0; 4]);
-//! ```
-//!
-//! `examples/ir.rs` is a compiler IR declared this way, saved to a file and run from its bytes.
+//! A crate declares its self-relative pointers (offsets from their own address to a target in the
+//! same buffer, as the regions of [`nearest`](https://docs.rs/nearest) have) with
+//! [`SelfRelative`], and [`view_ref`] reads a value that holds them as another type, with
+//! everything they aim at proven at compile time.
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.
@@ -354,19 +252,15 @@
 //! See `DESIGN.md` for how it works.
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(feature = "nearest")]
-extern crate alloc;
-
 mod analysis;
 mod deep;
 #[cfg(feature = "verdict")]
 #[doc(hidden)]
 pub mod hook;
 pub mod layout;
-#[cfg(feature = "nearest")]
-pub mod nearest;
 pub mod num;
 mod ptr;
+mod relative;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -385,6 +279,9 @@ use analysis::{
 use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
 pub use layout::{crc32, sum16};
 pub use puns_derive::Pun;
+pub use relative::SelfRelative;
+#[doc(hidden)]
+pub use relative::sized_probe as __sized_probe;
 use validate::{Checks, validate};
 
 // -------------------------------------------------------------------------------------------------
@@ -403,7 +300,8 @@ pub unsafe trait Scalar {
 /// Types made of plain data, whose layout and valid values are known at compile time.
 ///
 /// # Safety
-/// Not meant to be implemented by hand: use `#[derive(Pun)]`.
+/// Not meant to be implemented by hand: use `#[derive(Pun)]`, or [`self_relative!`] for a
+/// self-relative pointer.
 pub unsafe trait Pun {
   /// Type of the elements of an array or of a slice, `()` otherwise.
   #[doc(hidden)]
@@ -835,9 +733,7 @@ impl Need {
 /// pointer aims at.
 const POINTER_TARGET: &str = "the target holds a self-relative pointer, and what a pointer aims \
                               at is not a property of its bytes.\nUse `view_ref` to read a value \
-                              that holds pointers as another type (it proves what they aim at), \
-                              or the functions of `puns::nearest` to check the bytes of a whole \
-                              region";
+                              that holds pointers as another type (it proves what they aim at)";
 
 /// Why a pun of which `analysis` is the analysis does not meet the `need`, if it does not.
 const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
@@ -869,8 +765,8 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
     return Some(
       Message::new(
         "a pointer of the target is not, in the source, a pointer whose target it can read (the \
-         same offset type, the same kind of target, not larger nor more aligned): only a pointer \
-         proves a pointer, and no check makes up for it",
+         same scheme and offset, the same kind of target, not larger nor more aligned): only a \
+         pointer proves a pointer, and no check makes up for it",
       )
       .at(offset.saturating_sub(shift)),
     );
@@ -1309,39 +1205,20 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// Reinterpret a reference to a value that holds self-relative pointers as a reference to
 /// another type, when every `S`, *and everything it points to*, is a valid `D`.
 ///
-/// A self-relative pointer (a `Near` of the crate `nearest`, with the feature `nearest`) is an
-/// offset to a target in the same buffer. No other function makes a value that holds one: what a
-/// pointer aims at is not a property of its bytes. This one proves it, at compile time: a
-/// pointer of `D` must be, in `S`, a pointer at the same place whose offset is the same integer
-/// (width and byte order) and whose target can be read as the target of `D`'s: a value as a
-/// prefix of it that is not more aligned, a list as a list of elements of the same size, text
-/// as text. Those targets are related the same way, and so on: a recursive type is proven by
+/// A self-relative pointer ([`SelfRelative`]) is an offset to a target in the same buffer. No
+/// other function makes a value that holds one: what a pointer aims at is not a property of its
+/// bytes. This one proves it, at compile time: a pointer of `D` must be, in `S`, a pointer at the
+/// same place of the same scheme, whose offset is the same integer (width and byte order) and
+/// whose target can be read as the target of `D`'s: a value as a prefix of it that needs no more
+/// alignment, a sequence as a sequence of elements of the same size that needs no more alignment
+/// than the source guarantees, text as text. Those targets are related the same way, and so on: a recursive type is proven by
 /// induction over the pairs of types that are met, each once. Then nothing is checked and
 /// nothing is compiled: the result is the same address.
 ///
 /// Behind a pointer nothing can be checked, so nothing may be left to check there: every value
 /// must be valid for what it is read as.
 ///
-/// ```
-/// # #[cfg(feature = "nearest")] {
-/// use nearest::{Near, Region, flat};
-/// use puns::Pun;
-///
-/// #[flat]
-/// #[derive(Pun)]
-/// struct Old { done: bool, name: Near<str>, next: Option<Near<Old>> }
-///
-/// /// The next version: more states than done or not.
-/// #[flat]
-/// #[derive(Pun)]
-/// struct New { state: u8, name: Near<str>, next: Option<Near<New>> }
-///
-/// let old = Region::new(Old::new(true, "a", Near::new(Old::new(false, "b", None))));
-/// let new: &New = puns::view_ref(&*old);
-/// let next = new.next.as_ref().unwrap();
-/// assert_eq!((new.state, &*new.name, next.state, &*next.name), (1, "a", 0, "b"));
-/// # }
-/// ```
+/// See [`SelfRelative`] for an example.
 ///
 /// It is not a `const fn`: what the pointers aim at is proven by instances of functions, which
 /// only a build makes (`cargo check` reports nothing of it). It never gives a `&mut`: a pointer
@@ -1361,29 +1238,11 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// value itself is checked at run time, as [`try_pun_ref`] does.
 ///
 /// What is checked is the value that `value` refers to, not what it points to: a variant that
-/// `D` does not have, a scalar that `D` restricts, a pointer that may be null (`Option<Near<T>>`)
-/// read as one that is not (`Near<T>`). Behind its pointers nothing is checked, so everything
+/// `D` does not have, a scalar that `D` restricts, a pointer that may be null
+/// ([`Pointer::or_null`](layout::Pointer::or_null)) read as one that is not. Behind its pointers nothing is checked, so everything
 /// must be proven there, as for [`view_ref`].
 ///
-/// ```
-/// # #[cfg(feature = "nearest")] {
-/// use nearest::{Near, Region, flat};
-/// use puns::Pun;
-///
-/// #[flat]
-/// #[derive(Pun)]
-/// struct Maybe { id: u8, owner: Option<Near<u32>> }
-///
-/// #[flat]
-/// #[derive(Pun)]
-/// struct Owned { id: u8, owner: Near<u32> }
-///
-/// let owned = Region::new(Maybe::new(1, Near::new(7)));
-/// assert_eq!(*puns::try_view_ref::<Maybe, Owned>(&owned).unwrap().owner, 7);
-/// let orphan = Region::new(Maybe::new(2, None));
-/// assert!(puns::try_view_ref::<Maybe, Owned>(&orphan).is_err());
-/// # }
-/// ```
+/// See [`SelfRelative`] for an example.
 ///
 /// # Errors
 /// As [`try_pun_ref`]: [`Error::Alignment`], [`Error::Size`], [`Error::Validity`].

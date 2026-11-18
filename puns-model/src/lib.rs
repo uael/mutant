@@ -17,8 +17,10 @@
 //! What a value of a struct is known to be does not include what `#[pun(valid(..))]` or a rule
 //! requires: safe code can write anything to a plain field. The oracle has two modes for that.
 
-#[cfg(feature = "nearest")]
 pub mod pointers;
+// The self-relative pointers of the tests of `puns`, declared through its public API only.
+#[path = "../../puns/tests/support/relative.rs"]
+pub mod relative;
 pub mod types;
 
 use std::{collections::BTreeMap, fmt::Write as _, mem::MaybeUninit, sync::Mutex};

@@ -8,7 +8,6 @@ description = "Model check of the analysis of puns against an independent oracle
 
 [dependencies]
 puns = { path = "../puns", features = ["verdict"] }
-nearest = { version = "=0.7.1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 fakecore = { path = "fakecore" }
@@ -18,19 +17,10 @@ fakecore = { path = "fakecore" }
 # take minutes to build, so not built by `cargo test`. `model.yml` runs it every night:
 # `cargo test --profile model -p puns-model --features full`.
 full = []
-# The model check of self-relative pointers (`src/pointers.rs`, `tests/pointers*.rs`), which needs
-# the feature `nearest` of `puns`: a feature of its own, so that `cargo test` does not turn it on
-# for the whole workspace. `cargo test -p puns-model --features nearest` runs a sample, and with
-# `full` every pair.
-nearest = ["puns/nearest", "dep:nearest"]
-
-[[test]]
-name = "pointers"
-required-features = ["nearest"]
 
 [[test]]
 name = "pointers_full"
-required-features = ["nearest", "full"]
+required-features = ["full"]
 
 [[test]]
 name = "size1"
