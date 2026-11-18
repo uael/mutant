@@ -95,6 +95,15 @@ use syn::{
 /// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
 /// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
 ///   (`0xffff` over data that holds its own IP checksum);
+/// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of up to 64 bits, by the
+///   parameters of the catalogue of CRCs (`crc::<16, 0x8005, 0xffff, true, 0>` is the one of
+///   Modbus, `crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>` CRC-32C, see
+///   `puns::layout::Crc`); with two more offsets, `crc32(start, end, from, to)` or
+///   `crc::<..>(start, end, from, to)`, the bytes from `from` to `to` are taken as zeros (a CRC
+///   over the header that holds it, as in GPT);
+/// - `fletcher16(start, end)`, `adler32(start, end)`: Fletcher-16 (`0` over data that holds its
+///   ISO 8473 checksum, as OSPF and IS-IS do) and Adler-32; `sum(start, end)`: the sum of the
+///   bytes (tar).
 /// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for
 ///   as long as `COND` is true of it. This is how what is at an offset that depends on what is
 ///   before is reached: after options, at the end of a chain of headers
@@ -464,6 +473,7 @@ fn effect(op: &TokenStream) -> (usize, usize) {
     Some("Lit" | "load" | "Size" | "Get") => (0, 1),
     Some("At" | "Varint" | "Not" | "Let" | "Walk") => (1, 1),
     Some("Select") => (3, 1),
+    Some("CrcZeros") => (4, 1),
     Some("Set") => (1, 0),
     _ => (2, 1),
   }
@@ -678,8 +688,8 @@ fn propagated(expr: &Expr) -> std::collections::HashSet<String> {
       }
     }
     // The functions of rules need their arguments, `walk` where it starts.
-    Expr::Call(call) if ARITIES.iter().any(|(f, _)| is_call(call, f)) => {
-      let count = if is_call(call, "crc32") || is_call(call, "sum16") { 2 } else { 1 };
+    Expr::Call(call) if ARITIES.iter().any(|(f, _)| is_call(call, f)) || is_crc(call) => {
+      let count = if is_call(call, "walk") { 1 } else { call.args.len() };
       for arg in call.args.iter().take(count) {
         names.extend(propagated(arg));
       }
@@ -870,13 +880,14 @@ fn compile(
       ops.push(quote!(#op::Size));
       Ty::Int
     }
-    // `crc32(start, end)`, `sum16(start, end)`: over the bytes of the value.
-    Expr::Call(call)
-      if call.args.len() == 2 && (is_call(call, "crc32") || is_call(call, "sum16")) =>
-    {
-      int(&call.args[0], ops, scope)?;
-      int(&call.args[1], ops, scope)?;
-      ops.push(if is_call(call, "crc32") { quote!(#op::Crc32) } else { quote!(#op::Sum16) });
+    // `crc32(start, end)`, `sum16(start, end)`, `adler32(start, end)`...: over the bytes of the
+    // value; a CRC can take a range as zeros.
+    Expr::Call(call) if checksum(call, &op, root).is_some() => {
+      let Some(checksum) = checksum(call, &op, root) else { unreachable!() };
+      for arg in &call.args {
+        int(arg, ops, scope)?;
+      }
+      ops.push(checksum?);
       Ty::Int
     }
     // `le(offset, size)`, `be(offset, size)`: an integer, anywhere in the value.
@@ -941,10 +952,11 @@ fn compile(
 
 /// The functions that a rule can call.
 const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, \
-                         `quic_len`, `vlq`, `vlq_len`, `crc32`, `sum16` and `walk`";
+                         `quic_len`, `vlq`, `vlq_len`, `crc32`, `crc::<..>`, `sum16`, `sum`, \
+                         `fletcher16`, `adler32` and `walk`";
 
-/// The functions of rules, and how many arguments each takes.
-const ARITIES: [(&str, usize); 11] = [
+/// The functions of rules, and how many arguments each takes (`crc32` and `crc` also take 4).
+const ARITIES: [(&str, usize); 15] = [
   ("le", 2),
   ("be", 2),
   ("leb128", 1),
@@ -954,9 +966,74 @@ const ARITIES: [(&str, usize); 11] = [
   ("vlq", 1),
   ("vlq_len", 1),
   ("crc32", 2),
+  ("crc", 2),
   ("sum16", 2),
+  ("sum", 2),
+  ("fletcher16", 2),
+  ("adler32", 2),
   ("walk", 3),
 ];
+
+/// The operation of the checksum that `call` is, if it is one with the right number of arguments.
+fn checksum(
+  call: &syn::ExprCall,
+  op: &TokenStream,
+  root: &TokenStream,
+) -> Option<Result<TokenStream>> {
+  let layout = quote!(#root::layout);
+  let zeros = call.args.len() == 4;
+  if call.args.len() == 2 || zeros {
+    if is_call(call, "crc32") {
+      return Some(Ok(if zeros {
+        quote!(#op::CrcZeros(const { &#layout::Crc::CRC32 }))
+      } else {
+        quote!(#op::Crc32)
+      }));
+    }
+    // `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(..)`
+    if let Expr::Path(path) = &*call.func
+      && path.qself.is_none()
+      && path.path.segments.len() == 1
+      && path.path.segments[0].ident == "crc"
+    {
+      let syn::PathArguments::AngleBracketed(arguments) = &path.path.segments[0].arguments else {
+        return Some(Err(Error::new_spanned(
+          path,
+          "a CRC has parameters: `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`",
+        )));
+      };
+      if arguments.args.len() != 5 {
+        return Some(Err(Error::new_spanned(
+          arguments,
+          "a CRC has 5 parameters: `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`",
+        )));
+      }
+      let parameters = arguments.args.iter();
+      let variant = if zeros { quote!(CrcZeros) } else { quote!(Crc) };
+      // An error of the parameters is at the call.
+      let crc = located(quote!(#layout::Crc::new(#(#parameters),*)), call.span());
+      return Some(Ok(quote!(#op::#variant(const { &#crc }))));
+    }
+  }
+  if call.args.len() == 2 {
+    let checksum = [
+      ("sum16", None),
+      ("sum", Some("Sum")),
+      ("fletcher16", Some("Fletcher16")),
+      ("adler32", Some("Adler32")),
+    ]
+    .into_iter()
+    .find(|(name, _)| is_call(call, name))?;
+    return Some(Ok(checksum.1.map_or_else(
+      || quote!(#op::Sum16),
+      |name| {
+        let name = Ident::new(name, call.func.span());
+        quote!(#op::Checksum(#layout::Checksum::#name))
+      },
+    )));
+  }
+  None
+}
 
 /// The form of the variable-length integer that `call` reads, and whatever it is its length.
 fn varint(call: &syn::ExprCall) -> Option<(&'static str, bool)> {
@@ -1037,12 +1114,18 @@ fn constant(expr: &Expr, fields: &[FieldInfo], scope: &Scope) -> Result<()> {
   let bytes = "read its bytes with `le(offset, size)` or `be(offset, size)`";
   match expr {
     Expr::Macro(_) => Ok(()),
+    Expr::Call(call) if is_crc(call) => error(
+      "`crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>` takes 2 arguments, or 4 (the last two a range \
+       taken as zeros)"
+        .into(),
+    ),
     // A function of rules is called by its name alone.
     Expr::Call(call) if matches!(&*call.func, Expr::Path(path) if path.path.get_ident().is_some()) =>
     {
       let name = call.func.to_token_stream();
       if let Some((_, arity)) = ARITIES.iter().find(|(f, _)| is_call(call, f)) {
-        return error(format!("`{name}` takes {arity} arguments"));
+        let more = if is_call(call, "crc32") { " (or 4)" } else { "" };
+        return error(format!("`{name}` takes {arity} arguments{more}"));
       }
       error(format!(
         "`{name}` is not a function of rules, which are {FUNCTIONS}; a constant can be computed \
@@ -1092,6 +1175,12 @@ fn cast_mask(ty: &Type, op: &TokenStream) -> Result<Option<TokenStream>> {
       ));
     }
   })
+}
+
+/// Whatever `call` is a call of `crc::<..>`.
+fn is_crc(call: &syn::ExprCall) -> bool {
+  matches!(&*call.func, Expr::Path(path) if path.qself.is_none()
+    && path.path.segments.len() == 1 && path.path.segments[0].ident == "crc")
 }
 
 /// Whatever `call` is a call of the function `name`.

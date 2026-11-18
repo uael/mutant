@@ -205,7 +205,14 @@ An expression can read the value beyond its fields: `size_of_val(self)`, `le(off
 `leb128(offset)`, `quic(offset)` and `vlq(offset)`, and with `_len` the number of bytes of each
 (`Op::Varint`: an offset is replaced by what is there, as `be` does; a read never goes past the
 value). So a trailer is a region, and "the 4 last bytes are the CRC of what is before" is an
-assertion; an MQTT packet is `size = 1 + leb128_len(1) + leb128(1)`. A size or a length reads the value too
+assertion; an MQTT packet is `size = 1 + leb128_len(1) + leb128(1)`.
+
+Checksums other than these two are told by their parameters (`Op::Crc`, `Op::CrcZeros`,
+`Op::Checksum`): `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` is any CRC of up to 64
+bits, whose table of 256 entries (2 KiB) is made in const evaluation, once for each parameters;
+with two more offsets, the bytes between them are taken as zeros, for a CRC over the header that
+holds it (GPT). `fletcher16`, `adler32` and `sum` are the other checksums of the formats of the
+examples. As every read of the value, they are bounded by it: a range out of it fails. A size or a length reads the value too
 (not its size, which it defines): `from_head` evaluates it over the bytes that there are, which
 are initialized and in bounds whatever it reads, and the value it takes is then validated as a
 whole, the rule included, over its own bytes; a rule that reads beyond what it sizes fails there. A checksum that covers several layers
@@ -392,9 +399,16 @@ without its second condition, are caught.
 - Patterns other than `str`: the engine takes any DFA of at most 64 states, but there is no way
   to declare one from the derive.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
-- An arbitrary function in a rule (getters take any): it could only be called through a trait,
-  hence not in `const` contexts on stable. `crc32`, `sum16` and `walk` are built in for that
-  reason.
+- An arbitrary function in a rule (getters take any). The validator is `const fn` code, generic
+  over the type it validates, and on stable 1.100 such code cannot call a function that the type
+  chooses: a call through a function pointer is refused ("function pointer calls are not allowed
+  in constant functions"), a trait method too (E0015, "cannot call non-const associated
+  function"), and const traits are unstable (E0658), all probed. A user function could only be
+  called if validation stopped being `const`, which every function of the crate is, or behind
+  a check that only runs outside of `const`, which stable Rust cannot tell. So what a rule
+  computes is built in, and described by data where it varies: walks, variable-length integers,
+  CRCs by their parameters, sums. The data is all the analysis sees, and it does not reason about
+  it (a rule is proven only by the same rule): a checksum only makes a check stricter.
 
 ## Limits
 

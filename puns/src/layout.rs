@@ -1602,6 +1602,13 @@ pub enum Op {
   /// Replace two offsets by the ones' complement sum of the big-endian 16 bits words between
   /// them (the checksum of IP, before it is complemented).
   Sum16,
+  /// Replace two offsets by the CRC of the bytes between them.
+  Crc(&'static Crc),
+  /// Replace four offsets by the CRC of the bytes between the first two, the ones between the
+  /// last two taken as zeros (a CRC that covers the field that holds it).
+  CrcZeros(&'static Crc),
+  /// Replace two offsets by a checksum of the bytes between them.
+  Checksum(Checksum),
   Add,
   Sub,
   Mul,
@@ -1746,6 +1753,9 @@ impl Op {
         | Op::Varint { .. }
         | Op::Crc32
         | Op::Sum16
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Walk { .. } => {
@@ -1791,6 +1801,8 @@ impl Op {
       (Op::Varint { form: a, length: b }, Op::Varint { form: x, length: y }) => {
         a as u8 == x as u8 && b == y
       }
+      (Op::Crc(a), Op::Crc(b)) | (Op::CrcZeros(a), Op::CrcZeros(b)) => a.equals(b),
+      (Op::Checksum(a), Op::Checksum(b)) => a as u8 == b as u8,
       (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) | (Op::Let(a), Op::Let(b)) => a == b,
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
@@ -1800,6 +1812,9 @@ impl Op {
         | Op::Load { .. }
         | Op::At { .. }
         | Op::Varint { .. }
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1812,6 +1827,9 @@ impl Op {
         | Op::Load { .. }
         | Op::At { .. }
         | Op::Varint { .. }
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1855,7 +1873,143 @@ impl Op {
       Op::Get(_) => 27,
       Op::Walk { .. } => 28,
       Op::Varint { .. } => 30,
+      Op::Crc(_) => 31,
+      Op::CrcZeros(_) => 32,
+      Op::Checksum(_) => 33,
       Op::Let(_) => 29,
+    }
+  }
+}
+
+/// A CRC of at most 64 bits, by the parameters of the catalogue of CRCs.
+///
+/// They are its `width`, its polynomial `poly` (without its high bit), the value `init` that the
+/// register starts with, whatever its bits are `reflect`ed (the bytes taken least significant bit
+/// first, and the result read so), and `xorout`, what the result is combined with by XOR.
+///
+/// ```
+/// use puns::layout::Crc;
+///
+/// // CRC-32C (Castagnoli, iSCSI, SCTP), CRC-16/MODBUS, CRC-16/XMODEM, CRC-15/CAN.
+/// const CASTAGNOLI: Crc = Crc::new(32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff);
+/// assert_eq!(CASTAGNOLI.check(b"123456789"), 0xe306_9283);
+/// assert_eq!(Crc::new(16, 0x8005, 0xffff, true, 0).check(b"123456789"), 0x4b37);
+/// assert_eq!(Crc::new(16, 0x1021, 0, false, 0).check(b"123456789"), 0x31c3);
+/// assert_eq!(Crc::new(15, 0x4599, 0, false, 0).check(b"123456789"), 0x059e);
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Crc {
+  width: u32,
+  poly: u64,
+  init: u64,
+  reflect: bool,
+  xorout: u64,
+  /// The register, after a byte: in its low bits if reflected, else in its high bits.
+  table: [u64; 256],
+}
+
+impl Crc {
+  /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
+  pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
+
+  /// # Panics
+  /// If `width` is not 1 to 64, or a parameter has more bits than that.
+  #[must_use]
+  pub const fn new(width: u32, poly: u64, init: u64, reflect: bool, xorout: u64) -> Self {
+    assert!(width >= 1 && width <= 64, "a CRC has 1 to 64 bits");
+    let mask = u64::MAX >> (64 - width);
+    assert!(
+      poly <= mask && init <= mask && xorout <= mask,
+      "a parameter has more bits than the CRC"
+    );
+    let (mut table, mut i) = ([0; 256], 0);
+    while i < 256 {
+      let mut register = if reflect { i as u64 } else { (i as u64) << 56 };
+      let mut bit = 0;
+      while bit < 8 {
+        register = match (reflect, register & 1, register >> 63) {
+          (true, 1, _) => (register >> 1) ^ (poly.reverse_bits() >> (64 - width)),
+          (true, ..) => register >> 1,
+          (false, _, 1) => (register << 1) ^ (poly << (64 - width)),
+          (false, ..) => register << 1,
+        };
+        bit += 1;
+      }
+      table[i] = register;
+      i += 1;
+    }
+    Self { width, poly, init, reflect, xorout, table }
+  }
+
+  /// The CRC of `bytes`.
+  #[must_use]
+  pub const fn check(&self, bytes: &[u8]) -> u64 {
+    self.compute(bytes, (0, 0))
+  }
+
+  /// The CRC of `bytes`, the ones in `zeros` taken as zeros.
+  const fn compute(&self, bytes: &[u8], zeros: (usize, usize)) -> u64 {
+    let (mut register, mut i) = if self.reflect {
+      (self.init.reverse_bits() >> (64 - self.width), 0)
+    } else {
+      (self.init << (64 - self.width), 0)
+    };
+    while i < bytes.len() {
+      let byte = if i >= zeros.0 && i < zeros.1 { 0 } else { bytes[i] };
+      register = if self.reflect {
+        self.table[((register ^ byte as u64) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        self.table[(((register >> 56) ^ byte as u64) & 0xff) as usize] ^ (register << 8)
+      };
+      i += 1;
+    }
+    if !self.reflect {
+      register >>= 64 - self.width;
+    }
+    register ^ self.xorout
+  }
+
+  const fn equals(&self, other: &Crc) -> bool {
+    self.width == other.width
+      && self.poly == other.poly
+      && self.init == other.init
+      && self.reflect == other.reflect
+      && self.xorout == other.xorout
+  }
+}
+
+/// A checksum of bytes, see [`Op::Checksum`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Checksum {
+  /// The sum of the bytes (not reduced: `% 256` makes it the one of a byte).
+  Sum,
+  /// Fletcher-16: two sums modulo 255, the second of the first, as `second << 8 | first`. It is
+  /// `0` over data that holds its ISO 8473 checksum (OSPF, IS-IS).
+  Fletcher16,
+  /// Adler-32 (zlib): two sums modulo 65521, the first starting at 1, as `second << 16 | first`.
+  Adler32,
+}
+
+impl Checksum {
+  /// The checksum of `bytes`.
+  const fn compute(self, bytes: &[u8]) -> u128 {
+    let (modulo, mut first, mut second, mut i) = match self {
+      Checksum::Sum => (0, 0u128, 0u128, 0),
+      Checksum::Fletcher16 => (255, 0, 0, 0),
+      Checksum::Adler32 => (65521, 1, 0, 0),
+    };
+    while i < bytes.len() {
+      first += bytes[i] as u128;
+      if modulo > 0 {
+        first %= modulo;
+        second = (second + first) % modulo;
+      }
+      i += 1;
+    }
+    match self {
+      Checksum::Sum => first,
+      Checksum::Fletcher16 => second << 8 | first,
+      Checksum::Adler32 => second << 16 | first,
     }
   }
 }
@@ -1951,7 +2105,13 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
   let mut i = 0;
   while i < ops.len() {
     match ops[i] {
-      Op::At { .. } | Op::Varint { .. } | Op::Crc32 | Op::Sum16 => return true,
+      Op::At { .. }
+      | Op::Varint { .. }
+      | Op::Crc32
+      | Op::Sum16
+      | Op::Crc(_)
+      | Op::CrcZeros(_)
+      | Op::Checksum(_) => return true,
       Op::Walk { cond, next, .. } if ops_read_bytes(cond) || ops_read_bytes(next) => return true,
       _ => {}
     }
@@ -2066,6 +2226,10 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Opt
       Op::Select => {
         assert!(depth >= 3, "malformed expression");
         depth -= 2;
+      }
+      Op::CrcZeros(_) => {
+        assert!(depth >= 4, "malformed expression");
+        depth -= 3;
       }
       Op::Set(index) => {
         assert!(depth >= 1, "malformed expression");
@@ -2297,22 +2461,38 @@ impl Machine {
           self.set(depth - 1, None);
         }
       }
-      op @ (Op::Crc32 | Op::Sum16) => {
-        let (start, end) = (self.get(depth - 2), self.get(depth - 1));
-        let inside = start <= end && end <= size as u128;
-        let computed = inside && !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
-        self.depth -= 1;
-        if computed {
+      op @ (Op::Crc32 | Op::Sum16 | Op::Crc(_) | Op::CrcZeros(_) | Op::Checksum(_)) => {
+        // The range, and the one taken as zeros (none but for `CrcZeros`).
+        let operands = if matches!(op, Op::CrcZeros(_)) { 4 } else { 2 };
+        let (start, end) = (self.get(depth - operands), self.get(depth - operands + 1));
+        let (zeros, to) =
+          if operands == 4 { (self.get(depth - 2), self.get(depth - 1)) } else { (0, 0) };
+        let inside = start <= end && end <= size as u128 && zeros <= to && to <= size as u128;
+        let mut computed = inside;
+        let mut i = 1;
+        while i <= operands {
+          computed &= !self.has_failed(depth - i);
+          i += 1;
+        }
+        self.depth -= operands - 1;
+        let value = if computed {
           // SAFETY: in the bounds of the value.
           let bytes = unsafe {
             core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
           };
-          let value =
-            if matches!(op, Op::Crc32) { crc32(bytes) as u128 } else { sum16(bytes) as u128 };
-          self.set(depth - 2, Some(value));
+          // Where the zeros are in `bytes` (in the value: they fit a `usize`).
+          let zeros = (zeros.saturating_sub(start) as usize, to.saturating_sub(start) as usize);
+          Some(match op {
+            Op::Crc32 => crc32(bytes) as u128,
+            Op::Sum16 => sum16(bytes) as u128,
+            Op::Crc(crc) | Op::CrcZeros(crc) => crc.compute(bytes, zeros) as u128,
+            Op::Checksum(checksum) => checksum.compute(bytes),
+            _ => 0,
+          })
         } else {
-          self.set(depth - 2, None);
-        }
+          None
+        };
+        self.set(depth - operands, value);
       }
       // As in Rust, the left side first: the right one only counts if the left one does not
       // decide, and may then have failed.
@@ -2477,6 +2657,9 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     | Op::Varint { .. }
     | Op::Crc32
     | Op::Sum16
+    | Op::Crc(_)
+    | Op::CrcZeros(_)
+    | Op::Checksum(_)
     | Op::Both
     | Op::Either
     | Op::Select
