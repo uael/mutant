@@ -23,19 +23,19 @@ note: inside `puns::Message::panic`
   |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
- --> src/lib.rs
+ --> src/view.rs
   |
-  |   const { Plan::<S, D>::TRY_REF };
-  |           ^^^^^^^^^^^^^^^^^^^^^
+  |   const { Plan::<[u8], <V::List as Get<I>>::Type>::TRY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
- --> src/lib.rs
+ --> src/view.rs
   |
-  |   const { Plan::<S, D>::TRY_REF };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   const { Plan::<[u8], <V::List as Get<I>>::Type>::TRY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-note: the above error was encountered while instantiating `fn try_pun_ref::<[u8], Node>`
- --> src/lib.rs
+note: the above error was encountered while instantiating `fn puns::view::find::<Any<'_>, puns::view::First<puns::view::Here>, 2, false>`
+ --> src/view.rs
   |
-  |   try_pun_ref::<[u8], D>(bytes)
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |     _ => find::<V, I, N, HEAD>(known),
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

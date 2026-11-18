@@ -127,6 +127,8 @@ mod std_enums;
 #[cfg(test)]
 mod tests;
 mod validate;
+#[doc(hidden)]
+pub mod view;
 mod visit;
 
 use core::{marker::PhantomData, mem::ManuallyDrop};
@@ -1102,6 +1104,18 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   /// time (`TRY`, `TRY_REF`).
   #[inline(always)]
   const fn try_cast(source: *const S) -> Result<*const D, Error> {
+    // SAFETY: the marks of this pun, of a source that is a valid `S`.
+    unsafe { Self::try_cast_by::<Self>(source) }
+  }
+
+  /// [`Plan::try_cast`], checking what `C` marks rather than what the analysis of this pun does.
+  ///
+  /// # Safety
+  /// `source` must be a valid `S`, or `C` must mark of the target what the bytes of `source`
+  /// do not prove: [`Plan`] itself, or the marks of a source that the bytes are a valid value of,
+  /// of the extent of `source`.
+  #[inline(always)]
+  const unsafe fn try_cast_by<C: Checks>(source: *const S) -> Result<*const D, Error> {
     let (layout, target) = const { (S::LAYOUT, D::LAYOUT) };
     let addr = source.cast::<u8>();
     if const { !Self::ANALYSIS.aligned } && !ptr::is_aligned(addr, target.align()) {
@@ -1128,8 +1142,9 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
     }
     let target = ptr::from_raw_parts::<D>(addr, len);
     // SAFETY: the target is in the bounds of the source, which is a valid `S`: what the target
-    // reads of it is initialized, since the analysis found no padding under it.
-    if !unsafe { validate::<Self, Root, D>(target) } {
+    // reads of it is initialized, since the analysis found no padding under it. What `C` does not
+    // mark, the source proves (guaranteed by the caller).
+    if !unsafe { validate::<C, Root, D>(target) } {
       return Err(Error::Validity);
     }
     Ok(target)
@@ -1838,6 +1853,24 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
   /// `addr` must be valid for reads of `n` initialized bytes.
   #[inline(always)]
   const unsafe fn front(addr: *const u8, n: usize) -> Result<(*const D, usize), Error> {
+    // SAFETY: guaranteed by the caller; the marks of this pun, from bytes.
+    unsafe { Self::front_by::<Self>(addr, n, usize::MAX) }
+  }
+
+  /// [`Plan::front`], checking what `C` marks rather than everything that bytes do not prove, of
+  /// a `D` whose extent (its size without the trailing padding of a slice) is `extent` (any
+  /// extent if `usize::MAX`): one of another extent is not valid.
+  ///
+  /// # Safety
+  /// `addr` must be valid for reads of `n` initialized bytes, and `C` must mark of the target
+  /// what bytes do not prove ([`Plan`] itself), or what a source does not, of which the first
+  /// `extent` bytes are a valid value.
+  #[inline(always)]
+  const unsafe fn front_by<C: Checks>(
+    addr: *const u8,
+    n: usize,
+    extent: usize,
+  ) -> Result<(*const D, usize), Error> {
     let (layout, rule) = const { (D::LAYOUT, D::LAYOUT.length_rule()) };
     let (head, stride) = (layout.head(), layout.stride());
     if n < head {
@@ -1881,14 +1914,19 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
         len
       }
     };
+    // At most the `n` bytes: no overflow.
+    if extent != usize::MAX && head + len * stride != extent {
+      return Err(Error::Validity);
+    }
     // With its trailing padding, if any.
     let size = match layout.size_of_val(len) {
       Some(size) if size <= n => size,
       _ => return Err(Error::Size),
     };
     let target = ptr::from_raw_parts::<D>(addr, len);
-    // SAFETY: the target is in the bounds of the bytes, which are initialized.
-    if !unsafe { validate::<Self, Root, D>(target) } {
+    // SAFETY: the target is in the bounds of the bytes, which are initialized; what `C` does not
+    // mark, they prove (guaranteed by the caller).
+    if !unsafe { validate::<C, Root, D>(target) } {
       return Err(Error::Validity);
     }
     Ok((target, size))
@@ -1959,9 +1997,9 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Err
 /// it, and fail.
 ///
 /// A view of one thing or another (an enum of references, see `#[derive(Pun)]`) tests this
-/// before it tries each of its variants: the same bytes are then compared with what each
-/// variant requires there, which the optimizer makes one decision, rather than each conversion
-/// computing sizes and rules before it gets there.
+/// before it decides each of its variants (`view::decide`): the same bytes are then compared
+/// with what each variant requires there, which the optimizer makes one decision, rather than
+/// each conversion computing sizes and rules before it gets there.
 #[doc(hidden)]
 #[inline(always)]
 #[must_use]

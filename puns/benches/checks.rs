@@ -3,6 +3,7 @@
 //! ```text
 //! cargo bench -p puns --bench checks              # every case
 //! cargo bench -p puns --bench checks -- ipv6      # the cases whose name has `ipv6`
+//! cargo bench -p puns --bench checks -- '=sum16, 1500 bytes'  # the case of that name only
 //! ```
 //!
 //! Each case is a check made by `puns` and the same check written by hand, the way a careful
@@ -509,7 +510,9 @@ fn case<I: ?Sized, R: PartialEq + std::fmt::Debug>(
   puns: impl Fn(&I) -> R,
   hand: impl Fn(&I) -> R,
 ) {
-  if !filter.is_empty() && !filter.iter().any(|f| name.contains(f.as_str())) {
+  let chosen =
+    |f: &String| f.strip_prefix('=').map_or_else(|| name.contains(f.as_str()), |f| f == name);
+  if !filter.is_empty() && !filter.iter().any(chosen) {
     return;
   }
   assert_eq!(puns(input), hand(input), "{name}: puns and the hand-written check disagree");

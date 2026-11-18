@@ -43,6 +43,10 @@ name = "size8"
 required-features = ["full"]
 
 [[test]]
+name = "views_full"
+required-features = ["full"]
+
+[[test]]
 name = "parts2"
 required-features = ["full"]
 

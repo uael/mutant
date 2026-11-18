@@ -641,10 +641,10 @@ best of 7 samples:
 | IPv6, TCP behind 12 extension headers               |     23 |      16 |   1.4 |
 | IPv6, UDP, 1400 bytes (its checksum)                |     50 |      42 |   1.2 |
 | UDP, `from_head`                                    |    1.3 |     1.3 |   1.0 |
-| a frame that is one of 6 things: UDP over IPv4      |     14 |      11 |   1.2 |
-| a frame that is one of 6 things: ARP                |    2.7 |     2.3 |   1.2 |
-| a frame that is one of 6 things: the last one       |    2.5 |     2.0 |   1.2 |
-| a frame that is one of 6 things: a wrong checksum   |     23 |      11 |   2.0 |
+| a frame that is one of 6 things: UDP over IPv4      |     11 |      11 |   1.0 |
+| a frame that is one of 6 things: ARP                |    1.3 |     2.2 |   0.6 |
+| a frame that is one of 6 things: the last one       |    1.0 |     2.1 |   0.5 |
+| a frame that is one of 6 things: a wrong checksum   |     13 |      12 |   1.1 |
 | `[u8]` as `[bool]`, 64 KiB                          |  1 550 |  21 980 |  0.07 |
 | `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    152 |   5 241 |  0.03 |
 | `[u32]` as `[char]`, 4 KiB                          |    186 |     336 |   0.6 |
@@ -656,12 +656,13 @@ By hand, a slice is checked the way one writes it first, `bytes.iter().all(|&b| 
 checks 64 bytes at a time, without a branch in a block. A rule is compiled to its arithmetic, one
 function per operation that the optimizer inlines; no expression is interpreted at run time.
 
-One line is a known cost, not a property of the design: a view enum tries its variants in order,
-each a check of its own, so bytes that fail a rule which two variants share compute it for each.
-A UDP packet whose checksum is wrong fails `Frame<Ipv4<Udp>>`, then computes the same checksums
-again for `Frame<Ipv4>`: about twice the time by hand. What would remove it (and the repeated test
-of the EtherType that costs the later variants a few instructions) is in [the design][design],
-"Not done yet".
+A view enum answers what trying its variants in order would, but decides each variant once:
+bytes whose EtherType is not the one of a variant do not get to it, and a variant whose values are
+all values of a later one (`Frame<Ipv4<Udp>>` of `Frame<Ipv4>`) is decided after that one, then
+checked only for what it adds (the protocol). A UDP packet whose checksum is wrong computes it
+once, for `Frame<Ipv4>`, rather than for each variant that has it. The optimizer now inlines the
+view where it is called (its checksums stay calls), and not the check by hand: hence frames that
+take less time than by hand ([the design][design], "Views").
 
 ### What to keep in mind
 

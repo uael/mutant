@@ -25,9 +25,9 @@
 //! enum (`Drawing -> Shape`) the same as from `u32`. Those are verdicts: the native run has them.
 //!
 //! `misaligned` rejects an address for alignment (`try_pun_ref`, `from_tail`). The parts
-//! (`head*`, `tail*`) are in `parts.rs`, slices and unsized tails in `dst.rs`. What the model does
-//! not run, `pun`, `pun_mut`, `try_pun_mut`, `from_head_mut`, `from_tail_mut`, the regions and
-//! the view enums, the tests of `puns` run under Miri.
+//! (`head*`, `tail*`) are in `parts.rs`, slices and unsized tails in `dst.rs`, view enums in
+//! `views.rs`. What the model does not run, `pun`, `pun_mut`, `try_pun_mut`, `from_head_mut`,
+//! `from_tail_mut` and the regions, the tests of `puns` run under Miri.
 
 #[cfg(not(miri))]
 use core::num::NonZero;
