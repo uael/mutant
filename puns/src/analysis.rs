@@ -561,6 +561,15 @@ const fn relate_range(
         pos += enum_b.size;
         continue;
       }
+      // From something else, variant by variant: the ones whose tags the source can hold there.
+      if base_b == pos
+        && pos + enum_b.size <= end
+        && !enum_b.has_pointers()
+        && relate_enum_from(a, enum_b, pos, leaf, out)
+      {
+        pos += enum_b.size;
+        continue;
+      }
       // Else, what follows only tells whatever the enum can be checked at run time: which a
       // pointer in one of its variants cannot.
       out.mark(leaf, pos);
@@ -704,6 +713,118 @@ const fn relate_enums(
   }
   if !some && out.disjoint.is_none() {
     out.disjoint = Some(pos);
+  }
+  true
+}
+
+/// Relate what the source `a` holds at `pos` with the enum `b` there, which an enum of the source
+/// did not prove: the tag of `b` is related as a scalar, and each variant whose tags the source
+/// may hold there with what the source holds over the bytes of the enum, knowing that the tag is
+/// one of those (a niche of the variant is then proven by them).
+///
+/// Proven if every value that the source may hold at the tag is the tag of a variant (that has
+/// values), each of which is proven; else the enum is marked, and checked as a whole at run time.
+/// What a variant requires to be initialized must be, if the source may be that variant.
+///
+/// Returns `false`, having done nothing, if the tag cannot be told apart in the source.
+const fn relate_enum_from(
+  a: &Cursor,
+  b: &'static Layout,
+  pos: usize,
+  leaf: usize,
+  out: &mut Relation,
+) -> bool {
+  let Kind::Enum(layout) = b.kind else { panic!() };
+  let Kind::Scalar(tag) = layout.tag.layout.kind else { panic!() };
+  let start = pos + layout.tag.offset;
+  // What the source holds at the tag.
+  let Some(values) = tag_values(a, start, &tag) else {
+    // Padding where the tag is: nothing is ever this enum.
+    out.uninit(start);
+    return true;
+  };
+  let (mut some, mut all, mut i) = (false, true, 0);
+  while i < layout.variants.len() {
+    let variant = &layout.variants[i];
+    i += 1;
+    if !variant.is_present() || !values.meets(&variant.tags()) {
+      continue;
+    }
+    let known = Known::both(start, tag.size, tag.endian, &values, &variant.tags());
+    let mut relation = Relation::NEW;
+    let (mut from, mut to) = (*a, Cursor::new(variant.layout, pos, true, Checked::All));
+    to.known = known;
+    relate_range(&mut from, &mut to, pos, pos + b.size, &mut relation);
+    mark_rules(a.stack[0].layout, variant.layout, pos, 0, &mut relation);
+    if let Some(offset) = relation.uninit {
+      out.uninit(offset);
+    }
+    if let Some(offset) = relation.pointer {
+      out.pointer(offset);
+    }
+    some |= relation.disjoint.is_none();
+    all &= relation.infallible();
+  }
+  if !all || !all_tags(&values, layout.variants) {
+    out.mark(leaf, pos);
+  }
+  if !some && out.disjoint.is_none() {
+    out.disjoint = Some(pos);
+  }
+  true
+}
+
+/// The values that the source `a` may hold at `start`, where a target has the scalar `tag`, as an
+/// integer of its byte order: what a scalar of the source of the same size and order is known to
+/// be, else any; `None` if some of these bytes may be uninitialized.
+const fn tag_values(a: &Cursor, start: usize, tag: &Spec) -> Option<Tags> {
+  let mut from = *a;
+  let (pieces, len) = gather(&mut from, start, start + tag.size);
+  let mut i = 0;
+  while i < len {
+    if pieces[i].kind.may_be_uninit() {
+      return None;
+    }
+    i += 1;
+  }
+  if len == 1
+    && let RunKind::Atom(Spec { size, endian, known: Valid::In(ranges), .. }) = pieces[0].kind
+    && pieces[0].skip == 0
+    && size == tag.size
+    && (size == 1 || endian.equals(tag.endian))
+  {
+    return Some(Tags::of(ranges));
+  }
+  Some(Tags::range(0, max_value(tag.size)))
+}
+
+/// Whatever every value of `values` is a tag of one of `variants` that has values.
+const fn all_tags(values: &Tags, variants: &[crate::layout::Variant]) -> bool {
+  let mut r = 0;
+  while r < values.len() {
+    let (mut next, hi) = values.get(r);
+    r += 1;
+    loop {
+      // The range of the tags of a variant that holds `next`, if any.
+      let (mut found, mut i) = (None, 0);
+      while i < variants.len() && found.is_none() {
+        let tags = variants[i].tags();
+        let mut j = 0;
+        while variants[i].is_present() && j < tags.len() {
+          let (lo, up) = tags.get(j);
+          if lo <= next && next <= up {
+            found = Some(up);
+          }
+          j += 1;
+        }
+        i += 1;
+      }
+      match found {
+        None => return false,
+        Some(up) if up >= hi => break,
+        Some(up) => next = up + 1,
+      }
+    }
   }
   true
 }

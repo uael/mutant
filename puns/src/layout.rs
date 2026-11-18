@@ -612,6 +612,16 @@ pub(crate) struct Tags {
 }
 
 impl Tags {
+  /// The values `lo..=hi`.
+  pub(crate) const fn range(lo: u128, hi: u128) -> Self {
+    Self { one: (lo, hi), ranges: None }
+  }
+
+  /// The values of `ranges`, sorted.
+  pub(crate) const fn of(ranges: &'static [(u128, u128)]) -> Self {
+    Self { one: (0, 0), ranges: Some(ranges) }
+  }
+
   pub(crate) const fn len(&self) -> usize {
     match self.ranges {
       Some(ranges) => ranges.len(),

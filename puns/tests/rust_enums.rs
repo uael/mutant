@@ -524,3 +524,39 @@ fn generic_and_restricted() {
   assert!(puns::try_pun::<[u8; 2], Restricted>([0, 10]).is_err());
   assert_eq!(puns::try_pun::<[u8; 2], Restricted>([1, 10]), Ok(Restricted::Other(10)));
 }
+
+// --- Enums made of what is not an enum ------------------------------------------------------------
+
+/// An enum of a specified layout: a tag of one byte, then the byte of `Some`.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+enum Opt {
+  None,
+  Some(u8),
+}
+
+/// Two bytes, the first of which is always 1.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+struct Tagged {
+  tag: puns::num::u8c<1>,
+  value: u8,
+}
+
+#[test]
+fn from_other_than_enums() {
+  // Every byte is a `Maybe<NonZero<u8>>`: proven, nothing checked.
+  assert_eq!(puns::pun::<u8, Maybe<NonZero<u8>>>(0), Maybe::No);
+  assert_eq!(puns::pun::<u32, Maybe<NonZero<u32>>>(9), Maybe::Yes(NonZero::new(9).unwrap()));
+  // A `bool` is a `MaybeFlag`, which only some bytes are.
+  assert_eq!(puns::pun::<bool, MaybeFlag>(true), MaybeFlag::Flag(true));
+  assert_eq!(puns::try_pun::<u8, MaybeFlag>(1), Ok(MaybeFlag::Flag(true)));
+  // A tag that is always the one of `Some`, and what `Some` holds.
+  let some: Opt = puns::pun(Tagged { tag: puns::num::u8c::new(), value: 7 });
+  assert_eq!(some, Opt::Some(7));
+  // A tag of `None` or of `Some`, and a byte that `None` does not look at.
+  assert_eq!(puns::pun::<(bool, u8), Opt>((false, 7)), Opt::None);
+  assert_eq!(puns::pun::<(bool, u8), Opt>((true, 7)), Opt::Some(7));
+  // Not every byte is a tag: checked.
+  assert_eq!(puns::try_pun::<[u8; 2], Opt>([2, 0]), Err(Error::Validity));
+}
