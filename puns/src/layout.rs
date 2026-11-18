@@ -392,11 +392,14 @@ impl Pointer {
   /// pointer.
   ///
   /// # Panics
-  /// If `width` is not 2, 4 or 8, or if `limit` is more than an integer of that width holds.
+  /// If `width` is not 2, 4 or 8, if `limit` is more than an integer of that width holds, or if
+  /// `T` has no size.
   #[must_use]
   pub const fn new<T>(aim: Aim, nullable: bool, width: usize, endian: Endian, limit: u64) -> Self {
     assert!(matches!(width, 2 | 4 | 8), "the offset of a pointer is 2, 4 or 8 bytes");
     assert!(limit < (1 << (8 * width - 1)), "an offset does not hold its limit");
+    // An offset of 0 is no pointer, and a target without size could be where its pointer is.
+    assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
     let (size, align) = match aim {
       Aim::Str => (1, 1),
       Aim::One | Aim::List => (size_of::<T>(), align_of::<T>()),

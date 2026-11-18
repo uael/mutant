@@ -40,7 +40,7 @@
 use crate::{
   Fields, Message, Pun, Variants,
   analysis::{Analysis, analyze},
-  layout::Kind,
+  layout::{Aim, Field, Kind, Variant},
 };
 
 const LARGER: &str = "behind a pointer, the target is larger than what it is read from";
@@ -65,6 +65,9 @@ const VARIANTS: &str = "a variant of the target that holds a pointer is not pair
                         add new ones after them";
 const ELEMENTS: &str = "elements of the target that hold a pointer are not paired with elements \
                         of the source of the same size";
+const LISTS: &str = "an implementation of `Pun` lists fields, variants, elements or a target of a \
+                     pointer (`Fields`, `Variants`, `Elem`, `Pointee`) that are not those of its \
+                     layout: pointers cannot be followed through it";
 
 /// Fail to compile if `why` says why.
 const fn require(why: Option<&'static str>) {
@@ -155,6 +158,11 @@ pub const fn local<A: ?Sized + Pun, B: ?Sized + Pun>(fuel: usize) -> Option<&'st
   if !b.has_pointers() {
     return None;
   }
+  // This walk, and the one of `pair`, are over the lists of the two types: they are what the
+  // layouts hold, which the analysis went by, or a pointer could be missed, or taken for another.
+  if !listed::<A>() || !listed::<B>() {
+    return Some(LISTS);
+  }
   match b.kind {
     Kind::Pointer(to) => match a.kind {
       Kind::Pointer(from) if from.reads_as(&to).is_some() => {
@@ -214,6 +222,51 @@ const fn local_variants<A0: Variants, VA: Variants, VB: Variants>(
     }
   }
   local_variants::<A0, VA::Next, VB::Next>(fuel)
+}
+
+/// Whatever the lists of `T` are what its layout holds, as [`Pun`] requires: its fields in the
+/// order of their declarations, its variants, the type of its elements, and the size and the
+/// alignment of what it aims at if it is a pointer. One level: [`local`] asks again further down.
+const fn listed<T: ?Sized + Pun>() -> bool {
+  match T::LAYOUT.kind {
+    Kind::Struct(fields, _) => listed_fields::<T::Fields>(fields, 0),
+    Kind::Enum(layout) => listed_variants::<T::Variants>(layout.variants, 0),
+    Kind::Array(elem, _) | Kind::Slice(elem) => <T::Elem as Pun>::LAYOUT.equals(elem),
+    Kind::Pointer(pointer) => {
+      let target = <T::Pointee as Pun>::LAYOUT;
+      matches!(pointer.aim, Aim::Str)
+        || (target.size() == pointer.size && target.align() == pointer.align)
+    }
+    Kind::Scalar(_) | Kind::Pattern(_) => true,
+  }
+}
+
+/// The list `F` is the `fields` from the one declared at `index` on, each of the type that the
+/// list says where it holds a pointer.
+const fn listed_fields<F: Fields>(fields: &[Field], index: usize) -> bool {
+  match F::FIELD {
+    None => index == fields.len(),
+    Some(field) => {
+      index < fields.len()
+        && field.index == index
+        && (!field.layout.has_pointers() || <F::Type as Pun>::LAYOUT.equals(field.layout))
+        && listed_fields::<F::Next>(fields, index + 1)
+    }
+  }
+}
+
+/// The list `V` is the `variants` from the one at `index` on: the same tags, in the same order,
+/// with the same fields.
+const fn listed_variants<V: Variants>(variants: &[Variant], index: usize) -> bool {
+  match V::TAG {
+    None => index == variants.len(),
+    Some(tag) => {
+      index < variants.len()
+        && variants[index].tag == tag
+        && listed_fields::<V::Fields>(variants[index].fields(), 0)
+        && listed_variants::<V::Next>(variants, index + 1)
+    }
+  }
 }
 
 const fn has_pointers<F: Fields>() -> bool {
