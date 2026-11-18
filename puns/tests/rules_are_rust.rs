@@ -2,6 +2,11 @@
 //! integer is a `u128`, and where Rust would panic, the rule fails: each expression here is both
 //! a rule of a struct and the body of a function, and they must agree on every value.
 //!
+//! The evaluator computes in 64 or 32 bits what it knows to fit there (`narrow.rs`): the
+//! expressions after `e37` are at the limits of those widths (a sum, a product or a shift just
+//! past 64 bits, two numbers in the halves of a `u128`, a carry from one half into the other), and
+//! the ones of `walks!` walk over the bytes of the value, as `be` reads them.
+//!
 //! Not built under Miri: this is about what the derive makes of an expression, and the unsafe
 //! reads of the evaluator are the ones that `expressions.rs` runs there.
 
@@ -91,12 +96,85 @@ fn rules_are_rust() {
   let values = values(4000);
   let hook = std::panic::take_hook();
   std::panic::set_hook(Box::new(|_| {}));
-  let counts = std::panic::catch_unwind(|| compare(&values));
+  let counts = std::panic::catch_unwind(|| (compare(&values), compare_walks(&values)));
   std::panic::set_hook(hook);
-  let counts = counts.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+  let (counts, walks) = counts.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
   // The expressions are worth something if most of them both hold and fail.
   let both = counts.iter().filter(|(_, holds, fails)| *holds > 0 && *fails > 0).count();
-  assert!(both >= 15, "{counts:?}");
+  assert!(both >= 30, "{counts:?}");
+  let both = walks.iter().filter(|(_, holds, fails)| *holds > 0 && *fails > 0).count();
+  assert!(both >= 4, "{walks:?}");
+}
+
+/// `walks! { name: |a, b, c, d| expression; }`: as `rules!`, for expressions that read the bytes of
+/// the value (`be`) and walk: in Rust, `be` and `walk` are the functions below, which read the
+/// bytes of the value that is compared.
+macro_rules! walks {
+  ($($name:ident: |$a:ident, $b:ident, $c:ident, $d:ident| $e:expr;)+) => {
+    $(mod $name {
+      use super::{be, walk};
+
+      #[derive(puns::Pun)]
+      #[repr(C)]
+      #[pun(assert($e))]
+      pub struct Rule {
+        pub $a: u8,
+        pub $b: puns::num::u16le,
+        pub $c: puns::num::u32be,
+        pub $d: puns::num::u64le,
+      }
+
+      pub fn rust($a: u128, $b: u128, $c: u128, $d: u128) -> bool {
+        $e
+      }
+    })+
+
+    fn compare_walks(values: &[(u128, u128, u128, u128)]) -> Vec<(&'static str, usize, usize)> {
+      let mut counts = vec![];
+      $(
+        let (mut holds, mut fails) = (0, 0);
+        for &(a, b, c, d) in values {
+          let mut bytes = vec![a as u8];
+          bytes.extend((b as u16).to_le_bytes());
+          bytes.extend((c as u32).to_be_bytes());
+          bytes.extend((d as u64).to_le_bytes());
+          let rule = puns::from_bytes::<$name::Rule>(&bytes).is_ok();
+          BYTES.with_borrow_mut(|value| *value = bytes);
+          let rust = std::panic::catch_unwind(|| $name::rust(a, b, c, d)).unwrap_or(false);
+          assert_eq!(rule, rust, "{}: a = {a}, b = {b}, c = {c}, d = {d}", stringify!($name));
+          if rust { holds += 1 } else { fails += 1 }
+        }
+        counts.push((stringify!($name), holds, fails));
+      )+
+      counts
+    }
+  };
+}
+
+std::thread_local! {
+  /// The bytes of the value whose rule is compared.
+  static BYTES: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `be(offset, n)` of a rule: the `n` bytes at `offset` in the value, big-endian; a panic out of it.
+fn be(offset: u128, n: u128) -> u128 {
+  BYTES.with_borrow(|bytes| {
+    let (offset, n) = (usize::try_from(offset).unwrap(), usize::try_from(n).unwrap());
+    bytes[offset..offset.checked_add(n).unwrap()].iter().fold(0, |v, &b| v << 8 | u128::from(b))
+  })
+}
+
+/// `walk(start, cond, next)` of a rule: `start` replaced by `next` of it for as long as `cond` is
+/// true of it, in at most a step for each bit of the value and of a `u128` (else a panic).
+fn walk(start: u128, cond: impl Fn(u128) -> bool, next: impl Fn(u128) -> u128) -> u128 {
+  let limit = (BYTES.with_borrow(Vec::len) + 16) * 8;
+  let (mut state, mut steps) = (start, 0);
+  while cond(state) {
+    assert!(steps < limit, "a walk takes too many steps");
+    steps += 1;
+    state = next(state);
+  }
+  state
 }
 
 rules! {
@@ -137,4 +215,57 @@ rules! {
   e35: |a, b, c, d| a == 1 || (b == 2 && (c == 3 || d / (a - 1) > 0));
   e36: |a, b, c, d| (if if a > 3 { b > 2 } else { c / (a - a) > 0 } { 1 } else { d / (a & 0) }) == 1;
   e37: |a, b, c, d| !(a < 9 || { let x = b - c; x > d }) && (if a & 1 == 0 { b } else { c - b }) < d;
+  // At the limits of 32 and 64 bits.
+  e38: |a, b, c, d| d + d > d || d == 0;
+  e39: |a, b, c, d| d * d / (d + 1) < d || d == 0;
+  e40: |a, b, c, d| d * d * d / (c + 1) > a;
+  e41: |a, b, c, d| c * c + c * c > c && (c * c) >> 32 < c;
+  e42: |a, b, c, d| ((d << 64) + d) >> 64 == d && ((d << 64) + d) & 0xffff_ffff_ffff_ffff == d;
+  e43: |a, b, c, d| (((d << 64) + d + d) >> 64) - d == (d + d) >> 64;
+  e44: |a, b, c, d| (d << 63) >> 63 == d && (d << 65) >> 65 == d;
+  e45: |a, b, c, d| d - c - b - a < d || d < c;
+  e46: |a, b, c, d| (d + 1) % (c + 1) < c && (d + 1) / (b + 1) > a;
+  e47: |a, b, c, d| (d >> (a & 127)) < d && (d >> (a % 200)) <= d;
+  e48: |a, b, c, d| (1u128 << (a & 127)) > d && (c << (b % 140)) > 0;
+  e49: |a, b, c, d| (d | (d << 64)) + 1 > d;
+  e50: |a, b, c, d| c * c / c == c && (c * c) % (d + 1) <= d;
+  e51: |a, b, c, d| (d + 1 > 0xffff_ffff_ffff_ffff) == (d == 0xffff_ffff_ffff_ffff) && d + 0xffff_ffff_ffff_ffff > c;
+  e52: |a, b, c, d| ((a << 64) | d) - (d + 1) < (a << 64);
+  e53: |a, b, c, d| (d << 64) - d > c || d == 0;
+  e54: |a, b, c, d| b * c * a < (1 << 55) && a * b * c * d > c;
+  e55: |a, b, c, d| (c << 32) + c == c * 0x1_0000_0001 && (c << 32) - c == c * 0xffff_ffff;
+  e56: |a, b, c, d| { let x = (b << 64) + d; let y = x + (c << 63); (y >> 64) - b } < 2;
+  e57: |a, b, c, d| ((if a < 128 { d << 64 } else { d }) + (d + 1)) >> 64 > a;
+  e58: |a, b, c, d| (d * 0xffff_ffff_ffff_ffff) >> 64 == d - 1 || d == 0;
+}
+
+walks! {
+  // Two numbers in the halves of the state, as the walk of IPv6: a count in the high one, an
+  // offset in the low one.
+  w1: |a, b, c, d| walk(
+    ((a & 3) << 64) + (b & 7),
+    |s| (s >> 64) % 4 != 3 && (s & 0xffff_ffff_ffff_ffff) < 14,
+    |s| {
+      let at = s & 0xffff_ffff_ffff_ffff;
+      (((s >> 64) + be(at, 1) % 2) << 64) + at + 1 + be(at + 1, 1) % 3
+    },
+  ) >> 64 < 3;
+  // Until a byte is zero, or past the steps a walk may take.
+  w2: |a, b, c, d| walk(b % 15, |at| be(at % 15, 1) != 0, |at| at + 1) < 100;
+  // A state that grows past 64 bits.
+  w3: |a, b, c, d| walk(d, |s| s < (1 << 64) + 5 && be(0, 1) < 200, |s| s + (1 << 63) + be(1, 1)) > c;
+  // A state that may overflow.
+  w4: |a, b, c, d| walk(c, |s| s != 0 && be(3, 1) % 8 != 7, |s| s * 3 + be(4, 1) + (s >> 120)) % 5 != 0;
+  // A walk in a walk.
+  w5: |a, b, c, d| walk(
+    0,
+    |i| i < (a & 3) + be(14, 1) % 2,
+    |i| i + walk(0, |j| j < (b & 3), |j| j + 1 + be(j, 1) % 2) + 1,
+  ) < 6;
+  // An offset read at, then added to: it is in the value, and the sum fits 64 bits.
+  w6: |a, b, c, d| walk(
+    (d & 0xffff_ffff_ffff_ffff) % 20,
+    |at| at < 14,
+    |at| at + 1 + be(at, 1) * (d >> 56),
+  ) < 1 << 70;
 }

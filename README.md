@@ -621,30 +621,31 @@ table is in [`puns/DESIGN.md`][design]):
 | `&Frame<Ipv4<Udp>> -> &Frame<Ipv4>` (same rules)   | `mov rdx, rsi; mov rax, rdi; ret`    |
 | `&[u8; 2] -> Option<&Position>`                    | one `cmp byte ptr [rdi + 1], 2`      |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool` |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call    |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 29 instructions, no loop, no call    |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, without a branch |
 
 ### Time
 
 [`puns/benches/checks.rs`][checks] times each check next to the same check written by hand, with
 the same algorithm for the checksums (`cargo bench -p puns --bench checks`). Nanoseconds per
-check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5 runs, a run the
-best of 7 samples:
+check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5 runs (3 for the
+rows of IPv4 in 64 bytes, IPv6 in 0 and 3 headers and the view enum, measured again when rules
+were narrowed), a run the best of 7 samples:
 
 | Check                                               | `puns` | by hand | ratio |
 |-----------------------------------------------------|-------:|--------:|------:|
-| IPv4, UDP, 64 bytes (two checksums)                 |     12 |      10 |   1.2 |
+| IPv4, UDP, 64 bytes (two checksums)                 |     11 |      10 |   1.1 |
 | IPv4, UDP, 1472 bytes                               |     53 |      51 |   1.0 |
 | IPv4, TCP, 1460 bytes                               |     53 |      53 |   1.0 |
-| IPv6, TCP, no extension header                      |    1.6 |     1.7 |   0.9 |
-| IPv6, TCP behind 3 extension headers                |    6.0 |     4.7 |   1.3 |
-| IPv6, TCP behind 12 extension headers               |     23 |      16 |   1.4 |
+| IPv6, TCP, no extension header                      |    1.1 |     1.5 |   0.8 |
+| IPv6, TCP behind 3 extension headers                |    3.4 |     4.8 |   0.7 |
+| IPv6, TCP behind 12 extension headers               |     12 |      15 |   0.7 |
 | IPv6, UDP, 1400 bytes (its checksum)                |     50 |      42 |   1.2 |
 | UDP, `from_head`                                    |    1.3 |     1.3 |   1.0 |
-| a frame that is one of 6 things: UDP over IPv4      |     11 |      11 |   1.0 |
+| a frame that is one of 6 things: UDP over IPv4      |     13 |      11 |   1.1 |
 | a frame that is one of 6 things: ARP                |    1.3 |     2.2 |   0.6 |
 | a frame that is one of 6 things: the last one       |    1.0 |     2.1 |   0.5 |
-| a frame that is one of 6 things: a wrong checksum   |     13 |      12 |   1.1 |
+| a frame that is one of 6 things: a wrong checksum   |     12 |      11 |   1.1 |
 | `[u8]` as `[bool]`, 64 KiB                          |  1 550 |  21 980 |  0.07 |
 | `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    152 |   5 241 |  0.03 |
 | `[u32]` as `[char]`, 4 KiB                          |    186 |     336 |   0.6 |
@@ -674,10 +675,14 @@ take less time than by hand ([the design][design], "Views").
 - **A CRC is 32 KiB of tables in the binary** for each set of parameters that is used (16 bytes
   at a time; 16 KiB of them are read for a CRC of up to 32 bits); `sum16` adds 8 bytes at a time
   and needs none.
-- **A rule computes on 128-bit integers.** It costs what the arithmetic costs, and the arithmetic
-  of a `u128` is two registers and a carry: a `walk` that carries two things in its state (what
-  a header is, where it starts) keeps each in a half, `(kind << 64) + start`, not packed in the
-  low bits, which would put a shift on every step ([the design][design], "Walks").
+- **A rule means what it means on 128-bit integers, and computes in a register what fits one.**
+  The range of each of its values is known when the program is built, from the widths of the
+  fields and of what it reads: a sum of two fields of 16 bits is one addition of a register,
+  without a test of overflow, and an offset that was read at is in the value. A `walk` that
+  carries two things in its state (what a header is, where it starts) keeps each in a half,
+  `(kind << 64) + start`: what is added to the low half is computed there alone when it cannot
+  carry into the high one ([the design][design], "Walks" and "Narrowing"). A counter that only a
+  comparison bounds is computed on 128 bits.
 - **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
   the binary, a checked one adds its checks, inlined where it is called.
 - **Measure in release.** In a debug build nothing is inlined: each operation of a rule is a
