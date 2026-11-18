@@ -182,6 +182,16 @@ const fn first<T, O>() -> usize {
   if align_of::<T>() > size_of::<O>() { align_of::<T>() } else { size_of::<O>() }
 }
 
+impl<T, O: Offset> One<T, O> {
+  /// A pointer of offset zero, which aims at its own address: at the bytes of its offset, all
+  /// zero. For a target that zeros are (a `u8`), which is then there (S3 of `SelfRelative`): a
+  /// pointer whose offset is zero, not null, which a pointer whose offset cannot be zero is not.
+  #[must_use]
+  pub fn here() -> Self {
+    Self { offset: O::new(0), target: PhantomData }
+  }
+}
+
 impl<T, O: Offset> Opt<T, O> {
   /// No pointer.
   #[must_use]
@@ -367,8 +377,8 @@ impl<T: Fix> Region<T> {
   ///
   /// # Safety
   /// Every pointer of `root`, and of what was put in `builder`, was made by `builder` (`one`,
-  /// `opt`, `seq`, `text`), with what it aims at, and is in one value only; every value that
-  /// holds pointers implements [`Fix`] as it says.
+  /// `opt`, `seq`, `text`), with what it aims at, and is in one value only, or is `One::here` of
+  /// a target that zeros are; every value that holds pointers implements [`Fix`] as it says.
   pub unsafe fn new(mut builder: Builder, root: T) -> Self {
     let root = builder.put(root);
     Self { blocks: builder.blocks, len: builder.len, root, value: PhantomData }

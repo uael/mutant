@@ -556,3 +556,46 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
   assert_eq!(*r.get(some), 9);
   assert_eq!(puns::try_view_ref::<_, One<u32>>(&r.second).err(), Some(puns::Error::Validity));
 }
+
+/// A pointer whose offset can be zero (it then aims at its own address), read as one of the same
+/// scheme whose offset cannot (a `NonZero`): only when it is not zero, checked at run time.
+#[test]
+fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
+  use relative::Nz32le;
+
+  #[derive(Pun)]
+  #[repr(C)]
+  struct Plain {
+    pointer: One<u8>,
+  }
+
+  #[derive(Pun)]
+  #[repr(C)]
+  struct NeverZero {
+    pointer: One<u8, Nz32le>,
+  }
+
+  // SAFETY: the pointer, at its position.
+  unsafe impl Fix for Plain {
+    fn fix(&mut self, at: usize) {
+      let whole = addr(self);
+      field(whole, at, &mut self.pointer);
+    }
+  }
+
+  let mut b = Builder::new();
+  let pointer = b.one(5u8);
+  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  let r = unsafe { Region::new(b, Plain { pointer }) };
+  let view: &NeverZero = puns::try_view_ref(&*r).expect("not zero");
+  assert_eq!(*r.get(&view.pointer), 5);
+  // The other way is proven: a pointer that is not zero is a pointer.
+  let back: &Plain = puns::view_ref(view);
+  assert_eq!(*r.get(&back.pointer), 5);
+
+  // An offset of zero: the pointer aims at itself, at a `u8` of zero; no `NonZero` is that.
+  // SAFETY: `One::here`, of a target that zeros are.
+  let r = unsafe { Region::new(Builder::new(), Plain { pointer: One::here() }) };
+  assert_eq!(*r.get(&r.pointer), 0);
+  assert_eq!(puns::try_view_ref::<Plain, NeverZero>(&r).err(), Some(puns::Error::Validity));
+}

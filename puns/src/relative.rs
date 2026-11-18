@@ -107,7 +107,11 @@ use crate::{Pun, layout::Pointer};
 ///
 /// 1. **The type is its offset**: `Self` is the integer of `POINTER` (its width, asserted by
 ///    [`self_relative!`](crate::self_relative), in its byte order) and nothing else: every byte
-///    of every value is initialized, and none is in an `UnsafeCell`.
+///    of every value is initialized, and none is in an `UnsafeCell`. A type whose offset has no
+///    zero (a `NonZero` in it) is told apart by this crate, which finds it (`Option` of it has its
+///    size, `None` all zeros): it is never read from a pointer that may be zero without a check.
+///    Any other restriction of the values of the offset is not supported (a niche that is not
+///    zero is refused where it is found; one that the compiler does not know, it cannot find).
 /// 2. **The scheme is the way to the target**: where a pointer aims, and how many elements or
 ///    bytes it aims at, depend only on its scheme, the width and the byte order of its offset,
 ///    the kind of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, text),
