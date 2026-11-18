@@ -673,8 +673,9 @@ crate relies on (in their documentation, word for word): after `Ok(())`,
    every enum has the tag (or the niche) of a variant whose fields are valid, every union is one
    of its fields, and every rule of every struct holds, evaluated on the bytes of that struct;
 3. every pointer of the value, where it is, was handed over once, and the visitor returned `Ok`;
-   bytes of a pointer that are all zero are no pointer: not handed over, valid if it may be null,
-   invalid if not.
+   bytes of a pointer that are all zero are no pointer if it may be null (not handed over), not a
+   value if its type has none of zeros (its offset is a `NonZero`, `Pointer::nonzero`), and a
+   pointer of offset zero otherwise (handed over: its scheme says what it aims at).
 
 It says nothing of what the pointers aim at (in the bytes or not, shared or not: the scheme is
 the visitor's business), nor of addresses: positions only. A `&T` at `bytes.as_ptr() + at` must

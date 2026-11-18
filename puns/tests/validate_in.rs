@@ -159,6 +159,13 @@ enum Tree {
   Node(One<Tree>, One<Tree>),
 }
 
+/// A pointer whose offset cannot be zero.
+#[derive(Pun)]
+#[repr(C)]
+struct Strict {
+  to: One<u8, relative::Nz32le>,
+}
+
 /// Each pointer handed over once, in order, with what it is; a null pointer that may be is not;
 /// the error of the visitor ends the walk.
 #[test]
@@ -178,9 +185,12 @@ fn pointers_are_handed_over() {
   // Refused by the visitor, before `flag` is looked at.
   let mut record = Record { refuse: Some(5), ..Record::default() };
   assert_eq!(puns::validate_in::<Node, Record>(&bytes, 0, &mut record), Err(Stop::Refused(5)));
-  // A pointer that may not be null, null: invalid where it is.
-  let leaf = [1u8, 0, 0, 0, 0, 1, 0, 0, 0];
-  assert_eq!(check::<Tree>(&leaf, 0), (Err(Stop::Invalid(1)), vec![]));
+  // A pointer of offset zero: one whose offset may be zero is one, handed over (its scheme
+  // says what it aims at); one whose offset is a `NonZero` is not valid there.
+  let here = [1u8, 0, 0, 0, 0, 1, 0, 0, 0];
+  assert_eq!(check::<Tree>(&here, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
+  assert_eq!(check::<Strict>(&[0; 4], 0), (Err(Stop::Invalid(0)), vec![]));
+  assert_eq!(check::<Strict>(&[4, 0, 0, 0], 0), (Ok(()), vec![(0, Aim::One, false)]));
   // The pointers of the variant that the tag tells, and only those.
   let node = [1u8, 4, 0, 0, 0, 8, 0, 0, 0];
   assert_eq!(check::<Tree>(&node, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));

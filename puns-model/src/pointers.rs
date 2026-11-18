@@ -415,7 +415,11 @@ impl puns::Visit for Follow<'_> {
     assert_eq!(pointer.scheme(), crate::relative::SCHEME, "a pointer of the tests");
     let (width, endian) = (pointer.width(), pointer.endian());
     let offset = self.int(at, width, endian)?;
-    assert!(offset != 0, "zeros are no pointer, and are not handed over");
+    // An offset of zero, which the type of the pointer allows (it is no `NonZero`): the oracle
+    // reads it as null, so does this (the tests make one only for a target that zeros are).
+    if offset == 0 {
+      return Err(Stop::Pointer(at));
+    }
     self.fuel = self.fuel.checked_sub(1).ok_or(Stop::NoFuel)?;
     let to = i64::try_from(at).ok().and_then(|at| at.checked_add(offset));
     let to = to.and_then(|to| usize::try_from(to).ok()).filter(|to| *to <= self.bytes.len());

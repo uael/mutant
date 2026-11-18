@@ -25,9 +25,10 @@ use crate::{
 /// fields, in the variant that its tag tells, in the elements of its arrays), in the order of
 /// their positions, interleaved with the checks of the rest: `P` is the type of the pointer (its
 /// `LAYOUT` is a pointer: [`Layout::as_pointer`](layout::Layout::as_pointer)), `at` its position
-/// in the bytes. Bytes of a pointer that are all zero are no pointer: not handed over, valid if
-/// the pointer may be null, else invalid there. An error returned by `pointer` ends the
-/// validation, with that error.
+/// in the bytes. Bytes of a pointer that are all zero are not handed over if the pointer may be
+/// null (no pointer) or if its type has no value of zeros (its offset is a `NonZero`: not valid
+/// there); a pointer whose offset may be zero is handed over with it. An error returned by
+/// `pointer` ends the validation, with that error.
 ///
 /// ```
 /// use puns::{Invalid, Pun, Visit};
@@ -123,8 +124,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///    `size`, and any other), evaluated on the bytes of that struct only.
 /// 3. **Every pointer handed over**: each self-relative pointer of the value, where it is, was
 ///    handed to `visit` once, with its type and its position, and `visit` returned `Ok`; but
-///    bytes of a pointer that are all zero, which are no pointer: those of a pointer that may be
-///    null (none, then), not of one that may not (which is not valid).
+///    bytes of a pointer that are all zero where the pointer may be null (no pointer, then). Bytes
+///    of zeros of a pointer whose type has no such value (S1 of `SelfRelative`: its offset is a
+///    `NonZero`) are not valid; those of any other are a pointer, handed over.
 ///
 /// It says nothing of what the pointers aim at: whether they aim in the bytes, at what, whether
 /// two aim at the same place. That is the visitor's business, as is the scheme of the pointers.
@@ -275,14 +277,13 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
       // Not valid: `validate` said so above (a union holds no pointer, see below).
       Shape::Enum(layout) if layout.union => Err(Invalid::at(at).into()),
       Shape::Enum(layout) => enumeration::<T, V>(base, at, layout, visit),
-      // All zeros is no pointer: valid if it may be null, else not (as `validate` says).
-      Shape::Pointer(pointer) => {
-        match (load(here, pointer.width, pointer.endian), pointer.nullable) {
-          (0, true) => Ok(()),
-          (0, false) => Err(Invalid::at(at).into()),
-          _ => visit.pointer::<T>(at),
-        }
-      }
+      // All zeros: no pointer if it may be null; not a value if its type has none of zeros (a
+      // `NonZero` offset); else a pointer whose offset is zero, which its scheme reads.
+      Shape::Pointer(pointer) => match load(here, pointer.width, pointer.endian) {
+        0 if pointer.nullable => Ok(()),
+        0 if pointer.nonzero => Err(Invalid::at(at).into()),
+        _ => visit.pointer::<T>(at),
+      },
       // A sized value holds neither (the root is `Sized`, and so are its parts).
       Shape::Slice | Shape::Pattern(_) => Err(Invalid::at(at).into()),
     }
