@@ -55,8 +55,8 @@ jobs:
       - run: ${{ matrix.run }}
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
-  # as long to build as everything else, so jobs of its own: whole puns, unsized types and
-  # pointers, parts. Together they are `cargo test -p puns-model`.
+  # as long to build as everything else, so jobs of its own: whole puns, unsized types, pointers
+  # and view enums, parts. Together they are `cargo test -p puns-model`.
   model:
     name: Model check (sample, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -66,8 +66,8 @@ jobs:
         include:
           - name: puns
             tests: --lib --test miri_sample --test core_shadowed --test regressions --test rules
-          - name: unsized, pointers
-            tests: --test dst --test pointers
+          - name: unsized, pointers, views
+            tests: --test dst --test pointers --test views
           - name: parts
             tests: --test parts
     steps:
@@ -225,15 +225,16 @@ jobs:
           # reaches (see `puns-model/tests/miri_sample.rs`); the verdicts of every pair are the
           # job of the full native run, in `model.yml`.
           # In six jobs: whole puns (the two tests of the selection, told apart by name), the unit
-          # tests and the regressions, parts and unsized types, self-relative pointers in two.
+          # tests, the regressions and view enums, parts and unsized types, self-relative pointers
+          # in two.
           - name: model, puns
             id: model
             args: -p puns-model --test miri_sample
             filter: -- --skip sample_layouts
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          - name: model, library, regressions
+          - name: model, library, regressions, views
             id: model
-            args: -p puns-model --lib --test core_shadowed --test regressions
+            args: -p puns-model --lib --test core_shadowed --test regressions --test views
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           - name: model, layouts
             id: model

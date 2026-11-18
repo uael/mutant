@@ -1,10 +1,11 @@
 name: Model check
 
 # The exhaustive model check: every pair of the types of the model, every part, every value over
-# the alphabets, every pair of the types that hold pointers (`puns-model/tests/size*.rs`,
-# `parts*.rs` and `pointers_full.rs`, behind the `full` feature, which `cargo test` does not
-# build). It takes minutes to build and two to run, too long for every push, where CI runs a
-# sample of it: here on demand, and every night.
+# the alphabets, every pair of the types that hold pointers, every pair of the types of 1 and 2
+# bytes as a view enum (`puns-model/tests/size*.rs`, `parts*.rs`, `pointers_full.rs` and
+# `views_full.rs`, behind the `full` feature, which `cargo test` does not build). It takes
+# minutes to build and a few to run, too long for every push, where CI runs a sample of it: here
+# on demand, and every night.
 
 on:
   workflow_dispatch:
