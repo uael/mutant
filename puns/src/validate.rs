@@ -7,7 +7,7 @@
 use crate::{
   Count, Fields, Path, Pun, Root, Variants, Walks,
   analysis::Marks,
-  layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
+  layout::{self, Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
   ptr,
 };
 
@@ -43,6 +43,7 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
           && (const { !rules_marked::<C, P, T>() } || check_rules(ptr, rules))
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
+      Shape::Enum(layout) if layout.union => validate_union::<T, T::Variants>(ptr),
       Shape::Enum(layout) => validate_enum::<T>(ptr, layout),
       // Only a pointer proves a pointer, which the analysis made sure of: what may be left to
       // check is that one that may be null is not, where the target has no such value.
@@ -77,14 +78,33 @@ const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> 
 /// has one, has its fields initialized.
 const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, tag: u128) -> bool {
   let Some(expected) = (const { V::TAG }) else { return false };
+  let this = match const { V::RANGES } {
+    None => tag == expected,
+    // The variant of a niche, or one that no value is (no range).
+    Some(ranges) => layout::contains(ranges, tag),
+  };
   // SAFETY: guaranteed by the caller.
   unsafe {
-    if tag == expected {
+    if this {
       validate_fields::<All, Root, T, V::Fields>(ptr)
     } else {
       validate_variants::<T, V::Next>(ptr, tag)
     }
   }
+}
+
+/// Whatever the union at `ptr` is one of its fields, `V` or one after it (each of which is a
+/// variant of one field).
+///
+/// # Safety
+/// As [`validate`], and every byte that one of the fields requires to be initialized must be:
+/// the analysis refuses a union of which a field would read a byte that may be padding.
+const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> bool {
+  if const { V::TAG.is_none() } {
+    return false;
+  }
+  // SAFETY: guaranteed by the caller.
+  unsafe { validate_fields::<All, Root, T, V::Fields>(ptr) || validate_union::<T, V::Next>(ptr) }
 }
 
 /// Validate the `len` elements at `ptr`.

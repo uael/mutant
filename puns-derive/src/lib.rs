@@ -133,10 +133,14 @@ use syn::{
 ///
 /// Enums without fields, of any `repr`: their valid values are read from the compiler.
 ///
-/// Enums with fields whose layout is specified: `repr(C)`, `repr(u8)` (or any other integer), or
-/// both. Every field must be `Pun`, and can have the `valid` option. What is known of such an
-/// enum is its tag; making one out of anything but itself checks the tag, then what the fields
-/// of the variant require.
+/// Enums with fields, of a layout that is specified (`repr(C)`, `repr(u8)` or any other integer,
+/// or both) or of none: without `repr`, the layout that `rustc` chose is found by experiments in
+/// const evaluation on a value of each variant, which the layouts of the fields make (no field may
+/// hold a self-relative pointer). Every field must be `Pun`, and can have the `valid` option.
+/// What is known of such an enum is its tag; making one out of anything but itself checks the
+/// tag, then what the fields of the variant require.
+///
+/// An enum without variants has no value: nothing is made of one.
 ///
 /// Enums whose variants each hold a reference, such as
 /// `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`, are not data but *views* of
@@ -170,7 +174,7 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
       .flat_map(|variant| variant.fields.iter_mut())
       .map(|field| &mut field.ty)
       .collect(),
-    Data::Union(_) => vec![],
+    Data::Union(data) => data.fields.named.iter_mut().map(|field| &mut field.ty).collect(),
   };
   for ty in types {
     match syn::parse2(replace_self(ty.to_token_stream(), &this)) {
@@ -181,7 +185,7 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let expanded = match &input.data {
     Data::Struct(data) => derive_struct(&input, data),
     Data::Enum(data) => derive_enum(&input, data),
-    Data::Union(_) => Err(Error::new(Span::call_site(), "`Pun` cannot be derived for unions")),
+    Data::Union(data) => derive_union(&input, data),
   };
   expanded
     .unwrap_or_else(|error| {
@@ -1695,7 +1699,19 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
   if data.variants.is_empty() {
-    return Err(Error::new(Span::call_site(), "an enum without variant has no value"));
+    // No value: nothing is ever made of one, and nothing is valid for it.
+    return Ok(quote! {
+      // SAFETY: an enum without variants has no value, which is what the layout says.
+      unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = ();
+        type Walks = ();
+        type Pointee = ();
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout = #root::layout::Layout::uninhabited::<Self>();
+      }
+    });
   }
   // An enum of references: a view of what is one thing or another.
   let references = data
@@ -1811,11 +1827,7 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   if !repr.c && repr.int.is_none() {
-    return Err(Error::new(
-      input.ident.span(),
-      "the layout of an enum with fields is not specified: `Pun` can be derived for it with \
-       `#[repr(u8)]` (or another integer), `#[repr(C)]`, or both",
-    ));
+    return derive_discovered(input, data, root);
   }
   let (ident, vis) = (&input.ident, &input.vis);
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
@@ -2006,6 +2018,348 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
               const { &[#(#variants),*] },
             )
           },
+        );
+      }
+    };
+  })
+}
+
+/// An enum with fields whose layout is not specified (no `repr`): `rustc` chose it, and it is
+/// found by experiments in const evaluation on a sample of each variant (`Layout::discover`).
+///
+/// The samples are made by the layouts of the fields (`Layout::sample`), the offsets of the
+/// fields are those of the fields of the sample, by a `match` on it. Every function that is
+/// called is an associated function of a type that `Layout::PIN` fixes, or a method of a value
+/// that one of them makes, as in the rest of the derive.
+fn derive_discovered(
+  input: &DeriveInput,
+  data: &DataEnum,
+  root: &TokenStream,
+) -> Result<TokenStream> {
+  let (ident, vis) = (&input.ident, &input.vis);
+  let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+  let this = quote!(#ident #ty_generics);
+  let mut generics = input.generics.clone();
+  let bounds = parse_options(&input.attrs, "an enum", &["crate", "bound"])?.bounds;
+  for field in data.variants.iter().flat_map(|variant| &variant.fields) {
+    if bounds.is_none() && needs_bound(&field.ty, input) {
+      bound(&mut generics, &field.ty, root);
+    }
+  }
+  if let Some(bounds) = bounds {
+    generics.make_where_clause().predicates.extend(bounds);
+  }
+  let where_clause = &generics.where_clause;
+  let count = data.variants.len();
+  let usize = quote!(::core::primitive::usize);
+  let layout = quote!(#root::layout::Layout);
+  let discover = quote!(<#this as __PunDiscover>);
+
+  let (mut items, mut samples, mut offsets, mut observed, mut variants) =
+    (vec![], vec![], vec![], vec![], vec![]);
+  let shadows = (0..count).map(|i| format_ident!("__PunVariant{}", i)).collect::<Vec<_>>();
+  for (i, variant) in data.variants.iter().enumerate() {
+    let name = &variant.ident;
+    let n = variant.fields.len();
+    let members = variant
+      .fields
+      .iter()
+      .enumerate()
+      .map(|(j, field)| {
+        field
+          .ident
+          .as_ref()
+          .map_or_else(|| Member::Unnamed(Index::from(j)), |ident| Member::Named(ident.clone()))
+      })
+      .collect::<Vec<_>>();
+    let types = variant.fields.iter().map(|field| &field.ty).collect::<Vec<_>>();
+    let bindings = (0..n).map(|j| format_ident!("__pun_field{}", j)).collect::<Vec<_>>();
+    let offsets_name = format_ident!("OFFSETS{}", i);
+
+    // A sample of the variant, if it has values.
+    samples.push(quote! {
+      if #layout::inhabited_all(&[#(&<#types as #root::Pun>::LAYOUT),*]) {
+        #layout::wrap(Self::#name {
+          // SAFETY (of the generated code): a valid value of each field, made by its layout.
+          #(#members: unsafe { #layout::sample::<#types>().assume_init() }),*
+        })
+      } else {
+        #layout::uninit::<Self>()
+      }
+    });
+    // The offsets of its fields, in its sample.
+    offsets.push(quote! {
+      const #offsets_name: [#usize; #n] = {
+        let sample = &<Self as __PunDiscover>::SAMPLES[#i];
+        let base = sample.as_ptr();
+        if #layout::inhabited_all(&[#(&<#types as #root::Pun>::LAYOUT),*]) {
+          // SAFETY (of the generated code): the sample of a variant that has values is one.
+          match unsafe { &*base } {
+            Self::#name { #(#members: #bindings),* } => [#(
+              // SAFETY (of the generated code): a field of the value at `base`.
+              unsafe { (#bindings as *const #types).byte_offset_from(base) } as #usize
+            ),*],
+            // Not the variant: `Layout::discover` finds that the sample is not.
+            #[allow(unreachable_patterns)]
+            _ => [0; #n],
+          }
+        } else {
+          [0; #n]
+        }
+      };
+    });
+    let indices = (0..n).map(Index::from);
+    observed.push(quote! {
+      &[#(#root::layout::Field::new(
+        <Self as __PunDiscover>::#offsets_name[#indices],
+        &<#types as #root::Pun>::LAYOUT,
+      )),*]
+    });
+    // The layout of the variant: its fields where the sample has them (none if it has no value).
+    let mut fields = vec![];
+    for (j, field) in variant.fields.iter().enumerate() {
+      let options = parse_options(&field.attrs, "a field of an enum", &["valid"])?;
+      let ty = &field.ty;
+      let offset = quote!(<Self as __PunDiscover>::#offsets_name[#j]);
+      fields.push(match &options.valid {
+        None => quote!(#root::layout::Field::new(#offset, &<#ty as #root::Pun>::LAYOUT)),
+        Some(ranges) => {
+          let ranges = valid_ranges(ranges, ty, root)?;
+          quote!(#root::layout::Field::restricted(
+            #offset,
+            const { &<#ty as #root::Pun>::LAYOUT.restricted(#ranges) },
+          ))
+        }
+      });
+    }
+    variants.push(quote!(#root::layout::Variant::discovered(
+      #i,
+      const { &<Self as __PunDiscover>::DESC }.variant_ranges(#i),
+      <Self as __PunDiscover>::DESC.holds_tag(#i),
+      const {
+        &#layout::variant::<Self>({
+          let fields: &'static [#root::layout::Field] =
+            if <Self as __PunDiscover>::DESC.inhabited(#i) {
+              const { &#layout::sort_fields([#(#fields),*]) }
+            } else {
+              &[]
+            };
+          fields
+        })
+      },
+    )));
+
+    // The lists of the fields and of the variants, as for an enum of a specified layout.
+    let markers = (0..n).map(|j| format_ident!("__PunVariant{}Field{}", i, j)).collect::<Vec<_>>();
+    for (j, ty) in types.iter().enumerate() {
+      let (marker, next) = (
+        &markers[j],
+        markers.get(j + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics)),
+      );
+      items.push(quote! {
+        #[allow(non_camel_case_types)]
+        #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+        // SAFETY: the field of the layout of the variant, if it has values (else the variant has
+        // no field in the layout, and the list ends).
+        unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
+          type Type = #ty;
+          type Next = #next;
+          type Path<__P: #root::Path> = #root::At<__P, Self>;
+          const FIELD: ::core::option::Option<#root::layout::Field> =
+            if #discover::DESC.inhabited(#i) {
+              ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.variant_field(#i, #j))
+            } else {
+              ::core::option::Option::None
+            };
+        }
+      });
+    }
+    let (first_field, next) = (
+      markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics)),
+      shadows.get(i + 1).map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics)),
+    );
+    let shadow = &shadows[i];
+    items.push(quote! {
+      #[allow(dead_code, non_camel_case_types)]
+      #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the variant of the layout of the enum: its index, and its tags.
+      unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
+        type Fields = #first_field;
+        type Next = #next;
+        const TAG: ::core::option::Option<::core::primitive::u128> =
+          ::core::option::Option::Some(<#this as #root::Pun>::LAYOUT.variant_tag(#i));
+        const RANGES: ::core::option::Option<&'static [(::core::primitive::u128, ::core::primitive::u128)]> =
+          <#this as #root::Pun>::LAYOUT.variant_ranges(#i);
+      }
+    });
+  }
+  let first = &shadows[0];
+  let offset_decls = data.variants.iter().enumerate().map(|(i, variant)| {
+    let (name, n) = (format_ident!("OFFSETS{}", i), variant.fields.len());
+    quote!(const #name: [#usize; #n];)
+  });
+
+  Ok(quote! {
+    const _: () = {
+      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      const _: (
+        fn(#root::layout::Rule),
+        fn(#root::layout::Op),
+        fn(#root::layout::Field),
+        fn(#root::layout::Enum),
+        fn(#root::layout::Variant),
+      ) = #root::layout::Layout::PIN;
+
+      #(#items)*
+
+      trait __PunDiscover: ::core::marker::Sized {
+        const SAMPLES: [::core::mem::MaybeUninit<Self>; #count];
+        #(#offset_decls)*
+        const DESC: #root::layout::Desc<#count>;
+        const TAG: #root::layout::Layout;
+        const VARIANTS: [#root::layout::Variant; #count];
+        const ENUM: #root::layout::Enum;
+      }
+
+      impl #impl_generics __PunDiscover for #this #where_clause {
+        // A variant with a field without values is not made, but it is written.
+        #[allow(unreachable_code)]
+        const SAMPLES: [::core::mem::MaybeUninit<Self>; #count] = [#(#samples),*];
+        #(#offsets)*
+        const DESC: #root::layout::Desc<#count> = #layout::discover::<Self, #count>(
+          &<Self as __PunDiscover>::SAMPLES,
+          &[#(#observed),*],
+        );
+        const TAG: #root::layout::Layout = const { &<Self as __PunDiscover>::DESC }.tag();
+        const VARIANTS: [#root::layout::Variant; #count] = [#(#variants),*];
+        const ENUM: #root::layout::Enum = #root::layout::Enum::discovered(
+          const { &<Self as __PunDiscover>::TAG },
+          <Self as __PunDiscover>::DESC.tag_offset(),
+          const { &<Self as __PunDiscover>::VARIANTS },
+          #layout::size_align::<Self>(),
+        );
+      }
+
+      // SAFETY: the layout that `rustc` gave the enum, found by experiments that fail to compile
+      // rather than find a wrong one (see `discover.rs`).
+      unsafe impl #impl_generics #root::Pun for #this #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = #first #ty_generics;
+        type Walks = ();
+        type Pointee = ();
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout =
+          #layout::enumeration::<Self>(const { &<Self as __PunDiscover>::ENUM });
+      }
+    };
+  })
+}
+
+/// A `repr(C)` union: each field is a variant of one field, at offset 0, and a value is valid if
+/// it is one of them (see `Layout::union`).
+fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStream> {
+  let repr = parse_repr(&input.attrs)?;
+  if !repr.c || repr.packed.is_some() {
+    return Err(Error::new(
+      input.ident.span(),
+      "`Pun` is derived for unions of `repr(C)`, whose fields are all at offset 0",
+    ));
+  }
+  let options = parse_options(&input.attrs, "a union", &["crate", "bound"])?;
+  let root = options.root.clone().unwrap_or_else(|| quote!(::puns));
+  let (ident, vis) = (&input.ident, &input.vis);
+  let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+  let this = quote!(#ident #ty_generics);
+  let mut generics = input.generics.clone();
+  for field in &data.fields.named {
+    if options.bounds.is_none() && needs_bound(&field.ty, input) {
+      bound(&mut generics, &field.ty, &root);
+    }
+  }
+  if let Some(bounds) = &options.bounds {
+    generics.make_where_clause().predicates.extend(bounds.iter().cloned());
+  }
+  let where_clause = &generics.where_clause;
+  let count = data.fields.named.len();
+  let shadows = (0..count).map(|i| format_ident!("__PunVariant{}", i)).collect::<Vec<_>>();
+  let (mut items, mut variants) = (vec![], vec![]);
+  for (i, field) in data.fields.named.iter().enumerate() {
+    let ty = &field.ty;
+    let options = parse_options(&field.attrs, "a field of a union", &["valid"])?;
+    let layout = match &options.valid {
+      None => quote!(#root::layout::Field::new(0, &<#ty as #root::Pun>::LAYOUT)),
+      Some(ranges) => {
+        let ranges = valid_ranges(ranges, ty, &root)?;
+        quote!(#root::layout::Field::restricted(
+          0,
+          const { &<#ty as #root::Pun>::LAYOUT.restricted(#ranges) },
+        ))
+      }
+    };
+    variants.push(quote!(#root::layout::Variant::new(
+      #i as ::core::primitive::u128,
+      const {
+        &#root::layout::Layout::variant::<Self>(
+          const { &#root::layout::Layout::sort_fields([#layout]) },
+        )
+      },
+    )));
+    let marker = format_ident!("__PunVariant{}Field0", i);
+    let next = shadows.get(i + 1).map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics));
+    let shadow = &shadows[i];
+    items.push(quote! {
+      #[allow(non_camel_case_types)]
+      #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the field of the layout of the variant, the field of the union.
+      unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
+        type Type = #ty;
+        type Next = ();
+        type Path<__P: #root::Path> = #root::At<__P, Self>;
+        const FIELD: ::core::option::Option<#root::layout::Field> =
+          ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.variant_field(#i, 0));
+      }
+
+      #[allow(dead_code, non_camel_case_types)]
+      #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the variant of the layout of the union: its field.
+      unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
+        type Fields = #marker #ty_generics;
+        type Next = #next;
+        const TAG: ::core::option::Option<::core::primitive::u128> =
+          ::core::option::Option::Some(<#this as #root::Pun>::LAYOUT.variant_tag(#i));
+      }
+    });
+  }
+  let first = shadows.first().map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics));
+  Ok(quote! {
+    const _: () = {
+      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      const _: (
+        fn(#root::layout::Rule),
+        fn(#root::layout::Op),
+        fn(#root::layout::Field),
+        fn(#root::layout::Enum),
+        fn(#root::layout::Variant),
+      ) = #root::layout::Layout::PIN;
+
+      #(#items)*
+
+      // SAFETY: the fields of a `repr(C)` union are at offset 0; a value is taken to be valid if
+      // it is one of them, and nothing is known of one (see `Layout::union`).
+      unsafe impl #impl_generics #root::Pun for #this #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = #first;
+        type Walks = ();
+        type Pointee = ();
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout = #root::layout::Layout::union::<Self>(
+          const { &#root::layout::Enum::union(const { &[#(#variants),*] }) },
         );
       }
     };

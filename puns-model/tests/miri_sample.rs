@@ -16,6 +16,9 @@
 //! | the address checked (aligned here, see `misaligned`)   | `[u8; 2] -> u16`                   |
 //! | an enum with fields checked: the tag, then the variant | `u32 -> Shape`                     |
 //! | a target with padding, read from initialized bytes     | `[u8; 4] -> PadMid`                |
+//! | the tags of a variant (a niche: several, `RANGES`)     | `u8 -> MaybeFlag`                  |
+//! | a direct tag of two bytes, no `repr` (widened)         | `[u8; 4] -> Wid`                   |
+//! | a union, field by field                                | `u8 -> ChoiceU`                    |
 //!
 //! A pair is not there for what the analysis proves of it: an enum proven variant by variant
 //! (`Shape -> Drawing`) runs the same code as `bool -> u8`, nothing, and an enum checked from an
@@ -38,7 +41,8 @@ fn sample() {
   // with the full alphabets.
   puns_model::pairs!(check_pair, 3;
     (bool, u8), ([bool; 2], u16), (u8, bool), (u16, (u8, bool)), (u16, NotOneOne), (u8, SoftBit),
-    ([u8; 2], u16), (u32, Shape), ([u8; 4], PadMid),
+    ([u8; 2], u16), (u32, Shape), ([u8; 4], PadMid), (u8, MaybeFlag), ([u8; 4], Wid),
+    (u8, ChoiceU),
   );
   // Natively, every pair of a few types of each size as well: about a hundred pairs, which is
   // what builds in seconds (each pair is an instance of the analysis). Not compiled under Miri.
@@ -48,6 +52,17 @@ fn sample() {
     puns_model::all_pairs!(6; u16, [bool; 2], (u8, bool), Aligned, Opt, NotOneOne);
     puns_model::all_pairs!(4; [u8; 3], Wide, Triple);
     puns_model::all_pairs!(4; u32, char, PadMid, Shape, Drawing);
+    // What is new of a kind, a pair or two each, both ways where both mean something (every pair
+    // of these types is in the full run): bytes that may be uninitialized, `MaybeUninit`, a
+    // variant without values, enums without `repr` (niches, a niche in a niche, two niches in one
+    // byte, a direct tag, a widened one, from what is not an enum and from an enum), unions.
+    puns_model::pairs!(check_pair, 8;
+      (Zero, u8), (u8, Zero), (Zero, bool), (u8, core::mem::MaybeUninit<u8>),
+      (core::mem::MaybeUninit<u8>, u8), (ByteZero, u16), ([u8; 2], Never), (Never, Opt),
+      (u8, MaybeFlag), (bool, MaybeFlag), (MaybeFlag, u8), (u8, NzOpt), (u8, Option<Option<bool>>),
+      ([u8; 2], Mixed), (Mixed, Flags2), (Opt, NestPair), ((u8, bool), Pair), (u32, Letter),
+      (Letter, u32), ([u8; 4], Wid), (Wid, Wid), (u8, ChoiceU), (ChoiceU, u8), ([u8; 2], FlagsU),
+    );
   }
   puns_model::finish("sample");
 }

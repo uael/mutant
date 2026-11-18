@@ -130,6 +130,25 @@ scalar_oracle! {
   u32be => |_v| true, true;
 }
 
+/// Two niches in one byte, after the values of the `bool` (`Some(None)`, 2) and where `rustc`
+/// puts the other, read from a value of it (below the valid values today: 255).
+impl Oracle for Option<Option<bool>> {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    let none = None::<Option<bool>>;
+    // SAFETY: a byte of a niche, which `rustc` writes (`None` is no padding).
+    let none = u128::from(unsafe { *core::ptr::from_ref(&none).cast::<u8>() });
+    Ok(v <= 2 || v == none)
+  }
+}
+
+/// A niche in a `bool`: `None` is 2.
+impl Oracle for Option<bool> {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    Ok(int(b, off, 1, true, reads)? <= 2)
+  }
+}
+
 impl<const V: u8> Oracle for u8c<V> {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
     Ok(int(b, off, 1, true, reads)? == u128::from(V))

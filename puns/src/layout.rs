@@ -9,6 +9,8 @@
 
 use core::mem;
 
+#[doc(hidden)]
+pub use crate::discover::Desc;
 use crate::ptr;
 
 // -------------------------------------------------------------------------------------------------
@@ -83,6 +85,13 @@ impl Spec {
     Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
   }
 
+  /// A scalar of `size` bytes (at most 16) of native byte order that accepts every initialized
+  /// bit pattern: the tag of an enum that `discover.rs` found.
+  pub(crate) const fn of_size(size: usize) -> Self {
+    assert!(size <= 16, "a scalar is at most 16 bytes wide");
+    Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
+  }
+
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
   #[inline]
   #[must_use]
@@ -126,6 +135,30 @@ impl Spec {
     let full = ranges.len() == 1 && ranges[0].0 == 0 && ranges[0].1 == max;
     let valid = if full { Valid::Any } else { Valid::In(ranges) };
     Self { valid, known: valid, ..self }
+  }
+
+  /// Same as `self`, for a scalar that may be uninitialized: what a target requires is still
+  /// `self` (initialized, and one of its values), but nothing is known of what a source holds
+  /// there, not even that it is initialized.
+  ///
+  /// This is a byte that is either a byte of a tag, whose value is the one that `self` accepts,
+  /// or padding, without a way to tell which: the bytes of a tag that `rustc` widened past its
+  /// values, in an enum without `repr` (see `discover.rs`). Requiring the value is right in
+  /// either case, and so is knowing nothing.
+  ///
+  /// # Panics
+  /// If `self` accepts every initialized value, or uninitialized bytes: such a scalar is
+  /// [`Spec::uninit`].
+  #[must_use]
+  pub const fn maybe_uninit(self) -> Self {
+    assert!(matches!(self.valid, Valid::In(_)), "a scalar that may be uninitialized restricts");
+    Self { known: Valid::Uninit, ..self }
+  }
+
+  /// Whatever a source may hold uninitialized bytes in this scalar.
+  #[inline]
+  pub(crate) const fn may_be_uninit(&self) -> bool {
+    matches!(self.known, Valid::Uninit)
   }
 
   /// Same as `self`, for a scalar whose bits are not the value of an unsigned integer: a signed
@@ -190,7 +223,6 @@ impl Spec {
   pub(crate) const fn is_soft(&self) -> bool {
     matches!(self.known, Valid::Any) && matches!(self.valid, Valid::In(_))
   }
-
   /// Same as `self`, read in another byte order.
   #[inline]
   #[must_use]
@@ -247,7 +279,7 @@ impl Spec {
 }
 
 #[inline(always)]
-const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
+pub(crate) const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
   let mut i = 0;
   // A few ranges: a comparison each, without a branch, so that the validation of a slice can be
   // vectorised (see `validate::validate_elems`).
@@ -398,6 +430,9 @@ pub struct Pointer {
   pub(crate) aim: Aim,
   /// An offset whose bytes are all zero is no pointer.
   pub(crate) nullable: bool,
+  /// The type of the pointer has no value whose bytes are all zero (its offset is a `NonZero`):
+  /// found by [`Layout::pointer`], not told.
+  pub(crate) nonzero: bool,
   /// Size of the offset, which is the size of the pointer: 1 to 16 bytes.
   pub(crate) width: usize,
   /// Byte order of the offset.
@@ -417,7 +452,7 @@ impl Pointer {
     (size, align): (usize, usize),
   ) -> Self {
     assert!(width >= 1 && width <= 16, "the offset of a pointer is 1 to 16 bytes");
-    Self { scheme, aim, nullable: false, width, endian, size, align }
+    Self { scheme, aim, nullable: false, nonzero: false, width, endian, size, align }
   }
 
   /// The size and the alignment of `T`, which a pointer aims at.
@@ -474,7 +509,7 @@ impl Pointer {
   /// at nothing.
   #[must_use]
   pub const fn or_null(self) -> Self {
-    Self { nullable: true, ..self }
+    Self { nullable: true, nonzero: false, ..self }
   }
 
   /// Whatever an offset whose bytes are all zero is no pointer ([`Pointer::or_null`]).
@@ -505,7 +540,10 @@ impl Pointer {
         (Aim::Text, Aim::Text) => true,
         _ => false,
       };
-    if fits { Some(to.nullable || !self.nullable) } else { None }
+    // What may be zero (a null, or an offset of zero of a type that has one) is read as what may
+    // not be only when it is not, which is then checked at run time.
+    let zero = self.nullable || !self.nonzero;
+    if fits { Some(to.nullable || !to.nonzero && !self.nullable || !zero) } else { None }
   }
 
   /// Whatever two pointers are the same, as far as the pointers themselves go.
@@ -518,6 +556,7 @@ impl Pointer {
     aims
       && str_equals(self.scheme, other.scheme)
       && self.nullable == other.nullable
+      && self.nonzero == other.nonzero
       && self.width == other.width
       && self.endian.equals(other.endian)
       && self.size == other.size
@@ -542,6 +581,11 @@ const fn str_equals(a: &str, b: &str) -> bool {
 }
 
 /// Layout of an enum with fields, see [`Layout::enumeration`].
+///
+/// The tag is a scalar at a fixed place: of the representation that Rust specifies, or of the one
+/// that `rustc` chose, as `discover.rs` found it. In the second case it may be a niche: a scalar
+/// of the fields of one variant (the one that holds the tag), whose other values are the
+/// other variants.
 #[derive(Debug)]
 pub struct Enum {
   /// A scalar whose valid values are the tags of the variants.
@@ -549,6 +593,8 @@ pub struct Enum {
   pub(crate) variants: &'static [Variant],
   /// Size and alignment that the representation of the enum specifies.
   pub(crate) specified: (usize, usize),
+  /// A union: no tag, its variants are its fields, and a value is valid if it is one of them.
+  pub(crate) union: bool,
 }
 
 impl Enum {
@@ -589,8 +635,33 @@ impl Enum {
       assert!(fields == 0, "not where the fields of the variants are");
       (tail_offset(size, align, usize::MAX), align)
     };
-    Self { tag: Field::new(0, tag), variants, specified }
+    Self { tag: Field::new(0, tag), variants, specified, union: false }
   }
+
+  /// The enum that `rustc` laid out, as `discover.rs` found it: a tag at `offset`, and the
+  /// `variants` in the order of their declarations, of an enum of size and alignment `specified`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discovered(
+    tag: &'static Layout,
+    offset: usize,
+    variants: &'static [Variant],
+    specified: (usize, usize),
+  ) -> Self {
+    Self { tag: Field::new(offset, tag), variants, specified, union: false }
+  }
+
+  /// The `repr(C)` union whose `fields` are given, each as a variant of one field (at offset 0),
+  /// in the order of their declarations (see [`Layout::union`]).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn union(fields: &'static [Variant]) -> Self {
+    Self { tag: Field::new(0, &NO_TAG), variants: fields, specified: (0, 1), union: true }
+  }
+
+  /// An enum without a variant that a value can be: no value.
+  const NEVER: Self =
+    Self { tag: Field::new(0, &NO_TAG), variants: &[], specified: (0, 1), union: false };
 
   /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
   /// `shadows` (see [`Enum::new`]).
@@ -610,10 +681,112 @@ impl Enum {
 /// A variant of an enum with fields, see [`Layout::enumeration`].
 #[derive(Copy, Clone, Debug)]
 pub struct Variant {
-  /// Value of the tag.
+  /// Value of the tag; with `ranges`, what tells the variant from the others in the lists of
+  /// types (its index, see `deep.rs`).
   pub(crate) tag: u128,
-  /// The enum when it is this variant: a struct of its fields, in which the tag is padding.
+  /// The values of the tag of this variant, sorted, if it is not `tag` alone: several for the
+  /// variant of a niche, none for a variant that no value can be (it holds an uninhabited type).
+  pub(crate) ranges: Option<&'static [(u128, u128)]>,
+  /// The tag is in the fields of this variant: a niche.
+  pub(crate) holds_tag: bool,
+  /// The enum when it is this variant: a struct of its fields, in which the tag is padding (but
+  /// for the variant that holds it).
   pub(crate) layout: &'static Layout,
+}
+
+/// The values of the tag of a variant, one range at a time.
+#[derive(Copy, Clone)]
+pub(crate) struct Tags {
+  one: (u128, u128),
+  ranges: Option<&'static [(u128, u128)]>,
+}
+
+impl Tags {
+  /// The values `lo..=hi`.
+  pub(crate) const fn range(lo: u128, hi: u128) -> Self {
+    Self { one: (lo, hi), ranges: None }
+  }
+
+  /// The values of `ranges`, sorted.
+  pub(crate) const fn of(ranges: &'static [(u128, u128)]) -> Self {
+    Self { one: (0, 0), ranges: Some(ranges) }
+  }
+
+  pub(crate) const fn len(&self) -> usize {
+    match self.ranges {
+      Some(ranges) => ranges.len(),
+      None => 1,
+    }
+  }
+
+  pub(crate) const fn get(&self, index: usize) -> (u128, u128) {
+    match self.ranges {
+      Some(ranges) => ranges[index],
+      None => self.one,
+    }
+  }
+
+  pub(crate) const fn has(&self, value: u128) -> bool {
+    let mut i = 0;
+    while i < self.len() {
+      let (lo, hi) = self.get(i);
+      if lo <= value && value <= hi {
+        return true;
+      }
+      i += 1;
+    }
+    false
+  }
+
+  /// Whatever a value of `self` is one of `other`.
+  pub(crate) const fn meets(&self, other: &Tags) -> bool {
+    let (mut mine, mut theirs) = (0, 0);
+    while mine < self.len() && theirs < other.len() {
+      let ((lo, hi), (other_lo, other_hi)) = (self.get(mine), other.get(theirs));
+      if lo <= other_hi && other_lo <= hi {
+        return true;
+      }
+      if hi < other_hi {
+        mine += 1;
+      } else {
+        theirs += 1;
+      }
+    }
+    false
+  }
+
+  /// Whatever every value of `self` is one of `other`.
+  pub(crate) const fn within(&self, other: &Tags) -> bool {
+    let mut i = 0;
+    while i < self.len() {
+      let ((lo, hi), mut j, mut inside) = (self.get(i), 0, false);
+      while j < other.len() {
+        let (a, b) = other.get(j);
+        inside |= a <= lo && hi <= b;
+        j += 1;
+      }
+      if !inside {
+        return false;
+      }
+      i += 1;
+    }
+    true
+  }
+
+  const fn equals(&self, other: &Tags) -> bool {
+    if self.len() != other.len() {
+      return false;
+    }
+    let mut index = 0;
+    while index < self.len() {
+      let (mine, theirs) = (self.get(index), other.get(index));
+      if mine.0 != theirs.0 || mine.1 != theirs.1 {
+        return false;
+      }
+      index += 1;
+    }
+    true
+  }
 }
 
 impl Variant {
@@ -621,7 +794,31 @@ impl Variant {
   /// - `layout` is the [`Layout::variant`] of its fields.
   #[must_use]
   pub const fn new(tag: u128, layout: &'static Layout) -> Self {
-    Self { tag, layout }
+    Self { tag, ranges: None, holds_tag: false, layout }
+  }
+
+  /// The `index`th variant of an enum that `discover.rs` found: its tag is one of `ranges`
+  /// (sorted, disjoint, none if no value can be this variant), and if it `holds_tag`, the tag is
+  /// in its fields (a niche).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discovered(
+    index: usize,
+    ranges: &'static [(u128, u128)],
+    holds_tag: bool,
+    layout: &'static Layout,
+  ) -> Self {
+    Self { tag: index as u128, ranges: Some(ranges), holds_tag, layout }
+  }
+
+  /// The values of the tag of this variant.
+  pub(crate) const fn tags(&self) -> Tags {
+    Tags { one: (self.tag, self.tag), ranges: self.ranges }
+  }
+
+  /// Whatever a value can be this variant: a value of the tag is, and its fields can be.
+  pub(crate) const fn is_present(&self) -> bool {
+    !matches!(self.ranges, Some(ranges) if ranges.is_empty()) && self.layout.is_inhabited()
   }
 
   /// Fields, by offset from the start of the enum.
@@ -740,6 +937,35 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
   }
 }
 
+/// Whatever the type `P`, the offset of a self-relative pointer, has no value whose bytes are all
+/// zero: `Option<P>` has the size of `P` (a niche in it), with `None` all zeros.
+///
+/// # Panics
+/// If `Option<P>` has the size of `P` with a `None` that is not zeros: a niche that is not zero,
+/// which tells of values of the offset that are no pointer, and which is not supported.
+const fn excludes_zero<P>() -> bool {
+  if size_of::<Option<P>>() != size_of::<P>() {
+    return false;
+  }
+  let none = mem::MaybeUninit::new(None::<P>);
+  let mut i = 0;
+  while i < size_of::<P>() {
+    // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2 of
+    // `discover.rs`).
+    let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
+    assert!(
+      byte == 0,
+      "the offset of a self-relative pointer excludes values other than zero (a niche that is not \
+       zero): not supported, nothing tells which"
+    );
+    i += 1;
+  }
+  true
+}
+
+/// The tag of an enum that no value can be.
+const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
+
 /// What [`Layout::PIN`] is made of.
 fn pin<T>(_: T) {}
 
@@ -762,6 +988,47 @@ impl Layout {
   #[must_use]
   pub const fn uninit<T>() -> mem::MaybeUninit<T> {
     mem::MaybeUninit::uninit()
+  }
+
+  /// The layout of the enum `E` without `repr`, found by experiments on a sample of each of its
+  /// `V` variants (anything for a variant that has no value) and its `fields`, observed on the
+  /// sample: see `discover.rs`. For `#[derive(Pun)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discover<E, const V: usize>(
+    samples: &[mem::MaybeUninit<E>; V],
+    fields: &[&[Field]; V],
+  ) -> Desc<V> {
+    crate::discover::discover(samples, fields)
+  }
+
+  /// A valid `T`, made of nothing but its layout (every scalar the least of its values), for the
+  /// samples of the variants of an enum without `repr`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn sample<T: crate::Pun>() -> mem::MaybeUninit<T> {
+    crate::discover::sample::<T>()
+  }
+
+  /// `value`, as a sample (see [`Layout::discover`]).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn wrap<T>(value: T) -> mem::MaybeUninit<T> {
+    mem::MaybeUninit::new(value)
+  }
+
+  /// Whatever a value with fields of these layouts can be made.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn inhabited_all(fields: &[&'static Layout]) -> bool {
+    let mut i = 0;
+    while i < fields.len() {
+      if !fields[i].is_inhabited() {
+        return false;
+      }
+      i += 1;
+    }
+    true
   }
 
   /// The layout of a `repr(C)` struct whose fields have the given sizes and alignments, after
@@ -818,6 +1085,25 @@ impl Layout {
       kind: Kind::Scalar(spec),
       size: spec.size,
       align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: spec.is_constrained() as usize,
+      uniform: match spec.valid {
+        Valid::Uninit => Uniform::Pad,
+        Valid::Any => Uniform::Any,
+        Valid::In(_) => Uniform::No,
+      },
+      has_rules: false,
+    }
+  }
+
+  /// Layout of the tag of an enum that `discover.rs` found: a scalar of no type of its own, so of
+  /// no alignment.
+  pub(crate) const fn tag(spec: Spec) -> Self {
+    Self {
+      kind: Kind::Scalar(spec),
+      size: spec.size,
+      align: 1,
       tail: 0,
       unsized_: false,
       leaves: spec.is_constrained() as usize,
@@ -914,6 +1200,15 @@ impl Layout {
   #[must_use]
   pub const fn pointer<P, T>(pointer: Pointer) -> Self {
     assert!(size_of::<P>() == pointer.width, "a self-relative pointer is its offset");
+    // Whatever the type has no value of zeros: `Option` of it has its size, `None` being zeros (a
+    // `NonZero`). A niche elsewhere would tell of values of the offset that are no pointer, which
+    // nothing here can name: refused.
+    let nonzero = excludes_zero::<P>();
+    assert!(
+      !(nonzero && pointer.nullable),
+      "a self-relative pointer that may be null has a value of zeros: its offset is no `NonZero`"
+    );
+    let pointer = Pointer { nonzero, ..pointer };
     assert!(
       size_of::<T>() == pointer.size && align_of::<T>() == pointer.align,
       "the `POINTER` of a `SelfRelative` type is made for its `Target`"
@@ -929,6 +1224,39 @@ impl Layout {
       uniform: Uniform::No,
       has_rules: false,
     }
+  }
+
+  /// The layout of `Option<P>`, where `P` is a self-relative pointer whose `POINTER` is `pointer`
+  /// and which aims at `T`: the same pointer, that may be null. [`self_relative!`](crate::self_relative)
+  /// gives it as `Pun::OPTION`, by which `Option<P>` is that pointer.
+  ///
+  /// `Option<P>` is that when it has the size of `P` and `None` is all zero bytes, which is
+  /// checked here. Then `rustc` puts `None` in a niche of the bytes of `P` (all of them are of
+  /// its offset, initialized: S1 of [`SelfRelative`](crate::SelfRelative)), which is zeros, and
+  /// leaves the bytes of `Some(p)` the ones of `p` (R1 of `discover.rs`), which are not all zero:
+  /// a value of all zero bytes aims at nothing, any other is a pointer as `P` is (S5).
+  ///
+  /// # Panics
+  /// If `pointer` may be null already, if `Option<P>` is larger than `P` (an offset without a
+  /// niche at zero, such as a byte array, has a tag of its own in `Option`; a `NonZero` has
+  /// one), or if `None` is not zeros.
+  #[must_use]
+  pub const fn nullable<P, T>(pointer: Pointer) -> Self {
+    assert!(!pointer.is_nullable(), "`Option` of a pointer that may be null is not a pointer");
+    assert!(
+      size_of::<Option<P>>() == size_of::<P>(),
+      "`Option` of this self-relative pointer is larger than it: its offset has no niche at zero \
+       (a `NonZero` has one), so `None` is not the pointer of zeros"
+    );
+    let none = mem::MaybeUninit::new(None::<P>);
+    let mut i = 0;
+    while i < size_of::<P>() {
+      // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2).
+      let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
+      assert!(byte == 0, "`None` of this self-relative pointer is not zeros");
+      i += 1;
+    }
+    Self::pointer::<Option<P>, T>(pointer.or_null())
   }
 
   /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting
@@ -1160,10 +1488,18 @@ impl Layout {
       "the enum is not laid out as its representation specifies"
     );
     assert!(spec.is_integer() && tag.offset + spec.size <= size, "tag out of bounds");
-    let mut i = 0;
+    let (mut i, mut holders) = (0, 0);
     while i < layout.variants.len() {
       let variant = &layout.variants[i];
-      assert!(spec.contains(variant.tag), "not a value of the tag");
+      let tags = variant.tags();
+      let mut j = 0;
+      while j < tags.len() {
+        let (lo, hi) = tags.get(j);
+        assert!(lo <= hi && spec.contains(lo) && spec.contains(hi), "not a value of the tag");
+        assert!(j == 0 || tags.get(j - 1).1 < lo, "the tags of a variant are not sorted");
+        j += 1;
+      }
+      holders += variant.holds_tag as usize;
       let (fields, mut j, mut end) = (variant.fields(), 0, 0);
       assert!(variant.layout.size == size, "not a variant of this enum");
       while j < fields.len() {
@@ -1172,8 +1508,9 @@ impl Layout {
         if field.layout.size > 0 {
           let field_end = field.offset + field.layout.size;
           assert!(field.offset >= end && field_end <= size, "fields overlap or are out of bounds");
+          // Only the variant of a niche holds the tag.
           assert!(
-            field_end <= tag.offset || field.offset >= tag.offset + spec.size,
+            variant.holds_tag || field_end <= tag.offset || field.offset >= tag.offset + spec.size,
             "a field overlaps the tag"
           );
           end = field_end;
@@ -1182,11 +1519,12 @@ impl Layout {
       }
       let mut j = 0;
       while j < i {
-        assert!(layout.variants[j].tag != variant.tag, "two variants have the same tag");
+        assert!(!layout.variants[j].tags().meets(&tags), "two variants have the same tag");
         j += 1;
       }
       i += 1;
     }
+    assert!(holders <= 1, "the tag is in the fields of two variants");
     Self {
       kind: Kind::Enum(layout),
       size,
@@ -1266,6 +1604,100 @@ impl Layout {
     layout.variants[variant].tag
   }
 
+  /// The values of the tag of the `variant`th variant of an enum, if they are not
+  /// [`Layout::variant_tag`] alone.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn variant_ranges(&self, variant: usize) -> Option<&'static [(u128, u128)]> {
+    let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
+    layout.variants[variant].ranges
+  }
+
+  /// Layout of a type that has no value, such as `Infallible` or an enum without variants.
+  #[must_use]
+  pub const fn uninhabited<T>() -> Self {
+    Self {
+      kind: Kind::Enum(&Enum::NEVER),
+      size: size_of::<T>(),
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
+    }
+  }
+
+  /// Whatever a value of the layout can exist: one of a type without values is not. (A slice
+  /// can be empty, an array of no element too.)
+  #[must_use]
+  pub const fn is_inhabited(&self) -> bool {
+    match self.kind {
+      Kind::Scalar(_) | Kind::Pattern(_) | Kind::Pointer(_) | Kind::Slice(_) => true,
+      Kind::Array(elem, len) => len == 0 || elem.is_inhabited(),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          if !fields[i].layout.unsized_ && !fields[i].layout.is_inhabited() {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      Kind::Enum(layout) => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].is_present() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
+    }
+  }
+
+  /// Layout of the `repr(C)` union `T`, whose fields are the variants of `layout` (see
+  /// [`Enum::union`]).
+  ///
+  /// The validity of unions is not settled by the language. What is taken here is what every rule
+  /// that is considered allows: as a target, bytes are a union if they are one of its fields
+  /// (where no rule requires less, this requires more); as a source, nothing is known of them, not
+  /// even that they are initialized (a field may be written over another, and some rules let a
+  /// union hold any bytes).
+  ///
+  /// # Panics
+  /// If a field is not at offset 0 or out of the union, or holds a self-relative pointer.
+  #[must_use]
+  pub const fn union<T>(layout: &'static Enum) -> Self {
+    assert!(layout.union, "not a union");
+    let (size, mut i) = (size_of::<T>(), 0);
+    while i < layout.variants.len() {
+      let variant = &layout.variants[i];
+      let fields = variant.fields();
+      assert!(variant.layout.size == size, "not a field of this union");
+      assert!(fields.len() <= 1, "a field of a union is one field");
+      if fields.len() == 1 {
+        let field = &fields[0];
+        assert!(field.offset == 0 && field.layout.size <= size, "the fields of a union are at 0");
+        assert!(!field.layout.unsized_, "the fields of a union are sized");
+      }
+      assert!(!variant.layout.has_pointers(), "a union holds no self-relative pointer");
+      i += 1;
+    }
+    Self {
+      kind: Kind::Enum(layout),
+      size,
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
+    }
+  }
+
   /// The `index`th field, as declared, of the `variant`th variant of an enum.
   #[doc(hidden)]
   #[must_use]
@@ -1299,7 +1731,11 @@ impl Layout {
       Uniform::No => {}
     }
     match self.kind {
-      Kind::Scalar(spec) => (!matches!(spec.valid, Valid::Uninit), self.size),
+      // What a value holds (`always`) is what is known of it; what is required of one, what is
+      // valid.
+      Kind::Scalar(spec) => {
+        (!matches!(if always { spec.known } else { spec.valid }, Valid::Uninit), self.size)
+      }
       // The bytes of a pointer are initialized.
       Kind::Pointer(_) => (true, self.size),
       Kind::Pattern(_) | Kind::Slice(_) => panic!("not sized"),
@@ -1320,6 +1756,8 @@ impl Layout {
         }
         (false, self.size)
       }
+      // Nothing is known of what a union holds; a target may need what any field needs.
+      Kind::Enum(layout) if layout.union && always => (false, self.size),
       Kind::Enum(layout) => {
         let (start, end) = (layout.tag.offset, layout.tag.offset + layout.tag.layout.size);
         if offset >= start && offset < end {
@@ -1329,6 +1767,11 @@ impl Layout {
         let (mut i, mut every, mut some) = (0, true, false);
         let mut stop = if offset < start { start } else { self.size };
         while i < layout.variants.len() {
+          // A variant that no value can be has nothing to tell.
+          if !layout.variants[i].is_present() {
+            i += 1;
+            continue;
+          }
           let (init, end) = layout.variants[i].layout.segment(offset, always, checked);
           (every, some) = (every && init, some || init);
           if end < stop {
@@ -1643,11 +2086,22 @@ impl Layout {
       Kind::Pattern(dfa) => dfa.states[0].accept,
       // No pointer.
       Kind::Pointer(pointer) => pointer.nullable,
+      // A field of a union that zeros are.
+      Kind::Enum(layout) if layout.union => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].is_present() && layout.variants[i].layout.zeroable() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
       // The variant whose tag is 0, if any.
       Kind::Enum(layout) => {
         let mut i = 0;
         while i < layout.variants.len() {
-          if layout.variants[i].tag == 0 {
+          if layout.variants[i].tags().has(0) && layout.variants[i].is_present() {
             let (fields, mut j) = (layout.variants[i].fields(), 0);
             while j < fields.len() {
               if !fields[j].layout.zeroable() {
@@ -1680,8 +2134,13 @@ impl Layout {
     match (self.kind, other.kind) {
       // What a scalar requires, and what it is known to be: a layout that only requires what
       // another guarantees (`valid(..)` on a `u8`, and a `bool`) is not the same.
+      //
+      // A scalar that may be uninitialized is equal to none: what it is lies between what it
+      // requires and what it is known to be, which two types can have the same of while one has
+      // padding where the other does not.
       (Kind::Scalar(a), Kind::Scalar(b)) => {
-        a.size == b.size
+        !a.may_be_uninit()
+          && a.size == b.size
           && same_valid(a.valid, b.valid, a.endian, b.endian)
           && same_valid(a.known, b.known, a.endian, b.endian)
       }
@@ -1712,6 +2171,7 @@ impl Layout {
       (Kind::Pointer(a), Kind::Pointer(b)) => a.same(&b),
       (Kind::Enum(a), Kind::Enum(b)) => {
         if a.tag.offset != b.tag.offset
+          || a.union != b.union
           || !a.tag.layout.equals(b.tag.layout)
           || a.variants.len() != b.variants.len()
         {
@@ -1720,7 +2180,8 @@ impl Layout {
         let mut i = 0;
         while i < a.variants.len() {
           let (x, y) = (&a.variants[i], &b.variants[i]);
-          if x.tag != y.tag || !x.layout.equals(y.layout) {
+          if !x.tags().equals(&y.tags()) || x.holds_tag != y.holds_tag || !x.layout.equals(y.layout)
+          {
             return false;
           }
           i += 1;

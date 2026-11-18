@@ -24,7 +24,7 @@
 //! The cost of an analysis is therefore proportional to the number of fields of the types, not to
 //! their size.
 
-use crate::layout::{Dfa, Kind, Layout, Pointer, Spec, Uniform, Valid, max_value};
+use crate::layout::{Dfa, Endian, Kind, Layout, Pointer, Spec, Tags, Uniform, Valid, max_value};
 
 // -------------------------------------------------------------------------------------------------
 // `Cursor`
@@ -45,6 +45,17 @@ pub enum RunKind {
   /// A self-relative pointer. As a source, its bytes are initialized and nothing more is made of
   /// them; as a target, only a pointer proves it.
   Pointer(Pointer),
+}
+
+impl RunKind {
+  /// Whatever a source may hold uninitialized bytes there.
+  const fn may_be_uninit(&self) -> bool {
+    match self {
+      RunKind::Pad => true,
+      RunKind::Atom(spec) => spec.may_be_uninit(),
+      RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => false,
+    }
+  }
 }
 
 /// Consecutive bytes of the same nature: `start..end` are offsets from the root of the layout.
@@ -88,6 +99,7 @@ struct Repeat {
 }
 
 /// Forward-only iterator over the runs of a layout.
+#[derive(Copy, Clone)]
 pub struct Cursor {
   stack: [Frame; MAX_DEPTH],
   depth: usize,
@@ -96,6 +108,64 @@ pub struct Cursor {
   target: bool,
   /// What of the target may be checked at run time, see [`Checked`].
   checked: Checked,
+  /// What the source is known to hold under some bytes of the target, whatever its own layout
+  /// says there: the tag of an enum, when a variant of the target is related to a variant of the
+  /// source, or to a source whose bytes there are one of the tags of that variant.
+  known: Known,
+}
+
+/// The most ranges that [`Known`] holds: past them, nothing is known.
+const KNOWN: usize = 8;
+
+/// Values that the source is known to hold at `start..end`, as an integer of `endian` byte order:
+/// the tag of an enum. Nothing is known if there are no ranges.
+#[derive(Copy, Clone)]
+struct Known {
+  start: usize,
+  end: usize,
+  endian: Endian,
+  ranges: [(u128, u128); KNOWN],
+  len: usize,
+}
+
+impl Known {
+  const NONE: Self =
+    Self { start: 0, end: 0, endian: Endian::Little, ranges: [(0, 0); KNOWN], len: 0 };
+
+  /// The values of both `a` and `b`, at `start..start + size`; nothing if they are too many.
+  const fn both(start: usize, size: usize, endian: Endian, a: &Tags, b: &Tags) -> Self {
+    let mut known = Self { start, end: start + size, endian, ..Self::NONE };
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+      let ((lo_a, hi_a), (lo_b, hi_b)) = (a.get(i), b.get(j));
+      let (lo, hi) = (if lo_a > lo_b { lo_a } else { lo_b }, if hi_a < hi_b { hi_a } else { hi_b });
+      if lo <= hi {
+        if known.len == KNOWN {
+          return Self::NONE;
+        }
+        known.ranges[known.len] = (lo, hi);
+        known.len += 1;
+      }
+      if hi_a < hi_b {
+        i += 1;
+      } else {
+        j += 1;
+      }
+    }
+    known
+  }
+
+  /// Whatever the byte at `pos` holds a known value.
+  const fn covers(&self, pos: usize) -> bool {
+    self.len > 0 && self.start <= pos && pos < self.end
+  }
+
+  /// The values known of exactly `start..end`, read in `endian` byte order, if any.
+  const fn of(&self, start: usize, end: usize, endian: Endian) -> Option<&[(u128, u128)]> {
+    let same =
+      self.start == start && self.end == end && (end - start == 1 || self.endian.equals(endian));
+    if self.len > 0 && same { Some(self.ranges.split_at(self.len).0) } else { None }
+  }
 }
 
 /// Which rules of a target may be checked at run time: the rules that read the bytes of their
@@ -120,7 +190,7 @@ impl Cursor {
     checked: Checked,
   ) -> Self {
     let frame = Frame { layout: root, base, leaf: 0, field: 0 };
-    Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked }
+    Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked, known: Known::NONE }
   }
 
   /// Whatever the padding at the top of the stack is read by a rule that may be checked: one of
@@ -408,9 +478,34 @@ pub const fn relate_at(
 ) -> Relation {
   assert!(base_a == 0 || matches!(checked, Checked::No), "internal error: shifted source");
   let mut relation = Relation::NEW;
+  // A type without values is no value of any other, whatever its bytes (it may have none).
+  if !b.is_inhabited() && a.is_inhabited() {
+    relation.disjoint = Some(start);
+    return relation;
+  }
   let mut a = Cursor::new(a, base_a, false, Checked::No);
   let mut b = Cursor::new(b, base_b, true, checked);
   relate_range(&mut a, &mut b, start, end, &mut relation);
+  relation
+}
+
+/// [`relate`], knowing what the source holds at some bytes (see [`Known`]).
+const fn relate_known(
+  a: &'static Layout,
+  b: &'static Layout,
+  end: usize,
+  checked: Checked,
+  known: &Known,
+) -> Relation {
+  let mut relation = Relation::NEW;
+  if !b.is_inhabited() && a.is_inhabited() {
+    relation.disjoint = Some(0);
+    return relation;
+  }
+  let mut a = Cursor::new(a, 0, false, Checked::No);
+  let mut b = Cursor::new(b, 0, true, checked);
+  b.known = *known;
+  relate_range(&mut a, &mut b, 0, end, &mut relation);
   relation
 }
 
@@ -466,6 +561,20 @@ const fn relate_range(
         pos += enum_b.size;
         continue;
       }
+      // A union: one of its fields.
+      if base_b == pos && pos + enum_b.size <= end && relate_union_from(a, enum_b, pos, leaf, out) {
+        pos += enum_b.size;
+        continue;
+      }
+      // From something else, variant by variant: the ones whose tags the source can hold there.
+      if base_b == pos
+        && pos + enum_b.size <= end
+        && !enum_b.has_pointers()
+        && relate_enum_from(a, enum_b, pos, leaf, &b.known, out)
+      {
+        pos += enum_b.size;
+        continue;
+      }
       // Else, what follows only tells whatever the enum can be checked at run time: which a
       // pointer in one of its variants cannot.
       out.mark(leaf, pos);
@@ -477,7 +586,7 @@ const fn relate_range(
     match run_b.kind {
       // Padding that a rule reads accepts everything but padding.
       RunKind::Pad if b.padding_is_read(a.stack[0].layout) => {
-        if matches!(run_a.kind, RunKind::Pad) {
+        if run_a.kind.may_be_uninit() && !b.known.covers(pos) {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -486,7 +595,7 @@ const fn relate_range(
       RunKind::Pad => pos = stop,
       // Unconstrained bytes accept everything but padding.
       RunKind::Any => {
-        if matches!(run_a.kind, RunKind::Pad) {
+        if run_a.kind.may_be_uninit() && !b.known.covers(pos) {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -498,8 +607,15 @@ const fn relate_range(
         pos = stop;
       }
       RunKind::Atom(spec) => {
-        let (pieces, len) = gather(a, run_b.start, run_b.end);
-        match atom_relation(&pieces, len, &spec) {
+        // The tag, whose values may be known.
+        let relation = if let Some(known) = b.known.of(run_b.start, run_b.end, spec.endian) {
+          let Valid::In(ranges) = spec.valid else { panic!("not an atom") };
+          Some(relate_ranges(known, ranges))
+        } else {
+          let (pieces, len) = gather(a, run_b.start, run_b.end);
+          atom_relation(&pieces, len, &spec)
+        };
+        match relation {
           None => out.uninit(pos),
           Some(Rel::Subset) => {}
           Some(rel) => {
@@ -536,8 +652,8 @@ const fn relate_range(
   false
 }
 
-/// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: the variants of `a`
-/// with the ones of `b` that have the same tag.
+/// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: each variant of `a`
+/// with the ones of `b` that its tags are tags of, knowing that the tag is one of both.
 ///
 /// Returns `false`, having done nothing, if their tags are not at the same place.
 const fn relate_enums(
@@ -551,6 +667,10 @@ const fn relate_enums(
     return true;
   }
   let (Kind::Enum(enum_a), Kind::Enum(enum_b)) = (a.kind, b.kind) else { panic!() };
+  // A union is not told by a tag: one only proves the same union.
+  if enum_a.union || enum_b.union {
+    return false;
+  }
   let (Kind::Scalar(tag_a), Kind::Scalar(tag_b)) = (enum_a.tag.layout.kind, enum_b.tag.layout.kind)
   else {
     panic!()
@@ -564,33 +684,215 @@ const fn relate_enums(
   }
   // Whatever some variants of `a` are, and some are not, valid for `b`.
   let (mut some, mut all, mut i) = (false, true, 0);
+  let (tag, size) = (enum_b.tag.offset, tag_b.size);
   while i < enum_a.variants.len() {
-    let (from, mut j) = (&enum_a.variants[i], 0);
-    while j < enum_b.variants.len() && enum_b.variants[j].tag != from.tag {
-      j += 1;
-    }
+    let from = &enum_a.variants[i];
     i += 1;
-    if j == enum_b.variants.len() {
-      // Not a tag of `b`.
-      all = false;
+    // A variant that no value is.
+    if !from.is_present() {
       continue;
     }
-    let to = &enum_b.variants[j];
-    let mut relation = relate(from.layout, to.layout, b.size, Checked::All);
-    mark_rules(from.layout, to.layout, 0, 0, &mut relation);
-    if let Some(offset) = relation.uninit {
-      out.uninit(pos + offset);
+    // Proven if all of its tags are of one variant of `b`, which it proves.
+    let (tags, mut proven, mut j) = (from.tags(), false, 0);
+    while j < enum_b.variants.len() {
+      let to = &enum_b.variants[j];
+      j += 1;
+      if !tags.meets(&to.tags()) {
+        continue;
+      }
+      // What the tag holds in `to`: the tags of both.
+      let known = Known::both(tag, size, tag_b.endian, &tags, &to.tags());
+      let mut relation = relate_known(from.layout, to.layout, b.size, Checked::All, &known);
+      mark_rules(from.layout, to.layout, 0, 0, &mut relation);
+      if let Some(offset) = relation.uninit {
+        out.uninit(pos + offset);
+      }
+      if let Some(offset) = relation.pointer {
+        out.pointer(pos + offset);
+      }
+      some |= relation.disjoint.is_none();
+      proven |= relation.infallible() && tags.within(&to.tags());
     }
-    if let Some(offset) = relation.pointer {
-      out.pointer(pos + offset);
-    }
-    (some, all) = (some || relation.disjoint.is_none(), all && relation.infallible());
+    // Else some of its tags are not of `b`, or of several variants, or the fields of one are
+    // not proven.
+    all &= proven;
   }
   if !all {
     out.mark(leaf, pos);
   }
   if !some && out.disjoint.is_none() {
     out.disjoint = Some(pos);
+  }
+  true
+}
+
+/// Relate what the source `a` holds at `pos` with the enum `b` there, which an enum of the source
+/// did not prove: the tag of `b` is related as a scalar, and each variant whose tags the source
+/// may hold there with what the source holds over the bytes of the enum, knowing that the tag is
+/// one of those (a niche of the variant is then proven by them).
+///
+/// Proven if every value that the source may hold at the tag is the tag of a variant (that has
+/// values), each of which is proven; else the enum is marked, and checked as a whole at run time.
+/// What a variant requires to be initialized must be, if the source may be that variant.
+///
+/// Returns `false`, having done nothing, if the tag cannot be told apart in the source.
+const fn relate_enum_from(
+  a: &Cursor,
+  b: &'static Layout,
+  pos: usize,
+  leaf: usize,
+  known: &Known,
+  out: &mut Relation,
+) -> bool {
+  let Kind::Enum(layout) = b.kind else { panic!() };
+  let Kind::Scalar(tag) = layout.tag.layout.kind else { panic!() };
+  if layout.union {
+    return false;
+  }
+  let start = pos + layout.tag.offset;
+  // What the source holds at the tag.
+  let Some(values) = tag_values(a, start, &tag, known) else {
+    // Padding where the tag is: nothing is ever this enum.
+    out.uninit(start);
+    return true;
+  };
+  let (mut some, mut all, mut i) = (false, true, 0);
+  while i < layout.variants.len() {
+    let variant = &layout.variants[i];
+    i += 1;
+    if !variant.is_present() || !values.meets(&variant.tags()) {
+      continue;
+    }
+    let known = Known::both(start, tag.size, tag.endian, &values, &variant.tags());
+    let mut relation = Relation::NEW;
+    let (mut from, mut to) = (*a, Cursor::new(variant.layout, pos, true, Checked::All));
+    to.known = known;
+    relate_range(&mut from, &mut to, pos, pos + b.size, &mut relation);
+    mark_rules(a.stack[0].layout, variant.layout, pos, 0, &mut relation);
+    if let Some(offset) = relation.uninit {
+      out.uninit(offset);
+    }
+    if let Some(offset) = relation.pointer {
+      out.pointer(offset);
+    }
+    some |= relation.disjoint.is_none();
+    all &= relation.infallible();
+  }
+  if !all || !all_tags(&values, layout.variants) {
+    out.mark(leaf, pos);
+  }
+  if !some && out.disjoint.is_none() {
+    out.disjoint = Some(pos);
+  }
+  true
+}
+
+/// Relate what the source `a` holds at `pos` with the union `b` there, which the same union of
+/// the source did not prove: proven if the source proves one of its fields; else checked, field
+/// by field at run time, if none of them would read a byte that may be padding in the source;
+/// else refused.
+///
+/// Returns `false`, having done nothing, if `b` is not a union.
+const fn relate_union_from(
+  a: &Cursor,
+  b: &'static Layout,
+  pos: usize,
+  leaf: usize,
+  out: &mut Relation,
+) -> bool {
+  let Kind::Enum(layout) = b.kind else { panic!() };
+  if !layout.union {
+    return false;
+  }
+  let (mut proven, mut some, mut uninit, mut i) = (false, false, None, 0);
+  while i < layout.variants.len() {
+    let field = &layout.variants[i];
+    i += 1;
+    if !field.is_present() {
+      continue;
+    }
+    let mut relation = Relation::NEW;
+    let (mut from, mut to) = (*a, Cursor::new(field.layout, pos, true, Checked::All));
+    relate_range(&mut from, &mut to, pos, pos + b.size, &mut relation);
+    mark_rules(a.stack[0].layout, field.layout, pos, 0, &mut relation);
+    if relation.uninit.is_none() {
+      proven |= relation.infallible();
+      some |= relation.disjoint.is_none();
+    } else if uninit.is_none() {
+      // Its check would read padding: it cannot be checked.
+      uninit = relation.uninit;
+    }
+  }
+  if proven {
+    return true;
+  }
+  if let Some(offset) = uninit {
+    out.uninit(offset);
+  } else {
+    out.mark(leaf, pos);
+    if !some && out.disjoint.is_none() {
+      out.disjoint = Some(pos);
+    }
+  }
+  true
+}
+
+/// The values that the source `a` may hold at `start`, where a target has the scalar `tag`, as an
+/// integer of its byte order: what is `known` there (the tag of an enum that holds this one in a
+/// niche), else what a scalar of the source of the same size and order is known to be, else any;
+/// `None` if some of these bytes may be uninitialized.
+const fn tag_values(a: &Cursor, start: usize, tag: &Spec, known: &Known) -> Option<Tags> {
+  if let Some(ranges) = known.of(start, start + tag.size, tag.endian) {
+    // Their hull, which holds them.
+    return Some(Tags::range(ranges[0].0, ranges[ranges.len() - 1].1));
+  }
+  let mut from = *a;
+  let (pieces, len) = gather(&mut from, start, start + tag.size);
+  let mut i = 0;
+  while i < len {
+    if pieces[i].kind.may_be_uninit() {
+      return None;
+    }
+    i += 1;
+  }
+  if len == 1
+    && let RunKind::Atom(Spec { size, endian, known: Valid::In(ranges), .. }) = pieces[0].kind
+    && pieces[0].skip == 0
+    && size == tag.size
+    && (size == 1 || endian.equals(tag.endian))
+  {
+    return Some(Tags::of(ranges));
+  }
+  Some(Tags::range(0, max_value(tag.size)))
+}
+
+/// Whatever every value of `values` is a tag of one of `variants` that has values.
+const fn all_tags(values: &Tags, variants: &[crate::layout::Variant]) -> bool {
+  let mut r = 0;
+  while r < values.len() {
+    let (mut next, hi) = values.get(r);
+    r += 1;
+    loop {
+      // The range of the tags of a variant that holds `next`, if any.
+      let (mut found, mut i) = (None, 0);
+      while i < variants.len() && found.is_none() {
+        let tags = variants[i].tags();
+        let mut j = 0;
+        while variants[i].is_present() && j < tags.len() {
+          let (lo, up) = tags.get(j);
+          if lo <= next && next <= up {
+            found = Some(up);
+          }
+          j += 1;
+        }
+        i += 1;
+      }
+      match found {
+        None => return false,
+        Some(up) if up >= hi => break,
+        Some(up) => next = up + 1,
+      }
+    }
   }
   true
 }
@@ -725,6 +1027,8 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
       RunKind::Pad => return None,
       // Whatever a pattern accepts is initialized, and that is all that is made of it here.
       RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => {}
+      // Required to be some values, but a source may hold anything there, padding included.
+      RunKind::Atom(from) if from.may_be_uninit() => return None,
       RunKind::Atom(from) => match if soft { from.valid } else { from.known } {
         valid @ Valid::In(_) => {
           known[i].kind = RunKind::Atom(Spec { valid, ..from });
@@ -1060,6 +1364,7 @@ const fn pattern_target(
           (set, steps) = (next, steps + 1);
         }
       }
+      RunKind::Atom(spec) if spec.may_be_uninit() => return out.uninit(pos),
       RunKind::Atom(spec) => {
         // Each box of the scalar goes through the automaton on its own. Only what the type
         // system enforces is known of it.

@@ -1,0 +1,5 @@
+error: `Pun` is derived for unions of `repr(C)`, whose fields are all at offset 0
+ --> tests/compile-fail/union_without_repr.rs:3:7
+  |
+3 | union Word {
+  |       ^^^^

@@ -267,6 +267,43 @@ pub fn drawing_shape(d: &Drawing) -> Option<&Shape> {
 pub fn bytes_shape(b: &[u8; 4]) -> Option<Shape> {
   try_pun(*b).ok()
 }
+// Enums without `repr`: a niche, proven both ways (every `u32` is a `Ticket`); a direct tag,
+// checked: the tag, then what its variant requires.
+#[derive(Pun, Clone, Copy)]
+pub enum Ticket {
+  Free,
+  Paid(core::num::NonZero<u32>),
+}
+#[derive(Pun, Clone, Copy)]
+pub enum Small {
+  Byte(u8),
+  Flag(bool),
+  Word(u16),
+}
+#[unsafe(no_mangle)]
+pub const fn ticket_u32(t: Ticket) -> u32 {
+  pun(t)
+}
+#[unsafe(no_mangle)]
+pub const fn u32_ticket(w: u32) -> Ticket {
+  pun(w)
+}
+#[unsafe(no_mangle)]
+pub fn bytes_small(b: [u8; 4]) -> Option<Small> {
+  try_pun(b).ok()
+}
+// A union: one of its fields, here the `bool` or a number up to 3.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+pub union Choice {
+  pub flag: bool,
+  pub small: puns::num::u8in<0, 3>,
+}
+#[unsafe(no_mangle)]
+pub fn byte_choice(b: u8) -> Option<Choice> {
+  try_pun(b).ok()
+}
+
 // A rule that walks: a loop over the headers, then the sums.
 #[unsafe(no_mangle)]
 pub fn ipv6(b: &[u8]) -> Option<&Ipv6> {

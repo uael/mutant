@@ -59,7 +59,12 @@
 //!   values. See [`num`] for integers of a given byte order (`u16be`) or value (`u16bec<V>`).
 //! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
 //!   padding, and what each of their bytes can be.
-//! - Enums with fields (`repr(C)`, `repr(u8)`...): their tag, and what each variant is made of.
+//! - Enums with fields, of any `repr` (none too: the layout that `rustc` chose is found): their
+//!   tag, and what each variant is made of. `Option<T>` and `Result<T, E>` too: every `u32` is an
+//!   `Option<NonZero<u32>>`, a `bool` is an `Option<bool>`, and `Option` of a self-relative pointer
+//!   is the same pointer, that may be null.
+//! - `MaybeUninit<T>`: bytes of which nothing is known, which take anything; `Infallible` and enums
+//!   without variants: no value.
 //! - `str`: bytes that are UTF-8.
 //! - What `#[derive(Pun)]` is told: values that a field can take, sizes and lengths that are in
 //!   a field, assertions over fields. See [`macro@Pun`], and the examples.
@@ -179,8 +184,9 @@
 //!
 //! # Enums with fields
 //!
-//! An enum is known by its tag: a variant proves the variant of the same tag, and nothing else
-//! proves an enum.
+//! An enum is known by its tag: a variant proves the variant of the same tag. Something else
+//! proves an enum when what it holds where the tag is can only be tags of variants, each of which
+//! it proves; else the enum is checked, its tag then its variant.
 //!
 //! ```
 //! use puns::Pun;
@@ -209,6 +215,20 @@
 //! // Bytes are a `Shape` if they start with one of its tags, then are what that variant holds.
 //! assert_eq!(puns::try_pun([1u8, 3, 1, 0]), Ok(Shape::Rect(3, true)));
 //! assert!(puns::try_pun::<_, Shape>([1u8, 3, 2, 0]).is_err());
+//!
+//! /// A byte that is always 1, the tag of `Rect`, then what `Rect` holds.
+//! #[derive(Pun, Clone, Copy)]
+//! #[repr(C)]
+//! struct Rect {
+//!   tag: puns::num::u8c<1>,
+//!   size: u8,
+//!   filled: bool,
+//!   unused: u8,
+//! }
+//!
+//! // A `Rect` is a `Shape`: proven, nothing is checked.
+//! let rect = Rect { tag: puns::num::u8c::new(), size: 3, filled: true, unused: 0 };
+//! assert_eq!(puns::pun::<Rect, Shape>(rect), Shape::Rect(3, true));
 //! assert!(puns::try_pun::<_, Shape>([2u8, 0, 0, 0]).is_err());
 //! ```
 //!
@@ -231,12 +251,24 @@
 //! let _: &mut Drawing = puns::pun_mut(&mut shape);
 //! ```
 //!
-//! The layout of an enum with fields that has no `repr` is not specified, and cannot be told on
-//! stable Rust: `#[derive(Pun)]` asks for one.
+//! The layout of an enum with fields that has no `repr` is not specified: `rustc` chooses it. It
+//! is then *found*, by experiments in const evaluation on a value of each variant: where the
+//! fields are, where the tag is (before the fields, or a niche in a field of one variant, as for
+//! `Option<bool>`), and what it is for each variant. An experiment that goes wrong fails to
+//! compile, it never finds a wrong layout. Such an enum is then as precise as one of a `repr`:
 //!
-//! ```compile_fail
-//! #[derive(puns::Pun)]
-//! enum Unspecified { A(u8), B(u16) }
+//! ```
+//! use core::num::NonZero;
+//!
+//! #[derive(puns::Pun, Clone, Copy, Debug, PartialEq)]
+//! enum Ticket {
+//!   Free,
+//!   Paid(NonZero<u32>),
+//! }
+//!
+//! // A niche: `Free` is the 0 that no `NonZero` is, so every `Ticket` is a `u32`.
+//! assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
+//! assert_eq!(puns::try_pun::<u32, Ticket>(7), Ok(Ticket::Paid(NonZero::new(7).unwrap())));
 //! ```
 //!
 //! # Self-relative pointers
@@ -254,6 +286,7 @@
 
 mod analysis;
 mod deep;
+mod discover;
 #[cfg(feature = "verdict")]
 #[doc(hidden)]
 pub mod hook;
@@ -261,6 +294,7 @@ pub mod layout;
 pub mod num;
 mod ptr;
 mod relative;
+mod std_enums;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -302,7 +336,10 @@ pub unsafe trait Scalar {
 ///
 /// # Safety
 /// Not meant to be implemented by hand: use `#[derive(Pun)]`, or [`self_relative!`] for a
-/// self-relative pointer.
+/// self-relative pointer. What an implementation promises is that `LAYOUT` describes the values
+/// of `Self` (every value is valid for it as a source, every valid target is a value), with the
+/// lists of its fields, variants and elements; and that `OPTION`, if it is `Some`, describes the
+/// values of `Option<Self>` the same way, `Option<Self>` having the lists of `Option`.
 pub unsafe trait Pun {
   /// Type of the elements of an array or of a slice, `()` otherwise.
   #[doc(hidden)]
@@ -329,6 +366,16 @@ pub unsafe trait Pun {
   const PROBE: *const Self;
   #[doc(hidden)]
   const LAYOUT: Layout;
+  /// The layout of `Option<Self>`, if `Self` gives it, rather than the one found of `Option` as
+  /// of any enum without `repr` (`discover.rs`).
+  ///
+  /// This is how `Option` of a self-relative pointer is the same pointer, that may be null:
+  /// [`self_relative!`] fills it with [`Layout::nullable`], which checks that `None` is the
+  /// pointer of zeros and nothing else. A crate that implements `Pun` otherwise (which only
+  /// `#[derive(Pun)]` and the macros of this crate do) leaves it `None`. If it is `Some`, it is
+  /// the layout of `Option<Self>`, as `LAYOUT` is of `Self` (see the `# Safety` of the trait).
+  #[doc(hidden)]
+  const OPTION: Option<Layout> = None;
 }
 
 /// A type that goes with a tag, in what carries it: a payload and the value of the field that
@@ -401,6 +448,9 @@ pub unsafe trait Variants {
   type Next: Variants;
   /// The tag of the variant, `None` at the end of the list.
   const TAG: Option<u128>;
+  /// The values of the tag of the variant if they are not `TAG` alone, sorted: those of an enum
+  /// whose layout `rustc` chose (see `Layout::variant_ranges`), where `TAG` is its index.
+  const RANGES: Option<&'static [(u128, u128)]> = None;
 }
 
 // SAFETY: the end of every list.
@@ -560,6 +610,35 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   const LAYOUT: Layout = T::LAYOUT;
 }
 
+// SAFETY: a `MaybeUninit<T>` holds any bytes, uninitialized ones included, and nothing is known
+// of them: every byte is padding, which a target accepts whatever it is, and which a source does
+// not prove anything of. Its size and alignment are those of `T`.
+//
+// What may be written through a `&mut` to one is anything, uninitialized bytes included: a
+// `&mut MaybeUninit<T>` is only made of a source of which every byte may be uninitialized (the
+// reverse relation of `pun_mut`), and a `&mut T` of a `MaybeUninit<T>` never (a byte that `T`
+// needs initialized would be read from padding).
+unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Walks = ();
+  type Pointee = ();
+  const PROBE: *const Self = core::ptr::null();
+  const LAYOUT: Layout = Layout::padding::<Self>();
+}
+
+// SAFETY: no value: the layout of a type without values.
+unsafe impl Pun for core::convert::Infallible {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Walks = ();
+  type Pointee = ();
+  const PROBE: *const Self = core::ptr::null();
+  const LAYOUT: Layout = Layout::uninhabited::<Self>();
+}
+
 /// The `I`th field of the tuple `T`.
 #[doc(hidden)]
 pub struct TupleField<T, const I: usize>(PhantomData<T>);
@@ -660,11 +739,6 @@ macro_rules! impl_non_zero {
     // SAFETY: anything but 0.
     unsafe impl Scalar for core::num::NonZero<$ty> {
       const SPEC: Spec = Spec::ranges::<$ty>(Endian::NATIVE, &[(1, $ty::MAX as u128)]);
-    }
-
-    // SAFETY: `None` is 0, this is documented.
-    unsafe impl Scalar for Option<core::num::NonZero<$ty>> {
-      const SPEC: Spec = Spec::any::<$ty>();
     }
   )+};
 }
