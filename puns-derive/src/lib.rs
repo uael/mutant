@@ -25,9 +25,9 @@ use syn::{
 /// - `#[pun(assert(EXPR))]`: `EXPR` is true;
 /// - `#[pun(get(name: Type = EXPR, ..))]`: a `const fn` method `name` that returns
 ///   `(EXPR) as Type`, for bit fields and the like. Here `EXPR` is any Rust expression, in which
-///   an integer field, wherever it is named (by name or as `self.name`, but for a name that a
-///   `let` or a closure declares), is its value as a `u128`. It is read by reference, but in a
-///   packed struct, where it is copied;
+///   an unsigned integer field, wherever it is named (by name or as `self.name`, but for a name
+///   that a `let` or a closure declares), is its value as a `u128`; a field of another type is
+///   refused. It is read by reference, but in a packed struct, where it is copied;
 /// - `#[pun(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
 ///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
 /// - `#[pun(crate = path)]`: path of the `puns` crate.
@@ -49,9 +49,10 @@ use syn::{
 ///
 /// An `EXPR` is an expression over the unsigned integer fields of the struct (`u8`, `u16be`,
 /// `NonZero<u32>`, ..., by name, or `self.0` for tuple structs; a signed or floating-point
-/// number, a `bool` or an enum is refused, since its bits are not its value), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
-/// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, and costs what the
-/// arithmetic costs.
+/// number, a `bool` or an enum is refused, since its bits are not its value),
+/// `size_of_val(self)`, integer constants and the operators
+/// `+ - * / % & | ^ << >> == != < <= > >= && || !`. It is compiled to a constant: it can be
+/// evaluated in `const fn`s, and costs what the arithmetic costs.
 ///
 /// It means what the same Rust expression means where every integer is a `u128`, and is typed as
 /// Rust types it: arithmetic is on integers, `&&`, `||` and the condition of an `if` are `bool`s,
@@ -112,7 +113,7 @@ use syn::{
 ///   automaton, a `&'static puns::layout::Dfa` (`Dfa::ASCII`, `Dfa::DIGITS`, `Dfa::OCTAL`,
 ///   `Dfa::HEX`, `Dfa::UTF8`, `Dfa::UTF8_NO_NUL`, or one of yours): a pattern that the struct
 ///   requires of its bytes. As any rule, it proves nothing of them: a type that guarantees a
-///   pattern, as `str` does, cannot be derived, since its field can be written by safe code.
+///   pattern, as `str` does, cannot be derived, since its field can be written by safe code;
 /// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for
 ///   as long as `COND` is true of it. This is how what is at an offset that depends on what is
 ///   before is reached: after options, at the end of a chain of headers
