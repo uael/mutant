@@ -298,9 +298,11 @@ unsafe fn walk<T: ?Sized + Pun, V: Visit>(
         }
         Ok(())
       }
-      Shape::Struct(rules) => {
+      Shape::Struct => {
         fields::<T::Fields, V>(base, at, visit)?;
-        if rules.is_empty() || check_rules::<T>(ptr::from_raw_parts::<T>(here, 0), rules) {
+        // The rules of `T`, each operation applied by an instance of its own (`T::Rules`).
+        if const { T::LAYOUT.rules().is_empty() } || check_rules::<T>(ptr::from_raw_parts(here, 0))
+        {
           Ok(())
         } else {
           Err(Invalid::at(at).into())

@@ -1,90 +1,17 @@
-//! ***Type punning, proven at compile time: a safe alternative to `transmute`, and to hand-written
-//! parsing of bytes. Even for dynamically sized types.***
+#![doc = include_str!("../README.md")]
 //!
-//! A *pun* reads the bytes of a value of one type, the *source*, as a value of another, the
-//! *target*. The layouts and the valid values of both are compared at compile time, and a pun is
+//! # Reference
 //!
-//! - **proven** when every source is a valid target: it compiles to nothing;
-//! - **checked** when only some are: a `try_` function (or a `from_*` function, from bytes)
-//!   checks at run time what could not be proven, and nothing else;
-//! - **refused** when it can never be valid, or could read padding, or could write through a
-//!   `&mut` what the source cannot hold: it does not compile.
-//!
-//! ```
-//! use puns::Pun;
-//!
-//! #[derive(Pun, Debug, PartialEq)]
-//! #[repr(C)]
-//! struct Position {
-//!   x: u8,
-//!   visible: bool,
-//! }
-//!
-//! // Proven: every `Position` is two initialized bytes, nothing is checked, nothing is compiled.
-//! assert_eq!(puns::pun_ref::<_, [u8; 2]>(&Position { x: 7, visible: true }), &[7, 1]);
-//!
-//! // Checked: not every pair of bytes is a `Position`, only the `bool` is looked at.
-//! assert_eq!(puns::try_pun_ref(&[7u8, 1]), Ok(&Position { x: 7, visible: true }));
-//! assert_eq!(puns::try_pun_ref::<_, Position>(&[7u8, 2]), Err(puns::Error::Validity));
-//! ```
-//!
-//! # Functions
-//!
-//! What is read (a typed value, or bytes), by how much of it:
+//! What follows is only in this documentation: the functions with their links, what deriving
+//! `Pun` gives away, and two more refusals of enums.
 //!
 //! |               | Whole                                  | Front                     | Back                      |
 //! |---------------|----------------------------------------|---------------------------|---------------------------|
 //! | a typed value | [`pun`], [`pun_ref`], [`pun_mut`] (and [`try_pun`], [`try_pun_ref`], [`try_pun_mut`]) | [`head`], [`head_ref`], [`head_mut`] | [`tail`], [`tail_ref`], [`tail_mut`] |
 //! | bytes         | [`from_bytes`], [`from_bytes_mut`], [`as_bytes`] | [`from_head`], [`from_head_mut`] | [`from_tail`], [`from_tail_mut`] |
 //!
-//! The first row is proven, but for the `try_` functions, which are checked; the second row is
-//! checked: the size, the address, then what bytes do not prove of the target. A part is the
-//! first or the last `size_of::<D>()` bytes of the source (or, for the front, as many elements of
-//! a slice as fit). A `&mut` to a part is refused when what is written through it could break
-//! the rest of the source: a rule that holds over the part, an enum of which it is only a part.
-//!
-//! ```
-//! let mut bytes = [0u8, 1, 2, 3, 4];
-//! let (first, rest) = puns::from_head::<[u8; 2]>(&bytes).unwrap();
-//! let (_, last) = puns::from_tail::<[u8; 2]>(rest).unwrap();
-//! assert_eq!((first, last), (&[0, 1], &[3, 4]));
-//! assert_eq!(puns::tail::<[u8; 5], [u8; 2]>(bytes), [3, 4]);
-//! *puns::head_mut::<_, [u8; 2]>(&mut bytes) = [7, 7];
-//! assert_eq!(bytes, [7, 7, 2, 3, 4]);
-//! ```
-//!
-//! # What it knows
-//!
-//! - Integers, `bool`, `char`, `NonZero`, enums without fields: scalars with a set of valid
-//!   values. See [`num`] for integers of a given byte order (`u16be`) or value (`u16bec<V>`).
-//! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
-//!   padding, and what each of their bytes can be.
-//! - Enums with fields, of any `repr` (none too: the layout that `rustc` chose is found): their
-//!   tag, and what each variant is made of. `Option<T>` and `Result<T, E>` too: every `u32` is an
-//!   `Option<NonZero<u32>>`, a `bool` is an `Option<bool>`, and `Option` of a self-relative pointer
-//!   is the same pointer, that may be null.
-//! - `MaybeUninit<T>`: bytes of which nothing is known, which take anything; `Infallible` and enums
-//!   without variants: no value.
-//! - `str`: bytes that are UTF-8.
-//! - What `#[derive(Pun)]` is told: values that a field can take, sizes and lengths that are in
-//!   a field, assertions over fields. See [`macro@Pun`], and the examples.
-//!
-//! # Examples
-//!
-//! The files of `examples/` declare formats with the derive only, then read them from bytes and
-//! check that corrupted ones are rejected; each tells what it does not cover, and why:
-//!
-//! - `ethernet.rs`: Ethernet, VLANs, ARP, IPv4, IPv6 and its extension headers, UDP, TCP, ICMP.
-//! - `ip_services.rs`: DNS, DHCP, NTP, RADIUS, NetFlow v5, STUN, RTP and RTCP.
-//! - `transport.rs`: TLS, QUIC, HTTP/2, WebSocket, SSH, MQTT, CoAP, SCTP.
-//! - `routing.rs`: BGP, OSPF, GRE, VXLAN, Geneve, IGMP, ICMPv6 neighbor discovery.
-//! - `link.rs`: 802.11, Bluetooth HCI and L2CAP, CAN, Modbus, SLIP, PPP.
-//! - `images.rs`: PNG, BMP, TrueType and OpenType font directories.
-//! - `media.rs`: RIFF and WAVE, MP4 boxes.
-//! - `archives.rs`: ZIP, tar, gzip.
-//! - `executables.rs`: ELF, PE/COFF, Mach-O, Java class files, WebAssembly.
-//! - `storage.rs`: SQLite, FAT, GPT, USB descriptors.
-//! - `encodings.rs`: DER (SNMP, Kerberos), Protocol Buffers, MessagePack, CBOR, text fields.
+//! The types of a given byte order or value are in [`num`]; the options of the derive are in
+//! [`macro@Pun`]; what a layout is made of, and the checksums, in [`layout`].
 //!
 //! # What deriving `Pun` means
 //!
@@ -145,92 +72,7 @@
 //! assert_eq!(odd.get(), 3);
 //! ```
 //!
-//! # What is refused
-//!
-//! Reading padding:
-//!
-//! ```compile_fail
-//! let _: &[u8; 4] = puns::pun_ref(&(0u8, 0u16));
-//! ```
-//!
-//! Making a value that may not be valid, without a check:
-//!
-//! ```compile_fail
-//! let _: &str = puns::pun_ref(&[0u8; 4]);
-//! ```
-//!
-//! A check that can never succeed:
-//!
-//! ```compile_fail
-//! let _ = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
-//! ```
-//!
-//! A `&mut` through which an invalid value could be written back:
-//!
-//! ```compile_fail
-//! let _: &mut u8 = puns::pun_mut(&mut true);
-//! ```
-//!
-//! ```compile_fail
-//! let mut text = String::from("text");
-//! let _: &mut [u8] = puns::pun_mut(text.as_mut_str());
-//! ```
-//!
-//! Sizes or alignments that do not match:
-//!
-//! ```compile_fail
-//! let _: &u32 = puns::pun_ref(&[0u8; 4]);
-//! ```
-//!
-//! # Enums with fields
-//!
-//! An enum is known by its tag: a variant proves the variant of the same tag. Something else
-//! proves an enum when what it holds where the tag is can only be tags of variants, each of which
-//! it proves; else the enum is checked, its tag then its variant.
-//!
-//! ```
-//! use puns::Pun;
-//!
-//! #[derive(Pun, Debug, PartialEq, Clone, Copy)]
-//! #[repr(u8)]
-//! enum Shape {
-//!   Circle { radius: u16 },
-//!   Rect(u8, bool),
-//! }
-//!
-//! #[derive(Pun, Debug, PartialEq, Clone, Copy)]
-//! #[repr(u8)]
-//! enum Drawing {
-//!   Circle { radius: u16 },
-//!   Rect(u8, u8),
-//!   Nothing,
-//! }
-//!
-//! // Every `Shape` is a `Drawing`, variant by variant: nothing is checked.
-//! assert_eq!(puns::pun::<_, Drawing>(Shape::Rect(3, true)), Drawing::Rect(3, 1));
-//! // Not every `Drawing` is a `Shape`.
-//! assert_eq!(puns::try_pun(Drawing::Rect(3, 1)), Ok(Shape::Rect(3, true)));
-//! assert!(puns::try_pun::<_, Shape>(Drawing::Rect(3, 2)).is_err());
-//! assert!(puns::try_pun::<_, Shape>(Drawing::Nothing).is_err());
-//! // Bytes are a `Shape` if they start with one of its tags, then are what that variant holds.
-//! assert_eq!(puns::try_pun([1u8, 3, 1, 0]), Ok(Shape::Rect(3, true)));
-//! assert!(puns::try_pun::<_, Shape>([1u8, 3, 2, 0]).is_err());
-//!
-//! /// A byte that is always 1, the tag of `Rect`, then what `Rect` holds.
-//! #[derive(Pun, Clone, Copy)]
-//! #[repr(C)]
-//! struct Rect {
-//!   tag: puns::num::u8c<1>,
-//!   size: u8,
-//!   filled: bool,
-//!   unused: u8,
-//! }
-//!
-//! // A `Rect` is a `Shape`: proven, nothing is checked.
-//! let rect = Rect { tag: puns::num::u8c::new(), size: 3, filled: true, unused: 0 };
-//! assert_eq!(puns::pun::<Rect, Shape>(rect), Shape::Rect(3, true));
-//! assert!(puns::try_pun::<_, Shape>([2u8, 0, 0, 0]).is_err());
-//! ```
+//! # Enums: what is refused
 //!
 //! A `Shape` is not 4 bytes: the byte after the tag of a `Circle` is padding, and nothing tells a
 //! `Circle` from a `Rect` at compile time.
@@ -249,26 +91,6 @@
 //! # #[derive(Pun, Clone, Copy)] #[repr(u8)] enum Drawing { Circle { radius: u16 }, Rect(u8, u8), Nothing }
 //! let mut shape = Shape::Rect(3, true);
 //! let _: &mut Drawing = puns::pun_mut(&mut shape);
-//! ```
-//!
-//! The layout of an enum with fields that has no `repr` is not specified: `rustc` chooses it. It
-//! is then *found*, by experiments in const evaluation on a value of each variant: where the
-//! fields are, where the tag is (before the fields, or a niche in a field of one variant, as for
-//! `Option<bool>`), and what it is for each variant. An experiment that goes wrong fails to
-//! compile, it never finds a wrong layout. Such an enum is then as precise as one of a `repr`:
-//!
-//! ```
-//! use core::num::NonZero;
-//!
-//! #[derive(puns::Pun, Clone, Copy, Debug, PartialEq)]
-//! enum Ticket {
-//!   Free,
-//!   Paid(NonZero<u32>),
-//! }
-//!
-//! // A niche: `Free` is the 0 that no `NonZero` is, so every `Ticket` is a `u32`.
-//! assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
-//! assert_eq!(puns::try_pun::<u32, Ticket>(7), Ok(Ticket::Paid(NonZero::new(7).unwrap())));
 //! ```
 //!
 //! # Self-relative pointers
@@ -302,19 +124,13 @@ mod tests;
 mod validate;
 mod visit;
 
-/// The examples of `README.md`, run with the doc tests. `puns/README.md` is a link to the one of
-/// the repository, which a package holds as a file: the path is the same in both.
-#[cfg(doctest)]
-#[doc = include_str!("../README.md")]
-struct ReadmeDoctests;
-
 use core::{marker::PhantomData, mem::ManuallyDrop};
 
 use analysis::{
   Analysis, Exact, MUTABLE, Marks, POINTER_MUT, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze,
   analyze_tail, mutable, mutable_part,
 };
-use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
+use layout::{Dfa, Endian, Field, Layout, Spec};
 pub use layout::{crc32, sum16};
 pub use puns_derive::Pun;
 pub use relative::SelfRelative;
@@ -360,9 +176,9 @@ pub unsafe trait Pun {
   /// First variant of an enum with fields, `()` otherwise.
   #[doc(hidden)]
   type Variants: Variants;
-  /// First of the rules of a struct whose expression walks, `()` if none.
+  /// First of the rules of a struct that have an expression, `()` if none.
   #[doc(hidden)]
-  type Walks: Walks;
+  type Rules: Rules;
   /// What a self-relative pointer aims at (the element, if it aims at a list), `()` if `Self`
   /// is not one or aims at text.
   ///
@@ -441,6 +257,9 @@ impl<K: Pun + Copy> Tag<K> for [u8] {
 pub unsafe trait Fields {
   type Type: ?Sized + Pun;
   type Next: Fields;
+  /// The last field of the list, which may be unsized (`()` but for the fields of a struct, of
+  /// which only the last one may be).
+  type Last: Fields;
   /// Where the field is in the target, given where the struct is.
   type Path<P: Path>: Path;
   /// `None` at the end of the list.
@@ -470,63 +289,189 @@ unsafe impl Variants for () {
   const TAG: Option<u128> = None;
 }
 
-/// A rule whose expression walks, and the ones after it: a list at the type level.
+/// A rule of a struct that has an expression, and the ones after it: a list at the type level,
+/// in the order of the rules, by which the validation applies each operation of each expression
+/// in an instance of its own (see `validate::steps`).
 ///
-/// # Safety
-/// Implemented by `#[derive(Pun)]`.
+/// Sealed. What a list says is checked against the layout of the struct, where it is used: every
+/// rule that has an expression is listed, once, in order, with every one of its operations.
 #[doc(hidden)]
-pub unsafe trait Walks {
+pub trait Rules: sealed::Sealed {
   /// Index of the rule in the layout of the struct, `usize::MAX` at the end of the list.
   const RULE: usize;
-  /// Number of operations of the expression of the rule.
-  type Ops: Count;
-  /// Number of operations of the longest of the two expressions of its walk.
-  type Inner: Count;
-  type Next: Walks;
+  /// The operations of its expression.
+  type Expr: Steps;
+  type Next: Rules;
 }
 
-// SAFETY: the end of every list.
-unsafe impl Walks for () {
+impl Rules for () {
   const RULE: usize = usize::MAX;
-  type Ops = Zero;
-  type Inner = Zero;
+  type Expr = ();
   type Next = ();
 }
 
-/// A number, as a type: what a recursion over the operations of an expression goes down.
+/// The rule `R` of a struct, whose expression is `E`, then the list `N`.
+#[doc(hidden)]
+pub struct RuleAt<const R: usize, E, N>(PhantomData<(E, N)>);
+
+impl<const R: usize, E: Steps, N: Rules> Rules for RuleAt<R, E, N> {
+  const RULE: usize = R;
+  type Expr = E;
+  type Next = N;
+}
+
+/// What the operations of an expression are, as a type: the index of each, and the expressions of
+/// each walk. A tree, so that the recursions down it are as deep as the logarithm of its length.
 ///
-/// Sealed: the code that validates a value trusts it.
+/// Sealed. Its indices are checked against the expression where it is applied: every operation,
+/// once, in order (see `validate::covers`).
 #[doc(hidden)]
-pub trait Count: sealed::Sealed {
-  const VALUE: usize;
-  type Less: Count;
+pub trait Steps: sealed::Sealed {
+  /// [`steps::NONE`], [`steps::ONE`], [`steps::TWO`] or [`steps::WALK`].
+  const KIND: u8;
+  /// The index of the operation (`ONE`, `WALK`).
+  const AT: usize;
+  /// The index of the first operation, and the one after the last.
+  const FIRST: usize;
+  const END: usize;
+  /// The two parts (`TWO`), `()` otherwise.
+  type A: Steps;
+  type B: Steps;
+  /// The condition of a walk and what follows a step (`WALK`), `()` otherwise.
+  type Cond: Steps;
+  type Then: Steps;
+  /// Where they are, given where the walk is: `X` itself but for a walk. The functions that
+  /// apply the operations name all of these, whatever the kind of `Self` (the compiler makes
+  /// what a function names, used or not): so they name nothing new where they are not used.
+  type InCond<X: steps::Ops>: steps::Ops;
+  type InThen<X: steps::Ops>: steps::Ops;
 }
 
+/// The operations of expressions, as types: see [`Steps`].
 #[doc(hidden)]
-pub struct Zero;
+pub mod steps {
+  use core::marker::PhantomData;
 
-#[doc(hidden)]
-pub struct More<N>(PhantomData<N>);
+  use super::{Pun, Rules, Steps, sealed::Sealed};
+  use crate::layout::Op;
 
-impl sealed::Sealed for Zero {}
-impl<N: Count> sealed::Sealed for More<N> {}
-impl sealed::Sealed for Root {}
-impl<P: Path, F: ?Sized + Fields> sealed::Sealed for At<P, F> {}
+  /// Nothing (what the parts of an operation are).
+  pub const NONE: u8 = 0;
+  /// One operation, which is not a walk.
+  pub const ONE: u8 = 1;
+  /// Two parts, one after the other.
+  pub const TWO: u8 = 2;
+  /// A walk, and its expressions.
+  pub const WALK: u8 = 3;
 
-impl Count for Zero {
-  const VALUE: usize = 0;
-  type Less = Zero;
+  /// The operation `I`.
+  pub struct One<const I: usize>;
+
+  /// `A`, then `B`.
+  pub struct Two<A, B>(PhantomData<(A, B)>);
+
+  /// The walk `I`, whose condition is `C` and what follows a step `N`.
+  pub struct Walk<const I: usize, C, N>(PhantomData<(C, N)>);
+
+  impl Sealed for () {}
+  impl<const I: usize> Sealed for One<I> {}
+  impl<A: Steps, B: Steps> Sealed for Two<A, B> {}
+  impl<const I: usize, C: Steps, N: Steps> Sealed for Walk<I, C, N> {}
+  impl<const R: usize, E: Steps, N: Rules> Sealed for super::RuleAt<R, E, N> {}
+
+  impl Steps for () {
+    const KIND: u8 = NONE;
+    const AT: usize = 0;
+    const FIRST: usize = 0;
+    const END: usize = 0;
+    type A = ();
+    type B = ();
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<const I: usize> Steps for One<I> {
+    const KIND: u8 = ONE;
+    const AT: usize = I;
+    const FIRST: usize = I;
+    const END: usize = I + 1;
+    type A = ();
+    type B = ();
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<A: Steps, B: Steps> Steps for Two<A, B> {
+    const KIND: u8 = TWO;
+    const AT: usize = 0;
+    // Contiguous, or no range at all (checked by `validate::covers`).
+    const FIRST: usize =
+      if A::END == B::FIRST && A::KIND != NONE && B::KIND != NONE { A::FIRST } else { usize::MAX };
+    const END: usize = B::END;
+    type A = A;
+    type B = B;
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<const I: usize, C: Steps, N: Steps> Steps for Walk<I, C, N> {
+    const KIND: u8 = WALK;
+    const AT: usize = I;
+    const FIRST: usize = I;
+    const END: usize = I + 1;
+    type A = ();
+    type B = ();
+    type Cond = C;
+    type Then = N;
+    type InCond<X: Ops> = InWalk<X, Self, false>;
+    type InThen<X: Ops> = InWalk<X, Self, true>;
+  }
+
+  /// An expression of the layout of a struct, as a type: the one of a rule, or of a walk of one.
+  pub trait Ops: Sealed {
+    const OPS: &'static [Op];
+  }
+
+  /// The expression of the rule `R::RULE` of `T`.
+  pub struct InRule<T: ?Sized, R>(PhantomData<R>, PhantomData<T>);
+
+  /// The condition (or with `NEXT`, what follows a step) of the walk `W` of the expression `X`.
+  pub struct InWalk<X, W, const NEXT: bool>(PhantomData<(X, W)>);
+
+  impl<T: ?Sized + Pun, R: Rules> Sealed for InRule<T, R> {}
+  impl<X: Ops, W: Steps, const NEXT: bool> Sealed for InWalk<X, W, NEXT> {}
+
+  impl<T: ?Sized + Pun, R: Rules> Ops for InRule<T, R> {
+    const OPS: &'static [Op] = T::LAYOUT.rule_ops(R::RULE);
+  }
+
+  impl<X: Ops, W: Steps, const NEXT: bool> Ops for InWalk<X, W, NEXT> {
+    const OPS: &'static [Op] = match crate::layout::op_at(X::OPS, W::AT) {
+      Some(Op::Walk { cond, next, .. }) => {
+        if NEXT {
+          next
+        } else {
+          cond
+        }
+      }
+      _ => &[],
+    };
+  }
 }
 
-impl<N: Count> Count for More<N> {
-  const VALUE: usize = N::VALUE + 1;
-  type Less = N;
-}
-
-/// Implemented by this crate only: what implements [`Path`] and [`Count`] is trusted.
+/// Implemented by this crate only: what implements [`Path`], [`Rules`] and [`Steps`] is trusted.
 mod sealed {
   pub trait Sealed {}
 }
+
+impl sealed::Sealed for Root {}
+impl<P: Path, F: ?Sized + Fields> sealed::Sealed for At<P, F> {}
 
 /// Where something is in a target, for validation.
 ///
@@ -559,6 +504,7 @@ impl<P: Path, F: ?Sized + Fields> Path for At<P, F> {
 unsafe impl Fields for () {
   type Type = ();
   type Next = ();
+  type Last = ();
   type Path<P: Path> = P;
   const FIELD: Option<Field> = None;
 }
@@ -568,7 +514,7 @@ unsafe impl<T: Scalar> Pun for T {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
@@ -579,7 +525,7 @@ unsafe impl<T: Pun, const N: usize> Pun for [T; N] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
@@ -590,7 +536,7 @@ unsafe impl<T: Pun> Pun for [T] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
   // SAFETY: the probe of a slice.
@@ -602,7 +548,7 @@ unsafe impl Pun for str {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = <[u8] as Pun>::PROBE as *const str;
   // SAFETY: the probe of a `str`, which is the one of a slice.
@@ -614,7 +560,7 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   type Elem = T::Elem;
   type Fields = T::Fields;
   type Variants = T::Variants;
-  type Walks = T::Walks;
+  type Rules = T::Rules;
   type Pointee = T::Pointee;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
@@ -632,7 +578,7 @@ unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::padding::<Self>();
@@ -643,7 +589,7 @@ unsafe impl Pun for core::convert::Infallible {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::uninhabited::<Self>();
@@ -659,6 +605,7 @@ macro_rules! tuple_field {
     unsafe impl<$($all: Pun),+> Fields for TupleField<($($all,)+), $index> {
       type Type = $ty;
       type Next = $next;
+      type Last = ();
       type Path<P: Path> = At<P, Self>;
       const FIELD: Option<Field> = Some(*<($($all,)+) as Pun>::LAYOUT.field($index));
     }
@@ -672,7 +619,7 @@ macro_rules! tuple {
       type Elem = ();
       type Fields = TupleField<Self, 0>;
       type Variants = ();
-      type Walks = ();
+      type Rules = ();
       type Pointee = ();
       const PROBE: *const Self = core::ptr::null();
       // SAFETY: a tuple of `Sized` things is `Sized`.
@@ -1682,22 +1629,29 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
       Some(rule) => {
         // SAFETY: the sized fields of the target are in the first `head` bytes, and what a `size`
         // or `len` rule reads beyond them in the `n` bytes.
-        let Some(value) = (unsafe { eval(rule.ops, addr.add(rule.base), n - rule.base) }) else {
+        let Some(value) = (unsafe { validate::length::<D>(addr, n) }) else {
           return Err(Error::Validity);
         };
-        // From the size of the struct that has the rule, down to a number of elements.
-        let before = (head - rule.base) as u128;
+        // From the size of the struct that has the rule, down to a number of elements: in a
+        // `usize` (where the value is a field, the optimizer knows that it fits one), else a
+        // size or a length that no bytes have.
+        let before = head - rule.base;
+        if value > usize::MAX as u128 {
+          let whole = rule.elements || (value - before as u128).is_multiple_of(stride as u128);
+          return Err(if whole { Error::Size } else { Error::Validity });
+        }
+        let value = value as usize;
         let len = match () {
           () if rule.elements => value,
-          () if value >= before && (value - before).is_multiple_of(stride as u128) => {
-            (value - before) / stride as u128
+          () if value >= before && (value - before).is_multiple_of(stride) => {
+            (value - before) / stride
           }
           () => return Err(Error::Validity),
         };
-        if len > ((n - head) / stride) as u128 {
+        if len > (n - head) / stride {
           return Err(Error::Size);
         }
-        len as usize
+        len
       }
     };
     // With its trailing padding, if any.
@@ -1922,44 +1876,16 @@ pub const fn from_tail_mut<D: ?Sized + Pun>(
 pub const fn region<S: ?Sized + Pun>(value: &S, index: usize) -> &[u8] {
   // The bytes of the value can be read: it has no padding.
   const { Plan::<S, [u8]>::BY_REF };
-  let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
-  let base = core::ptr::from_ref::<S>(value).cast::<u8>();
+  let head = const { S::LAYOUT.tail_shape().start };
   let (_, tail, size) = validate::tail_of::<S>(value);
-  // Where the region starts in the tail, and how many regions are before it.
-  let (mut start, mut count) = (0, 0);
-  macro_rules! rule {
-    ($index:expr) => {
-      if let Rule::Region(ops) = rules[$index] {
-        let rest = tail - start;
-        let size = match ops {
-          // SAFETY: `base` is a struct of this layout.
-          Some(ops) => match unsafe { eval(ops, base, size) } {
-            Some(size) if size <= rest as u128 => size as usize,
-            _ => rest,
-          },
-          None => rest,
-        };
-        if count == index {
-          // SAFETY: `start + size <= tail`, the size of what follows the `head` first bytes.
-          return unsafe { core::slice::from_raw_parts(base.add(head + start), size) };
-        }
-        (start, count) = (start + size, count + 1);
-      }
-    };
+  // SAFETY: `value` is a struct of this layout, whose bytes are readable.
+  unsafe {
+    validate::region_at::<S, S::Rules>(
+      core::ptr::from_ref::<S>(value).cast::<u8>(),
+      size,
+      (head, tail),
+      index,
+      (0, 0),
+    )
   }
-  // Not a loop, for the first rules: see `layout::eval`.
-  macro_rules! unrolled {
-    ($($index:literal)+) => {$(
-      if $index < rules.len() {
-        rule!($index);
-      }
-    )+};
-  }
-  unrolled!(0 1 2 3 4 5 6 7);
-  let mut i = 8;
-  while i < rules.len() {
-    rule!(i);
-    i += 1;
-  }
-  panic!("no such region")
 }

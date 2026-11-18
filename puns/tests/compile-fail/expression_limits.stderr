@@ -1,0 +1,11 @@
+error: this expression has 257 operations, and one has at most 256: the validation applies each in a function of its own. Split it into several `assert`s, or name what it computes several times with `let`
+ --> tests/compile-fail/expression_limits.rs:8:14
+  |
+8 | ...rt(a + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1... 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 == a + 126))]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: walks are nested 5 deep here, and at most 4: the validation applies their expressions in functions of their own
+  --> tests/compile-fail/expression_limits.rs:17:8
+   |
+17 |     && walk(0, |m| m < a, |m| m + 1) == a, |l| l + 1) == 1, |k| k + 1) == 1, |j| j + 1) == 1,
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -88,13 +88,17 @@ pub struct Ipv4<P: ?Sized + Pun = [u8]> {
 #[repr(C)]
 #[pun(size = payload_length + 40)]
 #[pun(assert({
+  // What a header is in the high 64 bits, where it starts in the low ones: two registers.
   let upper = walk(
-    next_header + (40 << 8),
-    |at| { let kind = at & 0xff; kind == 0 || kind == 43 || kind == 60 },
-    |at| { let start = at >> 8; be(start, 1) + ((start + 8 + be(start + 1, 1) * 8) << 8) },
+    (next_header << 64) + 40,
+    |at| { let kind = at >> 64; kind == 0 || kind == 43 || kind == 60 },
+    |at| {
+      let start = at & 0xffff_ffff_ffff_ffff;
+      (be(start, 1) << 64) + start + 8 + be(start + 1, 1) * 8
+    },
   );
-  let protocol = upper & 0xff;
-  let start = upper >> 8;
+  let protocol = upper >> 64;
+  let start = upper & 0xffff_ffff_ffff_ffff;
   let end = 40 + payload_length;
   protocol != 17 || (sum16(8, 40) + protocol + (end - start) + sum16(start, end)) % 0xffff == 0
 }))]
@@ -342,6 +346,33 @@ pub fn view_slice(old: &[Old]) -> &[New] {
 #[unsafe(no_mangle)]
 pub fn try_view_owned(maybe: &Maybe) -> Option<&Owned> {
   puns::try_view_ref(maybe).ok()
+}
+
+/// A packet of a protocol, whose payload is a typed region of its bytes, as `Ipv4` in the README.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(size = 4 + length)]
+#[pun(assert(sum16(0, size_of_val(self)) == 0xffff))]
+pub struct Packet<P: ?Sized + Tag<u8> = [u8]> {
+  pub protocol: P::Tag,
+  pub length: u8,
+  pub checksum: u16be,
+  #[pun(regions(payload: P))]
+  pub data: [u8],
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(tag(u8 = puns::num::u8c<17>))]
+pub struct Datagram {
+  pub ports: [u8; 4],
+  pub rest: [u8],
+}
+
+// The rules of a packet of a protocol are those of any packet: proven by the same rules.
+#[unsafe(no_mangle)]
+pub const fn any_packet(packet: &Packet<Datagram>) -> &Packet {
+  pun_ref(packet)
 }
 
 fn main() {}

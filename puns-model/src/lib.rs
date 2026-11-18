@@ -16,6 +16,14 @@
 //!
 //! What a value of a struct is known to be does not include what `#[pun(valid(..))]` or a rule
 //! requires: safe code can write anything to a plain field. The oracle has two modes for that.
+//!
+//! A requirement of the target that the library does not check is right only where the
+//! requirements of the source imply it: then a source that met its own meets it (and one that did
+//! not is not something the library promised anything of). The oracle finds this by itself, one
+//! requirement at a time ([`require`]): a requirement of the target is implied if every value of
+//! the source that meets the requirements of the source meets it. This is what the library proves
+//! from the same rules of the source in a struct of the same extent at the same place, decided
+//! without that rule: any other requirement left unchecked is reported.
 
 pub mod pointers;
 // The self-relative pointers of the tests of `puns`, declared through its public API only.
@@ -75,6 +83,81 @@ pub fn int(
 }
 
 pub const NATIVE_LITTLE: bool = cfg!(target_endian = "little");
+
+/// A requirement of a value: where it is in the value, what it is, and whatever it holds.
+type Requirement = (usize, &'static str, Valid);
+
+thread_local! {
+  /// The requirements that [`require`] records, while [`requirements`] asks for them.
+  static REQUIRED: std::cell::RefCell<Option<Vec<Requirement>>> =
+    const { std::cell::RefCell::new(None) };
+}
+
+/// A requirement of a value that the type system does not guarantee: `holds`, which is returned.
+///
+/// It is a `valid(..)`, a rule, what a scalar that may be uninitialized must be. It is recorded
+/// with where it is (`off`) and what it is (`what`, the same for the same requirement wherever it
+/// is).
+///
+/// # Errors
+/// `holds`, if it is [`Uninit`].
+pub fn require(off: usize, what: &'static str, holds: Valid) -> Valid {
+  REQUIRED.with(|required| {
+    if let Some(required) = required.borrow_mut().as_mut() {
+      required.push((off, what, holds));
+    }
+  });
+  holds
+}
+
+/// What `holds` is, as one requirement (`off`, `what`), whatever it requires within.
+///
+/// The requirements that it records are not recorded, as they are not requirements of the value
+/// on their own (the fields of a union, of which one must be valid).
+///
+/// # Errors
+/// What `holds` returns, if it is [`Uninit`].
+pub fn require_whole(off: usize, what: &'static str, holds: impl FnOnce() -> Valid) -> Valid {
+  let outer = REQUIRED.with(|required| required.borrow_mut().take());
+  let valid = holds();
+  REQUIRED.with(|required| *required.borrow_mut() = outer);
+  require(off, what, valid)
+}
+
+/// The requirements of `p[off..off + size_of::<D>()]` as a `D`, each with where it is in the `D`.
+fn requirements<D: Oracle>(p: &Bytes, off: usize) -> Vec<Requirement> {
+  let p = &p[off..off + size_of::<D>()];
+  let mut reads = vec![false; p.len()];
+  let outer = REQUIRED.with(|required| required.borrow_mut().replace(vec![]));
+  let _ = D::check(p, 0, &mut reads, true);
+  REQUIRED
+    .with(|required| std::mem::replace(&mut *required.borrow_mut(), outer))
+    .unwrap_or_default()
+}
+
+/// For each value of the source, whatever every requirement of the `D` at `off` that it does not
+/// meet is implied by the requirements of the source: met by every value of the source that meets
+/// those (a requirement that is not there in a value, in a variant that it is not, is met). Then
+/// the library may leave them unchecked: a source that does not meet them did not meet its own.
+fn implied<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Vec<bool> {
+  let required: Vec<Vec<Requirement>> = source.iter().map(|p| requirements::<D>(p, off)).collect();
+  let mut broken = std::collections::BTreeSet::<(usize, &'static str)>::new();
+  for (p, required) in source.iter().zip(&required) {
+    if truth::<S>(p).soft == Ok(true) {
+      for (at, what, holds) in required {
+        if *holds != Ok(true) {
+          broken.insert((*at, *what));
+        }
+      }
+    }
+  }
+  required
+    .iter()
+    .map(|required| {
+      required.iter().all(|(at, what, holds)| *holds == Ok(true) || !broken.contains(&(*at, *what)))
+    })
+    .collect()
+}
 
 /// All the fields of a struct: valid if each is, an uninitialized byte under any is an error.
 ///
@@ -434,16 +517,16 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
   let v: Verdict = const { hook::verdict::<S, D>() };
   let pair = format!("{} -> {}", name::<S>(), name::<D>());
   let (ss, ds) = (size_of::<S>(), size_of::<D>());
-  let same = std::any::TypeId::of::<S>() == std::any::TypeId::of::<D>();
   let source = values::<S>();
   let truths: Vec<Truth> =
     if ds <= ss { source.iter().map(|p| truth::<D>(p)).collect() } else { vec![] };
-  // What the source requires of itself, which proves the same requirement of the target.
-  let claims: Vec<bool> = source.iter().map(|p| same || truth::<S>(p).soft == Ok(true)).collect();
+  // Whatever the requirements of the target that a value does not meet are implied by those of
+  // the source.
+  let claims: Vec<bool> = if ds <= ss { implied::<S, D>(&source, 0) } else { vec![] };
   let any_uninit = truths.iter().any(|t| t.hard.is_err());
-  // A requirement that reads uninitialized bytes is unsound to check, whatever the source says
-  // of itself (only the identity proves it without checking it).
-  let soft_uninit = !same && truths.iter().any(|t| t.soft.is_err());
+  // A requirement that reads uninitialized bytes is unsound to check: only one that the source
+  // implies may be read so, as it is then not checked.
+  let soft_uninit = truths.iter().zip(&claims).any(|(t, c)| t.soft.is_err() && !c);
   let all_hard = ds <= ss && truths.iter().all(|t| t.hard == Ok(true));
   let all_valid = ds <= ss && truths.iter().all(|t| t.soft == Ok(true));
   let none_valid = truths.iter().all(|t| t.soft != Ok(true));
@@ -692,9 +775,6 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
     ("tail", ss.saturating_sub(ds), v.tail, v.tail_ref, v.tail_mut),
   ];
   let source = if ds <= ss { values::<S>() } else { vec![] };
-  let same = std::any::TypeId::of::<S>() == std::any::TypeId::of::<D>();
-  // What the source requires of itself, which proves the same requirement of the target.
-  let claims: Vec<bool> = source.iter().map(|p| same || truth::<S>(p).soft == Ok(true)).collect();
   for (part, off, by_value, by_ref, by_mut) in parts {
     if ds > ss {
       if by_value || by_ref || by_mut {
@@ -708,8 +788,10 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
     if (by_ref && !by_value) || (by_mut && !by_ref) {
       incorrect.push(format!("{pair}: {part}: {by_value}, by reference {by_ref}, mut {by_mut}"));
     }
-    // The bytes of the part.
+    // The bytes of the part, and whatever the requirements of the part that a value does not meet
+    // are implied by those of the source.
     let truths: Vec<Truth> = source.iter().map(|p| truth_at::<D>(p, off)).collect();
+    let claims = if ds <= ss { implied::<S, D>(&source, off) } else { vec![] };
     let example = |pred: &dyn Fn(&Truth) -> bool| {
       source
         .iter()

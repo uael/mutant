@@ -17,7 +17,7 @@ unsafe impl Pun for Flag {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   // SAFETY: a sized type.

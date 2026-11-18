@@ -150,9 +150,9 @@ the start of the source, and each starts at its own base: the target of `tail` s
 `shift = size(S) - size(D)`, the source of the reverse relation of `tail_mut` there as well.
 Nothing else changes with the shift, since every step only compares what is at the same offset of
 both: a run of the target with what lies under it (scalars cut by the shift are decomposed into
-byte boxes as misaligned ones are), an enum only with an enum whose base is that offset, a rule
-only with the same rule whose struct is at that offset in the source (`mark_rules` from the
-shift). Periods stay correct: a period is the least common multiple of the strides of two
+byte boxes as misaligned ones are), an enum only with an enum whose base is that offset, the
+rules of a struct only with the same rules of a struct of the same extent at that offset in the
+source (`mark_rules` from the shift, section 4). Periods stay correct: a period is the least common multiple of the strides of two
 repetitions, and is only taken when the target is at the start of one of its elements; what lies
 under a run of the target a period later is the same whatever the phase of the two repetitions,
 which a shift only changes. The relation reports offsets of the source; messages subtract the
@@ -170,7 +170,12 @@ be written over the bytes `shift..shift + size` of the source, and the source mu
    with rules (`size`, `len`, `assert`, regions, walks) that covers any of them is refused, since
    its rules read its fields, and so is an enum (or a string) of the source of which they are
    only a part: its tag on one side, fields on the other. A target that takes as many elements
-   as fit may end anywhere in the source, and is refused over a source with enums.
+   as fit may end anywhere in the source, and is refused over a source with enums. A struct with
+   rules that lies within the bytes is not refused if the target has the same rules over the
+   same extent there (`proves_rules`, the test of section 4 the other way): what is written
+   through the target meets the rules of the source if it meets those of the target. The same of
+   the elements of an array that lie within the bytes (all at once where the target has elements
+   of the same size there, else each, up to 64).
 
 This is conservative: a rule that does not read the bytes of the part, or an enum all of whose
 variants would accept what is written, is refused all the same. The model check counts these as
@@ -191,9 +196,10 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 |----------------------------------------------------|--------------------------------------------|
 | `&Position -> &[u8; 2]`, `[bool; 4] -> u32`        | `mov rax, rdi; ret`                        |
 | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)         |
+| `&Packet<Datagram> -> &Packet` (the same rules)    | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call          |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block: 46 |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
@@ -202,10 +208,11 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways             |
 | `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`: 13      |
 | `u8 -> Option<Choice>` (a union: `bool`, `u8in`)   | one `cmp cl, 4`: 7                         |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 233 instructions, no call                  |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 236 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
+| `from_head::<Udp>(&[u8])` (a size in the value)    | 15 instructions                            |
 | `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 18, no loop     |
 | `view_ref::<Old, New>` (recursive, with pointers)  | `mov rax, rdi; ret`                        |
 | `view_ref::<[Old], [New]>`                         | `mov rdx, rsi; mov rax, rdi; ret`          |
@@ -213,7 +220,16 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 
 A count is not a time. The slice of `bool`s was a loop of one `cmp` per byte, 13 instructions,
 which stopped at the first invalid one; it is now 46 and takes a fraction of the time on a long
-slice (`benches/checks.rs` times the checks next to the same ones written by hand).
+slice (`benches/checks.rs` times the checks next to the same ones written by hand). The IPv6
+packet walks with a state of two registers ("Walks", section 4): with the state it had before
+(the kind in the low 8 bits), it was 233 instructions when the operations of its walk were applied
+as they are now and the others by an unrolled evaluator, and 254 with every operation applied so:
+the same arithmetic, which LLVM allocates registers to and selects instructions for a little
+otherwise (a step of the walk was two instructions longer).
+
+`from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`,
+where the optimizer knows that a field fits one (it was 29 instructions for `Udp`, 43 for
+`Frame<Ipv4>`).
 
 ### 4. Rules: what is not a property of bytes
 
@@ -240,8 +256,8 @@ branch, so that the stack is as deep after it either way). Nothing that is compu
 left out of the value of an expression: its first failure is its failure, the evaluator stops
 there, and what follows is compiled knowing that nothing failed. The
 derive also counts what the evaluator has room for (the depth of its
-stack, the operations of a walk, the variables) and reports an excess at the expression, with the
-numbers; the evaluator checks it again.
+stack, the variables, the operations of an expression and the walks one in another) and reports
+an excess at the expression, with the numbers; `check_ops` checks it again.
 
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
@@ -274,6 +290,16 @@ in another walk, several in an expression. A walk takes at most a step for each 
 128 (the bits of a `u128`), so that it ends: a walk over the bits of a field fits, whatever the
 size of the value.
 
+**Walks.** The state of a walk is one `u128`: two numbers that it carries are packed in it. On a
+64-bit target a `u128` is two registers, so the place to pack them is bit 64: `(kind << 64) +
+start`, read as `at >> 64` and `at & 0xffff_ffff_ffff_ffff`, is each a register, where `kind +
+(start << 8)` needs a `shrd` to read `start` and a merge to write it back, on the path from one
+step to the next. The IPv6 packet of the examples walked so: behind 12 extension headers it took
+1.3 times the instructions of the same loop by hand, but 2.2 times the time (on the code before
+these changes as well); packed at bit 64, its loop is the loop by hand (21 instructions against
+about 20, fewer in all: 310 against 322), but for the carries of the low half into the high one
+that a `u128` has (`adc`), which keep `start + 8 + length * 8` from being one `lea`.
+
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
 the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
 `||` that the left side decides without, as Rust does not compute it: `protocol != 17 ||
@@ -299,25 +325,54 @@ Two more options are not rules, but save the code that would otherwise be writte
   too.
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
-are proven only by the same rule, in the same struct, at the same place of the source. The
-evaluator (`layout::eval`) has a stack of 16 values and 8 variables, each a variable of the
-machine rather than an element of an array, reached by a `match` whose cases are all values (the
-last one is the default case: a `match` with one more case costs instructions); it is written so
-that a constant program compiles to its arithmetic: no
-loop for the first operations, and a local variable per stack slot rather than an array.
+are proven only by the same rules, at the same place of the source, in a struct of the same extent
+(`Layout::same_rules`, `analysis::proves_rules`). A rule is a function of the bytes of its
+struct, of its size (`size_of_val(self)`, a `size` rule), of the number of elements of its tail
+(a `len` rule) and of the bytes of that tail (regions): a struct of the source with the same
+rules in the same order (`Rule::equals`), the same sized part and the same tail (where it starts,
+the size of an element, and for a sized struct its bytes and the elements of the array it ends
+with) computes the same thing over the same bytes, whatever its fields, which are related to the
+target as any other. So `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>` (the payload of
+`Ipv4` is a typed region of its bytes, not a field of another type), and a part of a dynamic
+struct, which has another size, does not prove those of a struct of its own size. The elements
+of an array or a slice share their leaves: their rules are proven at once, where the source has
+elements of the same size at the same place (what the first one is to the source, each is), else
+checked for each. A rule that reads the bytes of its struct reads its padding (section 5): the
+same tests decide whether it is checked, and so whether the padding is read
+(`Cursor::padding_is_read`).
 
-An expression that walks holds two more expressions, which are evaluated in a loop. The evaluator
-applies a walk as it applies anything else (`Machine::walk`): it runs both expressions in a loop,
-which the optimizer makes constant where it inlines the evaluator, at the first level of walks.
-The first walk of an `assert` is applied otherwise, where it must be fast (the IPv6 packet): there,
-the operations are not left to the optimizer to find constant. They are constants of the
-instances of the functions that apply them (`validate::check_walks`), one instance per operation,
-reached by a recursion over a number that is a type. What is compiled is the loop and the
-arithmetic of both expressions, never an interpreter; and the list of the rules that walk is
-itself a type (`Pun::Walks`), so that a struct without any costs nothing more to compile. The
-recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
-first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
-Both apply the same operations, with the same limit of steps.
+**No interpreter.** Every operation of every rule is applied by an instance of a function of its
+own (`validate::steps`), in which it is a constant: what is compiled is the arithmetic of the
+expression, and the loop of each walk, never a `match` on operations at run time. The derive
+writes the rules of a struct that have an expression as a list at the type level (`Pun::Rules`,
+`RuleAt<RULE, STEPS, NEXT>`), and the operations of each as a balanced tree (`steps::One<I>`,
+`steps::Two<A, B>`, and `steps::Walk<I, COND, NEXT>` for a walk, whose two expressions are trees
+of their own, at any depth): the recursions down the tree are as deep as its logarithm, where a
+recursion over a number that is a type, before, was as deep as the expression (and was only used
+for the first walk of an `assert`). Nothing of what a list says is trusted: where it is used, it
+is checked against the layout (`validate::listed`, `covers`): every rule with an expression is
+listed, once, in order, every operation of each, a walk where there is one and only there (the
+functions name every part of the tree, whatever its kind, so where a part is not a walk they name
+the expression they are in again, nothing new). `Machine::apply` never sees a walk. The list
+being a type, a struct without rules costs nothing more to compile; `from_head` finds a `size`
+rule of the last field by the types too (`Fields::Last`), and checks that it is the one of the
+layout.
+
+The machine that applies the operations (`layout::Machine`) has a stack of 16 values and 8
+variables, each a variable of the machine rather than an element of an array, reached by a
+`match` whose cases are all values (the last one is the default case: a `match` with one more
+case costs instructions): once inlined, a local variable per stack slot. An expression has at
+most 256 operations, and nests at most 4 walks; the derive says where one goes beyond, and by how
+much, and `check_ops` checks it again. In a debug build, where nothing is inlined, each operation
+is a call.
+
+Before, the first 24 operations of an expression were unrolled and the rest applied in a loop, a
+`match` on each at run time; the walks of an expression other than the first of an `assert`, and
+their expressions, were applied in that loop too. The IPv4 packet of the examples, whose last
+`assert` (the checksums of UDP and TCP over the addresses of the packet) is longer than 24
+operations, was then checked 15 times as slowly as by hand; it now runs 1.18 times the
+instructions of the same check by hand (`valgrind --tool=callgrind`, UDP in 64 bytes: 256
+against 217, where it was 1885).
 
 What is not computed is told by an index (`Machine::skip`): the operations before it are not
 applied. A `Shortcut` that decides sets it past the right side, a failure to the end. Where the
@@ -826,8 +881,22 @@ failing to compile): about a hundred types of 1 to 8 bytes, every ordered pair o
 every value of the source over an alphabet (all bytes up to 2 bytes); slices and slice-tailed
 structs from every pattern of up to 6 bytes. It tells what a type requires (`valid(..)`, rules)
 from what it guarantees, and finds unsound verdicts (a value let through that the type system
-does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time) and
-imprecise ones (counted).
+does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time, a
+requirement of the target left unchecked that the source does not imply) and imprecise ones
+(counted).
+
+What the requirements of a source imply is found by the oracle, one requirement at a time: the
+oracle of each type says what it requires, with where and what each requirement is
+(`puns_model::require`), and a requirement of the target is implied if every value of the source
+that meets the requirements of the source meets it (`implied`). A requirement may be left
+unchecked only if it is implied; nothing of the library's test (the same rules, the same extent)
+is in the oracle. Before, an unchecked requirement was not reported for a value that met the
+requirements of its source, whatever they were: a rule of the target wrongly taken as proven by
+another one could not be seen. The types include the same rules over other fields, another
+rule, another extent, in a struct, an enum with and without `repr`, an array, a union and a
+struct with a byte that may be uninitialized; the model check reports both a rule proven by
+another (`same_rules` that compares nothing) and a `&mut` part over a rule that the target does
+not have (`cut` without its test), which were tried.
 
 The types include enums without `repr` (a niche in a `bool`, a `NonZero`, a `char`, a niche shared
 by two variants next to a field of a third, a direct tag of one byte and one that `rustc` widened,
@@ -890,9 +959,28 @@ as something else, a check that would be behind a pointer.
   added to `Visit` with a default body (`pointer_pair::<PS, PD>(at)`, which by default validates
   the target of `PD` alone): adding either breaks nothing of `validate_in`.
 - **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
-  part, while the operations of a rule tell which fields and bytes it reads (a rule over other
-  fields only could be allowed), and any enum only partly covered, while an enum all of whose
-  variants accept what is written could be allowed.
+  part that the target does not have over the same extent, while the operations of a rule tell
+  which fields and bytes it reads (a rule over other fields only could be allowed), and any enum
+  only partly covered, while an enum all of whose variants accept what is written could be
+  allowed. A `pun_mut` of a whole value does not ask this of rules: through `&mut Plain`, a
+  struct read from a `&mut S` whose rule `Plain` does not have can be written past that rule, as
+  through the fields of `S` itself (a rule is a requirement, see "What the type system enforces").
+  The two could be made the same, either way.
+- **Rules implied by other rules**: a rule is proven by the same rules, not by others that imply
+  it (`v % 6 == 0` implies `v % 3 == 0`), nor by the same rule of a struct of another extent that
+  does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check
+  counts what the source implies and the library checks all the same as nothing: it is not
+  wrong.
+- **A view enum that tells its variants apart**: `from_bytes` of a view enum tries its variants
+  in order, each a check of its own. A VLAN frame repeats the check of the size and the EtherType
+  of four variants before its own (`benches/checks.rs`: 53 instructions against 45 by hand); bytes
+  that fail a rule that two variants share compute it for each (an IPv4 packet of UDP whose
+  checksum is wrong: the checksum of `Frame<Ipv4<Udp>>`, then the same of `Frame<Ipv4>`, about
+  twice the time by hand). Both are avoidable: the variants could be told apart first by what is
+  constant in each (the EtherType of a tag), and, rules being proven by the same rules, a rule of
+  one variant that fails ends a later variant that has the same rule over the same extent at the
+  same place, which the validation would have to report (which rule failed) and the derive to
+  know at compile time (which variants share it).
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
 - **Precise checks of an enum made from something else**: when only some of its variants are
@@ -961,8 +1049,9 @@ as something else, a check that would be behind a pointer.
   the crate that validates it (validation recurses over the list of the variants).
 - `PhantomData<T>` is `Scalar` for any `T`, and deriving `Pun` exposes private fields: see
   "What the type system enforces" for which types must not derive `Pun`.
-- The evaluator of rules has a stack of 16 values and 8 variables (the derive says when an
-  expression needs more, and how much), and a walk takes at most `8 * size + 128` steps.
+- The evaluator of rules has a stack of 16 values and 8 variables, an expression at most 256
+  operations and at most 4 walks one in another (the derive says when an expression needs more,
+  and how much), and a walk takes at most `8 * size + 128` steps.
 - Unions: of `repr(C)` only (the fields of another are not known to be at 0), without a field
   that holds a pointer, and known as nothing as a source (section 5).
 - An enum without `repr` holds no self-relative pointer; its direct tag, all the bytes before the

@@ -11,7 +11,7 @@ use puns::{
   },
 };
 
-use crate::{Bytes, Oracle, Uninit, Valid, all, int};
+use crate::{Bytes, Oracle, Uninit, Valid, all, int, require, require_whole};
 
 /// A struct whose oracle is the one of its fields, at the offsets that the compiler gives.
 macro_rules! model_struct {
@@ -124,7 +124,7 @@ pub struct SoftBit {
 impl Oracle for SoftBit {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
     let v = int(b, off, 1, true, reads)?;
-    Ok(!target || v <= 1)
+    if target { require(off, "SoftBit", Ok(v <= 1)) } else { Ok(true) }
   }
 }
 
@@ -139,7 +139,10 @@ pub struct SoftTrue {
 impl Oracle for SoftTrue {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
     let v = int(b, off, 1, true, reads)?;
-    Ok(v <= 1 && (!target || v == 1))
+    if v > 1 {
+      return Ok(false);
+    }
+    if target { require(off, "SoftTrue", Ok(v == 1)) } else { Ok(true) }
   }
 }
 
@@ -154,7 +157,7 @@ pub struct Third {
 impl Oracle for Third {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
     let v = int(b, off, 1, true, reads)?;
-    Ok(!target || v % 3 == 0)
+    if target { require(off, "v % 3 == 0", Ok(v % 3 == 0)) } else { Ok(true) }
   }
 }
 
@@ -251,7 +254,7 @@ pub struct NotOneOne {
 impl Oracle for NotOneOne {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
     let v = int(b, off, 2, false, reads)?;
-    Ok(!target || v != 0x0101)
+    if target { require(off, "be(0, 2) != 0x0101", Ok(v != 0x0101)) } else { Ok(true) }
   }
 }
 
@@ -334,7 +337,7 @@ impl Oracle for OptSoftBit {
       0 => Ok(true),
       1 => {
         let v = int(b, off + 1, 1, true, reads)?;
-        Ok(!target || v <= 1)
+        if target { require(off + 1, "OptSoftBit::Some", Ok(v <= 1)) } else { Ok(true) }
       }
       _ => Ok(false),
     }
@@ -475,10 +478,10 @@ impl Oracle for ReadsPad {
       return fields;
     }
     // What the rule reads.
-    let pad = int(b, off + 1, 1, true, reads);
-    match (fields, pad) {
+    let rule = require(off, "le(1, 1) == 0", int(b, off + 1, 1, true, reads).map(|pad| pad == 0));
+    match (fields, rule) {
       (Err(Uninit), _) | (_, Err(Uninit)) => Err(Uninit),
-      (Ok(valid), Ok(pad)) => Ok(valid && pad == 0),
+      (Ok(valid), Ok(rule)) => Ok(valid && rule),
     }
   }
 }
@@ -552,7 +555,7 @@ impl Oracle for Zero {
     if !target {
       return Ok(true);
     }
-    Ok(int(b, off, 1, true, reads)? == 0)
+    require(off, "Zero", int(b, off, 1, true, reads).map(|v| v == 0))
   }
 }
 
@@ -804,14 +807,19 @@ type Check = fn(&Bytes, usize, &mut [bool], bool) -> Valid;
 /// # Errors
 /// [`Uninit`] if a field is decided by an uninitialized byte before one is valid.
 pub fn any(b: &Bytes, off: usize, reads: &mut [bool], target: bool, checks: &[Check]) -> Valid {
-  for check in checks {
-    match check(b, off, reads, target) {
-      Ok(true) => return Ok(true),
-      Ok(false) => {}
-      Err(Uninit) => return Err(Uninit),
+  let mut one = || {
+    for check in checks {
+      match check(b, off, reads, target) {
+        Ok(true) => return Ok(true),
+        Ok(false) => {}
+        Err(Uninit) => return Err(Uninit),
+      }
     }
-  }
-  Ok(false)
+    Ok(false)
+  };
+  // What a union requires is that one of its fields is valid, requirements included: one
+  // requirement, not those of each field, which a value that is another field need not meet.
+  if target { require_whole(off, "one of the fields of a union", one) } else { one() }
 }
 
 /// A `bool`, or a number up to 3: a byte up to 3.
@@ -853,5 +861,216 @@ pub union PaddedU {
 impl Oracle for PaddedU {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
     any(b, off, reads, target, &[u8::check, <(u8, u16)>::check])
+  }
+}
+
+// --- Rules proven by the same rules ---------------------------------------------------------------
+//
+// A rule of the target is proven by the same rule of the source in a struct of the same extent at
+// the same place, whatever the fields: these are such structs, and ones that are not (another
+// rule, another extent), in each kind of type that can hold one. Their oracles say what each
+// requires, one requirement at a time (`require`): what the source implies, the oracle finds.
+
+/// The rule of `Third`, over a field that requires something of its own (`rustc` sees no niche in
+/// it: enums that hold it are laid out as those that hold a `Third`).
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(v % 3 == 0))]
+pub struct ThirdSoft {
+  #[pun(valid(..=200))]
+  pub v: u8,
+}
+
+impl Oracle for ThirdSoft {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    if !target {
+      return Ok(true);
+    }
+    all(&[
+      require(off, "ThirdSoft: v <= 200", Ok(v <= 200)),
+      require(off, "ThirdSoft: v % 3", Ok(v % 3 == 0)),
+    ])
+  }
+}
+
+/// Another rule over the same byte.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(v % 5 == 0))]
+pub struct Fifth {
+  pub v: u8,
+}
+
+impl Oracle for Fifth {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    if target { require(off, "Fifth: v % 5", Ok(v % 5 == 0)) } else { Ok(true) }
+  }
+}
+
+/// A rule that reads the size of the value: its last byte is not `0xff`.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(be(size_of_val(self) - 1, 1) != 0xff))]
+pub struct LastNotFf1 {
+  pub v: u8,
+}
+
+impl Oracle for LastNotFf1 {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    if target { require(off, "LastNotFf1: last byte", Ok(v != 0xff)) } else { Ok(true) }
+  }
+}
+
+/// The same rule over 2 bytes: another function of the bytes, which a part of 1 byte is not.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(be(size_of_val(self) - 1, 1) != 0xff))]
+pub struct LastNotFf2 {
+  pub a: u8,
+  pub b: u8,
+}
+
+impl Oracle for LastNotFf2 {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    int(b, off, 1, true, reads)?;
+    let last = int(b, off + 1, 1, true, reads)?;
+    if target { require(off, "LastNotFf2: last byte", Ok(last != 0xff)) } else { Ok(true) }
+  }
+}
+
+/// The rule of `NotOneOne`, over a `NonZero`.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(be(0, 2) != 0x0101))]
+pub struct NotOneOneNz {
+  pub a: NonZero<u8>,
+  pub b: u8,
+}
+
+impl Oracle for NotOneOneNz {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 2, false, reads)?;
+    if v >> 8 == 0 {
+      return Ok(false);
+    }
+    if target { require(off, "NotOneOneNz: not 0x0101", Ok(v != 0x0101)) } else { Ok(true) }
+  }
+}
+
+model_tagged!(#[repr(u8)] enum ThirdIn: tag 1 { A(Third = Third { v: 0 }) = 0, B(u8 = 0) = 1 });
+model_tagged!(#[repr(u8)] enum ThirdSoftIn: tag 1 { A(ThirdSoft = ThirdSoft { v: 0 }) = 0, B(u8 = 0) = 1 });
+
+/// The variant of an enum without `repr` of two variants of a byte each, by its tag (a direct
+/// tag of a byte at 0, as the bytes of the samples say), and the offset of the field of that
+/// variant (`samples`: a value of each variant, and the offset of its field).
+fn rust_variant<E: Copy>(
+  samples: [(E, usize); 2],
+  b: &Bytes,
+  off: usize,
+  reads: &mut [bool],
+) -> Result<Option<(usize, usize)>, Uninit> {
+  assert_eq!(size_of::<E>(), 2, "not the layout of the oracle");
+  for (i, (sample, _)) in samples.iter().enumerate() {
+    // SAFETY: both variants initialize both bytes: a tag, and a byte of a field.
+    let bytes: [u8; 2] = unsafe { core::mem::transmute_copy(sample) };
+    assert_eq!(usize::from(bytes[0]), i, "not the layout of the oracle");
+  }
+  let tag = int(b, off, 1, true, reads)? as usize;
+  Ok(samples.get(tag).map(|(_, field)| (tag, *field)))
+}
+
+/// An enum without `repr` whose variant holds a struct with a rule: a direct tag.
+#[derive(Pun, Clone, Copy)]
+pub enum RustThird {
+  A(Third),
+  B(u8),
+}
+
+impl Oracle for RustThird {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let (a, b_) = (RustThird::A(Third { v: 0 }), RustThird::B(0));
+    let (RustThird::A(x), RustThird::B(y)) = (&a, &b_) else { unreachable!() };
+    let samples = [(a, offset_in(&a, x)), (b_, offset_in(&b_, y))];
+    match rust_variant(samples, b, off, reads)? {
+      Some((0, at)) => Third::check(b, off + at, reads, target),
+      Some((_, at)) => int(b, off + at, 1, true, reads).map(|_| true),
+      None => Ok(false),
+    }
+  }
+}
+
+/// The same, with the rule of `Third` over another field.
+#[derive(Pun, Clone, Copy)]
+pub enum RustThirdSoft {
+  A(ThirdSoft),
+  B(u8),
+}
+
+impl Oracle for RustThirdSoft {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let (a, b_) = (RustThirdSoft::A(ThirdSoft { v: 0 }), RustThirdSoft::B(0));
+    let (RustThirdSoft::A(x), RustThirdSoft::B(y)) = (&a, &b_) else { unreachable!() };
+    let samples = [(a, offset_in(&a, x)), (b_, offset_in(&b_, y))];
+    match rust_variant(samples, b, off, reads)? {
+      Some((0, at)) => ThirdSoft::check(b, off + at, reads, target),
+      Some((_, at)) => int(b, off + at, 1, true, reads).map(|_| true),
+      None => Ok(false),
+    }
+  }
+}
+
+/// A rule, and a byte that may be uninitialized.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(v % 3 == 0))]
+pub struct ThirdUninit {
+  pub v: u8,
+  pub z: core::mem::MaybeUninit<u8>,
+}
+
+impl Oracle for ThirdUninit {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    if target { require(off, "ThirdUninit: v % 3", Ok(v % 3 == 0)) } else { Ok(true) }
+  }
+}
+
+/// The same rule, over another field.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(v % 3 == 0))]
+pub struct ThirdSoftUninit {
+  #[pun(valid(..=200))]
+  pub v: u8,
+  pub z: core::mem::MaybeUninit<u8>,
+}
+
+impl Oracle for ThirdSoftUninit {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let v = int(b, off, 1, true, reads)?;
+    if !target {
+      return Ok(true);
+    }
+    all(&[
+      require(off, "ThirdSoftUninit: v <= 200", Ok(v <= 200)),
+      require(off, "ThirdSoftUninit: v % 3", Ok(v % 3 == 0)),
+    ])
+  }
+}
+
+/// A `Third`, or a `bool`.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+pub union ThirdU {
+  pub third: Third,
+  pub flag: bool,
+}
+
+impl Oracle for ThirdU {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    any(b, off, reads, target, &[Third::check, bool::check])
   }
 }

@@ -3,7 +3,7 @@
 [![CI](https://github.com/uael/puns/workflows/CI/badge.svg)](https://github.com/uael/puns/actions)
 [![docs.rs](https://img.shields.io/docsrs/puns)](https://docs.rs/puns)
 [![crates.io](https://img.shields.io/crates/v/puns)](https://crates.io/crates/puns)
-[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](LICENSE-MIT)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)][mit]
 
 **Type punning, proven at compile time: a safe alternative to `transmute`, and to hand-written
 parsing of bytes.**
@@ -262,6 +262,10 @@ assert_eq!((udp.destination_port.get(), &udp.payload), (53, &b"hello"[..]));
 // What is known is not checked again. A frame that carries UDP is a frame: no instruction.
 let any: &Frame = puns::pun_ref(frame);
 assert_eq!(any.payload.len(), 33);
+// And an IPv4 frame of any protocol: the rules of `Ipv4<Udp>` (its size, its checksum) are those
+// of `Ipv4`, over the same bytes, so they prove them. No instruction either.
+let ip: &Frame<Ipv4> = puns::pun_ref(frame);
+assert_eq!(ip.payload.header_length(), 20);
 
 // One bit of the header is flipped: its checksum does not hold, this is not IPv4.
 let mut corrupted = bytes;
@@ -614,41 +618,50 @@ table is in [`puns/DESIGN.md`][design]):
 | `&Position -> &[u8; 2]`, `[bool; 4] -> u32`        | `mov rax, rdi; ret`                  |
 | `&[Shape] -> &[Drawing]` (enums with fields)       | `mov rdx, rsi; mov rax, rdi; ret`    |
 | `&Frame<Ipv4> -> &[u8]`                            | `lea rdx, [rsi + 34]` (the length)   |
+| `&Frame<Ipv4<Udp>> -> &Frame<Ipv4>` (same rules)   | `mov rdx, rsi; mov rax, rdi; ret`    |
 | `&[u8; 2] -> Option<&Position>`                    | one `cmp byte ptr [rdi + 1], 2`      |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool` |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call    |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call    |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, without a branch |
 
 ### Time
 
 [`puns/benches/checks.rs`][checks] times each check next to the same check written by hand, with
 the same algorithm for the checksums (`cargo bench -p puns --bench checks`). Nanoseconds per
-check, the best of 7 samples, on a Xeon at 2.1 GHz, release with LTO:
+check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5 runs, a run the
+best of 7 samples:
 
 | Check                                               | `puns` | by hand | ratio |
 |-----------------------------------------------------|-------:|--------:|------:|
-| IPv6, TCP, no extension header                      |    2.5 |     2.6 |   0.9 |
-| IPv6, TCP behind 3 extension headers                |    7.3 |     7.0 |   1.0 |
-| IPv6, TCP behind 12 extension headers               |     32 |      21 |   1.6 |
-| IPv6, UDP, 1400 bytes (its checksum)                |     42 |      39 |   1.1 |
-| UDP, `from_head`                                    |    1.7 |     1.1 |   1.6 |
-| a frame that is one of 6 things: ARP                |    3.5 |     2.6 |   1.3 |
-| a frame that is one of 6 things: the last one       |    3.6 |     2.0 |   1.8 |
-| `[u8]` as `[bool]`, 64 KiB                          |  1 433 |  19 037 |  0.08 |
-| `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    149 |   5 092 |  0.03 |
-| `[u32]` as `[char]`, 4 KiB                          |    175 |     299 |   0.6 |
-| CRC-32, 1518 bytes (by hand: 16 bytes at a time)    |    675 |     566 |   1.2 |
-| CRC-16/Modbus, 1518 bytes (by hand: a byte at once) |    784 |   3 592 |   0.2 |
-| `sum16`, 1500 bytes                                 |     39 |      43 |   0.9 |
-| IPv4, UDP, 64 bytes                                 |    148 |     9.8 |    15 |
-| IPv4, UDP, 1472 bytes                               |    181 |      43 |   4.2 |
+| IPv4, UDP, 64 bytes (two checksums)                 |     12 |      10 |   1.2 |
+| IPv4, UDP, 1472 bytes                               |     53 |      51 |   1.0 |
+| IPv4, TCP, 1460 bytes                               |     53 |      53 |   1.0 |
+| IPv6, TCP, no extension header                      |    1.6 |     1.7 |   0.9 |
+| IPv6, TCP behind 3 extension headers                |    6.0 |     4.7 |   1.3 |
+| IPv6, TCP behind 12 extension headers               |     23 |      16 |   1.4 |
+| IPv6, UDP, 1400 bytes (its checksum)                |     50 |      42 |   1.2 |
+| UDP, `from_head`                                    |    1.3 |     1.3 |   1.0 |
+| a frame that is one of 6 things: UDP over IPv4      |     14 |      11 |   1.2 |
+| a frame that is one of 6 things: ARP                |    2.7 |     2.3 |   1.2 |
+| a frame that is one of 6 things: the last one       |    2.5 |     2.0 |   1.2 |
+| a frame that is one of 6 things: a wrong checksum   |     23 |      11 |   2.0 |
+| `[u8]` as `[bool]`, 64 KiB                          |  1 550 |  21 980 |  0.07 |
+| `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    152 |   5 241 |  0.03 |
+| `[u32]` as `[char]`, 4 KiB                          |    186 |     336 |   0.6 |
+| CRC-32, 1518 bytes (by hand: 16 bytes at a time)    |    710 |     594 |   1.2 |
+| CRC-16/Modbus, 1518 bytes (by hand: a byte at once) |    701 |   3 711 |   0.2 |
+| `sum16`, 1500 bytes                                 |     48 |      48 |   1.0 |
 
 By hand, a slice is checked the way one writes it first, `bytes.iter().all(|&b| b <= 1)`: `puns`
-checks 64 bytes at a time, without a branch in a block. The two IPv4 lines are a known gap, not a
-property of the design: an expression of a rule longer than 24 operations (here the checksums of
-UDP and TCP over the addresses of the packet, one `assert`) is applied by an interpreter instead
-of being compiled to its arithmetic, as shorter ones and every rule with a `walk` are. It is
-being closed.
+checks 64 bytes at a time, without a branch in a block. A rule is compiled to its arithmetic, one
+function per operation that the optimizer inlines; no expression is interpreted at run time.
+
+One line is a known cost, not a property of the design: a view enum tries its variants in order,
+each a check of its own, so bytes that fail a rule which two variants share compute it for each.
+A UDP packet whose checksum is wrong fails `Frame<Ipv4<Udp>>`, then computes the same checksums
+again for `Frame<Ipv4>`: about twice the time by hand. What would remove it (and the repeated test
+of the EtherType that costs the later variants a few instructions) is in [the design][design],
+"Not done yet".
 
 ### What to keep in mind
 
@@ -658,11 +671,16 @@ being closed.
 - **A slice is checked by blocks** of 64 bytes, without a branch inside a block: an element that
   is not valid is found when its block is done, not at its byte.
 - **A CRC is 32 KiB of tables in the binary** for each set of parameters that is used (16 bytes
-  at a time); `sum16` adds 8 bytes at a time and needs none.
+  at a time; 16 KiB of them are read for a CRC of up to 32 bits); `sum16` adds 8 bytes at a time
+  and needs none.
+- **A rule computes on 128-bit integers.** It costs what the arithmetic costs, and the arithmetic
+  of a `u128` is two registers and a carry: a `walk` that carries two things in its state (what
+  a header is, where it starts) keeps each in a half, `(kind << 64) + start`, not packed in the
+  low bits, which would put a shift on every step ([the design][design], "Walks").
 - **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
   the binary, a checked one adds its checks, inlined where it is called.
-- **Measure in release.** In a debug build the expressions of the rules are interpreted, and
-  nothing is inlined.
+- **Measure in release.** In a debug build nothing is inlined: each operation of a rule is a
+  call.
 - **The analysis is build time**: it runs in the compiler, for each new pair of types. The
   Ethernet example (32 types, about 80 puns, a view enum of 19 variants) builds in a few seconds
   in debug, and in about a minute in release with LTO and one codegen unit.
@@ -756,11 +774,13 @@ Rust 1.100 or later. `puns` is `no_std` and depends on nothing but its derive. B
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0][apache] or [MIT license][mit] at your
+option.
 
 [ethernet]: https://github.com/uael/puns/blob/main/puns/examples/ethernet.rs
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
 [examples]: https://github.com/uael/puns/tree/main/puns/examples
 [design]: https://github.com/uael/puns/blob/main/puns/DESIGN.md
+[apache]: https://github.com/uael/puns/blob/main/LICENSE-APACHE
+[mit]: https://github.com/uael/puns/blob/main/LICENSE-MIT
