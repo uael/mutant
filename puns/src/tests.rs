@@ -330,3 +330,52 @@ fn mutable_parts() {
 const TAIL_UNSIZED: &str = "\ncannot pun: the source is unsized: where its last bytes start \
                             depends on its length, which is only known at run time.\nUse \
                             `from_tail` to take a value from the end of bytes";
+
+/// Word by word, folded at each step: what `sum16` computes faster.
+fn sum16_reference(bytes: &[u8]) -> u16 {
+  let (mut sum, mut i) = (0u64, 0);
+  while i < bytes.len() {
+    let low = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+    sum += (u64::from(bytes[i]) << 8) | u64::from(low);
+    sum = (sum & 0xffff) + (sum >> 16);
+    i += 2;
+  }
+  sum as u16
+}
+
+/// Pseudo-random bytes.
+fn noise(len: usize, seed: &mut u64) -> Vec<u8> {
+  (0..len)
+    .map(|_| {
+      *seed ^= *seed << 13;
+      *seed ^= *seed >> 7;
+      *seed ^= *seed << 17;
+      (*seed >> 24) as u8
+    })
+    .collect()
+}
+
+#[test]
+fn sum16_is_the_sum_word_by_word() {
+  use crate::layout::sum16;
+  let mut seed = 0x9e37_79b9_7f4a_7c15;
+  let lengths = if cfg!(miri) { 40 } else { 300 };
+  for len in 0..lengths {
+    for bytes in [noise(len, &mut seed), vec![0; len], vec![0xff; len]] {
+      // From several offsets, so that blocks are read at any alignment.
+      for start in 0..bytes.len().min(9) {
+        assert_eq!(sum16(&bytes[start..]), sum16_reference(&bytes[start..]), "{bytes:?}");
+      }
+    }
+  }
+  // Past the number of blocks after which the sum is folded.
+  if !cfg!(miri) {
+    let bytes = noise(9 << 20, &mut seed);
+    assert_eq!(sum16(&bytes), sum16_reference(&bytes));
+    assert_eq!(sum16(&vec![0xff; 9 << 20]), 0xffff);
+  }
+  // At compile time too: a header of IPv4 that holds its checksum.
+  let sum =
+    const { sum16(&[0x45, 0, 0, 24, 0, 1, 0, 0, 64, 253, 0x65, 0xe6, 10, 0, 0, 1, 10, 0, 0, 2]) };
+  assert_eq!(sum, 0xffff);
+}

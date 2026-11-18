@@ -2563,7 +2563,7 @@ impl Machine {
           let zeros = (zeros.saturating_sub(start) as usize, to.saturating_sub(start) as usize);
           let value = match op {
             Op::Crc32 => crc32(bytes) as u128,
-            Op::Sum16 => sum16(bytes) as u128,
+            Op::Sum16 => sum16_inline(bytes) as u128,
             Op::Crc(crc) | Op::CrcZeros(crc) => crc.compute(bytes, zeros) as u128,
             Op::Checksum(checksum) => checksum.compute(bytes),
             Op::Matches(dfa) => dfa.accepts_bytes(bytes) as u128,
@@ -2796,13 +2796,48 @@ pub const fn crc32(bytes: &[u8]) -> u32 {
 /// ```
 #[must_use]
 pub const fn sum16(bytes: &[u8]) -> u16 {
-  let (mut sum, mut i) = (0u64, 0);
-  while i < bytes.len() {
-    let low = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
-    sum += ((bytes[i] as u64) << 8) | low as u64;
-    // No overflow: the carries are folded as they come.
-    sum = (sum & 0xffff) + (sum >> 16);
+  sum16_inline(bytes)
+}
+
+/// [`sum16`], inlined where a rule computes it.
+#[inline(always)]
+const fn sum16_inline(bytes: &[u8]) -> u16 {
+  // Eight bytes at a time, in the byte order of the target, as two halves of 32 bits added into a
+  // `u64` (RFC 1071): words of the other byte order sum to the sum with its bytes swapped, which
+  // is swapped back. Folded every 2^20 blocks, long before a carry could be lost (2^31). As the
+  // sum word by word folded at each step: `0` for no or only zero bytes, else the value of
+  // `1..=0xffff` that is congruent to the sum modulo `0xffff`.
+  let (mut blocks, rest) = bytes.as_chunks::<8>();
+  let mut sum = 0u64;
+  while !blocks.is_empty() {
+    let (now, later) = blocks.split_at(if blocks.len() > 1 << 20 { 1 << 20 } else { blocks.len() });
+    let (mut wide, mut i) = (0u64, 0);
+    while i < now.len() {
+      let block = u64::from_ne_bytes(now[i]);
+      wide += (block & 0xffff_ffff) + (block >> 32);
+      i += 1;
+    }
+    sum = fold(sum + fold(wide) as u64) as u64;
+    blocks = later;
+  }
+  if cfg!(target_endian = "little") {
+    sum = (sum as u16).swap_bytes() as u64;
+  }
+  // What remains, big-endian: fewer than 8 bytes, from an even offset.
+  let mut i = 0;
+  while i < rest.len() {
+    let low = if i + 1 < rest.len() { rest[i + 1] } else { 0 };
+    sum += ((rest[i] as u64) << 8) | low as u64;
     i += 2;
+  }
+  fold(sum)
+}
+
+/// A sum of 16 bits words, folded into 16 bits with end-around carries.
+#[inline(always)]
+const fn fold(mut sum: u64) -> u16 {
+  while sum > 0xffff {
+    sum = (sum & 0xffff) + (sum >> 16);
   }
   sum as u16
 }
