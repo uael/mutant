@@ -945,7 +945,7 @@ pub(crate) enum Shape {
   Scalar(Spec),
   Array(usize),
   Slice,
-  Struct(&'static [Rule]),
+  Struct,
   Pattern(&'static Dfa),
   Enum(&'static Enum),
   Pointer(Pointer),
@@ -1618,62 +1618,22 @@ impl Layout {
     }
   }
 
-  /// The `index`th operation of the expression of the `rule`th rule, if any.
-  pub(crate) const fn rule_op(&self, rule: usize, index: usize) -> Option<Op> {
+  /// The expression of the `rule`th rule, if it has one (else none).
+  pub(crate) const fn rule_ops(&self, rule: usize) -> &'static [Op] {
     let rules = self.rules();
     if rule >= rules.len() {
-      return None;
+      return &[];
     }
     match rules[rule].ops() {
-      Some(ops) if index < ops.len() => Some(ops[index]),
-      _ => None,
+      Some(ops) => ops,
+      None => &[],
     }
   }
 
-  /// Index of the [`Op::Walk`] of the expression of the `rule`th rule, `usize::MAX` if none.
-  pub(crate) const fn walk_at(&self, rule: usize) -> usize {
-    let mut i = 0;
-    while let Some(op) = self.rule_op(rule, i) {
-      if matches!(op, Op::Walk { .. }) {
-        return i;
-      }
-      i += 1;
-    }
-    usize::MAX
-  }
-
-  /// The `index`th operation of an expression (the condition, or with `next` what follows) of
-  /// the [`Op::Walk`] of the `rule`th rule.
-  pub(crate) const fn walk_op(&self, rule: usize, next: bool, index: usize) -> Option<Op> {
-    let Some(Op::Walk { cond, next: then, .. }) = self.rule_op(rule, self.walk_at(rule)) else {
-      return None;
-    };
-    let ops = if next { then } else { cond };
-    if index < ops.len() { Some(ops[index]) } else { None }
-  }
-
-  /// Whatever the `rule`th rule is a [`Rule::Walk`] whose expression has `ops` operations, and
-  /// whose walk has expressions of at most `inner` operations.
-  pub(crate) const fn walks(&self, rule: usize, ops: usize, inner: usize) -> bool {
+  /// The `index`th rule, if any.
+  pub(crate) const fn rule(&self, index: usize) -> Option<Rule> {
     let rules = self.rules();
-    if rule >= rules.len() {
-      return false;
-    }
-    let Rule::Walk(expression) = rules[rule] else { return false };
-    let Some(Op::Walk { cond, next, .. }) = self.rule_op(rule, self.walk_at(rule)) else {
-      return false;
-    };
-    expression.len() == ops && cond.len() <= inner && next.len() <= inner
-  }
-
-  /// Number of rules that are a [`Rule::Walk`].
-  pub(crate) const fn walk_rules(&self) -> usize {
-    let (rules, mut count, mut i) = (self.rules(), 0, 0);
-    while i < rules.len() {
-      count += matches!(rules[i], Rule::Walk(_)) as usize;
-      i += 1;
-    }
-    count
+    if index < rules.len() { Some(rules[index]) } else { None }
   }
 
   /// The tag of the `variant`th variant of an enum.
@@ -1965,7 +1925,7 @@ impl Layout {
       Kind::Scalar(spec) => Shape::Scalar(spec),
       Kind::Array(_, len) => Shape::Array(len),
       Kind::Slice(_) => Shape::Slice,
-      Kind::Struct(_, rules) => Shape::Struct(rules),
+      Kind::Struct(..) => Shape::Struct,
       Kind::Pattern(dfa) => Shape::Pattern(dfa),
       Kind::Enum(layout) => Shape::Enum(layout),
       Kind::Pointer(pointer) => Shape::Pointer(pointer),
@@ -2057,6 +2017,20 @@ impl Layout {
       Kind::Struct(_, rules) => rules,
       _ => &[],
     }
+  }
+
+  /// Fields of a struct, by offset (none if it is not one).
+  pub(crate) const fn struct_fields(&self) -> &'static [Field] {
+    match self.kind {
+      Kind::Struct(fields, _) => fields,
+      _ => &[],
+    }
+  }
+
+  /// Whatever the last rule of a struct is a region without an expression, which takes what
+  /// remains of the tail.
+  pub(crate) const fn has_last_region(&self) -> bool {
+    matches!(self.rules().last(), Some(Rule::Region(None)))
   }
 
   /// The rule that tells how long a value is from its first bytes, if any: the first `Size` or
@@ -2196,6 +2170,39 @@ impl Layout {
         false
       }
     }
+  }
+
+  /// Whatever two structs have rules that are the same function of the bytes of each: the same
+  /// rules, in the same order ([`Rule::equals`]), over a struct of the same extent. A rule is a
+  /// function of the bytes of its struct, of its size (`size_of_val(self)`, a `size` rule), of
+  /// the number of elements of its tail (a `len` rule) and of the bytes of its tail (regions):
+  /// so the same sized part, and the same tail (where it starts, the size of an element, and for
+  /// a sized struct its bytes and the elements of the array it ends with), whatever the fields.
+  pub(crate) const fn same_rules(&self, other: &Layout) -> bool {
+    let (Kind::Struct(_, mine), Kind::Struct(_, theirs)) = (self.kind, other.kind) else {
+      return false;
+    };
+    let (tail, other_tail) = (self.tail_shape(), other.tail_shape());
+    if mine.is_empty()
+      || mine.len() != theirs.len()
+      || self.size != other.size
+      || self.tail != other.tail
+      || self.unsized_ != other.unsized_
+      || tail.start != other_tail.start
+      || tail.bytes != other_tail.bytes
+      || tail.len != other_tail.len
+      || tail.array != other_tail.array
+    {
+      return false;
+    }
+    let mut i = 0;
+    while i < mine.len() {
+      if !mine[i].equals(&theirs[i]) {
+        return false;
+      }
+      i += 1;
+    }
+    true
   }
 
   /// Whatever two layouts describe the same thing.
@@ -2824,8 +2831,21 @@ pub struct Crc {
   /// `tables[k][b]`: the register after the byte `b` and `k` zero bytes, from a register of
   /// zeros: in its low bits if reflected, else in its high bits. Sixteen bytes are then sixteen
   /// lookups that do not wait for each other (slicing by 16), rather than a chain of sixteen.
-  /// One table only where 32 KiB do not fit (see [`CRC_TABLES`]).
-  tables: [[u64; 256]; CRC_TABLES],
+  tables: Tables,
+}
+
+/// The tables of a [`Crc`] ([`CRC_TABLES`] of them): of `u32`s for a CRC of at most 32 bits (16
+/// KiB, half of what the cache holds of them otherwise), else of `u64`s.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[expect(
+  clippy::large_enum_variant,
+  reason = "a `Crc` is a constant of 32 KiB, as it was with tables of `u64`s only: nothing to box"
+)]
+enum Tables {
+  /// The register in the low bits of a `u32` if reflected, else in its high bits.
+  Narrow([[u32; 256]; CRC_TABLES]),
+  /// The register in the low bits of a `u64` if reflected, else in its high bits.
+  Wide([[u64; 256]; CRC_TABLES]),
 }
 
 /// The number of tables of a [`Crc`]: 16 (32 KiB, sixteen bytes at a time), but 1 (2 KiB, a byte
@@ -2840,7 +2860,8 @@ impl Crc {
   /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
   pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
 
-  /// Its tables are 32 KiB: a `Crc` is meant to be a constant, made in const evaluation.
+  /// Its tables are 32 KiB (16 KiB of them are used for a CRC of up to 32 bits): a `Crc` is
+  /// meant to be a constant, made in const evaluation.
   ///
   /// # Panics
   /// If `width` is not 1 to 64, or a parameter has more bits than that.
@@ -2884,6 +2905,21 @@ impl Crc {
       }
       k += 1;
     }
+    let tables = if width > 32 {
+      Tables::Wide(tables)
+    } else {
+      // The register of the `u64`s, in a `u32`: its other bits are zeros.
+      let (mut narrow, mut k) = ([[0; 256]; CRC_TABLES], 0);
+      while k < CRC_TABLES {
+        let mut i = 0;
+        while i < 256 {
+          narrow[k][i] = if reflect { tables[k][i] as u32 } else { (tables[k][i] >> 32) as u32 };
+          i += 1;
+        }
+        k += 1;
+      }
+      Tables::Narrow(narrow)
+    };
     Self { width, poly, init, reflect, xorout, tables }
   }
 
@@ -2922,16 +2958,85 @@ impl Crc {
 
   /// The register after `bytes`.
   #[inline]
-  const fn update(&self, mut register: u64, bytes: &[u8]) -> u64 {
+  const fn update(&self, register: u64, bytes: &[u8]) -> u64 {
+    match &self.tables {
+      // In a `u32`: the low bits of the register if reflected, else its high bits.
+      Tables::Narrow(t) => {
+        let narrow = if self.reflect { register as u32 } else { (register >> 32) as u32 };
+        let narrow = Self::update_narrow(t, self.reflect, narrow, bytes);
+        if self.reflect { narrow as u64 } else { (narrow as u64) << 32 }
+      }
+      Tables::Wide(t) => Self::update_wide(t, self.reflect, register, bytes),
+    }
+  }
+
+  /// [`Crc::update`] with tables of `u32`s: as the CRC-32 of Ethernet ([`crc32`]).
+  #[inline]
+  const fn update_narrow(
+    t: &[[u32; 256]; CRC_TABLES],
+    reflect: bool,
+    mut register: u32,
+    bytes: &[u8],
+  ) -> u32 {
     // With one table, every byte goes through the loop below.
     let (blocks, rest): (&[[u8; 16]], &[u8]) =
       if CRC_TABLES == 16 { bytes.as_chunks::<16>() } else { (&[], bytes) };
-    #[cfg(not(target_pointer_width = "16"))]
-    let t = &self.tables;
     // A slice: with one table, the indices of the sixteen are never reached (no block), which
     // the compiler cannot tell of an array.
     #[cfg(target_pointer_width = "16")]
-    let t: &[[u64; 256]] = &self.tables;
+    let t: &[[u32; 256]] = t;
+    let mut i = 0;
+    while i < blocks.len() {
+      let b = &blocks[i];
+      // The register is the first 4 bytes of a block: what it holds after them, and after the 12
+      // that follow, is a lookup for each byte.
+      let head = [b[0], b[1], b[2], b[3]];
+      let x = register ^ if reflect { u32::from_le_bytes(head) } else { u32::from_be_bytes(head) };
+      let x = if reflect { x.to_le_bytes() } else { x.to_be_bytes() };
+      register = t[15][x[0] as usize]
+        ^ t[14][x[1] as usize]
+        ^ t[13][x[2] as usize]
+        ^ t[12][x[3] as usize]
+        ^ t[11][b[4] as usize]
+        ^ t[10][b[5] as usize]
+        ^ t[9][b[6] as usize]
+        ^ t[8][b[7] as usize]
+        ^ t[7][b[8] as usize]
+        ^ t[6][b[9] as usize]
+        ^ t[5][b[10] as usize]
+        ^ t[4][b[11] as usize]
+        ^ t[3][b[12] as usize]
+        ^ t[2][b[13] as usize]
+        ^ t[1][b[14] as usize]
+        ^ t[0][b[15] as usize];
+      i += 1;
+    }
+    let mut i = 0;
+    while i < rest.len() {
+      register = if reflect {
+        t[0][((register ^ rest[i] as u32) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        t[0][((register >> 24) ^ rest[i] as u32) as usize] ^ (register << 8)
+      };
+      i += 1;
+    }
+    register
+  }
+
+  /// [`Crc::update`] with tables of `u64`s.
+  #[inline]
+  const fn update_wide(
+    t: &[[u64; 256]; CRC_TABLES],
+    reflect: bool,
+    mut register: u64,
+    bytes: &[u8],
+  ) -> u64 {
+    // With one table, every byte goes through the loop below.
+    let (blocks, rest): (&[[u8; 16]], &[u8]) =
+      if CRC_TABLES == 16 { bytes.as_chunks::<16>() } else { (&[], bytes) };
+    // As above.
+    #[cfg(target_pointer_width = "16")]
+    let t: &[[u64; 256]] = t;
     let mut i = 0;
     while i < blocks.len() {
       let b = &blocks[i];
@@ -2939,9 +3044,8 @@ impl Crc {
       // are not those of the CRC are zeros): what it holds after them, and after the 8 bytes
       // that follow, is a lookup for each byte.
       let head = [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]];
-      let x =
-        register ^ if self.reflect { u64::from_le_bytes(head) } else { u64::from_be_bytes(head) };
-      let x = if self.reflect { x.to_le_bytes() } else { x.to_be_bytes() };
+      let x = register ^ if reflect { u64::from_le_bytes(head) } else { u64::from_be_bytes(head) };
+      let x = if reflect { x.to_le_bytes() } else { x.to_be_bytes() };
       register = t[15][x[0] as usize]
         ^ t[14][x[1] as usize]
         ^ t[13][x[2] as usize]
@@ -2962,7 +3066,7 @@ impl Crc {
     }
     let mut i = 0;
     while i < rest.len() {
-      register = if self.reflect {
+      register = if reflect {
         t[0][((register ^ rest[i] as u64) & 0xff) as usize] ^ (register >> 8)
       } else {
         t[0][((register >> 56) ^ rest[i] as u64) as usize] ^ (register << 8)
@@ -2981,12 +3085,17 @@ impl Crc {
     } else {
       self.init << (64 - self.width)
     };
-    let t = &self.tables[0];
+    // The first table, as the register of a `u64`.
+    let t = |i: u64| match &self.tables {
+      Tables::Narrow(t) if self.reflect => u64::from(t[0][i as usize]),
+      Tables::Narrow(t) => u64::from(t[0][i as usize]) << 32,
+      Tables::Wide(t) => t[0][i as usize],
+    };
     for &byte in bytes {
       register = if self.reflect {
-        t[((register ^ u64::from(byte)) & 0xff) as usize] ^ (register >> 8)
+        t((register ^ u64::from(byte)) & 0xff) ^ (register >> 8)
       } else {
-        t[((register >> 56) ^ u64::from(byte)) as usize] ^ (register << 8)
+        t((register >> 56) ^ u64::from(byte)) ^ (register << 8)
       };
     }
     if !self.reflect {
@@ -3124,7 +3233,7 @@ const fn cheap_ops(ops: &[Op]) -> bool {
 }
 
 /// Whatever two expressions are the same.
-const fn same_ops(a: &[Op], b: &[Op]) -> bool {
+pub(crate) const fn same_ops(a: &[Op], b: &[Op]) -> bool {
   let mut i = 0;
   while i < a.len() && i < b.len() && a[i].equals(&b[i]) {
     i += 1;
@@ -3145,8 +3254,6 @@ pub enum Rule {
   Len(&'static [Op]),
   /// The expression is true.
   Assert(&'static [Op]),
-  /// The expression, which has one [`Op::Walk`], is true.
-  Walk(&'static [Op]),
   /// The tail of the value starts with a region of as many bytes as the result of the
   /// expression (`None`: what remains). Regions follow each other, in the order of the rules.
   Region(Option<&'static [Op]>),
@@ -3174,24 +3281,20 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
 }
 
 impl Rule {
-  const fn ops(&self) -> Option<&'static [Op]> {
+  /// Its expression, if it has one.
+  pub(crate) const fn ops(&self) -> Option<&'static [Op]> {
     match *self {
-      Rule::Size(ops)
-      | Rule::Len(ops)
-      | Rule::Assert(ops)
-      | Rule::Region(Some(ops))
-      | Rule::Walk(ops) => Some(ops),
+      Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => Some(ops),
       Rule::Region(None) => None,
     }
   }
 
-  const fn equals(&self, other: &Rule) -> bool {
+  pub(crate) const fn equals(&self, other: &Rule) -> bool {
     let same_kind = matches!(
       (self, other),
       (Rule::Size(_), Rule::Size(_))
         | (Rule::Len(_), Rule::Len(_))
         | (Rule::Assert(_), Rule::Assert(_))
-        | (Rule::Walk(_), Rule::Walk(_))
         | (Rule::Region(_), Rule::Region(_))
     );
     match (self.ops(), other.ops()) {
@@ -3225,14 +3328,16 @@ pub(crate) struct LengthRule {
   pub(crate) ops: &'static [Op],
 }
 
-/// Depth of the stack of [`eval`].
+/// Depth of the stack of the evaluator ([`Machine`]).
 const STACK: usize = 16;
 /// Number of variables of an expression.
 const VARIABLES: usize = 8;
-/// An expression that has a [`Op::Walk`] is, as each expression of the walk, of at most that
-/// many operations: they are counted with types, see `validate::check_walks`.
-const WALK_OPS: usize = 72;
-const WALK_INNER_OPS: usize = 56;
+/// The most operations of an expression, and the most walks that it nests (a walk in a walk is
+/// two): the validation applies each operation in an instance of a function of its own, reached
+/// by recursions over a tree of the operations (`validate::steps`), which these keep short.
+/// `#[derive(Pun)]` has the same limits, and says where an expression goes beyond them.
+pub(crate) const MAX_OPS: usize = 256;
+pub(crate) const MAX_WALKS: usize = 4;
 
 /// Check that the expressions of `rules` are well formed, and only read the first `head` bytes.
 const fn check_rules(rules: &[Rule], head: usize) {
@@ -3240,27 +3345,20 @@ const fn check_rules(rules: &[Rule], head: usize) {
   while i < rules.len() {
     if let Some(ops) = rules[i].ops() {
       let sizes = matches!(rules[i], Rule::Size(_) | Rule::Len(_));
-      let first = check_ops(ops, head, sizes, 0);
-      // The first walk of a rule that walks is applied by `validate::check_walks`, whose
-      // recursions over the operations are as long as these limits.
-      if let Rule::Walk(_) = rules[i] {
-        let Some(Op::Walk { cond, next, .. }) = first else {
-          panic!("a rule that walks has a walk")
-        };
-        assert!(ops.len() <= WALK_OPS, "an expression that walks is too long");
-        assert!(
-          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
-          "the expressions of a `walk` are too long"
-        );
-      }
+      check_ops(ops, head, sizes, 0, 0);
     }
     i += 1;
   }
 }
 
-/// Check an expression, in which the variables of `defined` are (a bit for each): returns its
-/// first [`Op::Walk`], if any. With `sizes`, it is a size or a length, which cannot be computed
-/// from the size of the value.
+/// The `index`th operation of `ops`, if any.
+pub(crate) const fn op_at(ops: &[Op], index: usize) -> Option<Op> {
+  if index < ops.len() { Some(ops[index]) } else { None }
+}
+
+/// Check an expression, in which the variables of `defined` are (a bit for each), and which is in
+/// `walks` walks. With `sizes`, it is a size or a length, which cannot be computed from the size
+/// of the value.
 ///
 /// What an [`Op::Shortcut`], an [`Op::Then`] or an [`Op::Else`] does not compute is a *part*: the
 /// right side of a `&&` or `||`, a branch of an `if`. A part must end with what it is a part of
@@ -3269,8 +3367,9 @@ const fn check_rules(rules: &[Rule], head: usize) {
 /// was computed or not (the evaluator pushes a placeholder for a branch that is not). What a part
 /// defines is not defined after it. Every `&&`, `||` and `if` has its parts: what is computed is
 /// what Rust computes, and no failure can be left out of the value of the expression.
-const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Option<Op> {
-  let (mut depth, mut first, mut i) = (0usize, None, 0);
+const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8, walks: usize) {
+  assert!(ops.len() <= MAX_OPS, "an expression is too long");
+  let (mut depth, mut i) = (0usize, 0);
   // The parts that are open, innermost last: the index of the operation that ends each, the depth
   // of the stack before it, the variables defined before it, and the operation that opened it.
   let (mut parts, mut open) = ([(0usize, 0usize, 0u8, Op::Size); STACK], 0);
@@ -3325,12 +3424,10 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Opt
         assert!((index as usize) < VARIABLES && defined & (1 << index) != 0, "no such variable");
       }
       Op::Walk { var, cond, next } => {
-        if first.is_none() {
-          first = Some(op);
-        }
+        assert!(walks < MAX_WALKS, "walks are nested too deeply");
         assert!((var as usize) < VARIABLES, "too many variables in an expression");
-        check_ops(cond, head, sizes, defined | 1 << var);
-        check_ops(next, head, sizes, defined | 1 << var);
+        check_ops(cond, head, sizes, defined | 1 << var, walks + 1);
+        check_ops(next, head, sizes, defined | 1 << var, walks + 1);
       }
       _ => {}
     }
@@ -3339,7 +3436,6 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Opt
     i += 1;
   }
   assert!(depth == 1 && open == 0, "malformed expression");
-  first
 }
 
 /// What an operation takes off the stack, and what it puts on it, where it is computed (see
@@ -3386,9 +3482,10 @@ const fn effect(op: Op) -> (usize, usize) {
 
 /// What evaluates an expression: a stack, and variables.
 ///
-/// This is written so that, once inlined in a function where the expression is a constant, which
-/// is how it is used, what remains is the arithmetic of the expression, without relying on much
-/// of the optimizer: the stack is not an array but a variable for each of its slots, what is not
+/// It is given one operation at a time, each a constant of the instance of the function that
+/// applies it (`validate::steps`): there is no interpreter. This is written so that what remains
+/// once it is inlined there is the arithmetic of the expression, without relying on much of the
+/// optimizer: the stack is not an array but a variable for each of its slots, what is not
 /// computed is told by an index (`skip`), which is a constant on each path through the code, and
 /// a failure, which is the one of the expression (nothing that is computed is left out of its
 /// value), returns at once.
@@ -3504,7 +3601,10 @@ impl Machine {
   /// whose size is `size`: `false` if it fails, which is then the failure of the expression.
   ///
   /// # Safety
-  /// See [`eval`].
+  /// `op` must be an operation of an expression of a rule of the layout of a struct, and `base`
+  /// must be valid for reads of the sized fields of such a struct, and of `size` bytes,
+  /// initialized. `size` is the size of the struct, or for a `size` or `len` rule, which tells it,
+  /// what can be read.
   // Not in debug builds, where this would only make every struct that has rules slow to build.
   #[must_use]
   #[cfg_attr(not(debug_assertions), inline(always))]
@@ -3619,12 +3719,9 @@ impl Machine {
         self.set(depth - 3, value);
         self.depth -= 2;
       }
-      // `validate::check_walks` applies the first walk of a rule that walks; this, any other.
-      Op::Walk { var, cond, next } => {
-        // SAFETY: guaranteed by the caller.
-        let value = unsafe { self.walk(var, cond, next, self.get(depth - 1), base, size) };
-        return self.replace(value);
-      }
+      // `validate::walk` applies a walk, with the instances of the functions that apply its
+      // expressions: the validation never gives one to this function (`validate::covers`).
+      Op::Walk { .. } => return false,
       op => {
         match binary(op, self.get(depth - 2), self.get(depth - 1)) {
           Some(value) => self.set(depth - 2, value),
@@ -3637,22 +3734,6 @@ impl Machine {
   }
 }
 
-/// Evaluate a postfix expression over the struct at `base`.
-///
-/// The first operations are not in a loop: where the expression is a constant, each of them is
-/// one, and what remains is its arithmetic (see [`Machine`]).
-///
-/// # Safety
-/// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
-/// reads of the sized fields of such a struct, and of `size` bytes, initialized. `size` is the
-/// size of the struct, or for a `size` or `len` rule, which tells it, what can be read.
-// Not in debug builds, where this would only make every struct that has rules slow to build.
-#[cfg_attr(not(debug_assertions), inline(always))]
-pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-  // SAFETY: guaranteed by the caller.
-  unsafe { Machine::NEW.run(ops, base, size) }
-}
-
 // `walk_limit` adds 16 to the size of a value, at most `isize::MAX`: it does not overflow.
 const _: () = assert!(isize::MAX as usize <= usize::MAX - 16);
 
@@ -3661,88 +3742,6 @@ const _: () = assert!(isize::MAX as usize <= usize::MAX - 16);
 #[inline(always)]
 pub(crate) const fn walk_limit(size: usize) -> usize {
   (size + 16).saturating_mul(8)
-}
-
-impl Machine {
-  /// The value of the expression `ops`, evaluated by this machine.
-  ///
-  /// # Safety
-  /// See [`eval`].
-  #[cfg_attr(not(debug_assertions), inline(always))]
-  const unsafe fn run(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-    macro_rules! unrolled {
-      ($($index:literal)+) => {$(
-        // SAFETY: guaranteed by the caller.
-        if $index < ops.len() && !unsafe { self.apply(ops[$index], $index, base, size) } {
-          return None;
-        }
-      )+};
-    }
-    unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
-    let mut i = 24;
-    while i < ops.len() {
-      // SAFETY: guaranteed by the caller.
-      if !unsafe { self.apply(ops[i], i, base, size) } {
-        return None;
-      }
-      i += 1;
-    }
-    Some(self.result())
-  }
-
-  /// The value of the expression `ops`, evaluated by this machine an operation at a time: for
-  /// expressions that are not constants where they are evaluated, which unrolling would only
-  /// make slower to compile.
-  ///
-  /// # Safety
-  /// See [`eval`].
-  const unsafe fn run_loop(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-    let mut i = 0;
-    while i < ops.len() {
-      // SAFETY: guaranteed by the caller.
-      if !unsafe { self.apply(ops[i], i, base, size) } {
-        return None;
-      }
-      i += 1;
-    }
-    Some(self.result())
-  }
-
-  /// What `start` becomes when it is replaced by the value of `next` for as long as `cond` is
-  /// true of it, the variable `var` being it in both; `None` if it cannot be computed, or if it
-  /// takes more than [`walk_limit`] steps.
-  ///
-  /// A walk in an expression is a function of its own, which is not inlined (it would be too
-  /// big), so its expressions are not constants there: they are evaluated a step at a time. (The
-  /// first walk of a rule is applied otherwise, see `validate::check_walks`.)
-  ///
-  /// # Safety
-  /// See [`eval`].
-  #[inline(never)]
-  const unsafe fn walk(
-    &self,
-    var: u8,
-    cond: &[Op],
-    next: &[Op],
-    start: u128,
-    base: *const u8,
-    size: usize,
-  ) -> Option<u128> {
-    let (mut state, mut steps, limit) = (start, 0, walk_limit(size));
-    loop {
-      // SAFETY: guaranteed by the caller.
-      match unsafe { self.enter(var, state).run_loop(cond, base, size) } {
-        Some(0) => return Some(state),
-        Some(_) if steps < limit => steps += 1,
-        _ => return None,
-      }
-      // SAFETY: guaranteed by the caller.
-      match unsafe { self.enter(var, state).run_loop(next, base, size) } {
-        Some(next) => state = next,
-        None => return None,
-      }
-    }
-  }
 }
 
 #[inline(always)]

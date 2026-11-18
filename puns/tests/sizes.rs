@@ -98,8 +98,8 @@ fn walks_and_walks_in_walks() {
   assert!(from_bytes::<Nested>(&[1, 4, 1, 7, 1, 8, 2, 0]).is_err());
 }
 
-/// A step of 70 operations, and an expression of more than 80: longer than what the code of the
-/// walks of a struct applies, so the evaluator applies them.
+/// A step of 70 operations, and an expression of more than 80, each applied in an instance of a
+/// function of its own, as any other.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(walk(0, |at| at < 4, |at| at + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
@@ -125,6 +125,26 @@ fn long_walks() {
   assert!(from_bytes::<LongExpression>(&[3]).is_ok());
   // More steps than 8 per bit of the value, and 128.
   assert!(from_bytes::<LongExpression>(&[200]).is_err());
+}
+
+/// The longest expression (256 operations: `a` and 125 times `+ 1` are 251, `a + 125` 3, then
+/// `!=` and `!`), and walks nested as deep as they can be (4).
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(!(a + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 != a + 125)))]
+#[pun(assert(
+  walk(0, |i| i < 1 && walk(0, |j| j < 1 && walk(0, |k| k < 1 && walk(0, |l| l < a, |l| l + 1) == a,
+    |k| k + 1) == 1, |j| j + 1) == 1, |i| i + 1) == 1
+))]
+struct Longest {
+  a: u8,
+}
+
+#[test]
+fn the_limits_of_an_expression() {
+  assert!(from_bytes::<Longest>(&[3]).is_ok());
+  // The innermost walk takes more steps than 8 per bit of the value, and 128.
+  assert!(from_bytes::<Longest>(&[200]).is_err());
 }
 
 /// A DER "type, length, value": the length is short (below 0x80) or long (0x81 to 0x84, then that

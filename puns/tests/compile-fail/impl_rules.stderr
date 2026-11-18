@@ -1,0 +1,32 @@
+error[E0277]: the trait bound `Nothing: puns::sealed::Sealed` is not satisfied
+ --> tests/compile-fail/impl_rules.rs:6:22
+  |
+6 | impl puns::Rules for Nothing {
+  |                      ^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `puns::sealed::Sealed` is not implemented for `Nothing`
+ --> tests/compile-fail/impl_rules.rs:4:1
+  |
+4 | struct Nothing;
+  | ^^^^^^^^^^^^^^
+help: the trait `puns::sealed::Sealed` is implemented for `()`
+ --> src/lib.rs
+  |
+  |   impl Sealed for () {}
+  |   ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `puns::Rules`
+ --> src/lib.rs
+  |
+  | pub trait Rules: sealed::Sealed {
+  |                  ^^^^^^^^^^^^^^ required by this bound in `Rules`
+  = note: `Rules` is a "sealed trait", because to implement it you also need to implement `puns::sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+  = help: the following types implement the trait:
+            ()
+            puns::steps::One<I>
+            puns::steps::Two<A, B>
+            puns::steps::Walk<I, C, N>
+            puns::RuleAt<R, E, N>
+            puns::steps::InRule<T, R>
+            puns::steps::InWalk<X, W, NEXT>
+            puns::Root
+            puns::At<P, F>

@@ -194,7 +194,8 @@ impl Cursor {
   }
 
   /// Whatever the padding at the top of the stack is read by a rule that may be checked: one of
-  /// a struct that holds it, unless `source` proves it, as [`mark_rules`] tells.
+  /// a struct that holds it, unless `source` proves it, as [`mark_rules`] tells (by the same
+  /// tests, in the same order).
   const fn padding_is_read(&self, source: &'static Layout) -> bool {
     let (mut i, mut marked) = (0, matches!(self.checked, Checked::All));
     if matches!(self.checked, Checked::No) {
@@ -206,11 +207,16 @@ impl Cursor {
         // Nothing in it is checked.
         return false;
       }
-      if let Kind::Array(..) | Kind::Slice(_) = frame.layout.kind {
-        // The elements share their rules: proven all at once, or checked everywhere.
+      if let Kind::Array(..) | Kind::Slice(_) = frame.layout.kind
+        && (marked || !same_elements(source, frame.base, frame.layout))
+      {
+        // The elements share their rules: proven all at once, or checked everywhere. (Where the
+        // source has the same elements, what holds of one element holds of the one at the top.)
         marked = true;
       }
-      if frame.layout.rules_read_bytes() {
+      if frame.layout.rules_read_bytes()
+        && (marked || !proves_rules(source, frame.base, frame.layout))
+      {
         return true;
       }
       i += 1;
@@ -1456,8 +1462,8 @@ const fn pattern_product(a: &Dfa, from_a: u64, b: &Dfa, from_b: u64) -> bool {
 /// Mark the structs of `target`, which is at `base` in the target and whose first leaf is `leaf`,
 /// whose rules the `source` does not prove.
 ///
-/// A rule is not a property of bytes: it is only proven by the same rule, in the same struct, at
-/// the same place of the source.
+/// A rule is not a property of bytes: it is only proven by the same rule, at the same place of the
+/// source, in a struct of the same extent ([`proves_rules`]).
 const fn mark_rules(
   source: &'static Layout,
   target: &'static Layout,
@@ -1470,7 +1476,7 @@ const fn mark_rules(
   }
   match target.kind {
     Kind::Struct(fields, rules) => {
-      if !rules.is_empty() {
+      if !rules.is_empty() && !proves_rules(source, base, target) {
         out.mark(leaf + target.leaves - 1, base);
       }
       let mut i = 0;
@@ -1479,8 +1485,16 @@ const fn mark_rules(
         i += 1;
       }
     }
-    // Elements share their leaves: either they are all proven at once (`covered`), or none is.
-    Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
+    // Elements share their leaves: either they are all proven at once, or none is. They are when
+    // the source has elements of the same size at the same place, as many: then what the first
+    // one is to the source, each is.
+    Kind::Array(elem, _) | Kind::Slice(elem) => {
+      if same_elements(source, base, target) {
+        mark_rules(source, elem, base, leaf, out);
+      } else {
+        mark_all_rules(elem, base, leaf, out);
+      }
+    }
     Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => {}
   }
 }
@@ -1502,6 +1516,76 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
     }
     Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
     Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => {}
+  }
+}
+
+/// Whatever `source` has, at `offset`, a struct whose rules are the ones of the struct `target`,
+/// the same function of the same bytes ([`Layout::same_rules`]): then they hold of the target if
+/// they hold of the source. Its fields are not looked at: those of the target are related to the
+/// source as any other.
+const fn proves_rules(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
+  if offset == 0 && source.same_rules(target) {
+    return true;
+  }
+  match source.kind {
+    // A struct at the same offset may be its first field.
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        let field = &fields[i];
+        let inside = field.layout.is_dynamic() || offset < field.offset + field.layout.size;
+        if offset >= field.offset
+          && inside
+          && proves_rules(field.layout, offset - field.offset, target)
+        {
+          return true;
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Array(elem, len) => {
+      elem.size > 0 && offset / elem.size < len && proves_rules(elem, offset % elem.size, target)
+    }
+    Kind::Slice(elem) => elem.size > 0 && proves_rules(elem, offset % elem.size, target),
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
+  }
+}
+
+/// Whatever `source` has, at `offset`, as many elements of the size of those of the array or
+/// slice `target`, or more, from the start of an element of an array or a slice: each element of
+/// the target is then at the same place of an element of the source as the first one is.
+const fn same_elements(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
+  let same = match (source.kind, target.kind) {
+    (Kind::Array(a, n), Kind::Array(b, m)) => {
+      a.size == b.size && a.size > 0 && offset.is_multiple_of(a.size) && offset / a.size + m <= n
+    }
+    (Kind::Slice(a), Kind::Slice(b) | Kind::Array(b, _)) => {
+      a.size == b.size && (offset == 0 || a.size > 0 && offset.is_multiple_of(a.size))
+    }
+    _ => false,
+  };
+  if same {
+    return true;
+  }
+  match source.kind {
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        let field = &fields[i];
+        let inside = field.layout.is_dynamic() || offset < field.offset + field.layout.size;
+        if offset >= field.offset && inside {
+          return same_elements(field.layout, offset - field.offset, target);
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Array(elem, len) => {
+      elem.size > 0 && offset / elem.size < len && same_elements(elem, offset % elem.size, target)
+    }
+    Kind::Slice(elem) => elem.size > 0 && same_elements(elem, offset % elem.size, target),
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
   }
 }
 
@@ -1732,7 +1816,7 @@ pub const fn mutable_part(
     return Some(POINTER_MUT);
   }
   let end = shift.saturating_add(fit.end);
-  if let Some(why) = cut(a, 0, shift, end) {
+  if let Some(why) = cut(a, 0, b, shift, end) {
     return Some(why);
   }
   // A target that takes as many elements as fit may end anywhere in the source: within an enum
@@ -1743,23 +1827,42 @@ pub const fn mutable_part(
   if relate_at(b, shift, a, 0, shift, end, Checked::No).infallible() { None } else { Some(MUTABLE) }
 }
 
+/// The most elements with rules that [`cut`] looks at one by one, in an array that the bytes of a
+/// `&mut` cover in part: beyond, it refuses (a period would do, as for the analysis).
+const CUT_ELEMENTS: usize = 64;
+
 /// Why something of `layout`, which is at `base`, depends on the bytes `lo..hi` (`hi` may be
-/// `usize::MAX`) but does not lie within them, if something does: see [`mutable_part`].
-const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Option<&'static str> {
+/// `usize::MAX`) but does not lie within them, if something does: see [`mutable_part`]. The
+/// target `b`, which is written there, starts at `lo`.
+///
+/// A struct with rules that lies within the bytes is not cut if the target has, at the same
+/// place, a struct with the same rules over the same extent ([`proves_rules`], the other way):
+/// what is written then meets the rules of the source if it meets those of the target. The same
+/// of elements with rules, if the target has elements of the same size at the same place.
+const fn cut(
+  layout: &'static Layout,
+  base: usize,
+  b: &'static Layout,
+  lo: usize,
+  hi: usize,
+) -> Option<&'static str> {
   let end = if layout.is_dynamic() { usize::MAX } else { base + layout.size };
   if end <= lo || base >= hi || base == end {
     return None;
   }
+  // Within the bytes, and sized: the target is there too.
+  let within = !layout.is_dynamic() && base >= lo && end <= hi;
   match layout.kind {
     // No `&mut` covers a pointer, see `mutable_part`.
     Kind::Scalar(_) | Kind::Pointer(_) => None,
     Kind::Struct(fields, rules) => {
-      if !rules.is_empty() {
+      let proven = within && proves_rules(b, base - lo, layout);
+      if !rules.is_empty() && !proven {
         return Some(PART_RULE);
       }
       let mut i = 0;
       while i < fields.len() {
-        if let Some(why) = cut(fields[i].layout, base + fields[i].offset, lo, hi) {
+        if let Some(why) = cut(fields[i].layout, base + fields[i].offset, b, lo, hi) {
           return Some(why);
         }
         i += 1;
@@ -1792,8 +1895,34 @@ const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Opti
         return None;
       }
       if has_rules(elem) {
-        // Some element is covered, if only in part: its rules hold over what is covered.
-        return Some(PART_RULE);
+        // Every element is within the bytes, and the target has elements of the same size there:
+        // what the first one is to the target, each is.
+        if within && same_elements(b, base - lo, layout) {
+          return cut(elem, base, b, lo, hi);
+        }
+        // Else each element that the bytes cover, if there are not many: one that they cover in
+        // part is cut, as one whose rules the target does not have over it.
+        let count = match layout.kind {
+          Kind::Array(_, count) => count,
+          _ => usize::MAX,
+        };
+        let first = if lo > base { (lo - base) / elem.size } else { 0 };
+        if hi == usize::MAX || count == usize::MAX {
+          return Some(PART_RULE);
+        }
+        let last = (hi - 1 - base) / elem.size;
+        let last = if last < count { last } else { count - 1 };
+        if last - first >= CUT_ELEMENTS {
+          return Some(PART_RULE);
+        }
+        let mut k = first;
+        while k <= last {
+          if let Some(why) = cut(elem, base + k * elem.size, b, lo, hi) {
+            return Some(why);
+          }
+          k += 1;
+        }
+        return None;
       }
       if !is_tagged(elem) {
         return None;
@@ -1805,7 +1934,7 @@ const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Opti
       };
       let first = if lo > base { (lo - base) / elem.size } else { 0 };
       if first < count
-        && let Some(why) = cut(elem, base + first * elem.size, lo, hi)
+        && let Some(why) = cut(elem, base + first * elem.size, b, lo, hi)
       {
         return Some(why);
       }
@@ -1813,7 +1942,7 @@ const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Opti
         let last = (hi - 1 - base) / elem.size;
         if last < count
           && last != first
-          && let Some(why) = cut(elem, base + last * elem.size, lo, hi)
+          && let Some(why) = cut(elem, base + last * elem.size, b, lo, hi)
         {
           return Some(why);
         }

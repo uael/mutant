@@ -178,7 +178,7 @@ macro_rules! self_relative {
       type Elem = ();
       type Fields = ();
       type Variants = ();
-      type Walks = ();
+      type Rules = ();
       type Pointee = <$ty as $crate::SelfRelative>::Target;
       const PROBE: *const Self = $crate::__sized_probe::<Self>();
       const LAYOUT: $crate::layout::Layout = $crate::layout::Layout::pointer::<

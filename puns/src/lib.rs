@@ -314,7 +314,7 @@ use analysis::{
   Analysis, Exact, MUTABLE, Marks, POINTER_MUT, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze,
   analyze_tail, mutable, mutable_part,
 };
-use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
+use layout::{Dfa, Endian, Field, Layout, Spec};
 pub use layout::{crc32, sum16};
 pub use puns_derive::Pun;
 pub use relative::SelfRelative;
@@ -360,9 +360,9 @@ pub unsafe trait Pun {
   /// First variant of an enum with fields, `()` otherwise.
   #[doc(hidden)]
   type Variants: Variants;
-  /// First of the rules of a struct whose expression walks, `()` if none.
+  /// First of the rules of a struct that have an expression, `()` if none.
   #[doc(hidden)]
-  type Walks: Walks;
+  type Rules: Rules;
   /// What a self-relative pointer aims at (the element, if it aims at a list), `()` if `Self`
   /// is not one or aims at text.
   ///
@@ -441,6 +441,9 @@ impl<K: Pun + Copy> Tag<K> for [u8] {
 pub unsafe trait Fields {
   type Type: ?Sized + Pun;
   type Next: Fields;
+  /// The last field of the list, which may be unsized (`()` but for the fields of a struct, of
+  /// which only the last one may be).
+  type Last: Fields;
   /// Where the field is in the target, given where the struct is.
   type Path<P: Path>: Path;
   /// `None` at the end of the list.
@@ -470,63 +473,189 @@ unsafe impl Variants for () {
   const TAG: Option<u128> = None;
 }
 
-/// A rule whose expression walks, and the ones after it: a list at the type level.
+/// A rule of a struct that has an expression, and the ones after it: a list at the type level,
+/// in the order of the rules, by which the validation applies each operation of each expression
+/// in an instance of its own (see `validate::steps`).
 ///
-/// # Safety
-/// Implemented by `#[derive(Pun)]`.
+/// Sealed. What a list says is checked against the layout of the struct, where it is used: every
+/// rule that has an expression is listed, once, in order, with every one of its operations.
 #[doc(hidden)]
-pub unsafe trait Walks {
+pub trait Rules: sealed::Sealed {
   /// Index of the rule in the layout of the struct, `usize::MAX` at the end of the list.
   const RULE: usize;
-  /// Number of operations of the expression of the rule.
-  type Ops: Count;
-  /// Number of operations of the longest of the two expressions of its walk.
-  type Inner: Count;
-  type Next: Walks;
+  /// The operations of its expression.
+  type Expr: Steps;
+  type Next: Rules;
 }
 
-// SAFETY: the end of every list.
-unsafe impl Walks for () {
+impl Rules for () {
   const RULE: usize = usize::MAX;
-  type Ops = Zero;
-  type Inner = Zero;
+  type Expr = ();
   type Next = ();
 }
 
-/// A number, as a type: what a recursion over the operations of an expression goes down.
+/// The rule `R` of a struct, whose expression is `E`, then the list `N`.
+#[doc(hidden)]
+pub struct RuleAt<const R: usize, E, N>(PhantomData<(E, N)>);
+
+impl<const R: usize, E: Steps, N: Rules> Rules for RuleAt<R, E, N> {
+  const RULE: usize = R;
+  type Expr = E;
+  type Next = N;
+}
+
+/// What the operations of an expression are, as a type: the index of each, and the expressions of
+/// each walk. A tree, so that the recursions down it are as deep as the logarithm of its length.
 ///
-/// Sealed: the code that validates a value trusts it.
+/// Sealed. Its indices are checked against the expression where it is applied: every operation,
+/// once, in order (see `validate::covers`).
 #[doc(hidden)]
-pub trait Count: sealed::Sealed {
-  const VALUE: usize;
-  type Less: Count;
+pub trait Steps: sealed::Sealed {
+  /// [`steps::NONE`], [`steps::ONE`], [`steps::TWO`] or [`steps::WALK`].
+  const KIND: u8;
+  /// The index of the operation (`ONE`, `WALK`).
+  const AT: usize;
+  /// The index of the first operation, and the one after the last.
+  const FIRST: usize;
+  const END: usize;
+  /// The two parts (`TWO`), `()` otherwise.
+  type A: Steps;
+  type B: Steps;
+  /// The condition of a walk and what follows a step (`WALK`), `()` otherwise.
+  type Cond: Steps;
+  type Then: Steps;
+  /// Where they are, given where the walk is: `X` itself but for a walk. The functions that
+  /// apply the operations name all of these, whatever the kind of `Self` (the compiler makes
+  /// what a function names, used or not): so they name nothing new where they are not used.
+  type InCond<X: steps::Ops>: steps::Ops;
+  type InThen<X: steps::Ops>: steps::Ops;
 }
 
+/// The operations of expressions, as types: see [`Steps`].
 #[doc(hidden)]
-pub struct Zero;
+pub mod steps {
+  use core::marker::PhantomData;
 
-#[doc(hidden)]
-pub struct More<N>(PhantomData<N>);
+  use super::{Pun, Rules, Steps, sealed::Sealed};
+  use crate::layout::Op;
 
-impl sealed::Sealed for Zero {}
-impl<N: Count> sealed::Sealed for More<N> {}
-impl sealed::Sealed for Root {}
-impl<P: Path, F: ?Sized + Fields> sealed::Sealed for At<P, F> {}
+  /// Nothing (what the parts of an operation are).
+  pub const NONE: u8 = 0;
+  /// One operation, which is not a walk.
+  pub const ONE: u8 = 1;
+  /// Two parts, one after the other.
+  pub const TWO: u8 = 2;
+  /// A walk, and its expressions.
+  pub const WALK: u8 = 3;
 
-impl Count for Zero {
-  const VALUE: usize = 0;
-  type Less = Zero;
+  /// The operation `I`.
+  pub struct One<const I: usize>;
+
+  /// `A`, then `B`.
+  pub struct Two<A, B>(PhantomData<(A, B)>);
+
+  /// The walk `I`, whose condition is `C` and what follows a step `N`.
+  pub struct Walk<const I: usize, C, N>(PhantomData<(C, N)>);
+
+  impl Sealed for () {}
+  impl<const I: usize> Sealed for One<I> {}
+  impl<A: Steps, B: Steps> Sealed for Two<A, B> {}
+  impl<const I: usize, C: Steps, N: Steps> Sealed for Walk<I, C, N> {}
+  impl<const R: usize, E: Steps, N: Rules> Sealed for super::RuleAt<R, E, N> {}
+
+  impl Steps for () {
+    const KIND: u8 = NONE;
+    const AT: usize = 0;
+    const FIRST: usize = 0;
+    const END: usize = 0;
+    type A = ();
+    type B = ();
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<const I: usize> Steps for One<I> {
+    const KIND: u8 = ONE;
+    const AT: usize = I;
+    const FIRST: usize = I;
+    const END: usize = I + 1;
+    type A = ();
+    type B = ();
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<A: Steps, B: Steps> Steps for Two<A, B> {
+    const KIND: u8 = TWO;
+    const AT: usize = 0;
+    // Contiguous, or no range at all (checked by `validate::covers`).
+    const FIRST: usize =
+      if A::END == B::FIRST && A::KIND != NONE && B::KIND != NONE { A::FIRST } else { usize::MAX };
+    const END: usize = B::END;
+    type A = A;
+    type B = B;
+    type Cond = ();
+    type Then = ();
+    type InCond<X: Ops> = X;
+    type InThen<X: Ops> = X;
+  }
+
+  impl<const I: usize, C: Steps, N: Steps> Steps for Walk<I, C, N> {
+    const KIND: u8 = WALK;
+    const AT: usize = I;
+    const FIRST: usize = I;
+    const END: usize = I + 1;
+    type A = ();
+    type B = ();
+    type Cond = C;
+    type Then = N;
+    type InCond<X: Ops> = InWalk<X, Self, false>;
+    type InThen<X: Ops> = InWalk<X, Self, true>;
+  }
+
+  /// An expression of the layout of a struct, as a type: the one of a rule, or of a walk of one.
+  pub trait Ops: Sealed {
+    const OPS: &'static [Op];
+  }
+
+  /// The expression of the rule `R::RULE` of `T`.
+  pub struct InRule<T: ?Sized, R>(PhantomData<R>, PhantomData<T>);
+
+  /// The condition (or with `NEXT`, what follows a step) of the walk `W` of the expression `X`.
+  pub struct InWalk<X, W, const NEXT: bool>(PhantomData<(X, W)>);
+
+  impl<T: ?Sized + Pun, R: Rules> Sealed for InRule<T, R> {}
+  impl<X: Ops, W: Steps, const NEXT: bool> Sealed for InWalk<X, W, NEXT> {}
+
+  impl<T: ?Sized + Pun, R: Rules> Ops for InRule<T, R> {
+    const OPS: &'static [Op] = T::LAYOUT.rule_ops(R::RULE);
+  }
+
+  impl<X: Ops, W: Steps, const NEXT: bool> Ops for InWalk<X, W, NEXT> {
+    const OPS: &'static [Op] = match crate::layout::op_at(X::OPS, W::AT) {
+      Some(Op::Walk { cond, next, .. }) => {
+        if NEXT {
+          next
+        } else {
+          cond
+        }
+      }
+      _ => &[],
+    };
+  }
 }
 
-impl<N: Count> Count for More<N> {
-  const VALUE: usize = N::VALUE + 1;
-  type Less = N;
-}
-
-/// Implemented by this crate only: what implements [`Path`] and [`Count`] is trusted.
+/// Implemented by this crate only: what implements [`Path`], [`Rules`] and [`Steps`] is trusted.
 mod sealed {
   pub trait Sealed {}
 }
+
+impl sealed::Sealed for Root {}
+impl<P: Path, F: ?Sized + Fields> sealed::Sealed for At<P, F> {}
 
 /// Where something is in a target, for validation.
 ///
@@ -559,6 +688,7 @@ impl<P: Path, F: ?Sized + Fields> Path for At<P, F> {
 unsafe impl Fields for () {
   type Type = ();
   type Next = ();
+  type Last = ();
   type Path<P: Path> = P;
   const FIELD: Option<Field> = None;
 }
@@ -568,7 +698,7 @@ unsafe impl<T: Scalar> Pun for T {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
@@ -579,7 +709,7 @@ unsafe impl<T: Pun, const N: usize> Pun for [T; N] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
@@ -590,7 +720,7 @@ unsafe impl<T: Pun> Pun for [T] {
   type Elem = T;
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
   // SAFETY: the probe of a slice.
@@ -602,7 +732,7 @@ unsafe impl Pun for str {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = <[u8] as Pun>::PROBE as *const str;
   // SAFETY: the probe of a `str`, which is the one of a slice.
@@ -614,7 +744,7 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   type Elem = T::Elem;
   type Fields = T::Fields;
   type Variants = T::Variants;
-  type Walks = T::Walks;
+  type Rules = T::Rules;
   type Pointee = T::Pointee;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
@@ -632,7 +762,7 @@ unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::padding::<Self>();
@@ -643,7 +773,7 @@ unsafe impl Pun for core::convert::Infallible {
   type Elem = ();
   type Fields = ();
   type Variants = ();
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::uninhabited::<Self>();
@@ -659,6 +789,7 @@ macro_rules! tuple_field {
     unsafe impl<$($all: Pun),+> Fields for TupleField<($($all,)+), $index> {
       type Type = $ty;
       type Next = $next;
+      type Last = ();
       type Path<P: Path> = At<P, Self>;
       const FIELD: Option<Field> = Some(*<($($all,)+) as Pun>::LAYOUT.field($index));
     }
@@ -672,7 +803,7 @@ macro_rules! tuple {
       type Elem = ();
       type Fields = TupleField<Self, 0>;
       type Variants = ();
-      type Walks = ();
+      type Rules = ();
       type Pointee = ();
       const PROBE: *const Self = core::ptr::null();
       // SAFETY: a tuple of `Sized` things is `Sized`.
@@ -1682,22 +1813,29 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
       Some(rule) => {
         // SAFETY: the sized fields of the target are in the first `head` bytes, and what a `size`
         // or `len` rule reads beyond them in the `n` bytes.
-        let Some(value) = (unsafe { eval(rule.ops, addr.add(rule.base), n - rule.base) }) else {
+        let Some(value) = (unsafe { validate::length::<D>(addr, n) }) else {
           return Err(Error::Validity);
         };
-        // From the size of the struct that has the rule, down to a number of elements.
-        let before = (head - rule.base) as u128;
+        // From the size of the struct that has the rule, down to a number of elements: in a
+        // `usize` (where the value is a field, the optimizer knows that it fits one), else a
+        // size or a length that no bytes have.
+        let before = head - rule.base;
+        if value > usize::MAX as u128 {
+          let whole = rule.elements || (value - before as u128).is_multiple_of(stride as u128);
+          return Err(if whole { Error::Size } else { Error::Validity });
+        }
+        let value = value as usize;
         let len = match () {
           () if rule.elements => value,
-          () if value >= before && (value - before).is_multiple_of(stride as u128) => {
-            (value - before) / stride as u128
+          () if value >= before && (value - before).is_multiple_of(stride) => {
+            (value - before) / stride
           }
           () => return Err(Error::Validity),
         };
-        if len > ((n - head) / stride) as u128 {
+        if len > (n - head) / stride {
           return Err(Error::Size);
         }
-        len as usize
+        len
       }
     };
     // With its trailing padding, if any.
@@ -1922,44 +2060,16 @@ pub const fn from_tail_mut<D: ?Sized + Pun>(
 pub const fn region<S: ?Sized + Pun>(value: &S, index: usize) -> &[u8] {
   // The bytes of the value can be read: it has no padding.
   const { Plan::<S, [u8]>::BY_REF };
-  let (head, rules): (usize, &[Rule]) = const { (S::LAYOUT.tail_shape().start, S::LAYOUT.rules()) };
-  let base = core::ptr::from_ref::<S>(value).cast::<u8>();
+  let head = const { S::LAYOUT.tail_shape().start };
   let (_, tail, size) = validate::tail_of::<S>(value);
-  // Where the region starts in the tail, and how many regions are before it.
-  let (mut start, mut count) = (0, 0);
-  macro_rules! rule {
-    ($index:expr) => {
-      if let Rule::Region(ops) = rules[$index] {
-        let rest = tail - start;
-        let size = match ops {
-          // SAFETY: `base` is a struct of this layout.
-          Some(ops) => match unsafe { eval(ops, base, size) } {
-            Some(size) if size <= rest as u128 => size as usize,
-            _ => rest,
-          },
-          None => rest,
-        };
-        if count == index {
-          // SAFETY: `start + size <= tail`, the size of what follows the `head` first bytes.
-          return unsafe { core::slice::from_raw_parts(base.add(head + start), size) };
-        }
-        (start, count) = (start + size, count + 1);
-      }
-    };
+  // SAFETY: `value` is a struct of this layout, whose bytes are readable.
+  unsafe {
+    validate::region_at::<S, S::Rules>(
+      core::ptr::from_ref::<S>(value).cast::<u8>(),
+      size,
+      (head, tail),
+      index,
+      (0, 0),
+    )
   }
-  // Not a loop, for the first rules: see `layout::eval`.
-  macro_rules! unrolled {
-    ($($index:literal)+) => {$(
-      if $index < rules.len() {
-        rule!($index);
-      }
-    )+};
-  }
-  unrolled!(0 1 2 3 4 5 6 7);
-  let mut i = 8;
-  while i < rules.len() {
-    rule!(i);
-    i += 1;
-  }
-  panic!("no such region")
 }
