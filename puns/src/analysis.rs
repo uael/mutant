@@ -436,6 +436,10 @@ const fn relate_range(
         // Else, give up on proving anything: everything is checked at run time.
         out.marks = Marks::ALL;
         out.partial = Some(pos);
+        // But a pointer, which no check makes: one that the target holds is not proven here.
+        if b.stack[0].layout.has_pointers() {
+          out.pointer(pos);
+        }
       }
       return true;
     }
