@@ -1534,6 +1534,28 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Err
   }
 }
 
+/// Whatever `bytes` can neither be nor start with a `D`, as the first scalar that `D` requires
+/// some values of (an EtherType, a version) tells: [`from_bytes`] and [`from_head`] would check
+/// it, and fail.
+///
+/// A view of one thing or another (an enum of references, see `#[derive(Pun)]`) tests this
+/// before it tries each of its variants: the same bytes are then compared with what each
+/// variant requires there, which the optimizer makes one decision, rather than each conversion
+/// computing sizes and rules before it gets there.
+#[doc(hidden)]
+#[inline(always)]
+#[must_use]
+pub const fn rejects<D: ?Sized + Pun>(bytes: &[u8]) -> bool {
+  let Some((offset, spec)) = (const { D::LAYOUT.key() }) else { return false };
+  // The key is in the sized part of `D`: if it is not in `bytes`, neither is a `D`.
+  if bytes.len() < offset + spec.size {
+    return true;
+  }
+  // SAFETY: in the bounds of `bytes`, which are initialized; `matches` reads a scalar of at most
+  // 16 bytes, without alignment.
+  !unsafe { spec.matches(bytes.as_ptr().add(offset)) }
+}
+
 /// Take a `D` from the end of `bytes`: returns what precedes it, and it.
 ///
 /// The target is the last `size_of::<D>()` bytes, which are checked as [`from_bytes`] checks

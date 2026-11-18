@@ -1207,6 +1207,30 @@ impl Layout {
     false
   }
 
+  /// The first scalar of the sized part of a value of this layout that only some values are
+  /// valid for (the EtherType of a frame, the version of a header), by offset: its offset and
+  /// what it requires. Whatever bytes a value of this layout is made from, it is checked there.
+  pub(crate) const fn key(&self) -> Option<(usize, Spec)> {
+    match self.kind {
+      Kind::Scalar(spec) if spec.is_constrained() => Some((0, spec)),
+      Kind::Struct(fields, _) => {
+        let (mut best, mut i): (Option<(usize, Spec)>, usize) = (None, 0);
+        while i < fields.len() {
+          if let Some((offset, spec)) = fields[i].layout.key() {
+            let offset = fields[i].offset + offset;
+            if !matches!(best, Some((first, _)) if first <= offset) {
+              best = Some((offset, spec));
+            }
+          }
+          i += 1;
+        }
+        best
+      }
+      Kind::Array(elem, len) if len > 0 => elem.key(),
+      _ => None,
+    }
+  }
+
   /// How many elements of this layout the validation of a slice checks at a time, without
   /// stopping between them (see `validate::validate_elems`): about 64 bytes of them, if checking
   /// one is a few comparisons, else 1.

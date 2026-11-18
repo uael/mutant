@@ -1704,17 +1704,23 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
     let result = quote!(::core::result::Result);
     let from_heads = references.iter().map(|(variant, reference)| {
       let ty = &reference.elem;
+      // What a variant requires of its first constrained scalar rejects it first: the variants
+      // are then told apart by those bytes, rather than each converted in turn.
       quote! {
-        if let #result::Ok((value, rest)) = #root::from_head::<#ty>(bytes) {
-          return #result::Ok((Self::#variant(value), rest));
+        if !#root::rejects::<#ty>(bytes) {
+          if let #result::Ok((value, rest)) = #root::from_head::<#ty>(bytes) {
+            return #result::Ok((Self::#variant(value), rest));
+          }
         }
       }
     });
     let wholes = references.iter().map(|(variant, reference)| {
       let ty = &reference.elem;
       quote! {
-        if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
-          return #result::Ok(Self::#variant(value));
+        if !#root::rejects::<#ty>(bytes) {
+          if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
+            return #result::Ok(Self::#variant(value));
+          }
         }
       }
     });
