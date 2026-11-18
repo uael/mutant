@@ -24,5 +24,10 @@ puns-derive = { version = "=0.1.0", path = "../puns-derive" }
 [dev-dependencies]
 trybuild = "1"
 
+# What is checked at run time, next to the same checks by hand: `cargo bench -p puns`. Not a test.
+[[bench]]
+name = "checks"
+harness = false
+
 [lints]
 workspace = true
