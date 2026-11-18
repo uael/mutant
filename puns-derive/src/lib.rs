@@ -163,7 +163,9 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// What stands for the implementations of the derive when it fails, so that its error is the only
 /// one, rather than one at each use of the type. Never used: the crate does not compile.
 fn fallback(input: &DeriveInput) -> TokenStream {
-  let Ok(options) = parse_options(&input.attrs) else { return TokenStream::new() };
+  let Ok(options) = parse_options(&input.attrs, "the type", &ALL_OPTIONS) else {
+    return TokenStream::new();
+  };
   let views = matches!(&input.data, Data::Enum(data) if data.variants.iter().all(|variant| {
     matches!(&variant.fields, Fields::Unnamed(fields) if fields.unnamed.len() == 1
       && matches!(fields.unnamed[0].ty, Type::Reference(_)))
@@ -338,10 +340,24 @@ struct Options {
   regions: Option<Punctuated<Region, Token![,]>>,
 }
 
-fn parse_options(attrs: &[Attribute]) -> Result<Options> {
+/// The options of `attrs`, which are those of `place`: only the options in `allowed` mean
+/// something there, the others are refused rather than ignored.
+fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<Options> {
   let mut options = Options::default();
   for attr in attrs.iter().filter(|attr| attr.path().is_ident("pun")) {
     attr.parse_nested_meta(|meta| {
+      if let Some(name) = meta.path.get_ident().map(ToString::to_string)
+        && !allowed.contains(&name.as_str())
+        && ALL_OPTIONS.contains(&name.as_str())
+      {
+        let of = match name.as_str() {
+          "crate" => "the type",
+          "size" | "assert" | "tag" | "get" => "a struct",
+          "valid" => "a field",
+          _ => "the last field of a struct",
+        };
+        return Err(meta.error(format!("`{name}` is an option of {of}, not of {place}")));
+      }
       if meta.path.is_ident("crate") {
         options.root = Some(if meta.input.peek(Token![=]) {
           meta.value()?.parse::<Path>()?.into_token_stream()
@@ -380,6 +396,9 @@ fn parse_options(attrs: &[Attribute]) -> Result<Options> {
   }
   Ok(options)
 }
+
+/// Every option of `#[pun(..)]`.
+const ALL_OPTIONS: [&str; 8] = ["crate", "size", "len", "assert", "tag", "get", "valid", "regions"];
 
 // -------------------------------------------------------------------------------------------------
 // Expressions
@@ -1257,7 +1276,8 @@ fn bound(generics: &mut syn::Generics, ty: &Type, root: &TokenStream) {
 
 fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
-  let options = parse_options(&input.attrs)?;
+  let options =
+    parse_options(&input.attrs, "a struct", &["crate", "size", "assert", "tag", "get"])?;
   let root = options.root.clone().unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
@@ -1280,7 +1300,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           .map_or_else(|| Member::Unnamed(Index::from(i)), |ident| Member::Named(ident.clone())),
         ty: &field.ty,
         vis: &field.vis,
-        options: parse_options(&field.attrs)?,
+        options: parse_options(&field.attrs, "a field", &["valid", "len", "regions"])?,
         offset: TokenStream::new(),
       })
     })
@@ -1572,7 +1592,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 // Enums
 
 fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
-  let options = parse_options(&input.attrs)?;
+  let options = parse_options(&input.attrs, "an enum", &["crate"])?;
   let root = options.root.unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -1735,10 +1755,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       .collect::<Vec<_>>();
     let mut layouts = vec![];
     for (j, field) in variant.fields.iter().enumerate() {
-      let options = parse_options(&field.attrs)?;
-      if options.len.is_some() || options.regions.is_some() {
-        return Err(Error::new(field.span(), "the fields of an enum are sized"));
-      }
+      let options = parse_options(&field.attrs, "a field of an enum", &["valid"])?;
       let ty = &field.ty;
       let offset = quote!(#fields + <Self as __PunShapes>::#shape.0[#j]);
       layouts.push(match &options.valid {
