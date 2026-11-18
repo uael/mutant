@@ -332,9 +332,10 @@ model check, and Miri a selection of pairs chosen for the unsafe paths they reac
 verdicts: no undefined behaviour is what Miri is there to see (`puns-model/tests/miri_sample.rs`
 lists what each pair is for; three slow examples, `archives`, `link` and `routing`, which walk
 over hundreds of bytes, are not run under Miri, and other tests run the same paths there). The
-exhaustive run, every pair and every part of every type, is
-`cargo test --profile model -p puns-model -- --ignored` (optimized, without LTO: minutes to build,
-about two to run): the `model.yml` workflow runs it every night and on demand. See
+exhaustive run, every pair and every part of every type, is behind the `full` feature, which
+`cargo test` does not build: `cargo test --profile model -p puns-model --features full`
+(optimized, without LTO: minutes to build, two to run). The `model.yml` workflow runs it every
+night and on demand. See
 `puns-model/src/lib.rs` for what is checked.
 
 ## Not done yet

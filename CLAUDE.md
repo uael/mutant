@@ -16,7 +16,7 @@ cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-synt
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, stacked borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
-cargo test --profile model -p puns-model -- --ignored  # The full model check (nightly in model.yml); `cargo test` runs a sample
+cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)

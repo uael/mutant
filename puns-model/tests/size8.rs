@@ -3,7 +3,6 @@
 use puns_model::types::*;
 
 #[test]
-#[ignore = "full model run: `cargo test --profile model -p puns-model -- --ignored`, nightly in `model.yml`"]
 fn size8() {
   puns_model::all_pairs!(usize::MAX;
     u64, [u8; 8], [bool; 8], [u32; 2], (u32, u32), CTagged, CTaggedB, [Shape; 2], [Drawing; 2],
