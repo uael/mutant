@@ -30,6 +30,7 @@ pub mod pointers;
 #[path = "../../puns/tests/support/relative.rs"]
 pub mod relative;
 pub mod types;
+pub mod views;
 
 use std::{collections::BTreeMap, fmt::Write as _, mem::MaybeUninit, sync::Mutex};
 
@@ -449,6 +450,9 @@ pub struct Report {
   pub imprecise: BTreeMap<String, Vec<String>>,
   /// How the library classified the pairs.
   pub classes: BTreeMap<String, usize>,
+  /// View enums checked (`views::check_view`), and how many of their variants have a base.
+  pub views: usize,
+  pub view_bases: usize,
 }
 
 pub static REPORT: Mutex<Option<Report>> = Mutex::new(None);
@@ -473,7 +477,7 @@ fn show(p: &Bytes) -> String {
   s
 }
 
-fn name<T: ?Sized>() -> String {
+pub(crate) fn name<T: ?Sized>() -> String {
   std::any::type_name::<T>()
     .replace("puns_model::", "")
     .replace("puns::num::", "")
@@ -898,6 +902,9 @@ pub fn finish(title: &str) {
   );
   for (class, count) in &report.classes {
     println!("   {count:5} {class}");
+  }
+  if report.views > 0 {
+    println!("   {} views, {} variants with a base", report.views, report.view_bases);
   }
   for (cause, pairs) in &report.imprecise {
     println!("   imprecise, {cause}: {}", pairs.len());
