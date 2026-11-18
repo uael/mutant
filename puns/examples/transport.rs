@@ -29,15 +29,13 @@
 //! | MQTT: a remaining length of 1 to 4 bytes        | `size = 1 + leb128_len(1) + leb128(1)`     |
 //! | MQTT: flags that depend on the packet type      | `assert({ let kind = ..; .. })`            |
 //! | MQTT strings: a length, then UTF-8 without NUL  | `matches(Dfa::UTF8_NO_NUL, ..)`, a `str`   |
-//! | CoAP options: nibbles that tell 0, 1 or 2 bytes | a struct per form, an enum of references   |
+//! | CoAP options: nibbles that tell 0, 1 or 2 bytes | `size = { let delta = head >> 4; .. }`     |
 //! | CoAP: options up to a marker, then a payload    | `assert({ let end = walk(..); .. })`       |
 //! | SCTP chunks, padded to 4 bytes                  | `size = (length + 3) / 4 * 4`              |
 //! | SCTP: a CRC-32C, its own field taken as zeros   | `crc::<32, 0x1edc6f41, ..>(0, .., 8, 12)`  |
 //!
 //! What is not covered, and why:
 //!
-//! - CoAP options are still a struct for each form of their head, and an enum of references:
-//!   with `be` in `size`, they could be one struct (not rewritten yet).
 //! - CoAP: the option numbers are sums of the deltas before them: state carried along a
 //!   sequence, which use code keeps.
 //! - TLS: a handshake message can span records, and records are encrypted after the handshake;
@@ -560,120 +558,33 @@ pub struct Coap {
   pub data: [u8],
 }
 
-/// An option whose delta and length are both below 13: in the first byte.
-///
-/// Each nibble of the first byte is the value (0 to 12), or tells 1 (13) or 2 (14) more bytes:
-/// nine forms of head, a struct each, and an enum of references ([`CoapOption`]). With `be` in
-/// `size`, they could be one struct, whose value would be a region (not rewritten).
+/// An option: a head of two nibbles, a delta and a length, each a value (0 to 12) or telling 1
+/// (13) or 2 (14) more bytes (15 is not one), then those bytes, then the value.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = (head & 15) + 1)]
-#[pun(assert(head >> 4 < 13 && head & 15 < 13))]
-pub struct Option0 {
+#[pun(size = {
+  let delta = head >> 4;
+  let length = head & 15;
+  let after = 1 + if delta < 13 { 0 } else if delta < 15 { delta - 12 } else { 1 / 0 };
+  let value = if length < 13 {
+    length
+  } else if length == 13 {
+    13 + be(after, 1)
+  } else if length == 14 {
+    269 + be(after, 2)
+  } else {
+    1 / 0
+  };
+  after + (if length < 13 { 0 } else { length - 12 }) + value
+})]
+pub struct CoapOption {
   pub head: u8,
-  pub value: [u8],
-}
-
-/// A delta of 1 more byte (13 to 268), a length below 13.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (head & 15) + 2)]
-#[pun(assert(head >> 4 == 13 && head & 15 < 13))]
-pub struct OptionD8 {
-  pub head: u8,
-  pub delta: u8,
-  pub value: [u8],
-}
-
-/// A delta of 2 more bytes (269 to 65804), a length below 13.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (head & 15) + 3)]
-#[pun(assert(head >> 4 == 14 && head & 15 < 13))]
-pub struct OptionD16 {
-  pub head: u8,
-  pub delta: u16be,
-  pub value: [u8],
-}
-
-/// A delta below 13, a length of 1 more byte.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 15)]
-#[pun(assert(head >> 4 < 13 && head & 15 == 13))]
-pub struct OptionL8 {
-  pub head: u8,
-  pub length: u8,
-  pub value: [u8],
-}
-
-/// A delta below 13, a length of 2 more bytes.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 272)]
-#[pun(assert(head >> 4 < 13 && head & 15 == 14))]
-pub struct OptionL16 {
-  pub head: u8,
-  pub length: u16be,
-  pub value: [u8],
-}
-
-/// A delta and a length of 1 more byte each.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 16)]
-pub struct OptionD8L8 {
-  pub head: u8c<0xdd>,
-  pub delta: u8,
-  pub length: u8,
-  pub value: [u8],
-}
-
-/// A delta of 1 more byte, a length of 2.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 273)]
-pub struct OptionD8L16 {
-  pub head: u8c<0xde>,
-  pub delta: u8,
-  pub length: u16be,
-  pub value: [u8],
-}
-
-/// A delta of 2 more bytes, a length of 1.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 17)]
-pub struct OptionD16L8 {
-  pub head: u8c<0xed>,
-  pub delta: u16be,
-  pub length: u8,
-  pub value: [u8],
-}
-
-/// A delta and a length of 2 more bytes each.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 274)]
-pub struct OptionD16L16 {
-  pub head: u8c<0xee>,
-  pub delta: u16be,
-  pub length: u16be,
-  pub value: [u8],
-}
-
-/// A CoAP option, of any of the nine forms. (The nibble 15 is the payload marker, or reserved.)
-#[derive(Pun)]
-pub enum CoapOption<'a> {
-  Small(&'a Option0),
-  D8(&'a OptionD8),
-  D16(&'a OptionD16),
-  L8(&'a OptionL8),
-  L16(&'a OptionL16),
-  D8L8(&'a OptionD8L8),
-  D8L16(&'a OptionD8L16),
-  D16L8(&'a OptionD16L8),
-  D16L16(&'a OptionD16L16),
+  #[pun(regions(
+    delta = if head >> 4 < 13 { 0 } else { (head >> 4) - 12 },
+    length = if head & 15 < 13 { 0 } else { (head & 15) - 12 },
+    value,
+  ))]
+  pub rest: [u8],
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -1069,45 +980,25 @@ pub fn main() {
   // ---- CoAP: a header, a token, then options of their own forms.
   let get: &Coap = try_pun_ref(&GET[..]).unwrap();
   assert_eq!((get.kind(), get.class(), get.detail(), get.token()), (0, 0, 1, &[0x71][..]));
-  let Ok((CoapOption::Small(option), rest)) = CoapOption::from_head(get.options_and_payload())
-  else {
-    panic!()
-  };
-  assert_eq!((option.head >> 4, &option.value, rest.len()), (11, &b"temperature"[..], 0));
+  let (option, rest) = from_head::<CoapOption>(get.options_and_payload()).unwrap();
+  assert_eq!((option.head >> 4, option.value(), rest.len()), (11, &b"temperature"[..], 0));
   let content: &Coap = try_pun_ref(&CONTENT[..]).unwrap();
   assert_eq!((content.class(), content.detail()), (2, 5));
-  let Ok((CoapOption::D8(option), rest)) = CoapOption::from_head(content.options_and_payload())
-  else {
-    panic!()
-  };
+  let (option, rest) = from_head::<CoapOption>(content.options_and_payload()).unwrap();
   assert_eq!(
-    (option.delta + 13, &option.value, rest[0], &rest[1..]),
+    (option.delta()[0] + 13, option.value(), rest[0], &rest[1..]),
     (14, &[0x3c][..], 0xff, &b"22.3 C\0"[..])
   );
   // Options of the forms of 1 and 2 more bytes of length and delta.
   let mut long = vec![0x1d, 7];
   long.resize(2 + 20, b'x');
-  // The size of the value of an option, whatever its form.
-  let size = |option: CoapOption<'_>| match option {
-    CoapOption::Small(option) => option.value.len(),
-    CoapOption::D8(option) => option.value.len(),
-    CoapOption::D16(option) => option.value.len(),
-    CoapOption::L8(option) => option.value.len(),
-    CoapOption::L16(option) => option.value.len(),
-    CoapOption::D8L8(option) => option.value.len(),
-    CoapOption::D8L16(option) => option.value.len(),
-    CoapOption::D16L8(option) => option.value.len(),
-    CoapOption::D16L16(option) => option.value.len(),
-  };
-  assert!(matches!(CoapOption::from_bytes(&long), Ok(CoapOption::L8(_))));
-  assert_eq!(size(CoapOption::from_bytes(&long).unwrap()), 20);
+  assert_eq!(from_bytes::<CoapOption>(&long).map(|option| option.value().len()), Ok(20));
   let mut longer = vec![0xee, 0x01, 0x00, 0x00, 0x10];
   longer.resize(5 + 269 + 16, b'x');
-  assert!(matches!(CoapOption::from_bytes(&longer), Ok(CoapOption::D16L16(_))));
-  assert_eq!(size(CoapOption::from_bytes(&longer).unwrap()), 285);
+  assert_eq!(from_bytes::<CoapOption>(&longer).map(|option| option.value().len()), Ok(285));
   // The payload marker, and a reserved nibble, are no option; a length past the end.
   for bytes in [&[0xff][..], &[0xf1, 0], &[0x1f], &[0x13, 1, 2]] {
-    assert!(CoapOption::from_bytes(bytes).is_err());
+    assert!(from_bytes::<CoapOption>(bytes).is_err());
   }
   // Version 2; a token of 9 bytes; class 1; an empty message with a token.
   for (at, value) in [(0, 0x81), (0, 0x49), (1, 0x21), (1, 0x00)] {
