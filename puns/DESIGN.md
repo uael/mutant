@@ -205,8 +205,8 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&Packet<Datagram> -> &Packet` (the same rules)    | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call          |
-| `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 29 instructions, no loop, no call          |
+| `Ipv4::options()` (a region)                       | 10 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block: 46 |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
@@ -214,7 +214,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways             |
 | `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`: 13      |
 | `u8 -> Option<Choice>` (a union: `bool`, `u8in`)   | one `cmp cl, 4`: 7                         |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 236 instructions, no call                  |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 207 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -231,7 +231,9 @@ packet walks with a state of two registers ("Walks", section 4): with the state 
 (the kind in the low 8 bits), it was 233 instructions when the operations of its walk were applied
 as they are now and the others by an unrolled evaluator, and 254 with every operation applied so:
 the same arithmetic, which LLVM allocates registers to and selects instructions for a little
-otherwise (a step of the walk was two instructions longer).
+otherwise (a step of the walk was two instructions longer). Computed in the width that its values
+fit ("Narrowing", section 4), it went from 236 instructions to 207, `from_head::<Frame<Ipv4>>`
+from 37 to 29 and `Ipv4::options()` from 16 to 10.
 
 `from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`,
 where the optimizer knows that a field fits one (it was 29 instructions for `Udp`, 43 for
@@ -248,7 +250,8 @@ fields to a constant postfix program (`layout::Op`):
 - `#[pun(regions(a = EXPR, b))]`: consecutive regions of the tail, with an accessor for each.
 
 An expression means what the same Rust expression means where every integer (a field, a
-constant, a literal) is a `u128`, or is refused at compile time: never something else. The derive
+constant, a literal) is a `u128`, or is refused at compile time: never something else (which is
+not how it is computed: see "Narrowing" below). The derive
 types it as Rust does (an integer or a `bool`: `!` is bitwise on one and logical on the other, an
 integer is not a condition), reads literals itself (no float, no negative number, no signed
 suffix), converts constants through a trait that only unsigned integer types implement, and makes
@@ -302,9 +305,12 @@ start`, read as `at >> 64` and `at & 0xffff_ffff_ffff_ffff`, is each a register,
 (start << 8)` needs a `shrd` to read `start` and a merge to write it back, on the path from one
 step to the next. The IPv6 packet of the examples walked so: behind 12 extension headers it took
 1.3 times the instructions of the same loop by hand, but 2.2 times the time (on the code before
-these changes as well); packed at bit 64, its loop is the loop by hand (21 instructions against
+these changes as well); packed at bit 64, its loop was the loop by hand (21 instructions against
 about 20, fewer in all: 310 against 322), but for the carries of the low half into the high one
-that a `u128` has (`adc`), which keep `start + 8 + length * 8` from being one `lea`.
+that a `u128` has (`adc`), which kept `start + 8 + length * 8` from being one `lea`, and it took
+1.37 times the time. The halves are now computed apart where the low one is known not to carry
+("Narrowing"): the loop is 16 instructions, the check 210 against 322, and 0.74 times the time of
+the loop by hand (the median of 5 runs).
 
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
 the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
@@ -376,9 +382,9 @@ Before, the first 24 operations of an expression were unrolled and the rest appl
 `match` on each at run time; the walks of an expression other than the first of an `assert`, and
 their expressions, were applied in that loop too. The IPv4 packet of the examples, whose last
 `assert` (the checksums of UDP and TCP over the addresses of the packet) is longer than 24
-operations, was then checked 15 times as slowly as by hand; it now runs 1.18 times the
+operations, was then checked 15 times as slowly as by hand; it then ran 1.18 times the
 instructions of the same check by hand (`valgrind --tool=callgrind`, UDP in 64 bytes: 256
-against 217, where it was 1885).
+against 217, where it was 1885), and 1.11 times since "Narrowing" (241).
 
 What is not computed is told by an index (`Machine::skip`): the operations before it are not
 applied. A `Shortcut` that decides sets it past the right side, a failure to the end. Where the
@@ -387,6 +393,79 @@ makes jumps of it: no test is left where nothing is skipped. This replaced a bit
 of the stack that told whether it had failed, which made each operation carry failures along
 (a step of the walk of IPv6 took a third more time for it, and the side of a `||` that was not
 needed was computed all the same).
+
+**Narrowing.** An expression means what it means on `u128`, but most of its values are known to
+be much smaller: a field of two bytes, a sum of two of them, a checksum of 16 bits, an offset in
+the value. On a 64-bit target a `u128` is two registers, its addition a carry from one into the
+other (`adc`), its product three multiplications, its division a call; in a loop, the optimizer
+does not know that the high half of a state is zero. So the range of every value of an expression
+is found at compile time (`narrow.rs`), and each operation is computed as narrowly as its range
+allows, with the same result and the same failure as on `u128`:
+
+- A value is known as two intervals, one for each half of a `u128` (`narrow::Range`): `(kind <<
+  64) + start` is a kind of `0..=255` in the high half and an offset in the low one. A field, a
+  read of `n` bytes and a checksum are as wide as they are, a literal is itself, a comparison
+  `0..=1`, `size_of_val(self)` at most `isize::MAX` (a QUIC integer 62 bits, the other
+  variable-length integers anything). Each operation makes the range of its result from those of
+  its operands, and tells whatever it may fail: a sum whose bounds do not overflow cannot, a
+  difference whose left side is never less than its right side cannot.
+- A read that succeeds (`be(at, 1)`, a checksum over `start..end`) tells that its offsets are in
+  the value: a variable that was read at is at most `isize::MAX` after the read, for the rest of
+  the expression. Not after a part that may not have been computed (the right side of a `&&`, a
+  branch of an `if`), where the variables are what they were before it or after it, and not in
+  the `else` branch, which starts from what was before the first one. This is what bounds the
+  offset of a walk, whatever the number of its steps: the step of IPv6 reads at `start` before it
+  adds to it, so `start + 8 + length * 8` is less than `2^64`, and does not carry.
+- The state of a walk is a fixed point: what it starts as, joined with what a step makes of it,
+  twice, then each bound that still moves goes as far as it can (at most four more steps). The
+  number of steps of a walk (at most `8 * size + 128`) bounds nothing: on 64 bits it is more than
+  `2^64` for a value of `isize::MAX` bytes. The walks of a walk of a walk (two deep or more) have
+  a state that may be anything, so that the analysis stays a few times the length of the
+  expression.
+- How each operation is computed is a `narrow::How`, a constant of the instance of the function
+  that applies it, as the operation is ("No interpreter"): the width, a register (64 bits, or 32
+  where `usize` is narrower) or 128 bits; whatever it is tested (an addition, a product or a shift
+  that cannot overflow is not); an addition or a difference of 128 bits whose low halves cannot
+  carry or borrow, computed on each half alone; and the width of its result, to which it is
+  truncated. The truncation changes nothing, and tells the optimizer what the value is where it
+  could not know: the state of a walk, at each step, and the variables read in its expressions.
+- The plan of an expression is a constant of its type (`narrow::Planned<X>::PLAN`), and where the
+  expressions of a walk start (the variables, the state) one of theirs (`Ops::ENTRY`): made once
+  at compile time, for each expression. The tests of `puns` build in about 4% more time.
+
+Not narrower than a register: on 64 bits, everything in 32 bits where it fits was as many
+instructions in all, but `40 + payload_length` in 32 bits is not known to be the size of the value
+that the `size` rule compared in 64, and the bounds of what it reads were tested again (the UDP
+packet behind 3 headers: 217 instructions against 209); a remainder in 32 bits after a sum in 64
+was worse than either (243 against 241 for IPv4). The bounds of a read are one comparison of the
+offset, with `size - n`, which does not change in a walk, where they were two.
+
+That the narrowed evaluation is the one on `u128` is tested apart from the analysis of puns
+(`narrow_tests.rs`): every binary operation, of every pair of ranges at the limits of 32, 64 and
+128 bits and of the halves, over values at their bounds and others, as on a target of 64 and of
+32 bits, against the operation on `u128` with every test (the result is in the range that the
+analysis says, and what it says cannot fail does not); random expressions, with variables, parts,
+reads and walks (random ones, an offset that moves by what it reads, two numbers in the halves of
+the state), over random and boundary bytes, narrowed and not, which must have the same value or
+fail alike; and `tests/rules_are_rust.rs`, which compares rules at the limits of the widths, and
+walks, with Rust. An analysis that does not test a carry, that takes no fixed point, that does not
+join what follows a part, or that is wrong of the range of a product, a remainder or a shift, was
+tried, and is caught. What it cannot catch is a bound of `isize::MAX` taken smaller: no value of
+the tests is large enough to tell.
+
+Measured with `benches/checks.rs` (instructions per check, `callgrind`):
+
+| Check                                  | before | now | by hand |
+|----------------------------------------|-------:|----:|--------:|
+| IPv4, UDP, 64 bytes                    |    256 | 241 |     217 |
+| IPv4, protocol 253                     |    127 | 120 |     106 |
+| IPv6, TCP behind 3 extension headers   |    103 |  75 |     106 |
+| IPv6, TCP behind 12 extension headers  |    310 | 210 |     322 |
+| IPv6, UDP behind 3, 64 bytes           |    251 | 209 |     229 |
+| IPv6, UDP, 1400 bytes                  |    821 | 803 |     798 |
+| a frame of 6 things: UDP over IPv4     |    283 | 267 |     244 |
+
+The cases of the bench that compute no rule are unchanged.
 
 **Views.** `from_bytes` and `from_head` of a view enum answer what trying each variant in turn
 would answer: the order of the variants is the order of preference. But each variant is checked
@@ -1005,6 +1084,8 @@ asserted). What the code assumes of `usize`, and what holds each:
 | The tables of a `Crc` fit a value (`Crc::new`, `Crc::update`) | `CRC_TABLES`: 16 tables (32 KiB), 1 (2 KiB) where `usize` is 16 bits; `const` assertion; the CRCs are the same, the tests of `Crc` compare with references |
 | `sum16` folds before a carry could leave its `u64` (`sum16_inline`) | `SUM16_FOLD`: 2^20 blocks, or every block where `usize` cannot count that far; `const` assertion |
 | The 16 KiB table of `crc32` fits a value | it does on every width (`isize::MAX` is 32 KiB minus 1 on 16 bits) |
+| The size given to the evaluator of rules is at most `isize::MAX`, and so are an offset that a rule read at and `size_of_val(self)` (`narrow::SIZE_MAX`, the ranges of "Narrowing") | Rust: it is the size of a value, or the length of a slice of bytes |
+| A register is 64 bits where `usize` is, else 32 (`narrow::REGISTER`) | a choice of speed, not of results: every width computes the same, and `narrow_tests.rs` checks both |
 
 ## Model check
 
@@ -1123,6 +1204,11 @@ as something else, a check that would be behind a pointer.
   struct read from a `&mut S` whose rule `Plain` does not have can be written past that rule, as
   through the fields of `S` itself (a rule is a requirement, see "What the type system enforces").
   The two could be made the same, either way.
+- **Ranges from conditions**: a value is narrowed by what it is made of and by the reads that
+  succeeded, not by a comparison that held. The condition of a walk (`|i| i < count`) does not
+  narrow its step, nor the condition of an `if` its branches; so a counter that a walk increments
+  until a field is computed on 128 bits, unless it is read at. The walks of a walk of a walk have
+  a state that may be anything. Neither is in the examples, whose walks move offsets.
 - **Rules implied by other rules**: a rule is proven by the same rules, not by others that imply
   it (`v % 6 == 0` implies `v % 3 == 0`), nor by the same rule of a struct of another extent that
   does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check

@@ -3403,7 +3403,8 @@ impl Dfa {
 
 /// An operation of a postfix expression over the scalar fields of a struct, see [`Rule`].
 ///
-/// Expressions are evaluated on `u128`. What cannot be computed (an overflow, an underflow, a
+/// Expressions are evaluated on `u128` (and computed in a register where every value is known
+/// to fit one, with the same results). What cannot be computed (an overflow, an underflow, a
 /// division by zero, a shift by 128 or more, a read out of the value) makes the rule that holds
 /// the expression fail. What Rust does not compute is not computed: the right side of a `&&` or
 /// of a `||` that the left side decides, the branch of an `if` that is not taken
