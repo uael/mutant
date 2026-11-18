@@ -86,6 +86,37 @@ fn ids<O: Order>(t: &Tree<O>) -> Vec<u64> {
   out
 }
 
+/// A copy of bytes at an address that is a multiple of 8, which is what `view` takes: a mapped
+/// file is, and so is the buffer of a region where a `u64` is aligned to 8 (it is not on some
+/// 32-bit targets, where the tests would otherwise depend on where a buffer happens to be).
+struct Aligned {
+  buffer: Vec<u8>,
+  start: usize,
+  len: usize,
+}
+
+impl Aligned {
+  fn new(bytes: &[u8]) -> Self {
+    let mut buffer = vec![0; bytes.len() + 8];
+    let start = buffer.as_ptr().addr().wrapping_neg() % 8;
+    buffer[start..start + bytes.len()].copy_from_slice(bytes);
+    Self { buffer, start, len: bytes.len() }
+  }
+
+  /// The image of a region.
+  fn of<T: Flat>(region: &Region<T>) -> Self {
+    Self::new(region.as_bytes().expect("a compact region"))
+  }
+
+  fn bytes(&self) -> &[u8] {
+    &self.buffer[self.start..self.start + self.len]
+  }
+
+  fn bytes_mut(&mut self) -> &mut [u8] {
+    &mut self.buffer[self.start..self.start + self.len]
+  }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Offsets: what `nearest` requires of an `Offset`, and what `Order` says of its bytes
 
@@ -167,7 +198,8 @@ fn build_and_read<O: Order>() {
   assert_eq!(ids(&r), [1, 2, 3, 4, 5]);
   assert_eq!((&*r.name, &*r.kids[1].kids[0].name), ("root", "c"));
   assert_eq!(r.next.as_ref().map(|n| &*n.name), Some("next"));
-  assert!(r.kids.iter().all(|k| (&raw const *k).addr().is_multiple_of(8)));
+  let align = align_of::<Tree<O>>();
+  assert!(r.kids.iter().all(|k| (&raw const *k).addr().is_multiple_of(align)));
   assert_eq!(r.clone(), r);
   assert_eq!(Region::new(&*r), r);
   let e = Region::new(Expr::<O>::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
@@ -201,9 +233,9 @@ fn edit<O: Order>() {
   // The edited region is not compact; its copy is, and is the same value for both checks.
   let compact = Region::new(&*r);
   assert!(compact.byte_len() < r.byte_len() && r.as_bytes().is_none());
-  let image = compact.as_bytes().unwrap();
-  assert_eq!(puns::nearest::view::<Tree<O>>(image), Ok(&*r));
-  assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
+  let image = Aligned::of(&compact);
+  assert_eq!(puns::nearest::view::<Tree<O>>(image.bytes()), Ok(&*r));
+  assert_eq!(nearest::view::<Tree<O>>(image.bytes()), Ok(&*r));
 }
 
 /// A helper that takes the handle of a generic type, and returns one.
@@ -217,7 +249,7 @@ fn layout<O: Order>() {
   let w = size_of::<O>();
   let list = Region::<Near<[u64], O>>::new(Near::from_iter([7u64]));
   let bytes = list.as_bytes().unwrap();
-  let elems = (3 * w).next_multiple_of(8);
+  let elems = (3 * w).next_multiple_of(align_of::<u64>().max(w));
   assert_eq!(bytes.len(), elems + 8);
   assert_eq!(int::<O>(bytes, 0), i64::try_from(elems - w).unwrap()); // to the length
   assert_eq!((int::<O>(bytes, elems - 2 * w), int::<O>(bytes, elems - w)), (1, 1));
@@ -235,8 +267,8 @@ fn bytes<O: Order + Pun>() {
   let mut r = tree::<O>();
   *first(r.edit()).id() = 20;
   r.edit().kids().at(0).kids().push(leaf(9, "late"));
-  let compact = Region::new(&*r);
-  let image = compact.as_bytes().unwrap();
+  let compact = Aligned::of(&Region::new(&*r));
+  let image = compact.bytes();
   assert_eq!(puns::nearest::from_bytes::<Tree<O>>(image), Ok(Region::new(&*r)));
   assert_eq!(puns::nearest::view::<Tree<O>>(image), Ok(&*r));
   let mut scratch = vec![puns::nearest::Pending::default(); image.len() / size_of::<O>().min(4)];
@@ -271,17 +303,29 @@ fn bytes<O: Order + Pun>() {
   assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
 }
 
+/// Each test with each offset. Miri runs one offset of each width, of either byte order, and
+/// one of the target: the others run the same code, a second for each of their tests.
 macro_rules! offsets {
   ($($test:ident),*) => {
-    mod w16 { $(#[test] fn $test() { super::$test::<i16>() })* }
-    mod w32 { $(#[test] fn $test() { super::$test::<i32>() })* }
-    mod w64 { $(#[test] fn $test() { super::$test::<i64>() })* }
-    mod le16 { $(#[test] fn $test() { super::$test::<super::i16le>() })* }
-    mod le32 { $(#[test] fn $test() { super::$test::<super::i32le>() })* }
-    mod le64 { $(#[test] fn $test() { super::$test::<super::i64le>() })* }
-    mod be16 { $(#[test] fn $test() { super::$test::<super::i16be>() })* }
-    mod be32 { $(#[test] fn $test() { super::$test::<super::i32be>() })* }
-    mod be64 { $(#[test] fn $test() { super::$test::<super::i64be>() })* }
+    offsets!(
+      @ false ($($test),*) w32: i32, le16: super::i16le, be32: super::i32be, le64: super::i64le
+    );
+    offsets!(
+      @ true ($($test),*)
+      w16: i16, w64: i64, le32: super::i32le, be16: super::i16be, be64: super::i64be
+    );
+  };
+  (@ $skipped:literal $tests:tt $($name:ident: $offset:ty),*) => {
+    $(offsets!(@@ $skipped $tests $name: $offset);)*
+  };
+  (@@ $skipped:literal ($($test:ident),*) $name:ident: $offset:ty) => {
+    mod $name {
+      $(#[test] fn $test() {
+        if !(cfg!(miri) && $skipped) {
+          super::$test::<$offset>();
+        }
+      })*
+    }
   };
 }
 offsets!(sizes, contract, build_and_read, edit, layout, bytes);
@@ -324,7 +368,7 @@ fn numbers_of_a_byte_order_in_a_region() {
   // so placed that the rows are aligned to the width of the offset; the rows.
   let image = [1, 2, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 1, 3, 0];
   assert_eq!(r.as_bytes().unwrap(), image);
-  assert_eq!(puns::nearest::view::<Table>(r.as_bytes().unwrap()), Ok(&*r));
+  assert_eq!(puns::nearest::view::<Table>(Aligned::of(&r).bytes()), Ok(&*r));
   // Plain data: a handle derefs to the number itself.
   let t = r.edit();
   *t.count() = u32le::new(3);
@@ -346,15 +390,23 @@ fn the_limit_of_a_narrow_offset() {
   long.resize(limit + 8, 0);
   assert_eq!(puns::nearest::from_bytes::<Small>(&long).err(), Some(Error::Invalid(0)));
   assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid(0)));
-  let full = std::panic::catch_unwind(|| Region::<Small>::new(Near::from_iter(0..10_000u32)));
-  assert!(full.is_err());
+  // What `nearest` does of a region that grows past it, which takes Miri seconds.
+  if !cfg!(miri) {
+    let full = std::panic::catch_unwind(|| Region::<Small>::new(Near::from_iter(0..10_000u32)));
+    assert!(full.is_err());
+  }
 }
 
 // -------------------------------------------------------------------------------------------------
 // The check of this crate against the one of `nearest`
 
-/// How much of the corpus runs: Miri is slow.
+/// How much of the corpus runs: Miri is slow, and is there for what the walk does of the bytes
+/// (the reads of scalars, the casts), not for the verdicts.
 const SCALE: usize = if cfg!(miri) { 1 } else { 6 };
+
+/// Of the bytes of an image, which ones are changed, and where it is cut: every one, or one in
+/// that many under Miri.
+const STEP: usize = if cfg!(miri) { 11 } else { 1 };
 
 #[derive(Default, Debug)]
 struct Stats {
@@ -362,13 +414,6 @@ struct Stats {
   compared: usize,
   accepted: usize,
   rejected: usize,
-}
-
-/// `bytes` in words: an 8-aligned copy.
-fn aligned(bytes: &[u8]) -> Vec<u64> {
-  let mut words = vec![0u64; bytes.len().div_ceil(8) + 1];
-  puns::pun_mut::<[u64], [u8]>(&mut words)[..bytes.len()].copy_from_slice(bytes);
-  words
 }
 
 /// Both checks on the same bytes: the same result, and an accepted image is the same value.
@@ -415,34 +460,31 @@ fn same_scratch<T: Flat + Pun + PartialEq + core::fmt::Debug>(bytes: &[u8]) {
 /// The image, then every byte changed in a few ways, every truncation and some extensions.
 fn corrupt<T: Flat + Pun + PartialEq + core::fmt::Debug>(image: &[u8], stats: &mut Stats) {
   stats.images += 1;
-  let (mut words, len) = (aligned(image), image.len());
-  let ok = puns::nearest::view::<T>(&puns::as_bytes(&words[..])[..len]);
+  let (mut copy, len) = (Aligned::new(image), image.len());
+  let ok = puns::nearest::view::<T>(copy.bytes());
   assert!(ok.is_ok(), "a valid image is rejected: {ok:?}");
-  same::<T>(&puns::as_bytes(&words[..])[..len], stats);
+  same::<T>(copy.bytes(), stats);
   same_loaded::<T>(image);
-  same_scratch::<T>(&puns::as_bytes(&words[..])[..len]);
+  same_scratch::<T>(copy.bytes());
   let masks: &[u8] = if cfg!(miri) { &[0xff] } else { &[0x01, 0x02, 0x04, 0x10, 0x80, 0xff] };
-  let step = if cfg!(miri) { 3 } else { 1 };
-  for at in (0..len).step_by(step) {
+  for at in (0..len).step_by(STEP) {
     for &mask in masks {
-      puns::pun_mut::<[u64], [u8]>(&mut words)[at] ^= mask;
-      same::<T>(&puns::as_bytes(&words[..])[..len], stats);
+      copy.bytes_mut()[at] ^= mask;
+      same::<T>(copy.bytes(), stats);
       if !cfg!(miri) {
-        same_loaded::<T>(&puns::as_bytes(&words[..])[..len]);
+        same_loaded::<T>(copy.bytes());
       }
-      puns::pun_mut::<[u64], [u8]>(&mut words)[at] ^= mask;
+      copy.bytes_mut()[at] ^= mask;
     }
   }
-  for cut in (0..len).step_by(step) {
-    same::<T>(&puns::as_bytes(&words[..])[..cut], stats);
+  for cut in (0..len).step_by(STEP) {
+    same::<T>(&copy.bytes()[..cut], stats);
   }
   for extra in 1..=7 {
-    let words = aligned(&[image, &vec![0; extra][..]].concat());
-    same::<T>(&puns::as_bytes(&words[..])[..len + extra], stats);
+    same::<T>(Aligned::new(&[image, &vec![0; extra][..]].concat()).bytes(), stats);
   }
   // Not 8-aligned.
-  let words = aligned(&[&[0u8][..], image].concat());
-  same::<T>(&puns::as_bytes(&words[..])[1..=len], stats);
+  same::<T>(&Aligned::new(&[&[0u8][..], image].concat()).bytes()[1..=len], stats);
 }
 
 /// A small deterministic generator, for the corpus.
@@ -528,8 +570,11 @@ fn corpus<O: Order>(scale: usize) -> Stats {
     corrupt::<Item<O>>(r.as_bytes().unwrap(), &mut stats);
     let r = expr::<O>(&mut rng, 1 + i % 3);
     corrupt::<Expr<O>>(r.as_bytes().unwrap(), &mut stats);
-    let r = dir::<O>(&mut rng, i % 2);
-    corrupt::<Dir<O>>(r.as_bytes().unwrap(), &mut stats);
+    // The largest images: of lists of structs that hold pointers.
+    if !cfg!(miri) {
+      let r = dir::<O>(&mut rng, i % 2);
+      corrupt::<Dir<O>>(r.as_bytes().unwrap(), &mut stats);
+    }
   }
   assert!(stats.accepted > 0 && stats.rejected > stats.accepted, "{stats:?}");
   stats
@@ -575,7 +620,7 @@ fn the_check_is_the_one_of_nearest() {
     total.compared += stats.compared;
   }
   println!("{total:?}");
-  assert!(total.compared > if cfg!(miri) { 100 } else { 10_000 });
+  assert!(total.compared > if cfg!(miri) { 20 } else { 10_000 }, "{total:?}");
 }
 
 /// An edited region is not compact: both reject its buffer, both accept its compact copy.
@@ -720,8 +765,9 @@ fn an_expression_as_its_next_version() {
   assert!(matches!(&args[3], v2::Expr::Cond(None, 65)));
   // A deep copy of the view is a region of the new type, which both check as one.
   let copy = Region::<v2::Expr>::new(new);
-  assert_eq!(nearest::view::<v2::Expr>(copy.as_bytes().unwrap()), Ok(new));
-  assert_eq!(puns::nearest::view::<v2::Expr>(copy.as_bytes().unwrap()), Ok(new));
+  let image = Aligned::of(&copy);
+  assert_eq!(nearest::view::<v2::Expr>(image.bytes()), Ok(new));
+  assert_eq!(puns::nearest::view::<v2::Expr>(image.bytes()), Ok(new));
   // The image of the old one is the image of the new one here: the same sizes everywhere.
   assert_eq!(copy.as_bytes(), r.as_bytes());
 }
@@ -762,7 +808,8 @@ fn a_directory_as_its_next_version() {
 #[test]
 fn loaded_then_read_as_another_type() {
   let r = Region::new(Expr::<V1>::neg(Expr::add(Expr::Lit(1), Expr::var("y"))));
-  let old: &Expr<V1> = puns::nearest::view(r.as_bytes().unwrap()).unwrap();
+  let image = Aligned::of(&r);
+  let old: &Expr<V1> = puns::nearest::view(image.bytes()).unwrap();
   assert_eq!(v2::eval(puns::view_ref(old)), -1);
 }
 

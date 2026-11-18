@@ -33,9 +33,9 @@
 //!   not a pointer: it is checked where it is used, as any index is, not when the file is loaded.
 //!   A rule of the function cannot tell that a block jumps within the blocks: rules read the
 //!   fields of their struct, not what its pointers aim at.
-//! - The file is read into memory aligned to 8 bytes, where a compiler would map it
-//!   (`mmap` gives pages, which are): mapping needs a dependency or `unsafe`, and shows nothing
-//!   more. `view` takes bytes wherever they come from.
+//! - The file is read into memory at an address that is a multiple of 8, where a compiler would
+//!   map it (`mmap` gives pages, which are): mapping needs a dependency or `unsafe`, and shows
+//!   nothing more. `view` takes bytes wherever they come from.
 //! - Editing a region in place (pushing a block, replacing an instruction) is the business of
 //!   `nearest`, whose handles this crate does not touch: see its documentation.
 //! - Reading the file of an older version of the IR as the new one, without converting it, is
@@ -290,13 +290,16 @@ pub fn main() {
   let path = std::env::temp_dir().join(format!("puns-ir-{}.image", std::process::id()));
   fs::File::create(&path).and_then(|mut file| file.write_all(image)).unwrap();
 
-  // Read back, in memory that is aligned to 8 bytes as a mapped file is: words, seen as bytes.
+  // Read back, at an address that is a multiple of 8 as a mapped file is: here, in a buffer
+  // that has room for it.
   let size = usize::try_from(fs::metadata(&path).unwrap().len()).unwrap();
-  let mut words = vec![0u64; size.div_ceil(8)];
-  let read = &mut puns::pun_mut::<[u64], [u8]>(&mut words)[..size];
-  fs::File::open(&path).and_then(|mut file| file.read_exact(read)).unwrap();
+  let mut buffer = vec![0u8; size + 8];
+  let start = buffer.as_ptr().addr().wrapping_neg() % 8;
+  fs::File::open(&path)
+    .and_then(|mut file| file.read_exact(&mut buffer[start..start + size]))
+    .unwrap();
   fs::remove_file(&path).unwrap();
-  let bytes = &puns::as_bytes(&words[..])[..size];
+  let bytes = &buffer[start..start + size];
 
   // Checked, and that is all: the function is these bytes.
   let loaded: &Function = puns::nearest::view(bytes).unwrap();
