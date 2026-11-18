@@ -59,6 +59,117 @@ note: the above error was encountered while instantiating `fn pun_mut::<bool, u8
   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
+[What is refused](#what-is-refused) shows a whole message, and what to write instead.
+
+## Types that look nothing alike
+
+Two types need not be declared alike to hold the same bytes. What is compared is what each byte
+can be, through structs, arrays, tuples, enums and slices:
+
+```rust
+use core::num::NonZero;
+
+use puns::{
+  Pun,
+  num::{u16be, u32le},
+};
+
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+#[repr(u8)]
+enum Kind {
+  Text = 1,
+  Image = 2,
+}
+
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+#[repr(u8)]
+enum Shape {
+  Circle { radius: u16 },
+  Rect(u8, bool),
+}
+
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+#[repr(u8)]
+enum Drawing {
+  Circle { radius: u16 },
+  Rect(u8, u8),
+  Nothing,
+}
+
+/// An entry, as the program that writes it knows it.
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+#[repr(C)]
+struct Entry {
+  kind: Kind,            // 1 or 2
+  visible: bool,         // 0 or 1
+  port: u16be,           // two bytes, of any alignment
+  id: NonZero<u32>,      // not 0
+  name: [char; 2],       // Unicode scalar values
+  range: (u32le, u32le), // eight bytes
+  shape: Shape,          // a tag, then a `u16`, or a `u8` and a `bool`
+}
+
+/// The same 28 bytes, as a program that knows less declares them.
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+#[repr(C)]
+struct Raw {
+  kind: u8,
+  flags: u8,
+  port: [u8; 2],
+  id: u32,
+  name: [u32; 2],
+  range: [[u8; 4]; 2],
+  shape: Drawing, // more variants, and a `u8` where the `bool` is
+}
+
+/// A table of them: a header, then entries to the end.
+#[derive(Pun)]
+#[repr(C)]
+struct Table<E: ?Sized> {
+  count: u32le,
+  entries: E,
+}
+
+let entry = Entry {
+  kind: Kind::Image,
+  visible: true,
+  port: u16be::new(443),
+  id: NonZero::new(7).unwrap(),
+  name: ['p', 'n'],
+  range: (u32le::new(1), u32le::new(2)),
+  shape: Shape::Rect(3, true),
+};
+
+// Proven, field by field and byte by byte: 1 or 2 is a `u8`, a `bool` is a `u8`, a `NonZero` is a
+// `u32`, a `char` is a `u32`, two `u32le` are two arrays of four bytes, a `Shape` is a `Drawing`.
+let raw: Raw = puns::pun(entry);
+assert_eq!((raw.kind, raw.flags, raw.port, raw.id), (2, 1, [1, 187], 7));
+assert_eq!((raw.name, raw.shape), ([112, 110], Drawing::Rect(3, 1)));
+
+// So is a slice of them, and a struct that ends with one: the same pointer, the same length.
+let table = Table { count: u32le::new(2), entries: [entry; 2] };
+let typed: &Table<[Entry]> = &table;
+let loose: &Table<[Raw]> = puns::pun_ref(typed);
+assert_eq!((loose.entries.len(), loose.entries[1]), (2, raw));
+
+// The other way is checked, and only what a `Raw` does not prove: the kind, the flags, the
+// identifier, the two characters and the shape. The port and the range are not looked at.
+assert_eq!(puns::try_pun_ref::<Raw, Entry>(&raw), Ok(&entry));
+let surrogate = Raw { name: [0xd800, 110], ..raw };
+assert_eq!(puns::try_pun_ref::<Raw, Entry>(&surrogate), Err(puns::Error::Validity));
+let nothing = Raw { shape: Drawing::Nothing, ..raw };
+assert!(puns::try_pun_ref::<Raw, Entry>(&nothing).is_err());
+
+// By `&mut`, both must accept what the other holds: a `(u32le, u32le)` and a `[[u8; 4]; 2]` do.
+let mut range = (u32le::new(1), u32le::new(2));
+puns::pun_mut::<_, [[u8; 4]; 2]>(&mut range)[1] = [9, 0, 0, 0];
+assert_eq!(range.1.get(), 9);
+```
+
+What is not compatible is found as precisely. Reading these entries as bytes is refused, "at byte
+25 of the target": the one byte of padding of the 28, after the tag of a `Shape::Circle`. Reading
+a `&mut Entry` as a `&mut Raw` is refused too: through it, a kind of 9 could be written.
+
 ## A format is a type
 
 What the type of a field cannot say (a size that is in a header, a checksum, a value that tells
@@ -326,54 +437,177 @@ keep an invariant that the derive is not told of, should not derive `Pun`: see
 
 ## What is refused
 
-Each of these is a compile error, with a message that tells why and at which byte:
+A refusal is a compile error that tells why, at which byte, and often what to write instead. Here
+is a classic mistake with `transmute`, a struct that has padding read as bytes:
 
 ```rust,compile_fail
-// Reading padding: the byte after the `u8` is not initialized.
-let _: &[u8; 4] = puns::pun_ref(&(0u8, 0u16));
+#[derive(puns::Pun)]
+#[repr(C)]
+struct Header {
+  kind: u8,
+  length: u32,
+}
+
+let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, length: 2 });
 ```
 
-```rust,compile_fail
-// A value that may not be valid, without a check: `try_pun_ref` is the function for this.
-let _: &str = puns::pun_ref(&[0u8; 4]);
+```text
+error[E0080]: evaluation panicked:
+              cannot pun: a byte that the target requires to be initialized is padding in the source.
+              This is at byte 1 of the target.
+
+   --> puns-0.1.0/src/lib.rs
+    |
+    |   const BY_REF: () = Self::require(Self::check(Need::REF));
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Header, [u8; 8]>::BY_REF` failed inside this call
+    |
+note: inside `puns::Plan::<Header, [u8; 8]>::require`
+   --> puns-0.1.0/src/lib.rs
+    |
+    |       message.panic();
+    |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+   --> core/src/panic.rs
+    |
+    = note: the failure occurred here
+
+note: erroneous constant encountered
+   --> puns-0.1.0/src/lib.rs
+    |
+    |   const { Plan::<S, D>::BY_REF };
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn pun_ref::<Header, [u8; 8]>`
+  --> src/main.rs:10:25
+   |
+10 |   let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, length: 2 });
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-```rust,compile_fail
-// A target that needs a greater alignment than the source has.
-let _: &u32 = puns::pun_ref(&[0u8; 4]);
+The first lines tell why, and where in the type: byte 1 is the first of the three bytes of padding
+after `kind`. The last note tells where in your code. Between them, `rustc` shows the constant of
+`puns` whose evaluation failed, with the two types it was evaluated for. What to write instead is
+to declare the bytes, which are then initialized:
+
+```rust
+#[derive(puns::Pun)]
+#[repr(C)]
+struct Header {
+  kind: u8,
+  reserved: [u8; 3],
+  length: u32,
+}
+
+let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, reserved: [0; 3], length: 2 });
+assert_eq!(bytes[..4], [1, 0, 0, 0]);
 ```
 
+The other refusals, each with its message and with what works:
+
+**A target that needs a greater alignment than the source has.** A `[u8; 4]` can be at any
+address, a `u32` cannot.
+
 ```rust,compile_fail
-// A `&mut` through which bytes that are not UTF-8 could be written.
+let n: &u32 = puns::pun_ref(&[0u8; 4]);
+```
+
+```text
+cannot pun: the target has a greater alignment than the source.
+Use `try_pun_ref` or `try_pun_mut` to check the address at run time.
+```
+
+```rust
+use puns::num::u32le;
+
+// By value there is no address: the four bytes are copied into a `u32`.
+assert_eq!(puns::pun::<[u8; 4], u32>([1, 0, 0, 0]), u32::from_ne_bytes([1, 0, 0, 0]));
+// By reference, to a type that has no alignment: a `u32le` is four bytes.
+assert_eq!(puns::pun_ref::<[u8; 4], u32le>(&[1, 0, 0, 0]).get(), 1);
+// Or the address is checked at run time: it is aligned, or it is not.
+match puns::try_pun_ref::<[u8; 4], u32>(&[0; 4]) {
+  Ok(n) => assert_eq!(*n, 0),
+  Err(error) => assert_eq!(error, puns::Error::Alignment),
+}
+```
+
+**A value that may not be valid, without a check.**
+
+```rust,compile_fail
+let text: &str = puns::pun_ref(&[0xffu8; 4]);
+```
+
+```text
+cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
+Use a `try_*` function to check them at run time.
+This is at byte 0 of the target.
+```
+
+```rust
+assert_eq!(puns::try_pun_ref::<[u8; 4], str>(b"text"), Ok("text"));
+assert_eq!(puns::try_pun_ref::<[u8; 4], str>(&[0xff; 4]), Err(puns::Error::Validity));
+```
+
+**A `&mut` through which an invalid value could be written.** Here, bytes that are not UTF-8.
+
+```rust,compile_fail
 let mut text = String::from("text");
-let _: &mut [u8] = puns::pun_mut(text.as_mut_str());
+let bytes: &mut [u8] = puns::pun_mut(text.as_mut_str());
 ```
 
+```text
+cannot pun: some values of the target are not valid for the source (or are padding where the
+source is not), and could be written through the `&mut`.
+```
+
+```rust
+// By shared reference nothing is written: every `str` is bytes.
+let text = String::from("text");
+let bytes: &[u8] = puns::pun_ref(text.as_str());
+assert_eq!(bytes, b"text");
+```
+
+**An enum without `repr`, read as bytes.** Its layout is found, and its padding with it.
+
 ```rust,compile_fail
-// An enum without `repr`: the tag of `B` is its first byte, the second is padding.
 #[derive(puns::Pun, Clone, Copy)]
 enum Small {
   A(u8),
   B(u16),
 }
 
-let _: [u8; 4] = puns::pun(Small::B(1));
+let bytes: [u8; 4] = puns::pun(Small::B(1));
 ```
 
+```text
+cannot pun: a byte that the target requires to be initialized is padding in the source.
+This is at byte 1 of the target.
+```
+
+**A check that can never succeed.** A byte that is always 2 is never a `bool`.
+
 ```rust,compile_fail
-// A check that can never succeed.
-let _ = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
+let never = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
+```
+
+```text
+cannot pun: no value of the source is valid for the target.
+This is at byte 0 of the target.
 ```
 
 A refusal is an error of the monomorphization of a generic function: **`cargo build` reports it,
 `cargo check` does not.**
 
-## Machine code
+## Performance
 
-What is proven never reaches code generation, and which checks remain is decided at compile time,
-for each pair of types. On x86-64, `opt-level = 3` (the functions are in
-[`puns/examples/codegen.rs`][codegen], the whole table is in
-[`puns/DESIGN.md`][design]):
+What a pun costs is decided when the program is built. A proven pun is no instruction: the
+analysis ran in the compiler. A checked pun runs the checks that the pair of types leaves, and
+nothing else: reading a `[u8; 2]` as a `Position` looks at one byte, reading a `Raw` as an
+`Entry` at the fields that can be wrong, and not at its port or its range.
+
+### Machine code
+
+On x86-64, `opt-level = 3` (the functions are in [`puns/examples/codegen.rs`][codegen], the whole
+table is in [`puns/DESIGN.md`][design]):
 
 | Function                                           | Machine code                         |
 |----------------------------------------------------|--------------------------------------|
@@ -385,8 +619,55 @@ for each pair of types. On x86-64, `opt-level = 3` (the functions are in
 | `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call    |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, without a branch |
 
-[`puns/benches/checks.rs`][checks] times what is checked at run time next to the
-same checks written by hand.
+### Time
+
+[`puns/benches/checks.rs`][checks] times each check next to the same check written by hand, with
+the same algorithm for the checksums (`cargo bench -p puns --bench checks`). Nanoseconds per
+check, the best of 7 samples, on a Xeon at 2.1 GHz, release with LTO:
+
+| Check                                               | `puns` | by hand | ratio |
+|-----------------------------------------------------|-------:|--------:|------:|
+| IPv6, TCP, no extension header                      |    2.5 |     2.6 |   0.9 |
+| IPv6, TCP behind 3 extension headers                |    7.3 |     7.0 |   1.0 |
+| IPv6, TCP behind 12 extension headers               |     32 |      21 |   1.6 |
+| IPv6, UDP, 1400 bytes (its checksum)                |     42 |      39 |   1.1 |
+| UDP, `from_head`                                    |    1.7 |     1.1 |   1.6 |
+| a frame that is one of 6 things: ARP                |    3.5 |     2.6 |   1.3 |
+| a frame that is one of 6 things: the last one       |    3.6 |     2.0 |   1.8 |
+| `[u8]` as `[bool]`, 64 KiB                          |  1 433 |  19 037 |  0.08 |
+| `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    149 |   5 092 |  0.03 |
+| `[u32]` as `[char]`, 4 KiB                          |    175 |     299 |   0.6 |
+| CRC-32, 1518 bytes (by hand: 16 bytes at a time)    |    675 |     566 |   1.2 |
+| CRC-16/Modbus, 1518 bytes (by hand: a byte at once) |    784 |   3 592 |   0.2 |
+| `sum16`, 1500 bytes                                 |     39 |      43 |   0.9 |
+| IPv4, UDP, 64 bytes                                 |    148 |     9.8 |    15 |
+| IPv4, UDP, 1472 bytes                               |    181 |      43 |   4.2 |
+
+By hand, a slice is checked the way one writes it first, `bytes.iter().all(|&b| b <= 1)`: `puns`
+checks 64 bytes at a time, without a branch in a block. The two IPv4 lines are a known gap, not a
+property of the design: an expression of a rule longer than 24 operations (here the checksums of
+UDP and TCP over the addresses of the packet, one `assert`) is applied by an interpreter instead
+of being compiled to its arithmetic, as shorter ones and every rule with a `walk` are. It is
+being closed.
+
+### What to keep in mind
+
+- **A check never allocates, never panics, and its time is bounded by the size of the value**:
+  where Rust would panic, the rule fails, and a `walk` takes at most `8 * size + 128` steps.
+  Untrusted bytes can be given to `from_bytes` and `from_head`.
+- **A slice is checked by blocks** of 64 bytes, without a branch inside a block: an element that
+  is not valid is found when its block is done, not at its byte.
+- **A CRC is 32 KiB of tables in the binary** for each set of parameters that is used (16 bytes
+  at a time); `sum16` adds 8 bytes at a time and needs none.
+- **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
+  the binary, a checked one adds its checks, inlined where it is called.
+- **Measure in release.** In a debug build the expressions of the rules are interpreted, and
+  nothing is inlined.
+- **The analysis is build time**: it runs in the compiler, for each new pair of types. The
+  Ethernet example (32 types, about 80 puns, a view enum of 19 variants) builds in a few seconds
+  in debug, and in about a minute in release with LTO and one codegen unit.
+- **The functions of the grid are `const fn`s**: a pun of constants is done when the program is
+  built.
 
 ## Next to `transmute`, `bytemuck` and `zerocopy`
 
@@ -404,9 +685,8 @@ this changes:
 - **Types that have invalid values convert to each other**, by `&mut` too: `&mut [bool; 4]` as
   `&mut [[bool; 2]; 2]`, an enum as another when each accepts what the other holds.
 - **Enums without `repr` are known**, `Option` and `Result` among them: their layout, which
-  `rustc` chose, is found when the program is built. Where a marker trait asks an enum with fields
-  for a `repr` that specifies its layout, `Option<NonZero<u32>>` is here every `u32`, and a
-  `bool` an `Option<bool>`, proven.
+  `rustc` chose, is found when the program is built, where a derive of a marker trait asks an
+  enum with fields for a `repr` that specifies it. A `bool` is an `Option<bool>`, proven.
 - **The rules of a format are in its type**: sizes and lengths that are in the data, values that
   tell what follows, checksums. With a marker trait, a cast gives a header, and the code that
   finds where the packet ends is still to be written, and to be trusted.
