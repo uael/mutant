@@ -280,6 +280,136 @@ fn part_mut<S: ?Sized + Pun, D: ?Sized + Pun>(tail: bool) -> String {
   word.into()
 }
 
+/// The rule of `Distinct` over other fields: a field that is restricted, and one that is a `bool`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a != b))]
+struct DistinctAscii {
+  a: crate::num::u8in<0, 0x7f>,
+  b: u8,
+}
+
+/// The same rule, over a larger struct: `size_of_val(self)` is not the same.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a != b))]
+struct DistinctWide {
+  a: u8,
+  b: u8,
+  c: u8,
+}
+
+/// Two rules, and the same two in the other order.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a != b), assert(a != 0))]
+struct TwoRules {
+  a: u8,
+  b: u8,
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a != 0), assert(a != b))]
+struct TwoRulesSwapped {
+  a: u8,
+  b: u8,
+}
+
+/// A rule that reads `size_of_val(self)`, over a slice: the same rule, the same extent.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(size_of_val(self) > n))]
+struct Longer {
+  n: u8,
+  t: [u8],
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(size_of_val(self) > n))]
+struct LongerAscii {
+  n: u8,
+  t: [crate::num::u8in<0, 0x7f>],
+}
+
+/// The same rule over a slice of other elements: the extent is not the same.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(size_of_val(self) > n))]
+struct LongerWide {
+  n: u8,
+  t: [[u8; 2]],
+}
+
+/// A rule that reads padding, as bytes.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(le(1, 1) == 0))]
+struct ReadsPad {
+  a: u8,
+  b: u16,
+}
+
+/// The same rule, where the padding is a field.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(le(1, 1) == 0))]
+struct ReadsField {
+  a: u8,
+  b: u8,
+  c: u16,
+}
+
+#[derive(Pun)]
+#[repr(u8)]
+#[pun(crate)]
+#[expect(dead_code, reason = "a layout for the analysis, never made")]
+enum WithDistinct {
+  A(DistinctAscii) = 1,
+  B(u8) = 2,
+}
+
+#[derive(Pun)]
+#[repr(u8)]
+#[pun(crate)]
+#[expect(dead_code, reason = "a layout for the analysis, never made")]
+enum WithDistinctAny {
+  A(Distinct) = 1,
+  B(u8) = 2,
+}
+
+#[test]
+fn rules_proven_by_the_same_rules() {
+  // The same rules over the same bytes: proven, whatever the fields, which are related as any.
+  assert_eq!(verdict::<DistinctAscii, Distinct>(), "infallible");
+  assert_eq!(verdict::<Distinct, DistinctAscii>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<Pair<u8, DistinctAscii>, Pair<u8, Distinct>>(), "infallible");
+  // Not the same extent, not the same order, no such struct.
+  assert_eq!(verdict::<DistinctWide, Pair<Distinct, u8>>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<TwoRules, TwoRulesSwapped>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<[u8; 2], Distinct>(), "fallible at 0, mutable");
+  // Parts: a struct of the same extent at the same place.
+  assert_eq!(tail::<Pair<u16, DistinctAscii>, Distinct>(), "infallible from 2");
+  assert_eq!(tail::<DistinctWide, Distinct>(), "fallible at 0 from 1");
+  // Arrays: elements of the same size at the same place, proven all at once.
+  assert_eq!(verdict::<[DistinctAscii; 3], [Distinct; 3]>(), "infallible");
+  assert_eq!(tail::<[DistinctAscii; 3], [Distinct; 2]>(), "infallible from 2");
+  assert_eq!(verdict::<[DistinctAscii], [Distinct]>(), "infallible");
+  assert_eq!(verdict::<[DistinctWide; 2], [Pair<Distinct, u8>; 2]>(), "fallible at 0, mutable");
+  // A slice tail: the same extent if the elements are of the same size.
+  assert_eq!(verdict::<LongerAscii, Longer>(), "infallible");
+  assert_eq!(verdict::<Longer, LongerAscii>(), "fallible at 1, mutable");
+  assert_eq!(verdict::<LongerWide, Longer>(), "fallible at 0, mutable");
+  // Enums: a variant whose struct has the same rules proves the variant. (The reverse
+  // inclusions, `mutable`, are of the fields: rules are not invariants, safe code writes fields.)
+  assert_eq!(verdict::<WithDistinct, WithDistinctAny>(), "infallible");
+  assert_eq!(verdict::<WithDistinctAny, WithDistinct>(), "fallible at 0, mutable");
+  // A rule that reads padding: not checked where the source proves it.
+  assert_eq!(verdict::<ReadsField, ReadsPad>(), "infallible");
+  assert_eq!(verdict::<ReadsPad, ReadsField>(), "uninit at 1");
+}
+
 #[test]
 fn mutable_parts() {
   // The reverse inclusion, over the bytes that are covered.
@@ -313,7 +443,13 @@ fn mutable_parts() {
   assert_eq!(part_mut::<Pair<Distinct, u8>, u8>(false), "rule");
   assert_eq!(part_mut::<Pair<Distinct, u8>, u8>(true), "ok");
   assert_eq!(part_mut::<Pair<u8, Distinct>, u8>(true), "rule");
-  assert_eq!(part_mut::<Distinct, Distinct>(false), "rule");
+  // But a struct within the part whose rules the target has over the same bytes: what is written
+  // then meets them if it meets those of the target.
+  assert_eq!(part_mut::<Distinct, Distinct>(false), "ok");
+  assert_eq!(part_mut::<[Distinct; 3], [Distinct; 2]>(false), "ok");
+  assert_eq!(part_mut::<[Distinct; 3], [Distinct; 2]>(true), "ok");
+  assert_eq!(part_mut::<Pair<Distinct, u8>, Distinct>(false), "ok");
+  assert_eq!(part_mut::<Pair<Distinct, u8>, [u8; 2]>(false), "rule");
   assert_eq!(part_mut::<[Distinct; 3], [u8; 1]>(true), "rule");
   // Strings: whole, or not at all.
   assert_eq!(part_mut::<str, str>(false), "ok");

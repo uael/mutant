@@ -65,7 +65,7 @@ jobs:
       matrix:
         include:
           - name: puns
-            tests: --lib --test miri_sample --test core_shadowed --test regressions
+            tests: --lib --test miri_sample --test core_shadowed --test regressions --test rules
           - name: unsized, pointers
             tests: --test dst --test pointers
           - name: parts

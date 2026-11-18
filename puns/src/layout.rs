@@ -2092,6 +2092,39 @@ impl Layout {
     }
   }
 
+  /// Whatever two structs have rules that are the same function of the bytes of each: the same
+  /// rules, in the same order ([`Rule::equals`]), over a struct of the same extent. A rule is a
+  /// function of the bytes of its struct, of its size (`size_of_val(self)`, a `size` rule), of
+  /// the number of elements of its tail (a `len` rule) and of the bytes of its tail (regions):
+  /// so the same sized part, and the same tail (where it starts, the size of an element, and for
+  /// a sized struct its bytes and the elements of the array it ends with), whatever the fields.
+  pub(crate) const fn same_rules(&self, other: &Layout) -> bool {
+    let (Kind::Struct(_, mine), Kind::Struct(_, theirs)) = (self.kind, other.kind) else {
+      return false;
+    };
+    let (tail, other_tail) = (self.tail_shape(), other.tail_shape());
+    if mine.is_empty()
+      || mine.len() != theirs.len()
+      || self.size != other.size
+      || self.tail != other.tail
+      || self.unsized_ != other.unsized_
+      || tail.start != other_tail.start
+      || tail.bytes != other_tail.bytes
+      || tail.len != other_tail.len
+      || tail.array != other_tail.array
+    {
+      return false;
+    }
+    let mut i = 0;
+    while i < mine.len() {
+      if !mine[i].equals(&theirs[i]) {
+        return false;
+      }
+      i += 1;
+    }
+    true
+  }
+
   /// Whatever two layouts describe the same thing.
   #[expect(
     clippy::many_single_char_names,

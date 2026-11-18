@@ -1,0 +1,42 @@
+error[E0080]: evaluation panicked:
+              cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
+              Use a `try_*` function to check them at run time.
+              This is at byte 0 of the target.
+
+    --> src/lib.rs
+     |
+     |   const HEAD_REF: () = Self::require(Self::check(Need::PART_REF));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Wide, Narrow>::HEAD_REF` failed inside this call
+     |
+note: inside `puns::Plan::<Wide, Narrow>::require`
+ --> src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::HEAD_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::HEAD_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn head_ref::<Wide, Narrow>`
+  --> tests/compile-fail/same_rule_other_extent.rs:27:20
+   |
+27 |   let _: &Narrow = puns::head_ref(wide);
+   |                    ^^^^^^^^^^^^^^^^^^^^

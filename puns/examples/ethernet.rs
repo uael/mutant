@@ -618,6 +618,10 @@ pub fn main() {
   let udp = datagram.payload.payload().unwrap();
   assert_eq!((udp.destination_port.get(), &udp.payload), (53, &b"hello"[..]));
   assert_eq!(try_pun_ref::<_, Frame<Ipv4<Tcp>>>(&bytes[..]).err(), Some(Error::Validity));
+  // And back to any packet, proven: the rules of `Ipv4<Udp>` are those of `Ipv4`, over the same
+  // bytes, and what the protocol is known to be is a `Protocol`. Nothing is checked.
+  let any: &Frame<Ipv4> = pun_ref(datagram);
+  assert_eq!(any.payload.options(), [7, 6, 4, 10, 0, 0, 1, 1]);
   // The options: one that has a length, then two that are a single byte.
   let (option, rest) = from_head::<Ipv4Option>(ip.payload.options()).unwrap();
   assert_eq!((option.kind, option.length, &option.data), (7, 6, &[4, 10, 0, 0][..]));
