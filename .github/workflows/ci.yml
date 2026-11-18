@@ -12,19 +12,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # `cargo test --workspace --exclude puns-model`, in three jobs: what it builds (every test file
+  # is a binary, eleven of which hold an example) is most of its minute. With the two jobs of the
+  # model check below, this is `cargo test --all`.
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The unit tests, the compile-fail tests (trybuild), the doc tests (README included).
+          - name: library, compile-fail, docs
+            run: |
+              cargo test -p puns --lib --test compile_fail
+              cargo test --workspace --exclude puns-model --doc
+          # The other test files, every other one each. Each example is run through its test
+          # (`tests/ethernet.rs`...), which asserts its results; `codegen` has none, and is built.
+          - name: integration, 1 of 2
+            part: 1
+            run: cargo test -p puns $TESTS
+          - name: integration, 2 of 2
+            part: 2
+            run: |
+              cargo test -p puns $TESTS
+              cargo build -p puns --example codegen
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
-      # Unit, integration, compile-fail (trybuild) and doc tests. It builds every example, and runs
-      # each of them through its test (`tests/ethernet.rs`...), which asserts its results. With the
-      # job below, this is `cargo test --all`, in two halves that each fit in a minute.
-      - run: cargo test --workspace --exclude puns-model
+        with:
+          # A cache for each job of the matrix: they do not build the same binaries.
+          key: test-${{ matrix.part || 0 }}
+      - name: Select the test files of the job
+        if: matrix.part
+        run: |
+          tests=$(ls puns/tests/*.rs | grep -v '/compile_fail\.rs$' | sed 's|.*/|--test |; s|\.rs$||')
+          tests=$(echo "$tests" | awk -v part="${{ matrix.part }}" 'NR % 2 == part % 2')
+          echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
+      - run: ${{ matrix.run }}
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
   # as long to build as everything else, so jobs of its own, one for whole puns and one for
