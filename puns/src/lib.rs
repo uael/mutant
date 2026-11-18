@@ -339,6 +339,12 @@ pub unsafe trait Scalar {
 /// of `Self` (every value is valid for it as a source, every valid target is a value), with the
 /// lists of its fields, variants and elements; and that `OPTION`, if it is `Some`, describes the
 /// values of `Option<Self>` the same way, `Option<Self>` having the lists of `Option`.
+#[diagnostic::on_unimplemented(
+  message = "`{Self}` is not a `Pun` type: `puns` does not know its layout and its valid values",
+  label = "not a `Pun` type",
+  note = "a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with \
+          `SelfRelative` and `self_relative!`"
+)]
 pub unsafe trait Pun {
   /// Type of the elements of an array or of a slice, `()` otherwise.
   #[doc(hidden)]
