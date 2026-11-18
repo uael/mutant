@@ -379,3 +379,83 @@ fn sum16_is_the_sum_word_by_word() {
     const { sum16(&[0x45, 0, 0, 24, 0, 1, 0, 0, 64, 253, 0x65, 0xe6, 10, 0, 0, 1, 10, 0, 0, 2]) };
   assert_eq!(sum, 0xffff);
 }
+
+/// Bit by bit, as the catalogue of CRCs defines one by its parameters: what `crc32` and `Crc`
+/// compute faster.
+fn crc_reference(
+  width: u32,
+  poly: u64,
+  init: u64,
+  reflect: bool,
+  xorout: u64,
+  bytes: &[u8],
+) -> u64 {
+  let mask = u64::MAX >> (64 - width);
+  let mut register = init;
+  for &byte in bytes {
+    let byte = if reflect { byte.reverse_bits() } else { byte };
+    for bit in (0..8).rev() {
+      let feedback = ((register >> (width - 1)) ^ u64::from(byte >> bit)) & 1;
+      register = (register << 1) & mask;
+      if feedback == 1 {
+        register ^= poly;
+      }
+    }
+  }
+  if reflect {
+    register = register.reverse_bits() >> (64 - width);
+  }
+  register ^ xorout
+}
+
+#[test]
+fn crcs_are_the_crcs_bit_by_bit() {
+  use crate::layout::{Crc, crc32};
+  // CRC-32, CRC-32C, CRC-16/MODBUS, CRC-16/XMODEM, CRC-15/CAN, CRC-5/USB, CRC-8/SMBUS,
+  // CRC-64/XZ, CRC-64/ECMA-182: both orientations, widths below and above a byte.
+  let params = [
+    (32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff),
+    (32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff),
+    (16, 0x8005, 0xffff, true, 0),
+    (16, 0x1021, 0, false, 0),
+    (15, 0x4599, 0, false, 0),
+    (5, 0x05, 0x1f, true, 0x1f),
+    (8, 0x07, 0, false, 0),
+    (64, 0x42f0_e1eb_a9ea_3693, u64::MAX, true, u64::MAX),
+    (64, 0x42f0_e1eb_a9ea_3693, 0, false, 0),
+  ];
+  let crcs = params.map(|(width, poly, init, reflect, xorout)| {
+    (Crc::new(width, poly, init, reflect, xorout), (width, poly, init, reflect, xorout))
+  });
+  let mut seed = 0x2545_f491_4f6c_dd1d;
+  let lengths = if cfg!(miri) { 40 } else { 300 };
+  for len in 0..lengths {
+    let bytes = noise(len, &mut seed);
+    // From several offsets, so that blocks are read at any alignment.
+    for start in 0..bytes.len().min(3) {
+      let bytes = &bytes[start..];
+      let reference = crc_reference(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff, bytes);
+      assert_eq!(u64::from(crc32(bytes)), reference, "{bytes:?}");
+      for (crc, (width, poly, init, reflect, xorout)) in &crcs {
+        let reference = crc_reference(*width, *poly, *init, *reflect, *xorout, bytes);
+        assert_eq!(crc.check(bytes), reference, "{width} {poly:x}: {bytes:?}");
+      }
+    }
+    // With bytes taken as zeros, anywhere, and past the end.
+    let crc = &crcs[1].0;
+    for (from, to) in [(0, len), (len / 3, len / 2), (len / 2, len + 7), (len, len)] {
+      let mut zeroed = bytes.clone();
+      zeroed[from.min(len)..to.min(len)].fill(0);
+      let reference = crc_reference(32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff, &zeroed);
+      assert_eq!(crc.compute(&bytes, (from, to)), reference, "{from} {to}: {bytes:?}");
+    }
+  }
+  // More zeros than a block of them.
+  let bytes = noise(300, &mut seed);
+  let mut zeroed = bytes.clone();
+  zeroed[10..290].fill(0);
+  assert_eq!(crcs[3].0.compute(&bytes, (10, 290)), crc_reference(16, 0x1021, 0, false, 0, &zeroed));
+  // At compile time too.
+  assert_eq!(const { crc32(b"123456789") }, 0xcbf4_3926);
+  assert_eq!(const { Crc::new(16, 0x8005, 0xffff, true, 0).check(b"123456789") }, 0x4b37);
+}

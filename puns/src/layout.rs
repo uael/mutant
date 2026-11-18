@@ -1946,8 +1946,10 @@ pub struct Crc {
   init: u64,
   reflect: bool,
   xorout: u64,
-  /// The register, after a byte: in its low bits if reflected, else in its high bits.
-  table: [u64; 256],
+  /// `tables[k][b]`: the register after the byte `b` and `k` zero bytes, from a register of
+  /// zeros: in its low bits if reflected, else in its high bits. Sixteen bytes are then sixteen
+  /// lookups that do not wait for each other (slicing by 16), rather than a chain of sixteen.
+  tables: [[u64; 256]; 16],
 }
 
 impl Crc {
@@ -1964,7 +1966,7 @@ impl Crc {
       poly <= mask && init <= mask && xorout <= mask,
       "a parameter has more bits than the CRC"
     );
-    let (mut table, mut i) = ([0; 256], 0);
+    let (mut tables, mut i) = ([[0; 256]; 16], 0);
     while i < 256 {
       let mut register = if reflect { i as u64 } else { (i as u64) << 56 };
       let mut bit = 0;
@@ -1977,10 +1979,25 @@ impl Crc {
         };
         bit += 1;
       }
-      table[i] = register;
+      tables[0][i] = register;
       i += 1;
     }
-    Self { width, poly, init, reflect, xorout, table }
+    // A zero byte more.
+    let mut k = 1;
+    while k < 16 {
+      let mut i = 0;
+      while i < 256 {
+        let register = tables[k - 1][i];
+        tables[k][i] = if reflect {
+          tables[0][(register & 0xff) as usize] ^ (register >> 8)
+        } else {
+          tables[0][(register >> 56) as usize] ^ (register << 8)
+        };
+        i += 1;
+      }
+      k += 1;
+    }
+    Self { width, poly, init, reflect, xorout, tables }
   }
 
   /// The CRC of `bytes`.
@@ -1989,26 +2006,76 @@ impl Crc {
     self.compute(bytes, (0, 0))
   }
 
-  /// The CRC of `bytes`, the ones in `zeros` taken as zeros.
-  const fn compute(&self, bytes: &[u8], zeros: (usize, usize)) -> u64 {
-    let (mut register, mut i) = if self.reflect {
-      (self.init.reverse_bits() >> (64 - self.width), 0)
+  /// The CRC of `bytes`, the ones from `zeros.0` to `zeros.1` taken as zeros.
+  #[inline]
+  pub(crate) const fn compute(&self, bytes: &[u8], zeros: (usize, usize)) -> u64 {
+    let mut register = if self.reflect {
+      self.init.reverse_bits() >> (64 - self.width)
     } else {
-      (self.init << (64 - self.width), 0)
+      self.init << (64 - self.width)
     };
-    while i < bytes.len() {
-      let byte = if i >= zeros.0 && i < zeros.1 { 0 } else { bytes[i] };
-      register = if self.reflect {
-        self.table[((register ^ byte as u64) & 0xff) as usize] ^ (register >> 8)
-      } else {
-        self.table[(((register >> 56) ^ byte as u64) & 0xff) as usize] ^ (register << 8)
-      };
-      i += 1;
+    let to = if zeros.1 < bytes.len() { zeros.1 } else { bytes.len() };
+    let from = if zeros.0 < to { zeros.0 } else { to };
+    let (before, rest) = bytes.split_at(from);
+    let (zeros, after) = rest.split_at(to - from);
+    register = self.update(register, before);
+    // As many zeros, a block at a time.
+    let mut zeros = zeros.len();
+    while zeros > 0 {
+      let count = if zeros < 64 { zeros } else { 64 };
+      register = self.update(register, [0; 64].split_at(count).0);
+      zeros -= count;
     }
+    register = self.update(register, after);
     if !self.reflect {
       register >>= 64 - self.width;
     }
     register ^ self.xorout
+  }
+
+  /// The register after `bytes`.
+  #[inline]
+  const fn update(&self, mut register: u64, bytes: &[u8]) -> u64 {
+    let (blocks, rest) = bytes.as_chunks::<16>();
+    let t = &self.tables;
+    let mut i = 0;
+    while i < blocks.len() {
+      let b = &blocks[i];
+      // The register is the first 8 bytes of a block, as many as a `u64` holds (its bits that
+      // are not those of the CRC are zeros): what it holds after them, and after the 8 bytes
+      // that follow, is a lookup for each byte.
+      let head = [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]];
+      let x =
+        register ^ if self.reflect { u64::from_le_bytes(head) } else { u64::from_be_bytes(head) };
+      let x = if self.reflect { x.to_le_bytes() } else { x.to_be_bytes() };
+      register = t[15][x[0] as usize]
+        ^ t[14][x[1] as usize]
+        ^ t[13][x[2] as usize]
+        ^ t[12][x[3] as usize]
+        ^ t[11][x[4] as usize]
+        ^ t[10][x[5] as usize]
+        ^ t[9][x[6] as usize]
+        ^ t[8][x[7] as usize]
+        ^ t[7][b[8] as usize]
+        ^ t[6][b[9] as usize]
+        ^ t[5][b[10] as usize]
+        ^ t[4][b[11] as usize]
+        ^ t[3][b[12] as usize]
+        ^ t[2][b[13] as usize]
+        ^ t[1][b[14] as usize]
+        ^ t[0][b[15] as usize];
+      i += 1;
+    }
+    let mut i = 0;
+    while i < rest.len() {
+      register = if self.reflect {
+        t[0][((register ^ rest[i] as u64) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        t[0][((register >> 56) ^ rest[i] as u64) as usize] ^ (register << 8)
+      };
+      i += 1;
+    }
+    register
   }
 
   const fn equals(&self, other: &Crc) -> bool {
@@ -2562,7 +2629,7 @@ impl Machine {
           // Where the zeros are in `bytes` (in the value: they fit a `usize`).
           let zeros = (zeros.saturating_sub(start) as usize, to.saturating_sub(start) as usize);
           let value = match op {
-            Op::Crc32 => crc32(bytes) as u128,
+            Op::Crc32 => crc32_inline(bytes) as u128,
             Op::Sum16 => sum16_inline(bytes) as u128,
             Op::Crc(crc) | Op::CrcZeros(crc) => crc.compute(bytes, zeros) as u128,
             Op::Checksum(checksum) => checksum.compute(bytes),
@@ -2765,22 +2832,64 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
 /// ```
 #[must_use]
 pub const fn crc32(bytes: &[u8]) -> u32 {
-  const TABLE: [u32; 256] = {
-    let (mut table, mut i) = ([0u32; 256], 0);
+  crc32_inline(bytes)
+}
+
+/// [`crc32`], inlined where a rule computes it.
+#[inline(always)]
+const fn crc32_inline(bytes: &[u8]) -> u32 {
+  // Slicing by 16, as `Crc`, with tables of `u32`s (16 KiB, built at compile time). Without
+  // carry-less multiplication, which a `const fn` cannot reach on stable Rust, it is the fastest.
+  const TABLES: [[u32; 256]; 16] = {
+    let mut tables = [[0u32; 256]; 16];
+    let mut i = 0;
     while i < 256 {
       let (mut value, mut bit) = (i as u32, 0);
       while bit < 8 {
         value = if value & 1 != 0 { (value >> 1) ^ 0xedb8_8320 } else { value >> 1 };
         bit += 1;
       }
-      table[i] = value;
+      tables[0][i] = value;
       i += 1;
     }
-    table
+    let mut k = 1;
+    while k < 16 {
+      let mut i = 0;
+      while i < 256 {
+        let value = tables[k - 1][i];
+        tables[k][i] = tables[0][(value & 0xff) as usize] ^ (value >> 8);
+        i += 1;
+      }
+      k += 1;
+    }
+    tables
   };
-  let (mut crc, mut i) = (!0u32, 0);
-  while i < bytes.len() {
-    crc = TABLE[((crc ^ bytes[i] as u32) & 0xff) as usize] ^ (crc >> 8);
+  let (blocks, rest) = bytes.as_chunks::<16>();
+  let (t, mut crc, mut i) = (&TABLES, !0u32, 0);
+  while i < blocks.len() {
+    let b = &blocks[i];
+    let x = (crc ^ u32::from_le_bytes([b[0], b[1], b[2], b[3]])).to_le_bytes();
+    crc = t[15][x[0] as usize]
+      ^ t[14][x[1] as usize]
+      ^ t[13][x[2] as usize]
+      ^ t[12][x[3] as usize]
+      ^ t[11][b[4] as usize]
+      ^ t[10][b[5] as usize]
+      ^ t[9][b[6] as usize]
+      ^ t[8][b[7] as usize]
+      ^ t[7][b[8] as usize]
+      ^ t[6][b[9] as usize]
+      ^ t[5][b[10] as usize]
+      ^ t[4][b[11] as usize]
+      ^ t[3][b[12] as usize]
+      ^ t[2][b[13] as usize]
+      ^ t[1][b[14] as usize]
+      ^ t[0][b[15] as usize];
+    i += 1;
+  }
+  let mut i = 0;
+  while i < rest.len() {
+    crc = t[0][((crc ^ rest[i] as u32) & 0xff) as usize] ^ (crc >> 8);
     i += 1;
   }
   !crc
