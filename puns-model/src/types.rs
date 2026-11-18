@@ -760,3 +760,62 @@ impl Oracle for OneOfTwo {
     }
   }
 }
+
+// --- Unions -----------------------------------------------------------------------------------------
+//
+// The validity of unions is not settled by the language: the oracle takes the rule that every
+// proposal allows, valid if valid for one field. What the library knows of a union as a source is
+// nothing, which is less than that.
+
+/// Valid if one of `results` is; decided by an uninitialized byte if none is, and one is.
+///
+/// # Errors
+/// [`Uninit`] if no field is valid and one is decided by an uninitialized byte.
+pub fn any(results: &[Valid]) -> Valid {
+  if results.contains(&Ok(true)) {
+    return Ok(true);
+  }
+  if results.iter().any(std::result::Result::is_err) { Err(Uninit) } else { Ok(false) }
+}
+
+/// A `bool`, or a number up to 3: a byte up to 3.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+pub union ChoiceU {
+  pub flag: bool,
+  pub small: u8in<0, 3>,
+}
+
+impl Oracle for ChoiceU {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    any(&[bool::check(b, off, reads, target), <u8in<0, 3>>::check(b, off, reads, target)])
+  }
+}
+
+/// Two `bool`s, or a `NonZero<u16>`.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+pub union FlagsU {
+  pub pair: [bool; 2],
+  pub nz: NonZero<u16>,
+}
+
+impl Oracle for FlagsU {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    any(&[<[bool; 2]>::check(b, off, reads, target), <NonZero<u16>>::check(b, off, reads, target)])
+  }
+}
+
+/// A byte, or a byte and a `u16`: a value of the first field has three bytes of padding.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+pub union PaddedU {
+  pub byte: u8,
+  pub pair: (u8, u16),
+}
+
+impl Oracle for PaddedU {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    any(&[u8::check(b, off, reads, target), <(u8, u16)>::check(b, off, reads, target)])
+  }
+}

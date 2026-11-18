@@ -561,6 +561,11 @@ const fn relate_range(
         pos += enum_b.size;
         continue;
       }
+      // A union: one of its fields.
+      if base_b == pos && pos + enum_b.size <= end && relate_union_from(a, enum_b, pos, leaf, out) {
+        pos += enum_b.size;
+        continue;
+      }
       // From something else, variant by variant: the ones whose tags the source can hold there.
       if base_b == pos
         && pos + enum_b.size <= end
@@ -662,6 +667,10 @@ const fn relate_enums(
     return true;
   }
   let (Kind::Enum(enum_a), Kind::Enum(enum_b)) = (a.kind, b.kind) else { panic!() };
+  // A union is not told by a tag: one only proves the same union.
+  if enum_a.union || enum_b.union {
+    return false;
+  }
   let (Kind::Scalar(tag_a), Kind::Scalar(tag_b)) = (enum_a.tag.layout.kind, enum_b.tag.layout.kind)
   else {
     panic!()
@@ -736,6 +745,9 @@ const fn relate_enum_from(
 ) -> bool {
   let Kind::Enum(layout) = b.kind else { panic!() };
   let Kind::Scalar(tag) = layout.tag.layout.kind else { panic!() };
+  if layout.union {
+    return false;
+  }
   let start = pos + layout.tag.offset;
   // What the source holds at the tag.
   let Some(values) = tag_values(a, start, &tag) else {
@@ -770,6 +782,56 @@ const fn relate_enum_from(
   }
   if !some && out.disjoint.is_none() {
     out.disjoint = Some(pos);
+  }
+  true
+}
+
+/// Relate what the source `a` holds at `pos` with the union `b` there, which the same union of
+/// the source did not prove: proven if the source proves one of its fields; else checked, field
+/// by field at run time, if none of them would read a byte that may be padding in the source;
+/// else refused.
+///
+/// Returns `false`, having done nothing, if `b` is not a union.
+const fn relate_union_from(
+  a: &Cursor,
+  b: &'static Layout,
+  pos: usize,
+  leaf: usize,
+  out: &mut Relation,
+) -> bool {
+  let Kind::Enum(layout) = b.kind else { panic!() };
+  if !layout.union {
+    return false;
+  }
+  let (mut proven, mut some, mut uninit, mut i) = (false, false, None, 0);
+  while i < layout.variants.len() {
+    let field = &layout.variants[i];
+    i += 1;
+    if !field.is_present() {
+      continue;
+    }
+    let mut relation = Relation::NEW;
+    let (mut from, mut to) = (*a, Cursor::new(field.layout, pos, true, Checked::All));
+    relate_range(&mut from, &mut to, pos, pos + b.size, &mut relation);
+    mark_rules(a.stack[0].layout, field.layout, pos, 0, &mut relation);
+    if relation.uninit.is_none() {
+      proven |= relation.infallible();
+      some |= relation.disjoint.is_none();
+    } else if uninit.is_none() {
+      // Its check would read padding: it cannot be checked.
+      uninit = relation.uninit;
+    }
+  }
+  if proven {
+    return true;
+  }
+  if let Some(offset) = uninit {
+    out.uninit(offset);
+  } else {
+    out.mark(leaf, pos);
+    if !some && out.disjoint.is_none() {
+      out.disjoint = Some(pos);
+    }
   }
   true
 }

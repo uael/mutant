@@ -61,3 +61,48 @@ fn maybe_uninit_scalar() {
   // same `Spec` of this kind while one may be padding where the other may not).
   let _: MaybeUninit<u8> = puns::pun(Zero(MaybeUninit::uninit()));
 }
+
+/// Four bytes, or a word.
+#[derive(puns::Pun, Clone, Copy)]
+#[repr(C)]
+union Word {
+  bytes: [u8; 4],
+  word: u32,
+}
+
+/// A `bool`, or a number up to 3: a byte up to 3.
+#[derive(puns::Pun, Clone, Copy)]
+#[repr(C)]
+union Choice {
+  flag: bool,
+  small: puns::num::u8in<0, 3>,
+}
+
+/// A byte, or a byte and a `u16`: the first byte, then three of which nothing is required.
+#[derive(puns::Pun, Clone, Copy)]
+#[repr(C)]
+union Padded {
+  byte: u8,
+  pair: (u8, u16),
+}
+
+#[test]
+fn unions() {
+  // As a target, one of its fields: proven by one that every source is.
+  let word: Word = puns::pun(0x0102_0304u32);
+  // SAFETY: made of a `u32`.
+  assert_eq!(unsafe { word.word }, 0x0102_0304);
+  let _: &Word = puns::pun_ref(&7u32);
+  let flag: Choice = puns::pun(true);
+  // SAFETY: made of a `bool`.
+  assert!(unsafe { flag.flag });
+  let _: Choice = puns::pun(puns::num::u8in::<1, 2>::new(1).unwrap());
+  // Checked, field by field, when no field is proven: 2 is no `bool`, but is a `small`.
+  assert!(puns::try_pun::<u8, Choice>(2).is_ok());
+  assert_eq!(puns::try_pun::<u8, Choice>(4).map(|_| ()), Err(Error::Validity));
+  // Its first field takes one byte: the rest may be padding in the source.
+  let _: Padded = puns::pun((1u8, 2u16));
+  // As a source, nothing: only what takes anything.
+  let _: MaybeUninit<u32> = puns::pun(word);
+  let _: Word = puns::pun(word);
+}

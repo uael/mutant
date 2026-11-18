@@ -514,6 +514,8 @@ pub struct Enum {
   pub(crate) variants: &'static [Variant],
   /// Size and alignment that the representation of the enum specifies.
   pub(crate) specified: (usize, usize),
+  /// A union: no tag, its variants are its fields, and a value is valid if it is one of them.
+  pub(crate) union: bool,
 }
 
 impl Enum {
@@ -554,7 +556,7 @@ impl Enum {
       assert!(fields == 0, "not where the fields of the variants are");
       (tail_offset(size, align, usize::MAX), align)
     };
-    Self { tag: Field::new(0, tag), variants, specified }
+    Self { tag: Field::new(0, tag), variants, specified, union: false }
   }
 
   /// The enum that `rustc` laid out, as `discover.rs` found it: a tag at `offset`, and the
@@ -567,11 +569,20 @@ impl Enum {
     variants: &'static [Variant],
     specified: (usize, usize),
   ) -> Self {
-    Self { tag: Field::new(offset, tag), variants, specified }
+    Self { tag: Field::new(offset, tag), variants, specified, union: false }
+  }
+
+  /// The `repr(C)` union whose `fields` are given, each as a variant of one field (at offset 0),
+  /// in the order of their declarations (see [`Layout::union`]).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn union(fields: &'static [Variant]) -> Self {
+    Self { tag: Field::new(0, &NO_TAG), variants: fields, specified: (0, 1), union: true }
   }
 
   /// An enum without a variant that a value can be: no value.
-  const NEVER: Self = Self { tag: Field::new(0, &NO_TAG), variants: &[], specified: (0, 1) };
+  const NEVER: Self =
+    Self { tag: Field::new(0, &NO_TAG), variants: &[], specified: (0, 1), union: false };
 
   /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
   /// `shadows` (see [`Enum::new`]).
@@ -1582,6 +1593,46 @@ impl Layout {
     }
   }
 
+  /// Layout of the `repr(C)` union `T`, whose fields are the variants of `layout` (see
+  /// [`Enum::union`]).
+  ///
+  /// The validity of unions is not settled by the language. What is taken here is what every rule
+  /// that is considered allows: as a target, bytes are a union if they are one of its fields
+  /// (where no rule requires less, this requires more); as a source, nothing is known of them, not
+  /// even that they are initialized (a field may be written over another, and some rules let a
+  /// union hold any bytes).
+  ///
+  /// # Panics
+  /// If a field is not at offset 0 or out of the union, or holds a self-relative pointer.
+  #[must_use]
+  pub const fn union<T>(layout: &'static Enum) -> Self {
+    assert!(layout.union, "not a union");
+    let (size, mut i) = (size_of::<T>(), 0);
+    while i < layout.variants.len() {
+      let variant = &layout.variants[i];
+      let fields = variant.fields();
+      assert!(variant.layout.size == size, "not a field of this union");
+      assert!(fields.len() <= 1, "a field of a union is one field");
+      if fields.len() == 1 {
+        let field = &fields[0];
+        assert!(field.offset == 0 && field.layout.size <= size, "the fields of a union are at 0");
+        assert!(!field.layout.unsized_, "the fields of a union are sized");
+      }
+      assert!(!variant.layout.has_pointers(), "a union holds no self-relative pointer");
+      i += 1;
+    }
+    Self {
+      kind: Kind::Enum(layout),
+      size,
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
+    }
+  }
+
   /// The `index`th field, as declared, of the `variant`th variant of an enum.
   #[doc(hidden)]
   #[must_use]
@@ -1640,6 +1691,8 @@ impl Layout {
         }
         (false, self.size)
       }
+      // Nothing is known of what a union holds; a target may need what any field needs.
+      Kind::Enum(layout) if layout.union && always => (false, self.size),
       Kind::Enum(layout) => {
         let (start, end) = (layout.tag.offset, layout.tag.offset + layout.tag.layout.size);
         if offset >= start && offset < end {
@@ -1968,6 +2021,17 @@ impl Layout {
       Kind::Pattern(dfa) => dfa.states[0].accept,
       // No pointer.
       Kind::Pointer(pointer) => pointer.nullable,
+      // A field of a union that zeros are.
+      Kind::Enum(layout) if layout.union => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].is_present() && layout.variants[i].layout.zeroable() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
       // The variant whose tag is 0, if any.
       Kind::Enum(layout) => {
         let mut i = 0;
@@ -2042,6 +2106,7 @@ impl Layout {
       (Kind::Pointer(a), Kind::Pointer(b)) => a.same(&b),
       (Kind::Enum(a), Kind::Enum(b)) => {
         if a.tag.offset != b.tag.offset
+          || a.union != b.union
           || !a.tag.layout.equals(b.tag.layout)
           || a.variants.len() != b.variants.len()
         {

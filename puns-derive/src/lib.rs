@@ -174,7 +174,7 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
       .flat_map(|variant| variant.fields.iter_mut())
       .map(|field| &mut field.ty)
       .collect(),
-    Data::Union(_) => vec![],
+    Data::Union(data) => data.fields.named.iter_mut().map(|field| &mut field.ty).collect(),
   };
   for ty in types {
     match syn::parse2(replace_self(ty.to_token_stream(), &this)) {
@@ -185,7 +185,7 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let expanded = match &input.data {
     Data::Struct(data) => derive_struct(&input, data),
     Data::Enum(data) => derive_enum(&input, data),
-    Data::Union(_) => Err(Error::new(Span::call_site(), "`Pun` cannot be derived for unions")),
+    Data::Union(data) => derive_union(&input, data),
   };
   expanded
     .unwrap_or_else(|error| {
@@ -2253,6 +2253,114 @@ fn derive_discovered(
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout =
           #layout::enumeration::<Self>(const { &<Self as __PunDiscover>::ENUM });
+      }
+    };
+  })
+}
+
+/// A `repr(C)` union: each field is a variant of one field, at offset 0, and a value is valid if
+/// it is one of them (see `Layout::union`).
+fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStream> {
+  let repr = parse_repr(&input.attrs)?;
+  if !repr.c || repr.packed.is_some() {
+    return Err(Error::new(
+      input.ident.span(),
+      "`Pun` is derived for unions of `repr(C)`, whose fields are all at offset 0",
+    ));
+  }
+  let options = parse_options(&input.attrs, "a union", &["crate", "bound"])?;
+  let root = options.root.clone().unwrap_or_else(|| quote!(::puns));
+  let (ident, vis) = (&input.ident, &input.vis);
+  let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+  let this = quote!(#ident #ty_generics);
+  let mut generics = input.generics.clone();
+  for field in &data.fields.named {
+    if options.bounds.is_none() && needs_bound(&field.ty, input) {
+      bound(&mut generics, &field.ty, &root);
+    }
+  }
+  if let Some(bounds) = &options.bounds {
+    generics.make_where_clause().predicates.extend(bounds.iter().cloned());
+  }
+  let where_clause = &generics.where_clause;
+  let count = data.fields.named.len();
+  let shadows = (0..count).map(|i| format_ident!("__PunVariant{}", i)).collect::<Vec<_>>();
+  let (mut items, mut variants) = (vec![], vec![]);
+  for (i, field) in data.fields.named.iter().enumerate() {
+    let ty = &field.ty;
+    let options = parse_options(&field.attrs, "a field of a union", &["valid"])?;
+    let layout = match &options.valid {
+      None => quote!(#root::layout::Field::new(0, &<#ty as #root::Pun>::LAYOUT)),
+      Some(ranges) => {
+        let ranges = valid_ranges(ranges, ty, &root)?;
+        quote!(#root::layout::Field::restricted(
+          0,
+          const { &<#ty as #root::Pun>::LAYOUT.restricted(#ranges) },
+        ))
+      }
+    };
+    variants.push(quote!(#root::layout::Variant::new(
+      #i as ::core::primitive::u128,
+      const {
+        &#root::layout::Layout::variant::<Self>(
+          const { &#root::layout::Layout::sort_fields([#layout]) },
+        )
+      },
+    )));
+    let marker = format_ident!("__PunVariant{}Field0", i);
+    let next = shadows.get(i + 1).map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics));
+    let shadow = &shadows[i];
+    items.push(quote! {
+      #[allow(non_camel_case_types)]
+      #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the field of the layout of the variant, the field of the union.
+      unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
+        type Type = #ty;
+        type Next = ();
+        type Path<__P: #root::Path> = #root::At<__P, Self>;
+        const FIELD: ::core::option::Option<#root::layout::Field> =
+          ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.variant_field(#i, 0));
+      }
+
+      #[allow(dead_code, non_camel_case_types)]
+      #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
+
+      // SAFETY: the variant of the layout of the union: its field.
+      unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
+        type Fields = #marker #ty_generics;
+        type Next = #next;
+        const TAG: ::core::option::Option<::core::primitive::u128> =
+          ::core::option::Option::Some(<#this as #root::Pun>::LAYOUT.variant_tag(#i));
+      }
+    });
+  }
+  let first = shadows.first().map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics));
+  Ok(quote! {
+    const _: () = {
+      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      const _: (
+        fn(#root::layout::Rule),
+        fn(#root::layout::Op),
+        fn(#root::layout::Field),
+        fn(#root::layout::Enum),
+        fn(#root::layout::Variant),
+      ) = #root::layout::Layout::PIN;
+
+      #(#items)*
+
+      // SAFETY: the fields of a `repr(C)` union are at offset 0; a value is taken to be valid if
+      // it is one of them, and nothing is known of one (see `Layout::union`).
+      unsafe impl #impl_generics #root::Pun for #this #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = #first;
+        type Walks = ();
+        type Pointee = ();
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout = #root::layout::Layout::union::<Self>(
+          const { &#root::layout::Enum::union(const { &[#(#variants),*] }) },
+        );
       }
     };
   })
