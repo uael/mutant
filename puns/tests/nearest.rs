@@ -857,6 +857,51 @@ enum Small {
   Neg(Near<Expr<V1>, V1>),
 }
 
+/// Two generic types that hold each other: the bounds that the derive would find go round in a
+/// circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
+/// they are told: none but the ones that the types declare.
+#[flat]
+#[derive(Pun, Debug, PartialEq, Eq)]
+#[pun(bound())]
+struct Ping<O: Order> {
+  id: u8,
+  pong: Option<Near<Pong<O>, O>>,
+}
+
+#[flat]
+#[derive(Pun, Debug, PartialEq, Eq)]
+#[pun(bound())]
+enum Pong<O: Order> {
+  End(bool),
+  Ping(Near<Ping<O>, O>),
+}
+
+/// A generic type whose parameter is what it holds: the derive finds its bounds (and `#[flat]`
+/// its own: the parameter is `Flat`).
+#[flat]
+#[derive(Pun, Debug, PartialEq, Eq)]
+struct Boxed<T: Pun> {
+  id: u8,
+  value: Near<T, i32le>,
+  more: Near<[T], i32le>,
+}
+
+#[test]
+fn generic_types() {
+  let r = Region::new(Ping::<i16be>::new(
+    1,
+    Near::new(Pong::ping(Ping::new(2, Near::new(Pong::End(true))))),
+  ));
+  let image = Aligned::of(&r);
+  assert_eq!(puns::nearest::view::<Ping<i16be>>(image.bytes()), Ok(&*r));
+  assert_eq!(nearest::view::<Ping<i16be>>(image.bytes()), Ok(&*r));
+  let ping: &Ping<i16be> = puns::view_ref(&*r);
+  assert_eq!(ping.id, 1);
+  let flags = Region::new(Boxed::<bool>::new(1, true, [false, true]));
+  let bytes: &Boxed<u8> = puns::view_ref(&*flags);
+  assert_eq!((bytes.id, *bytes.value, &bytes.more[..]), (1, 1, &[0, 1][..]));
+}
+
 /// A value that holds pointers is read as plain data: an offset is initialized bytes.
 #[test]
 fn pointers_are_read_as_bytes() {

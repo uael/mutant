@@ -656,9 +656,6 @@ another size, a list or text read as something else, a check that would be behin
   `Region<B>` of a `Region<A>` without a copy needs the two images to be the same bytes (the
   same sizes behind every pointer), which the analysis does not tell yet. Today it is a deep
   copy, `Region::new(view)`.
-- **Bounds of generic types that hold pointers**: a type parameter that is the offset of a
-  recursive type is declared `O: puns::nearest::Order`; two generic types that hold each other
-  need a way to tell the derive their bounds (a `#[pun(bound(..))]`), which there is not.
 - **`from_bytes` into a storage other than the heap** (`nearest`'s `Inline<N>`...): the loader
   of `nearest` that copies without checking panics when the storage is full, where the checked
   one returns an error, so only the heap is offered. See also "Limits" for 32-bit targets.
@@ -717,6 +714,12 @@ another size, a list or text read as something else, a check that would be behin
   (`view_ref`) needs the fields that hold pointers at the same position in both structs, the
   variants that do at the same position in both enums, and does not look through a struct that
   only holds a pointer. See "Self-relative pointers".
+- The derive bounds its implementation by "the type of each field that depends on a parameter is
+  `Pun`", but for the fields that name the type itself (a recursive type would be `Pun` if it
+  is). So the parameter that is the offset of a recursive type is declared with what its
+  pointers need, `O: puns::nearest::Order`; and two generic types that hold each other, whose
+  bounds would be found in a circle (`overflow evaluating the requirement`), tell theirs:
+  `#[pun(bound())]` on both when the bounds that the types declare are enough, as `O: Order` is.
 - `nearest` keeps the buffer of a region in `u64`s, which are aligned to 4 on some 32-bit targets
   (i686): there, the bytes of a region are not always at a multiple of 8, which `view` requires
   (give it a copy that is), and `nearest` 0.7.1 itself reads a type aligned to 8 misaligned.

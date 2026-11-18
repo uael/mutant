@@ -1,0 +1,20 @@
+error[E0275]: overflow evaluating the requirement `Option<Near<Ping<i32le>, i32le>>: Pun`
+  --> tests/compile-fail-nearest/generic_cycle.rs:21:11
+   |
+21 |   let _ = puns::nearest::view::<Ping<i32le>>(region.as_bytes().unwrap());
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: required for `Pong<i32le>` to implement `Pun`
+  --> tests/compile-fail-nearest/generic_cycle.rs:15:8
+   |
+14 | #[derive(Pun)]
+   |          --- type parameter would need to implement `Pun`
+15 | struct Pong<O: Order> {
+   |        ^^^^^^^^^^^^^^
+   = note: 2 redundant requirements hidden
+   = note: required for `Ping<i32le>` to implement `Pun`
+note: required by a bound in `puns::nearest::view`
+  --> src/nearest.rs
+   |
+   | pub fn view<T: Flat + Pun>(bytes: &[u8]) -> Result<&T, Error> {
+   |                       ^^^ required by this bound in `view`

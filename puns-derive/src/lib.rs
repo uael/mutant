@@ -30,7 +30,12 @@ use syn::{
 ///   refused. It is read by reference, but in a packed struct, where it is copied;
 /// - `#[pun(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
 ///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
-/// - `#[pun(crate = path)]`: path of the `puns` crate.
+/// - `#[pun(crate = path)]`: path of the `puns` crate;
+/// - `#[pun(bound(T: Trait, ..))]`, also of an enum with fields: what the implementation of `Pun`
+///   is bounded by, on top of the bounds of the type, instead of what the derive finds (the type
+///   of each field that depends on a parameter is `Pun`, unless it names the type itself). For
+///   generic types that hold each other behind pointers, whose bounds would be found in a
+///   circle: `#[pun(bound())]` when the bounds of the type are enough.
 ///
 /// The byte order of a field is the one of its type: `u32be`, `i16le`, `f64be`... of
 /// `puns::num`. A byte order that a value tells (ELF, TIFF) is a choice between two types, which
@@ -366,6 +371,8 @@ struct Options {
   valid: Option<Punctuated<Expr, Token![,]>>,
   len: Option<Expr>,
   regions: Option<Punctuated<Region, Token![,]>>,
+  /// The bounds of the implementation, instead of the ones that the derive finds.
+  bounds: Option<Punctuated<syn::WherePredicate, Token![,]>>,
 }
 
 /// The options of `attrs`, which are those of `place`: only the options in `allowed` mean
@@ -379,7 +386,7 @@ fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<O
         && ALL_OPTIONS.contains(&name.as_str())
       {
         let of = match name.as_str() {
-          "crate" => "the type",
+          "crate" | "bound" => "the type",
           "size" | "assert" | "tag" | "get" => "a struct",
           "valid" => "a field",
           _ => "the last field of a struct",
@@ -392,6 +399,11 @@ fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<O
         } else {
           quote!(crate)
         });
+      } else if meta.path.is_ident("bound") {
+        let content;
+        syn::parenthesized!(content in meta.input);
+        let bounds = Punctuated::<syn::WherePredicate, Token![,]>::parse_terminated(&content)?;
+        options.bounds.get_or_insert_default().extend(bounds);
       } else if meta.path.is_ident("size") {
         options.size = Some(meta.value()?.parse()?);
       } else if meta.path.is_ident("len") {
@@ -426,7 +438,8 @@ fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<O
 }
 
 /// Every option of `#[pun(..)]`.
-const ALL_OPTIONS: [&str; 8] = ["crate", "size", "len", "assert", "tag", "get", "valid", "regions"];
+const ALL_OPTIONS: [&str; 9] =
+  ["crate", "bound", "size", "len", "assert", "tag", "get", "valid", "regions"];
 
 // -------------------------------------------------------------------------------------------------
 // Expressions
@@ -1441,7 +1454,7 @@ fn bound(generics: &mut syn::Generics, ty: &Type, root: &TokenStream) {
 fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   let options =
-    parse_options(&input.attrs, "a struct", &["crate", "size", "assert", "tag", "get"])?;
+    parse_options(&input.attrs, "a struct", &["crate", "bound", "size", "assert", "tag", "get"])?;
   let root = options.root.clone().unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
@@ -1495,13 +1508,16 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let sized = !(repr.c || repr.transparent);
   let mut generics = input.generics.clone();
   for field in &fields {
-    if needs_bound(field.ty, input) {
+    if options.bounds.is_none() && needs_bound(field.ty, input) {
       bound(&mut generics, field.ty, &root);
     }
     // What a region is read as.
     for ty in field.options.regions.iter().flatten().filter_map(|region| region.ty.as_ref()) {
       bound(&mut generics, ty, &root);
     }
+  }
+  if let Some(bounds) = &options.bounds {
+    generics.make_where_clause().predicates.extend(bounds.iter().cloned());
   }
   if sized {
     generics.make_where_clause().predicates.push(parse_quote!(#this: ::core::marker::Sized));
@@ -1759,7 +1775,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 // Enums
 
 fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
-  let options = parse_options(&input.attrs, "an enum", &["crate"])?;
+  let options = parse_options(&input.attrs, "an enum", &["crate", "bound"])?;
   let root = options.root.unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -1884,10 +1900,14 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
   let mut generics = input.generics.clone();
+  let bounds = parse_options(&input.attrs, "an enum", &["crate", "bound"])?.bounds;
   for field in data.variants.iter().flat_map(|variant| &variant.fields) {
-    if needs_bound(&field.ty, input) {
+    if bounds.is_none() && needs_bound(&field.ty, input) {
       bound(&mut generics, &field.ty, root);
     }
+  }
+  if let Some(bounds) = bounds {
+    generics.make_where_clause().predicates.extend(bounds);
   }
   let where_clause = &generics.where_clause;
 

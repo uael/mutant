@@ -87,6 +87,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # A target without `std`: nothing may need it.
       - run: cargo build -p puns --target thumbv7em-none-eabihf
+      # And with the feature `nearest`, which needs an allocator but no `std`.
+      - run: cargo build -p puns --features nearest --target thumbv7em-none-eabihf
 
   fmt:
     name: Format
