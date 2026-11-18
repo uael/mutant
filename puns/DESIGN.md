@@ -201,6 +201,9 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
+| `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways             |
+| `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`: 13      |
+| `u8 -> Option<Choice>` (a union: `bool`, `u8in`)   | one `cmp cl, 4`: 7                         |
 | `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 233 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
