@@ -110,9 +110,10 @@ pub fn require(off: usize, what: &'static str, holds: Valid) -> Valid {
   holds
 }
 
-/// What `holds` is, as one requirement (`off`, `what`) whatever it requires within: the requirements
-/// that it records are not, as they are not requirements of the value on their own (the fields of
-/// a union, of which one must be valid).
+/// What `holds` is, as one requirement (`off`, `what`), whatever it requires within.
+///
+/// The requirements that it records are not recorded, as they are not requirements of the value
+/// on their own (the fields of a union, of which one must be valid).
 ///
 /// # Errors
 /// What `holds` returns, if it is [`Uninit`].

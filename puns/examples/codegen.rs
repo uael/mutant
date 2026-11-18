@@ -367,7 +367,7 @@ pub struct Datagram {
 
 // The rules of a packet of a protocol are those of any packet: proven by the same rules.
 #[unsafe(no_mangle)]
-pub fn any_packet(packet: &Packet<Datagram>) -> &Packet {
+pub const fn any_packet(packet: &Packet<Datagram>) -> &Packet {
   pun_ref(packet)
 }
 
