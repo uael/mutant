@@ -8,7 +8,7 @@ description = "Model check of the analysis of puns against an independent oracle
 
 [dependencies]
 puns = { path = "../puns", features = ["verdict"] }
-nearest = { version = "0.7.1", optional = true, default-features = false, features = ["alloc"] }
+nearest = { version = "=0.7.1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 fakecore = { path = "fakecore" }

@@ -23,7 +23,9 @@ nearest = ["dep:nearest"]
 
 [dependencies]
 puns-derive = { version = "=0.1.0", path = "../puns-derive" }
-nearest = { version = "0.7.1", optional = true, default-features = false, features = ["alloc"] }
+# This very release: the loaders of `puns::nearest` state again the byte format of a region and
+# use hidden items of `nearest` (see `DESIGN.md`), which another release may change.
+nearest = { version = "=0.7.1", optional = true, default-features = false, features = ["alloc"] }
 
 [package.metadata.docs.rs]
 features = ["nearest"]
