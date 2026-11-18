@@ -2751,14 +2751,29 @@ pub struct Crc {
   /// `tables[k][b]`: the register after the byte `b` and `k` zero bytes, from a register of
   /// zeros: in its low bits if reflected, else in its high bits. Sixteen bytes are then sixteen
   /// lookups that do not wait for each other (slicing by 16), rather than a chain of sixteen.
-  tables: [[u64; 256]; 16],
+  tables: Tables,
+}
+
+/// The tables of a [`Crc`]: of `u32`s for a CRC of at most 32 bits (16 KiB, half of what the
+/// cache holds of them otherwise), else of `u64`s.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[expect(
+  clippy::large_enum_variant,
+  reason = "a `Crc` is a constant of 32 KiB, as it was with tables of `u64`s only: nothing to box"
+)]
+enum Tables {
+  /// The register in the low bits of a `u32` if reflected, else in its high bits.
+  Narrow([[u32; 256]; 16]),
+  /// The register in the low bits of a `u64` if reflected, else in its high bits.
+  Wide([[u64; 256]; 16]),
 }
 
 impl Crc {
   /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
   pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
 
-  /// Its tables are 32 KiB: a `Crc` is meant to be a constant, made in const evaluation.
+  /// Its tables are 32 KiB (16 KiB of them are used for a CRC of up to 32 bits): a `Crc` is
+  /// meant to be a constant, made in const evaluation.
   ///
   /// # Panics
   /// If `width` is not 1 to 64, or a parameter has more bits than that.
@@ -2802,6 +2817,21 @@ impl Crc {
       }
       k += 1;
     }
+    let tables = if width > 32 {
+      Tables::Wide(tables)
+    } else {
+      // The register of the `u64`s, in a `u32`: its other bits are zeros.
+      let (mut narrow, mut k) = ([[0; 256]; 16], 0);
+      while k < 16 {
+        let mut i = 0;
+        while i < 256 {
+          narrow[k][i] = if reflect { tables[k][i] as u32 } else { (tables[k][i] >> 32) as u32 };
+          i += 1;
+        }
+        k += 1;
+      }
+      Tables::Narrow(narrow)
+    };
     Self { width, poly, init, reflect, xorout, tables }
   }
 
@@ -2840,9 +2870,74 @@ impl Crc {
 
   /// The register after `bytes`.
   #[inline]
-  const fn update(&self, mut register: u64, bytes: &[u8]) -> u64 {
+  const fn update(&self, register: u64, bytes: &[u8]) -> u64 {
+    match &self.tables {
+      // In a `u32`: the low bits of the register if reflected, else its high bits.
+      Tables::Narrow(t) => {
+        let narrow = if self.reflect { register as u32 } else { (register >> 32) as u32 };
+        let narrow = Self::update_narrow(t, self.reflect, narrow, bytes);
+        if self.reflect { narrow as u64 } else { (narrow as u64) << 32 }
+      }
+      Tables::Wide(t) => Self::update_wide(t, self.reflect, register, bytes),
+    }
+  }
+
+  /// [`Crc::update`] with tables of `u32`s: as the CRC-32 of Ethernet ([`crc32`]).
+  #[inline]
+  const fn update_narrow(
+    t: &[[u32; 256]; 16],
+    reflect: bool,
+    mut register: u32,
+    bytes: &[u8],
+  ) -> u32 {
     let (blocks, rest) = bytes.as_chunks::<16>();
-    let t = &self.tables;
+    let mut i = 0;
+    while i < blocks.len() {
+      let b = &blocks[i];
+      // The register is the first 4 bytes of a block: what it holds after them, and after the 12
+      // that follow, is a lookup for each byte.
+      let head = [b[0], b[1], b[2], b[3]];
+      let x = register ^ if reflect { u32::from_le_bytes(head) } else { u32::from_be_bytes(head) };
+      let x = if reflect { x.to_le_bytes() } else { x.to_be_bytes() };
+      register = t[15][x[0] as usize]
+        ^ t[14][x[1] as usize]
+        ^ t[13][x[2] as usize]
+        ^ t[12][x[3] as usize]
+        ^ t[11][b[4] as usize]
+        ^ t[10][b[5] as usize]
+        ^ t[9][b[6] as usize]
+        ^ t[8][b[7] as usize]
+        ^ t[7][b[8] as usize]
+        ^ t[6][b[9] as usize]
+        ^ t[5][b[10] as usize]
+        ^ t[4][b[11] as usize]
+        ^ t[3][b[12] as usize]
+        ^ t[2][b[13] as usize]
+        ^ t[1][b[14] as usize]
+        ^ t[0][b[15] as usize];
+      i += 1;
+    }
+    let mut i = 0;
+    while i < rest.len() {
+      register = if reflect {
+        t[0][((register ^ rest[i] as u32) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        t[0][((register >> 24) ^ rest[i] as u32) as usize] ^ (register << 8)
+      };
+      i += 1;
+    }
+    register
+  }
+
+  /// [`Crc::update`] with tables of `u64`s.
+  #[inline]
+  const fn update_wide(
+    t: &[[u64; 256]; 16],
+    reflect: bool,
+    mut register: u64,
+    bytes: &[u8],
+  ) -> u64 {
+    let (blocks, rest) = bytes.as_chunks::<16>();
     let mut i = 0;
     while i < blocks.len() {
       let b = &blocks[i];
@@ -2850,9 +2945,8 @@ impl Crc {
       // are not those of the CRC are zeros): what it holds after them, and after the 8 bytes
       // that follow, is a lookup for each byte.
       let head = [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]];
-      let x =
-        register ^ if self.reflect { u64::from_le_bytes(head) } else { u64::from_be_bytes(head) };
-      let x = if self.reflect { x.to_le_bytes() } else { x.to_be_bytes() };
+      let x = register ^ if reflect { u64::from_le_bytes(head) } else { u64::from_be_bytes(head) };
+      let x = if reflect { x.to_le_bytes() } else { x.to_be_bytes() };
       register = t[15][x[0] as usize]
         ^ t[14][x[1] as usize]
         ^ t[13][x[2] as usize]
@@ -2873,7 +2967,7 @@ impl Crc {
     }
     let mut i = 0;
     while i < rest.len() {
-      register = if self.reflect {
+      register = if reflect {
         t[0][((register ^ rest[i] as u64) & 0xff) as usize] ^ (register >> 8)
       } else {
         t[0][((register >> 56) ^ rest[i] as u64) as usize] ^ (register << 8)

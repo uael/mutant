@@ -1790,19 +1790,26 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
         let Some(value) = (unsafe { validate::length::<D>(addr, n) }) else {
           return Err(Error::Validity);
         };
-        // From the size of the struct that has the rule, down to a number of elements.
-        let before = (head - rule.base) as u128;
+        // From the size of the struct that has the rule, down to a number of elements: in a
+        // `usize` (where the value is a field, the optimizer knows that it fits one), else a
+        // size or a length that no bytes have.
+        let before = head - rule.base;
+        if value > usize::MAX as u128 {
+          let whole = rule.elements || (value - before as u128).is_multiple_of(stride as u128);
+          return Err(if whole { Error::Size } else { Error::Validity });
+        }
+        let value = value as usize;
         let len = match () {
           () if rule.elements => value,
-          () if value >= before && (value - before).is_multiple_of(stride as u128) => {
-            (value - before) / stride as u128
+          () if value >= before && (value - before).is_multiple_of(stride) => {
+            (value - before) / stride
           }
           () => return Err(Error::Validity),
         };
-        if len > ((n - head) / stride) as u128 {
+        if len > (n - head) / stride {
           return Err(Error::Size);
         }
-        len as usize
+        len
       }
     };
     // With its trailing padding, if any.
