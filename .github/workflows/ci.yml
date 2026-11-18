@@ -119,6 +119,11 @@ jobs:
   miri:
     name: Miri (${{ matrix.name }})
     runs-on: ubuntu-latest
+    # Every `cargo` of the job is the nightly one: without this, the first one that is not
+    # asked for it (the one of the cache action) installs the toolchain of `rust-toolchain`,
+    # ten seconds for a compiler that the job does not use.
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-11-17
     strategy:
       fail-fast: false
       matrix:
