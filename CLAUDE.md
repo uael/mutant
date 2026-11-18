@@ -46,8 +46,14 @@ monomorphization: `cargo check` does not report them, `cargo build` does. The tr
 passing case (`tests/compile-pass/`) so that trybuild builds instead of checking.
 
 Every check that CI runs on a push must take at most a minute, build included (CI builds the crates
-of the workspace each time): check what matters, and time a check before adding one. What is
-exhaustive (the full model check, behind the `full` feature of `puns-model`) runs in
+of the workspace each time): check what matters, and time a check before adding one. The time that
+counts is the one of the job on GitHub, which this machine does not tell: about 15 seconds of each
+job go to the checkout and the toolchain before anything runs, its runners are slower and vary by a
+third from one run to the next, so aim at 45 seconds and read the times of the jobs after a change
+of the workflow (the first run after a change of a cache key has nothing cached). This is why `cargo
+test --all` is three jobs there (the tests, and the two halves of the sample of the model check),
+and why each Miri run is a job of its own, with the standard library that Miri builds in its cache.
+What is exhaustive (the full model check, behind the `full` feature of `puns-model`) runs in
 `.github/workflows/model.yml`, every night and on demand, with a check of the compiler (an optimized
 build refuses a wrong view behind pointers): run it when `rust-toolchain` changes. Under Miri, the
 model check runs a selection of pairs that reaches every unsafe path
