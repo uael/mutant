@@ -1,6 +1,6 @@
 [package]
 name = "puns"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version = "1.100"
 license = "Apache-2.0 OR MIT"
@@ -17,7 +17,7 @@ categories = ["encoding", "parsing", "no-std", "rust-patterns"]
 verdict = []
 
 [dependencies]
-puns-derive = { version = "=0.1.1", path = "../puns-derive" }
+puns-derive = { version = "=0.1.2", path = "../puns-derive" }
 
 [dev-dependencies]
 trybuild = "1"
