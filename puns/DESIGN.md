@@ -208,7 +208,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways             |
 | `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`: 13      |
 | `u8 -> Option<Choice>` (a union: `bool`, `u8in`)   | one `cmp cl, 4`: 7                         |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 254 instructions, no call                  |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 236 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -221,9 +221,11 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 A count is not a time. The slice of `bool`s was a loop of one `cmp` per byte, 13 instructions,
 which stopped at the first invalid one; it is now 46 and takes a fraction of the time on a long
 slice (`benches/checks.rs` times the checks next to the same ones written by hand). The IPv6
-packet was 233 instructions when the operations of its walk were applied as they are now and the
-others by an unrolled evaluator: the same arithmetic, which LLVM allocates registers to and
-selects instructions for a little otherwise (a step of the walk is two instructions longer).
+packet walks with a state of two registers ("Walks", section 4): with the state it had before
+(the kind in the low 8 bits), it was 233 instructions when the operations of its walk were applied
+as they are now and the others by an unrolled evaluator, and 254 with every operation applied so:
+the same arithmetic, which LLVM allocates registers to and selects instructions for a little
+otherwise (a step of the walk was two instructions longer).
 
 `from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`,
 where the optimizer knows that a field fits one (it was 29 instructions for `Udp`, 43 for
@@ -287,6 +289,16 @@ what follows it and how long it is; at the end of a string, in a `size`. A walk 
 in another walk, several in an expression. A walk takes at most a step for each bit of the value, plus
 128 (the bits of a `u128`), so that it ends: a walk over the bits of a field fits, whatever the
 size of the value.
+
+**Walks.** The state of a walk is one `u128`: two numbers that it carries are packed in it. On a
+64-bit target a `u128` is two registers, so the place to pack them is bit 64: `(kind << 64) +
+start`, read as `at >> 64` and `at & 0xffff_ffff_ffff_ffff`, is each a register, where `kind +
+(start << 8)` needs a `shrd` to read `start` and a merge to write it back, on the path from one
+step to the next. The IPv6 packet of the examples walked so: behind 12 extension headers it took
+1.3 times the instructions of the same loop by hand, but 2.2 times the time (on the code before
+these changes as well); packed at bit 64, its loop is the loop by hand (21 instructions against
+about 20, fewer in all: 310 against 322), but for the carries of the low half into the high one
+that a `u128` has (`adc`), which keep `start + 8 + length * 8` from being one `lea`.
 
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
 the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
@@ -959,6 +971,16 @@ as something else, a check that would be behind a pointer.
   does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check
   counts what the source implies and the library checks all the same as nothing: it is not
   wrong.
+- **A view enum that tells its variants apart**: `from_bytes` of a view enum tries its variants
+  in order, each a check of its own. A VLAN frame repeats the check of the size and the EtherType
+  of four variants before its own (`benches/checks.rs`: 53 instructions against 45 by hand); bytes
+  that fail a rule that two variants share compute it for each (an IPv4 packet of UDP whose
+  checksum is wrong: the checksum of `Frame<Ipv4<Udp>>`, then the same of `Frame<Ipv4>`, about
+  twice the time by hand). Both are avoidable: the variants could be told apart first by what is
+  constant in each (the EtherType of a tag), and, rules being proven by the same rules, a rule of
+  one variant that fails ends a later variant that has the same rule over the same extent at the
+  same place, which the validation would have to report (which rule failed) and the derive to
+  know at compile time (which variants share it).
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
 - **Precise checks of an enum made from something else**: when only some of its variants are
