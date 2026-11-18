@@ -28,3 +28,7 @@ jobs:
       - run: cargo test --profile model -p puns-model --features full
       # The tests that CI does not build on a push.
       - run: cargo clippy -p puns-model --tests --features full -- -D warnings
+      # The same for self-relative pointers (feature `nearest`): every pair of the types of
+      # `puns_model::pointers`, every value of every byte of their images given to the loaders.
+      - run: cargo test --profile model -p puns-model --features nearest,full --test pointers_full
+      - run: cargo clippy -p puns-model --tests --features nearest,full -- -D warnings

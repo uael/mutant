@@ -2,6 +2,8 @@
 //! compared with the check of `nearest` on valid images and on corruptions of them), values of a
 //! region read as other types, rules checked when a region is loaded.
 
+#![cfg(feature = "nearest")]
+
 use nearest::{Edit, Error, Flat, Near, Offset, Pending, Region, flat};
 use puns::{
   Pun,

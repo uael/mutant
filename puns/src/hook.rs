@@ -64,8 +64,37 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
 /// itself follows them through instances of functions, without a bound: `fuel` must be the
 /// number of pairs of types that can be met for the answer to be the same.
 #[must_use]
-pub const fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
+pub const fn views<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
   ok::<S, D>(Need::VIEW) && crate::deep::local::<S, D>(fuel).is_none()
+}
+
+/// Whatever [`try_view_ref`](crate::try_view_ref) compiles for `S` and `D`, as [`views`].
+#[must_use]
+pub const fn tries_view<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
+  ok::<S, D>(Need::TRY_VIEW) && crate::deep::local::<S, D>(fuel).is_none()
+}
+
+/// [`view_ref`](crate::view_ref), if it compiles (see [`views`] for `FUEL`).
+#[must_use]
+pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(value: &S) -> Option<&D> {
+  if const { !views::<S, D>(FUEL) } {
+    return None;
+  }
+  // SAFETY: as in `view_ref`, which would compile: `FUEL` follows the pointers as far as the
+  // types of the model go.
+  Some(unsafe { &*Plan::<S, D>::cast(value) })
+}
+
+/// [`try_view_ref`](crate::try_view_ref), if it compiles (see [`views`] for `FUEL`).
+#[must_use]
+pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
+  value: &S,
+) -> Option<Result<&D, Error>> {
+  if const { !tries_view::<S, D>(FUEL) } {
+    return None;
+  }
+  // SAFETY: as in `try_view_ref`, which would compile.
+  Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
 }
 
 /// What each function that takes a part of a value would do with a pun from `S` to `D`:
