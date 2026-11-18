@@ -176,7 +176,7 @@ assert_eq!((size_of_val(packet), rest), (33, &[0xaa, 0xbb][..]));
 | bit fields                                              | `get(header_length: usize = ..)`             |
 | a frame is one thing or another                         | an enum of references                        |
 
-[`puns/examples/ethernet.rs`](puns/examples/ethernet.rs) is the complete version: the checksums
+[`puns/examples/ethernet.rs`][ethernet] is the complete version: the checksums
 of UDP and TCP, IPv6 behind any chain of extension headers, VLAN tags, the frame check sequence.
 
 ## What the derive is told
@@ -330,8 +330,8 @@ A refusal is an error of the monomorphization of a generic function: **`cargo bu
 
 What is proven never reaches code generation, and which checks remain is decided at compile time,
 for each pair of types. On x86-64, `opt-level = 3` (the functions are in
-[`puns/examples/codegen.rs`](puns/examples/codegen.rs), the whole table is in
-[`puns/DESIGN.md`](puns/DESIGN.md)):
+[`puns/examples/codegen.rs`][codegen], the whole table is in
+[`puns/DESIGN.md`][design]):
 
 | Function                                           | Machine code                         |
 |----------------------------------------------------|--------------------------------------|
@@ -343,7 +343,7 @@ for each pair of types. On x86-64, `opt-level = 3` (the functions are in
 | `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call    |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, without a branch |
 
-[`puns/benches/checks.rs`](puns/benches/checks.rs) times what is checked at run time next to the
+[`puns/benches/checks.rs`][checks] times what is checked at run time next to the
 same checks written by hand.
 
 ## Next to `transmute`, `bytemuck` and `zerocopy`
@@ -383,7 +383,7 @@ takes build time: a fraction of a second for each new pair of types.
   `offset_of!` that swaps fields: what it generates does not trust a name that safe code can
   redefine.
 
-[`puns/DESIGN.md`](puns/DESIGN.md) tells how it works, what its soundness rests on, and what is
+[`puns/DESIGN.md`][design] tells how it works, what its soundness rests on, and what is
 not done yet.
 
 ## Self-relative pointers
@@ -396,7 +396,7 @@ version of its type, for no instruction.
 
 ## Examples
 
-Each file of [`puns/examples/`](puns/examples) declares formats with the derive only (no `impl`,
+Each file of [`puns/examples/`][examples] declares formats with the derive only (no `impl`,
 no `unsafe`), reads them from bytes, and checks that corrupted ones are rejected. Each tells
 what is specific to its formats and the option that tells it, and what is not covered and why.
 They run as tests (`cargo test --test ethernet`), or one by one (`cargo run --example ethernet`).
@@ -426,9 +426,15 @@ Rust 1.100 or later. `puns` is `no_std` and depends on nothing but its derive. B
 `cargo build` to see refusals: `cargo check` does not evaluate what decides them.
 
 `0.1`: the API may still change before `1.0`. "Not done yet", in
-[`puns/DESIGN.md`](puns/DESIGN.md), lists what is missing.
+[`puns/DESIGN.md`][design], lists what is missing.
 
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option.
+
+[ethernet]: https://github.com/uael/puns/blob/main/puns/examples/ethernet.rs
+[codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
+[checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
+[examples]: https://github.com/uael/puns/tree/main/puns/examples
+[design]: https://github.com/uael/puns/blob/main/puns/DESIGN.md
