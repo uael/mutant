@@ -17,7 +17,7 @@ pub trait Checks {
 }
 
 /// Everything.
-struct All;
+pub struct All;
 
 impl Checks for All {
   const MARKS: Marks = Marks::ALL;

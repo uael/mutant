@@ -651,8 +651,62 @@ buffer, with `Near<T, O>` pointers) declares its pointers with `SelfRelative`, a
 one structure made of them, with a byte format of its own, which `puns` does not state again (a
 scheme is a name for it). One validator of values, the one of `puns`, serves both: what a field
 may be, enums, rules, `try_view_ref`; what is a region's (where its targets are, its blocks, its
-walk of an image) is `nearest`'s. Until that dependency is in place, the version of `puns` that
-had a feature `nearest` (and the loaders, the IR example, the corpus tests) is at `e5875f5`.
+walk of an image) is `nearest`'s. The version of `puns` that had a feature `nearest` (its
+loaders, the IR example, the corpus tests) is at `e5875f5`.
+
+**The validator of a value in a buffer (`visit.rs`).** `validate_in::<T, V>(bytes, at, visit)`
+validates the `T` at the position `at` of `bytes`, everything of it but what its pointers aim
+at, and hands each of its pointers to the visitor, `V: Visit`, with its type and its position:
+`visit.pointer::<P>(at)`. The visitor is the crate that has the pointers: it reads the
+description of `P` (`Layout::as_pointer`, the getters of `Pointer`), finds the target as its
+scheme says, places it as its buffer wants, and validates it in turn (`validate_in::<Pointee<P>,
+_>`, `validate_elems_in` for a sequence) or queues it. `validate_elems_in` does `count` values
+one after the other. Both are safe functions, for any bytes and any position: they read nothing
+out of `bytes` (`get`, checked arithmetic, then reads at positions in bounds), do not panic, and
+recurse over types only, never through pointers. Their contract, which `unsafe` code of another
+crate relies on (in their documentation, word for word): after `Ok(())`,
+
+1. `at + size_of::<T>()` is at most `bytes.len()` (for `validate_elems_in`, `at + count *
+   size_of::<T>()`, which does not overflow);
+2. those bytes are a valid `T` as its layout says, provided that every pointer handed over is a
+   valid pointer of its type (S1 to S7): every scalar is one of its values (`valid(..)` included),
+   every enum has the tag (or the niche) of a variant whose fields are valid, every union is one
+   of its fields, and every rule of every struct holds, evaluated on the bytes of that struct;
+3. every pointer of the value, where it is, was handed over once, and the visitor returned `Ok`;
+   bytes of a pointer that are all zero are no pointer if it may be null (not handed over), not a
+   value if its type has none of zeros (its offset is a `NonZero`, `Pointer::nonzero`), and a
+   pointer of offset zero otherwise (handed over: its scheme says what it aims at).
+
+It says nothing of what the pointers aim at (in the bytes or not, shared or not: the scheme is
+the visitor's business), nor of addresses: positions only. A `&T` at `bytes.as_ptr() + at` must
+be aligned for `T`, which is the caller's duty (a buffer at an aligned address, `at` a multiple of
+the alignment). The bytes are initialized (a `&[u8]`), so `MaybeUninit` and padding are what they
+are; a `MaybeUninit` of a pointer is nothing, and nothing is handed over of it. A union that holds
+a pointer does not compile there (which field it is cannot be told, so neither can the pointer).
+`T` is `Sized`: a value of a size that its bytes tell is not one that a buffer holds by value.
+`Invalid { at }` is where the bytes stop being a value (the scalar, the tag, the union, the struct
+whose rule fails, the value that is not all there), `#[non_exhaustive]`, so that it may one day
+say why.
+
+What holds no pointer is validated by `validate`, the code of `try_pun_ref`, at the same speed,
+and its answer is the verdict: only where it fails is it walked again, by the positional walk
+(`value`, `fields`, `enumeration`), to tell where, and if the walk finds nothing the error is at
+the value itself (less precise, never wrong); likewise for the elements of `validate_elems_in`
+(`the_verdict_is_the_one_of_try_pun_ref` holds the two to the same answers). The walk goes by the
+lists of types that the derive writes (`Fields`, `Variants`, `Elem`, `Pointee`), which are
+checked against the layout for every type it goes through (`listed`: every field by its
+declaration index, offset, layout and type; every variant by its tag, its tags of a niche and its
+fields; the element; the target of a pointer), as `deep::listed` does for `view_ref`: a list that
+left a field out would leave it unchecked (compile-fail `validate_lists_not_the_layout`). A struct that holds pointers is
+walked field by field, so that its pointers are handed over in order with the checks of the rest
+(a visitor whose queue is full stops the walk where it is).
+
+The model check holds it to the oracle of pointers (below): with a visitor that follows the
+pointers of the tests through their buffer, `validate_in` accepts exactly what the oracle accepts,
+on the corpus and on every copy with one byte changed, padding and gaps included
+(`check_validate`; a sample on a push, every type and every mask of one bit with `full`).
+`tests/validate_in.rs` gives each kind its answer, the positions of errors, and random bytes,
+positions and counts (some that overflow) under Miri on every target of CI.
 
 ### 10. Enums without `repr` (`discover.rs`)
 
@@ -749,6 +803,21 @@ it as to any pointer. A crate that declares a pointer gets this from the macro a
 show it with an offset whose zero is a niche (`Nz32le`), `Option<One<T, Nz32le>>` read as `Opt<T,
 i32le>` and back, through values of a buffer.
 
+### 11. What `usize` is assumed to be
+
+`puns` builds for every width of `usize` that Rust supports, 16 bits included (`msp430-none-elf`,
+built by CI with `-Zbuild-std=core`; Miri cannot run a 16-bit target, so what holds there is
+asserted). What the code assumes of `usize`, and what holds each:
+
+| Assumption (where) | Held by |
+|---|---|
+| A value is at most `isize::MAX` bytes, so a size plus a little does not overflow (`walk_limit`) | Rust; `const` assertion next to `walk_limit` |
+| An offset, a length or a range read by a rule is compared as a `u128` before it is made a `usize` (`Machine::apply`: `At`, `Varint`, checksums) | the code; on every target the comparison is with the size of the value |
+| A position plus a size in the bytes given to `validate_in` and `validate_elems_in` | `checked_mul`, `get`: the arithmetic of the bounds is checked, so is any position in them |
+| The tables of a `Crc` fit a value (`Crc::new`, `Crc::update`) | `CRC_TABLES`: 16 tables (32 KiB), 1 (2 KiB) where `usize` is 16 bits; `const` assertion; the CRCs are the same, the tests of `Crc` compare with references |
+| `sum16` folds before a carry could leave its `u64` (`sum16_inline`) | `SUM16_FOLD`: 2^20 blocks, or every block where `usize` cannot count that far; `const` assertion |
+| The 16 KiB table of `crc32` fits a value | it does on every width (`isize::MAX` is 32 KiB minus 1 on 16 bits) |
+
 ## Model check
 
 `puns-model/` compares every verdict of the analysis with oracles that do not use it,
@@ -815,8 +884,11 @@ as something else, a check that would be behind a pointer.
 - **Checks behind pointers**: `try_view_ref` checks the value it is given, and asks of what that
   value points to what `view_ref` does. Checking behind pointers is a walk of the buffer with the
   marks of each pair of types, which only the crate that has the pointers can make (it knows the
-  way to the targets): `puns` would give it the check of one value at a time, with the marks
-  (see `validate`), which is not public yet.
+  way to the targets). `validate_in` is the walk for one type (everything checked); the pair
+  version would be a function of its own, `validate_pair_in::<S, D, V>`, which checks what the
+  marks of the analysis of `S` as `D` leave, and hands over pairs of pointers through a method
+  added to `Visit` with a default body (`pointer_pair::<PS, PD>(at)`, which by default validates
+  the target of `PD` alone): adding either breaks nothing of `validate_in`.
 - **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
   part, while the operations of a rule tell which fields and bytes it reads (a rule over other
   fields only could be allowed), and any enum only partly covered, while an enum all of whose

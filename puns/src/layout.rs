@@ -518,6 +518,43 @@ impl Pointer {
     self.nullable
   }
 
+  /// The scheme: the name that the declaring crate gave the way to the target.
+  #[must_use]
+  pub const fn scheme(&self) -> &'static str {
+    self.scheme
+  }
+
+  /// What the pointer aims at: one value, a sequence (and the alignment that the declarer
+  /// guarantees of its first element), or text.
+  #[must_use]
+  pub const fn aim(&self) -> Aim {
+    self.aim
+  }
+
+  /// The size of the offset in bytes, which is the size of the pointer.
+  #[must_use]
+  pub const fn width(&self) -> usize {
+    self.width
+  }
+
+  /// The byte order of the offset.
+  #[must_use]
+  pub const fn endian(&self) -> Endian {
+    self.endian
+  }
+
+  /// The size of the target type (of an element of a sequence; 0 for text).
+  #[must_use]
+  pub const fn size(&self) -> usize {
+    self.size
+  }
+
+  /// The alignment of the target type (of an element of a sequence; 1 for text).
+  #[must_use]
+  pub const fn align(&self) -> usize {
+    self.align
+  }
+
   /// Whatever the target of the pointer `self` can be read through the pointer `to`, as far as
   /// the pointers themselves go (what the targets hold is related through the types, see
   /// `deep.rs`): `None` if never, `Some(false)` if only when `self` is not null, which is then to
@@ -1257,6 +1294,49 @@ impl Layout {
       i += 1;
     }
     Self::pointer::<Option<P>, T>(pointer.or_null())
+  }
+
+  /// The pointer that a value of the layout is, if it is a self-relative pointer (see
+  /// [`Pointer`]); `None` for anything else, a struct that holds one included.
+  #[must_use]
+  pub const fn as_pointer(&self) -> Option<Pointer> {
+    match self.kind {
+      Kind::Pointer(pointer) => Some(pointer),
+      _ => None,
+    }
+  }
+
+  /// Whatever validation has nothing to check of a value of the layout: every bit pattern of its
+  /// bytes (initialized) is a value, it holds no pointer, no enum and no rule. A value of it is
+  /// made of any initialized bytes; [`validate_in`](crate::validate_in) reads nothing of it.
+  #[must_use]
+  pub const fn is_free(&self) -> bool {
+    self.leaves == 0
+  }
+
+  /// Whatever a value of the layout is all its bytes: it holds no padding (no byte that may be
+  /// uninitialized), and no pointer. Such a value can be copied as bytes, and its bytes are
+  /// initialized. An enum with fields is never one (which bytes are padding depends on its tag),
+  /// nor a slice or a pattern (unsized).
+  #[must_use]
+  pub const fn is_plain(&self) -> bool {
+    match self.kind {
+      Kind::Scalar(spec) => !spec.may_be_uninit(),
+      Kind::Array(elem, _) => elem.is_plain(),
+      Kind::Struct(fields, _) => {
+        let (mut i, mut covered) = (0, 0);
+        while i < fields.len() {
+          // Sorted by offset: a field after the bytes covered so far leaves a hole.
+          if fields[i].offset != covered || !fields[i].layout.is_plain() {
+            return false;
+          }
+          covered += fields[i].layout.size;
+          i += 1;
+        }
+        !self.unsized_ && covered == self.size
+      }
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
+    }
   }
 
   /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting
@@ -2744,8 +2824,17 @@ pub struct Crc {
   /// `tables[k][b]`: the register after the byte `b` and `k` zero bytes, from a register of
   /// zeros: in its low bits if reflected, else in its high bits. Sixteen bytes are then sixteen
   /// lookups that do not wait for each other (slicing by 16), rather than a chain of sixteen.
-  tables: [[u64; 256]; 16],
+  /// One table only where 32 KiB do not fit (see [`CRC_TABLES`]).
+  tables: [[u64; 256]; CRC_TABLES],
 }
+
+/// The number of tables of a [`Crc`]: 16 (32 KiB, sixteen bytes at a time), but 1 (2 KiB, a byte
+/// at a time) on a 16-bit target, where no value is larger than `isize::MAX` (32 KiB minus 1)
+/// bytes. The CRC is the same either way.
+pub(crate) const CRC_TABLES: usize = if cfg!(target_pointer_width = "16") { 1 } else { 16 };
+
+// The tables of a `Crc` are a value, which is at most `isize::MAX` bytes.
+const _: () = assert!(size_of::<[[u64; 256]; CRC_TABLES]>() <= isize::MAX as usize);
 
 impl Crc {
   /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
@@ -2764,7 +2853,7 @@ impl Crc {
       poly <= mask && init <= mask && xorout <= mask,
       "a parameter has more bits than the CRC"
     );
-    let (mut tables, mut i) = ([[0; 256]; 16], 0);
+    let (mut tables, mut i) = ([[0; 256]; CRC_TABLES], 0);
     while i < 256 {
       let mut register = if reflect { i as u64 } else { (i as u64) << 56 };
       let mut bit = 0;
@@ -2782,7 +2871,7 @@ impl Crc {
     }
     // A zero byte more.
     let mut k = 1;
-    while k < 16 {
+    while k < CRC_TABLES {
       let mut i = 0;
       while i < 256 {
         let register = tables[k - 1][i];
@@ -2834,8 +2923,15 @@ impl Crc {
   /// The register after `bytes`.
   #[inline]
   const fn update(&self, mut register: u64, bytes: &[u8]) -> u64 {
-    let (blocks, rest) = bytes.as_chunks::<16>();
+    // With one table, every byte goes through the loop below.
+    let (blocks, rest): (&[[u8; 16]], &[u8]) =
+      if CRC_TABLES == 16 { bytes.as_chunks::<16>() } else { (&[], bytes) };
+    #[cfg(not(target_pointer_width = "16"))]
     let t = &self.tables;
+    // A slice: with one table, the indices of the sixteen are never reached (no block), which
+    // the compiler cannot tell of an array.
+    #[cfg(target_pointer_width = "16")]
+    let t: &[[u64; 256]] = &self.tables;
     let mut i = 0;
     while i < blocks.len() {
       let b = &blocks[i];
@@ -2874,6 +2970,29 @@ impl Crc {
       i += 1;
     }
     register
+  }
+
+  /// The CRC of `bytes` with the first table only, a byte at a time: what a target of one table
+  /// computes, for the tests.
+  #[cfg(test)]
+  pub(crate) fn bytewise(&self, bytes: &[u8]) -> u64 {
+    let mut register = if self.reflect {
+      self.init.reverse_bits() >> (64 - self.width)
+    } else {
+      self.init << (64 - self.width)
+    };
+    let t = &self.tables[0];
+    for &byte in bytes {
+      register = if self.reflect {
+        t[((register ^ u64::from(byte)) & 0xff) as usize] ^ (register >> 8)
+      } else {
+        t[((register >> 56) ^ u64::from(byte)) as usize] ^ (register << 8)
+      };
+    }
+    if !self.reflect {
+      register >>= 64 - self.width;
+    }
+    register ^ self.xorout
   }
 
   const fn equals(&self, other: &Crc) -> bool {
@@ -3534,6 +3653,9 @@ pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Opt
   unsafe { Machine::NEW.run(ops, base, size) }
 }
 
+// `walk_limit` adds 16 to the size of a value, at most `isize::MAX`: it does not overflow.
+const _: () = assert!(isize::MAX as usize <= usize::MAX - 16);
+
 /// So that a walk ends: a step for each bit of a value of `size` bytes, and for each bit of a
 /// `u128`. (`size` is at most `isize::MAX`: adding 16 does not overflow.)
 #[inline(always)]
@@ -3762,6 +3884,13 @@ pub const fn sum16(bytes: &[u8]) -> u16 {
   sum16_inline(bytes)
 }
 
+/// The blocks of 8 bytes that `sum16` adds before it folds: 2^20, or all of them where a `usize`
+/// does not count that far (a 16-bit target: at most 2^12 blocks, far from a lost carry).
+const SUM16_FOLD: usize = if usize::BITS > 20 { 1 << (20 % usize::BITS) } else { usize::MAX };
+
+// A block adds less than 2^33 to the sum: `SUM16_FOLD` of them never carry out of a `u64`.
+const _: () = assert!((SUM16_FOLD as u128) << 33 < 1 << 64);
+
 /// [`sum16`], inlined where a rule computes it.
 #[inline(always)]
 const fn sum16_inline(bytes: &[u8]) -> u16 {
@@ -3773,7 +3902,8 @@ const fn sum16_inline(bytes: &[u8]) -> u16 {
   let (mut blocks, rest) = bytes.as_chunks::<8>();
   let mut sum = 0u64;
   while !blocks.is_empty() {
-    let (now, later) = blocks.split_at(if blocks.len() > 1 << 20 { 1 << 20 } else { blocks.len() });
+    let (now, later) =
+      blocks.split_at(if blocks.len() > SUM16_FOLD { SUM16_FOLD } else { blocks.len() });
     let (mut wide, mut i) = (0u64, 0);
     while i < now.len() {
       let block = u64::from_ne_bytes(now[i]);
