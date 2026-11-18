@@ -121,6 +121,8 @@ mod discover;
 pub mod hook;
 pub mod layout;
 mod narrow;
+#[cfg(test)]
+mod narrow_tests;
 pub mod num;
 mod ptr;
 mod relative;
