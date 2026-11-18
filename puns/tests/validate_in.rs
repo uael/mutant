@@ -332,3 +332,48 @@ fn types_without_values() {
   // `Result<u8, Infallible>`: an `Ok` only.
   assert_eq!(ok::<Result<u8, Infallible>>(&[7], 0), Ok(()));
 }
+
+/// Bytes at an address aligned for anything here.
+#[repr(C, align(16))]
+struct Aligned([u8; 32]);
+
+/// For types without pointers, `validate_in` says what `try_pun_ref` says, on a value and on
+/// every copy of it with one byte changed (by every mask of one bit and all bits); and
+/// `validate_elems_in` of two what `try_pun_ref` to a slice of two says.
+#[test]
+fn the_verdict_is_the_one_of_try_pun_ref() {
+  /// From the bytes of a value of `T`.
+  fn agree<T: Pun>(value: &[u8]) {
+    let size = size_of::<T>();
+    assert_eq!(value.len(), size);
+    let mut buffer = Aligned([0; 32]);
+    buffer.0[..size].copy_from_slice(value);
+    buffer.0[size..2 * size].copy_from_slice(value);
+    let masks: &[u8] = if cfg!(miri) { &[0x01, 0xff] } else { &[1, 2, 4, 8, 16, 32, 64, 128, 0xff] };
+    for at in 0..2 * size {
+      for &mask in masks {
+        buffer.0[at] ^= mask;
+        let bytes = &buffer.0[..2 * size];
+        let mut record = Record::default();
+        let ours = puns::validate_in::<T, _>(bytes, 0, &mut record).is_ok();
+        assert_eq!(ours, puns::try_pun_ref::<[u8], T>(&bytes[..size]).is_ok(), "{at} {mask:#x}");
+        let ours = puns::validate_elems_in::<T, _>(bytes, 0, 2, &mut record).is_ok();
+        assert_eq!(ours, puns::try_pun_ref::<[u8], [T]>(bytes).is_ok(), "{at} {mask:#x}, two");
+        buffer.0[at] ^= mask;
+      }
+    }
+  }
+  agree::<bool>(&[1]);
+  agree::<char>(&('é' as u32).to_ne_bytes());
+  agree::<NonZero<u16>>(&258u16.to_ne_bytes());
+  agree::<Span>(&[1, 2, 1]);
+  agree::<Shape>(&[2, 3, 4]);
+  agree::<Shape>(&[1, 1, 0]);
+  agree::<Choice>(&[1]);
+  agree::<Option<bool>>(&[0]);
+  agree::<[NonZero<u16>; 3]>(&[1, 1, 1, 1, 1, 1]);
+  agree::<Result<u8, bool>>(puns::as_bytes(&Ok::<u8, bool>(7)));
+  agree::<Result<u8, bool>>(puns::as_bytes(&Err::<u8, bool>(true)));
+  agree::<u8in<1, 3>>(&[2]);
+  agree::<Option<NonZero<u32>>>(&9u32.to_ne_bytes());
+}

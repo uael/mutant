@@ -688,9 +688,16 @@ a pointer does not compile there (which field it is cannot be told, so neither c
 whose rule fails, the value that is not all there), `#[non_exhaustive]`, so that it may one day
 say why.
 
-What holds no pointer is validated by `validate`, the code of `try_pun_ref`, at the same speed;
-only where it fails is it walked again, by the positional walk (`value`, `fields`, `enumeration`),
-to tell where. The two read the same layout, in the same order. A struct that holds pointers is
+What holds no pointer is validated by `validate`, the code of `try_pun_ref`, at the same speed,
+and its answer is the verdict: only where it fails is it walked again, by the positional walk
+(`value`, `fields`, `enumeration`), to tell where, and if the walk finds nothing the error is at
+the value itself (less precise, never wrong); likewise for the elements of `validate_elems_in`
+(`the_verdict_is_the_one_of_try_pun_ref` holds the two to the same answers). The walk goes by the
+lists of types that the derive writes (`Fields`, `Variants`, `Elem`, `Pointee`), which are
+checked against the layout for every type it goes through (`listed`: every field by its
+declaration index, offset, layout and type; every variant by its tag, its tags of a niche and its
+fields; the element; the target of a pointer), as `deep::listed` does for `view_ref`: a list that
+left a field out would leave it unchecked (compile-fail `validate_lists_not_the_layout`). A struct that holds pointers is
 walked field by field, so that its pointers are handed over in order with the checks of the rest
 (a visitor whose queue is full stops the walk where it is).
 
