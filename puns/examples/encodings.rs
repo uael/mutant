@@ -23,17 +23,14 @@
 //! | a string whose length is in its head         | `size = (head & 0x1f) + 1` on a `str`          |
 //! | big-endian floats                            | `get(value: f64 = f64::from_bits(..))`         |
 //! | UTF-8 of a counted length                    | `len = length` on a `str`                      |
-//! | a C string: a NUL at its end, and only there | `assert(walk(0, ..) == .. - 1)`                |
+//! | a C string: a NUL at its end, and only there | `size = walk(0, ..) + 1`                       |
 //! | a name padded with NULs                      | a `walk` of an offset and a flag               |
 //! | an HTTP request line, a decimal number       | `assert(walk(..))`, `u128bec<..>` for a name   |
 //!
 //! What is not covered, and why:
 //!
-//! - DER: the length is in 1 byte, or in 1 to 4 more bytes. A `size` rule reads fields, not
-//!   `be(..)`, so a [`Der`] value is known when its extent is (as a whole message, or in another
-//!   one), and is not `from_head`ed from a stream; with `be` in `size` (planned), it is. Tags of more
-//!   than one byte (numbers above 30) are left out: they are base-128 integers, which would move
-//!   every offset after them. `OPTIONAL` elements and `CHOICE`s are a type each: a chain of
+//! - DER: tags of more than one byte (numbers above 30) are left out: they are base-128 integers
+//!   (`vlq`), which would move every offset after them. `OPTIONAL` elements and `CHOICE`s are a type each: a chain of
 //!   [`Then`] is one sequence of types.
 //! - Protocol Buffers: a varint of any length, or a message made of fields of any form, is a walk
 //!   over its bytes whose step is 208 operations; an expression of a walk has at most 56 (planned:
@@ -45,9 +42,7 @@
 //!   not `Pun`: it cannot be the type of a field.
 //! - Text: `str` is the only pattern there is. Text that is ASCII (`u8in<0x20, 0x7e>` bytes),
 //!   UTF-8 but for U+0000 (MQTT), "modified UTF-8" (Java) or UTF-16 cannot be told as a pattern
-//!   yet. A C string's size is where its NUL is: it is only found by a walk, which a `size` rule
-//!   cannot use, so C strings are checked when their extent is known, not `from_head`ed. A number
-//!   in decimal is checked and decoded by a walk, but what a walk computes can size nothing.
+//!   yet.
 #![deny(unsafe_code)]
 
 use core::marker::PhantomData;
@@ -70,12 +65,17 @@ use puns::{
 #[pun(assert(length != 0x82 || be(2, 2) >= 0x100))]
 #[pun(assert(length != 0x83 || be(2, 3) >= 0x1_0000))]
 #[pun(assert(length != 0x84 || be(2, 4) >= 0x100_0000))]
-// The contents fill the value. (An `if` chain of the four long forms, in this sum, is 9 deep:
-// more than the 8 of the stack of an expression. A long form is followed by at least 128
-// bytes, so 4 bytes can be read, and shifted, instead.)
-#[pun(assert({
-  let n = if length < 0x80 { 0 } else { length & 0x7f };
-  2 + n + (if n == 0 { length } else { be(2, 4) >> (32 - 8 * n) }) == size_of_val(self)
+// The tag, the length, its long form, the contents.
+#[pun(size = 2 + (if length < 0x80 {
+  length
+} else if length == 0x81 {
+  1 + be(2, 1)
+} else if length == 0x82 {
+  2 + be(2, 2)
+} else if length == 0x83 {
+  3 + be(2, 3)
+} else {
+  4 + be(2, 4)
 }))]
 pub struct Der<T, C: ?Sized = [u8]> {
   pub tag: T,
@@ -432,16 +432,16 @@ pub struct Utf8Field {
   pub text: str,
 }
 
-/// A C string: bytes, then a NUL that is the last byte, and the only one.
+/// A C string: bytes, up to the first NUL, which is its last byte.
 #[derive(Pun)]
 #[repr(transparent)]
-#[pun(assert(walk(0, |at| be(at, 1) != 0, |at| at + 1) == size_of_val(self) - 1))]
+#[pun(size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1)]
 pub struct CStr(pub [u8]);
 
 /// A C string that is UTF-8 as well: its text is a region, a `str`.
 #[derive(Pun)]
 #[repr(transparent)]
-#[pun(assert(walk(0, |at| be(at, 1) != 0, |at| at + 1) == size_of_val(self) - 1))]
+#[pun(size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1)]
 pub struct CText {
   #[pun(regions(text: str = size_of_val(self) - 1, nul))]
   pub bytes: [u8],
@@ -547,6 +547,13 @@ const CBOR: [u8; 13] =
 
 pub fn main() {
   // ---- DER: an SNMP GetRequest, a chain of values of their own sizes.
+  // A value from a stream: its length, of the short or the long form, tells where it ends.
+  let mut stream = vec![0x04, 0x81, 0x80];
+  stream.resize(3 + 128 + 2, 7);
+  let (value, rest) = from_head::<Der<u8c<0x04>>>(&stream).unwrap();
+  assert_eq!((value.contents().map(<[u8]>::len), rest.len()), (Ok(128), 2));
+  assert!(from_head::<Der<u8c<0x04>>>(&stream[..100]).is_err());
+  assert_eq!(from_head::<Der<u8>>(&[0x02, 0x01, 5, 9]).map(|(_, rest)| rest), Ok(&[9][..]));
   let message: &SnmpMessage = try_pun_ref(&GET_REQUEST[..]).unwrap();
   let body = message.contents().unwrap();
   assert_eq!(body.first().unwrap().contents().unwrap().0, 1);
@@ -713,6 +720,10 @@ pub fn main() {
     assert_eq!(from_head::<Utf8Field>(bytes).err(), Some(Error::Validity));
   }
   assert!(try_pun_ref::<_, CStr>(&b"hello\0"[..]).is_ok());
+  // From a stream: up to the first NUL.
+  let (string, rest) = from_head::<CStr>(b"hello\0world\0").unwrap();
+  assert_eq!((&string.0, rest), (&b"hello\0"[..], &b"world\0"[..]));
+  assert_eq!(from_head::<CStr>(b"hello").err(), Some(Error::Validity));
   for bytes in [&b"hel\0lo\0"[..], b"hello"] {
     assert_eq!(try_pun_ref::<_, CStr>(bytes).err(), Some(Error::Validity));
   }
