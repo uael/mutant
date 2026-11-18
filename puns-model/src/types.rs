@@ -789,15 +789,26 @@ impl Oracle for OneOfTwo {
 // proposal allows, valid if valid for one field. What the library knows of a union as a source is
 // nothing, which is less than that.
 
-/// Valid if one of `results` is; decided by an uninitialized byte if none is, and one is.
+/// The check of a field.
+type Check = fn(&Bytes, usize, &mut [bool], bool) -> Valid;
+
+/// Valid if one of the `checks` of the fields of a union is, tried in order. The bytes read are
+/// those of the fields tried: of the one that makes it valid, not of the ones after it (they may
+/// be padding of that value). A field decided by an uninitialized byte decides the union: the
+/// unions of the model have fields that all start with the same bytes, so that what such a byte
+/// decides of one it decides of all.
 ///
 /// # Errors
-/// [`Uninit`] if no field is valid and one is decided by an uninitialized byte.
-pub fn any(results: &[Valid]) -> Valid {
-  if results.contains(&Ok(true)) {
-    return Ok(true);
+/// [`Uninit`] if a field is decided by an uninitialized byte before one is valid.
+pub fn any(b: &Bytes, off: usize, reads: &mut [bool], target: bool, checks: &[Check]) -> Valid {
+  for check in checks {
+    match check(b, off, reads, target) {
+      Ok(true) => return Ok(true),
+      Ok(false) => {}
+      Err(Uninit) => return Err(Uninit),
+    }
   }
-  if results.iter().any(std::result::Result::is_err) { Err(Uninit) } else { Ok(false) }
+  Ok(false)
 }
 
 /// A `bool`, or a number up to 3: a byte up to 3.
@@ -810,7 +821,7 @@ pub union ChoiceU {
 
 impl Oracle for ChoiceU {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
-    any(&[bool::check(b, off, reads, target), <u8in<0, 3>>::check(b, off, reads, target)])
+    any(b, off, reads, target, &[bool::check, <u8in<0, 3>>::check])
   }
 }
 
@@ -824,7 +835,7 @@ pub union FlagsU {
 
 impl Oracle for FlagsU {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
-    any(&[<[bool; 2]>::check(b, off, reads, target), <NonZero<u16>>::check(b, off, reads, target)])
+    any(b, off, reads, target, &[<[bool; 2]>::check, <NonZero<u16>>::check])
   }
 }
 
@@ -838,6 +849,6 @@ pub union PaddedU {
 
 impl Oracle for PaddedU {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
-    any(&[u8::check(b, off, reads, target), <(u8, u16)>::check(b, off, reads, target)])
+    any(b, off, reads, target, &[u8::check, <(u8, u16)>::check])
   }
 }
