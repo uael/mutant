@@ -193,7 +193,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)         |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call          |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block: 46 |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
@@ -202,10 +202,11 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways             |
 | `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`: 13      |
 | `u8 -> Option<Choice>` (a union: `bool`, `u8in`)   | one `cmp cl, 4`: 7                         |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 233 instructions, no call                  |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 254 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
+| `from_head::<Udp>(&[u8])` (a size in the value)    | 15 instructions                            |
 | `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 18, no loop     |
 | `view_ref::<Old, New>` (recursive, with pointers)  | `mov rax, rdi; ret`                        |
 | `view_ref::<[Old], [New]>`                         | `mov rdx, rsi; mov rax, rdi; ret`          |
@@ -213,7 +214,14 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 
 A count is not a time. The slice of `bool`s was a loop of one `cmp` per byte, 13 instructions,
 which stopped at the first invalid one; it is now 46 and takes a fraction of the time on a long
-slice (`benches/checks.rs` times the checks next to the same ones written by hand).
+slice (`benches/checks.rs` times the checks next to the same ones written by hand). The IPv6
+packet was 233 instructions when the operations of its walk were applied as they are now and the
+others by an unrolled evaluator: the same arithmetic, which LLVM allocates registers to and
+selects instructions for a little otherwise (a step of the walk is two instructions longer).
+
+`from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`,
+where the optimizer knows that a field fits one (it was 29 instructions for `Udp`, 43 for
+`Frame<Ipv4>`).
 
 ### 4. Rules: what is not a property of bytes
 
@@ -240,8 +248,8 @@ branch, so that the stack is as deep after it either way). Nothing that is compu
 left out of the value of an expression: its first failure is its failure, the evaluator stops
 there, and what follows is compiled knowing that nothing failed. The
 derive also counts what the evaluator has room for (the depth of its
-stack, the operations of a walk, the variables) and reports an excess at the expression, with the
-numbers; the evaluator checks it again.
+stack, the variables, the operations of an expression and the walks one in another) and reports
+an excess at the expression, with the numbers; `check_ops` checks it again.
 
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
@@ -299,25 +307,40 @@ Two more options are not rules, but save the code that would otherwise be writte
   too.
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
-are proven only by the same rule, in the same struct, at the same place of the source. The
-evaluator (`layout::eval`) has a stack of 16 values and 8 variables, each a variable of the
-machine rather than an element of an array, reached by a `match` whose cases are all values (the
-last one is the default case: a `match` with one more case costs instructions); it is written so
-that a constant program compiles to its arithmetic: no
-loop for the first operations, and a local variable per stack slot rather than an array.
+are proven only by the same rule, in the same struct, at the same place of the source.
 
-An expression that walks holds two more expressions, which are evaluated in a loop. The evaluator
-applies a walk as it applies anything else (`Machine::walk`): it runs both expressions in a loop,
-which the optimizer makes constant where it inlines the evaluator, at the first level of walks.
-The first walk of an `assert` is applied otherwise, where it must be fast (the IPv6 packet): there,
-the operations are not left to the optimizer to find constant. They are constants of the
-instances of the functions that apply them (`validate::check_walks`), one instance per operation,
-reached by a recursion over a number that is a type. What is compiled is the loop and the
-arithmetic of both expressions, never an interpreter; and the list of the rules that walk is
-itself a type (`Pun::Walks`), so that a struct without any costs nothing more to compile. The
-recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
-first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
-Both apply the same operations, with the same limit of steps.
+**No interpreter.** Every operation of every rule is applied by an instance of a function of its
+own (`validate::steps`), in which it is a constant: what is compiled is the arithmetic of the
+expression, and the loop of each walk, never a `match` on operations at run time. The derive
+writes the rules of a struct that have an expression as a list at the type level (`Pun::Rules`,
+`RuleAt<RULE, STEPS, NEXT>`), and the operations of each as a balanced tree (`steps::One<I>`,
+`steps::Two<A, B>`, and `steps::Walk<I, COND, NEXT>` for a walk, whose two expressions are trees
+of their own, at any depth): the recursions down the tree are as deep as its logarithm, where a
+recursion over a number that is a type, before, was as deep as the expression (and was only used
+for the first walk of an `assert`). Nothing of what a list says is trusted: where it is used, it
+is checked against the layout (`validate::listed`, `covers`): every rule with an expression is
+listed, once, in order, every operation of each, a walk where there is one and only there (the
+functions name every part of the tree, whatever its kind, so where a part is not a walk they name
+the expression they are in again, nothing new). `Machine::apply` never sees a walk. The list
+being a type, a struct without rules costs nothing more to compile; `from_head` finds a `size`
+rule of the last field by the types too (`Fields::Last`), and checks that it is the one of the
+layout.
+
+The machine that applies the operations (`layout::Machine`) has a stack of 16 values and 8
+variables, each a variable of the machine rather than an element of an array, reached by a
+`match` whose cases are all values (the last one is the default case: a `match` with one more
+case costs instructions): once inlined, a local variable per stack slot. An expression has at
+most 256 operations, and nests at most 4 walks; the derive says where one goes beyond, and by how
+much, and `check_ops` checks it again. In a debug build, where nothing is inlined, each operation
+is a call.
+
+Before, the first 24 operations of an expression were unrolled and the rest applied in a loop, a
+`match` on each at run time; the walks of an expression other than the first of an `assert`, and
+their expressions, were applied in that loop too. The IPv4 packet of the examples, whose last
+`assert` (the checksums of UDP and TCP over the addresses of the packet) is longer than 24
+operations, was then checked 15 times as slowly as by hand; it now runs 1.18 times the
+instructions of the same check by hand (`valgrind --tool=callgrind`, UDP in 64 bytes: 256
+against 217, where it was 1885).
 
 What is not computed is told by an index (`Machine::skip`): the operations before it are not
 applied. A `Shortcut` that decides sets it past the right side, a failure to the end. Where the
@@ -889,8 +912,9 @@ as something else, a check that would be behind a pointer.
   the crate that validates it (validation recurses over the list of the variants).
 - `PhantomData<T>` is `Scalar` for any `T`, and deriving `Pun` exposes private fields: see
   "What the type system enforces" for which types must not derive `Pun`.
-- The evaluator of rules has a stack of 16 values and 8 variables (the derive says when an
-  expression needs more, and how much), and a walk takes at most `8 * size + 128` steps.
+- The evaluator of rules has a stack of 16 values and 8 variables, an expression at most 256
+  operations and at most 4 walks one in another (the derive says when an expression needs more,
+  and how much), and a walk takes at most `8 * size + 128` steps.
 - Unions: of `repr(C)` only (the fields of another are not known to be at 0), without a field
   that holds a pointer, and known as nothing as a source (section 5).
 - An enum without `repr` holds no self-relative pointer; its direct tag, all the bytes before the

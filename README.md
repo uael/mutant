@@ -616,7 +616,7 @@ table is in [`puns/DESIGN.md`][design]):
 | `&Frame<Ipv4> -> &[u8]`                            | `lea rdx, [rsi + 34]` (the length)   |
 | `&[u8; 2] -> Option<&Position>`                    | one `cmp byte ptr [rdi + 1], 2`      |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool` |
-| `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call    |
+| `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call    |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, without a branch |
 
 ### Time
@@ -658,11 +658,12 @@ being closed.
 - **A slice is checked by blocks** of 64 bytes, without a branch inside a block: an element that
   is not valid is found when its block is done, not at its byte.
 - **A CRC is 32 KiB of tables in the binary** for each set of parameters that is used (16 bytes
-  at a time); `sum16` adds 8 bytes at a time and needs none.
+  at a time; 16 KiB of them are read for a CRC of up to 32 bits); `sum16` adds 8 bytes at a time
+  and needs none.
 - **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
   the binary, a checked one adds its checks, inlined where it is called.
-- **Measure in release.** In a debug build the expressions of the rules are interpreted, and
-  nothing is inlined.
+- **Measure in release.** In a debug build nothing is inlined: each operation of a rule is a
+  call.
 - **The analysis is build time**: it runs in the compiler, for each new pair of types. The
   Ethernet example (32 types, about 80 puns, a view enum of 19 variants) builds in a few seconds
   in debug, and in about a minute in release with LTO and one codegen unit.
