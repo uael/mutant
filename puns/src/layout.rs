@@ -11,7 +11,10 @@ use core::mem;
 
 #[doc(hidden)]
 pub use crate::discover::Desc;
-use crate::ptr;
+use crate::{
+  narrow::{self, How, fit},
+  ptr,
+};
 
 // -------------------------------------------------------------------------------------------------
 // `Endian`
@@ -4361,9 +4364,9 @@ pub(crate) struct LengthRule {
 }
 
 /// Depth of the stack of the evaluator ([`Machine`]).
-const STACK: usize = 16;
+pub(crate) const STACK: usize = 16;
 /// Number of variables of an expression.
-const VARIABLES: usize = 8;
+pub(crate) const VARIABLES: usize = 8;
 /// The most operations of an expression, and the most walks that it nests (a walk in a walk is
 /// two): the validation applies each operation in an instance of a function of its own, reached
 /// by recursions over a tree of the operations (`validate::steps`), which these keep short.
@@ -4399,7 +4402,7 @@ pub(crate) const fn op_at(ops: &[Op], index: usize) -> Option<Op> {
 /// was computed or not (the evaluator pushes a placeholder for a branch that is not). What a part
 /// defines is not defined after it. Every `&&`, `||` and `if` has its parts: what is computed is
 /// what Rust computes, and no failure can be left out of the value of the expression.
-const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8, walks: usize) {
+pub(crate) const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8, walks: usize) {
   assert!(ops.len() <= MAX_OPS, "an expression is too long");
   let (mut depth, mut i) = (0usize, 0);
   // The parts that are open, innermost last: the index of the operation that ends each, the depth
@@ -4629,8 +4632,9 @@ impl Machine {
     inner
   }
 
-  /// Apply the operation `op`, at the index `at` of an expression, over the struct at `base`,
-  /// whose size is `size`: `false` if it fails, which is then the failure of the expression.
+  /// Apply the operation `op`, at the index `at` of an expression, computed as `how` says (see
+  /// `narrow`), over the struct at `base`, whose size is `size`: `false` if it fails, which is
+  /// then the failure of the expression.
   ///
   /// # Safety
   /// `op` must be an operation of an expression of a rule of the layout of a struct, and `base`
@@ -4644,6 +4648,7 @@ impl Machine {
     &mut self,
     op: Op,
     at: usize,
+    how: How,
     base: *const u8,
     size: usize,
   ) -> bool {
@@ -4659,7 +4664,7 @@ impl Machine {
         self.push(unsafe { load(base.add(offset), size as usize, endian) });
       }
       Op::Size => self.push(size as u128),
-      Op::Get(index) => self.push(self.variables.get(index as usize)),
+      Op::Get(index) => self.push(fit(self.variables.get(index as usize), how.result)),
       Op::Set(index) => {
         self.variables.set(index as usize, self.get(depth - 1));
         self.depth -= 1;
@@ -4681,7 +4686,8 @@ impl Machine {
       Op::At { size: width, big } => {
         let (offset, endian) =
           (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
-        if offset <= size as u128 && size - offset as usize >= width as usize {
+        // In the value: one comparison of the offset, with what does not change in a walk.
+        if size >= width as usize && offset <= (size - width as usize) as u128 {
           // SAFETY: in the bounds of the value.
           self.set(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
         } else {
@@ -4748,15 +4754,15 @@ impl Machine {
       Op::Select => {
         let value =
           if self.get(depth - 3) != 0 { self.get(depth - 2) } else { self.get(depth - 1) };
-        self.set(depth - 3, value);
+        self.set(depth - 3, fit(value, how.result));
         self.depth -= 2;
       }
       // `validate::walk` applies a walk, with the instances of the functions that apply its
       // expressions: the validation never gives one to this function (`validate::covers`).
       Op::Walk { .. } => return false,
       op => {
-        match binary(op, self.get(depth - 2), self.get(depth - 1)) {
-          Some(value) => self.set(depth - 2, value),
+        match narrow::binary(op, how, self.get(depth - 2), self.get(depth - 1)) {
+          Some(value) => self.set(depth - 2, fit(value, how.result)),
           None => return false,
         }
         self.depth -= 1;
@@ -4776,8 +4782,9 @@ pub(crate) const fn walk_limit(size: usize) -> usize {
   (size + 16).saturating_mul(8)
 }
 
+/// `op` of `a` and `b` on `u128`, `None` where Rust would panic: what an expression means.
 #[inline(always)]
-const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
+pub(crate) const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
   match op {
     Op::Add => a.checked_add(b),
     Op::Sub => a.checked_sub(b),

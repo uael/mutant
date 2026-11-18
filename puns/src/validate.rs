@@ -8,6 +8,7 @@ use crate::{
   Fields, Path, Pun, Root, Rules, Steps, Variants,
   analysis::Marks,
   layout::{self, Dfa, Enum, Kind, Machine, Op, Rule, Shape, load, op_at, walk_limit},
+  narrow::{Planned, fit},
   ptr,
   steps::{InRule, ONE, Ops, TWO, WALK},
 };
@@ -404,7 +405,7 @@ const unsafe fn steps<X: Ops, S: Steps>(
   unsafe {
     match const { S::KIND } {
       ONE => match const { op_at(X::OPS, S::AT) } {
-        Some(op) => machine.apply(op, S::AT, base, size),
+        Some(op) => machine.apply(op, S::AT, const { Planned::<X>::PLAN.how[S::AT] }, base, size),
         None => false,
       },
       TWO => {
@@ -446,7 +447,9 @@ const unsafe fn walk<X: Ops, W: Steps>(
   if !machine.computes(W::AT) {
     return true;
   }
-  let mut state = machine.top();
+  // What the state may be, which the optimizer cannot find in a loop: the width it fits.
+  let fits = const { Planned::<X>::PLAN.how[W::AT].result };
+  let mut state = fit(machine.top(), fits);
   let (mut steps, limit) = (0, walk_limit(size));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
@@ -465,7 +468,7 @@ const unsafe fn walk<X: Ops, W: Steps>(
     if !unsafe { self::steps::<W::InThen<X>, W::Then>(&mut next, base, size) } {
       break None;
     }
-    state = next.result();
+    state = fit(next.result(), fits);
   };
   machine.replace(result)
 }
