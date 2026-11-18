@@ -49,19 +49,27 @@ does: see "Self-relative pointers") is read by these functions as plain data, an
 of them. It has its own: `view_ref` (proven, pointers followed, by reference only) and
 `try_view_ref`, which are not `const fn`s.
 
-## What stable Rust (1.100) gives us
+## What stable Rust gives us
 
-Probed, not remembered:
+Probed, not remembered. Where a feature is stable, the version is the first stable release that has
+it, probed on that release and on the one before (1.76 and 1.78 for `offset_of!`, 1.78 and 1.82 for
+inline `const`, 1.82 and 1.83 for `&mut`, 1.98 and 1.99 for `size_of_val_raw`):
 
-| Needed                                   | Stable?                                            |
-|------------------------------------------|----------------------------------------------------|
-| `TransmuteFrom`, `ptr_metadata`          | no                                                 |
-| const traits, `generic_const_exprs`      | no                                                 |
-| reflection, `offset_of!` on enums/slices | no                                                 |
-| `const fn` with loops, `&mut`, raw ptrs  | yes                                                |
-| inline `const { }` in generic code       | yes                                                |
-| `size_of_val_raw`, `align_of_val_raw`    | yes, and `const`                                   |
-| `offset_of!` on sized fields             | yes, even when the struct is unsized               |
+| Needed                                       | Stable?                                        |
+|----------------------------------------------|------------------------------------------------|
+| `TransmuteFrom`, `ptr_metadata`              | no                                             |
+| const traits, `generic_const_exprs`          | no                                             |
+| reflection, `offset_of!` on enums/slices     | no                                             |
+| `offset_of!` on sized fields                 | 1.77, even when the struct is unsized          |
+| inline `const { }` in generic code           | 1.79                                           |
+| `&mut` in `const fn` (with loops, raw ptrs)  | 1.83                                           |
+| `size_of_val_raw`, `align_of_val_raw`, const | 1.99                                           |
+
+The last one sets `rust-version`: the layout of an unsized type (a struct that ends with a slice
+or a `str`) is read from a pointer to it with a made-up length (`Pun::PROBE`), in `const`, which
+`size_of_val` cannot do (it needs a reference, which needs a valid value). On 1.98, `puns` does
+not build: `layout_for_ptr` is unstable, and so is calling it in `const`. CI builds the crate and
+its examples on 1.99 (job "Minimum Rust version").
 
 Const evaluation runs about 400 000 loop iterations per second and is stopped by a deny-by-default
 lint after 2 000 000 basic blocks. Any analysis whose cost grows with the *size* of a type (one
@@ -1258,7 +1266,7 @@ as something else, a check that would be behind a pointer.
 - Sums of types in sequences, and recursion: `OPTIONAL` and `CHOICE` of ASN.1, the containers of
   CBOR and MessagePack. A chain of types (`Then<A, B>`) is one sequence of types.
 - An arbitrary function in a rule (getters take any). The validator is `const fn` code, generic
-  over the type it validates, and on stable 1.100 such code cannot call a function that the type
+  over the type it validates, and on stable (1.100) such code cannot call a function that the type
   chooses: a call through a function pointer is refused ("function pointer calls are not allowed
   in constant functions"), a trait method too (E0015, "cannot call non-const associated
   function"), and const traits are unstable (E0658), all probed. A user function could only be

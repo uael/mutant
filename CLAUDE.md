@@ -29,8 +29,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rust-version` is
-1.100). CI also builds for `thumbv7em-none-eabihf`, a target without `std`. A pinned nightly
+The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is
+1.99, the first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the
+layout of unsized types needs (`puns/DESIGN.md`, "What stable Rust gives us"); the CI job "Minimum
+Rust version" builds on it, and a feature newer than 1.99 raises `rust-version` with its reason
+written there. CI also builds for `thumbv7em-none-eabihf`, a target without `std`. A pinned nightly
 (`nightly-2026-11-17`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by
 Miri, under which the trybuild test is ignored. Generate trybuild `.stderr` files with the pinned
 stable.
