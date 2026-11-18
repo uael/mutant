@@ -239,22 +239,23 @@ pub struct Ipv4<P: ?Sized + Tag<Protocol> = [u8]> {
 // is not the whole of what is carried, and what is encrypted cannot be read: the walk stops
 // there, on something that has no such checksum.)
 #[pun(assert({
-  // What a header is (the low 8 bits), and where it starts (the other bits): down to the first
-  // one that is not an extension header.
+  // What a header is (the high 64 bits), and where it starts (the low 64 bits: a `u128` is two
+  // registers, which these read without a shift): down to the first one that is not an extension
+  // header.
   let upper = walk(
-    next_header + (40 << 8),
+    (next_header << 64) + 40,
     |at| {
-      let kind = at & 0xff;
+      let kind = at >> 64;
       kind == 0 || kind == 43 || kind == 60 || kind == 51 || kind == 135 || kind == 139 || kind == 140
     },
     |at| {
-      let start = at >> 8;
-      let size = 8 + be(start + 1, 1) * if at & 0xff == 51 { 4 } else { 8 };
-      be(start, 1) + ((start + size) << 8)
+      let start = at & 0xffff_ffff_ffff_ffff;
+      let size = 8 + be(start + 1, 1) * if at >> 64 == 51 { 4 } else { 8 };
+      (be(start, 1) << 64) + start + size
     },
   );
-  let protocol = upper & 0xff;
-  let start = upper >> 8;
+  let protocol = upper >> 64;
+  let start = upper & 0xffff_ffff_ffff_ffff;
   let end = 40 + payload_length;
   (protocol != 17 && protocol != 6 && protocol != 58)
     || (sum16(8, 40) + protocol + (end - start) + sum16(start, end)) % 0xffff == 0

@@ -132,19 +132,24 @@ pub enum AnyFrame<'a> {
   Other(&'a Frame),
 }
 
-/// IPv6 and the checksum of UDP behind any chain of extension headers: a walk (the benchmark of
-/// the regression of the walk, in `DESIGN.md`).
+/// IPv6 and the checksum of UDP behind any chain of extension headers: a walk.
+///
+/// Its state is the kind of a header in its high 64 bits and where it starts in the low ones: two
+/// registers (see "Walks" in `DESIGN.md`).
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = payload_length + 40)]
 #[pun(assert({
   let upper = walk(
-    next_header + (40 << 8),
-    |at| { let kind = at & 0xff; kind == 0 || kind == 43 || kind == 60 },
-    |at| { let start = at >> 8; be(start, 1) + ((start + 8 + be(start + 1, 1) * 8) << 8) },
+    (next_header << 64) + 40,
+    |at| { let kind = at >> 64; kind == 0 || kind == 43 || kind == 60 },
+    |at| {
+      let start = at & 0xffff_ffff_ffff_ffff;
+      (be(start, 1) << 64) + start + 8 + be(start + 1, 1) * 8
+    },
   );
-  let protocol = upper & 0xff;
-  let start = upper >> 8;
+  let protocol = upper >> 64;
+  let start = upper & 0xffff_ffff_ffff_ffff;
   let end = 40 + payload_length;
   protocol != 17 || (sum16(8, 40) + protocol + (end - start) + sum16(start, end)) % 0xffff == 0
 }))]
