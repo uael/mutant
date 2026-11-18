@@ -12,23 +12,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # `cargo test --workspace --exclude puns-model`, in three jobs: what it builds (every test file
+  # is a binary, eleven of which hold an example) is most of its minute. With the two jobs of the
+  # model check below, this is `cargo test --all`.
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The unit tests, the compile-fail tests (trybuild), the doc tests (README included).
+          - name: library, compile-fail, docs
+            run: |
+              cargo test -p puns --lib --test compile_fail
+              cargo test --workspace --exclude puns-model --doc
+          # The other test files, every other one each. Each example is run through its test
+          # (`tests/ethernet.rs`...), which asserts its results; `codegen` has none, and is built.
+          - name: integration, 1 of 2
+            part: 1
+            run: cargo test -p puns $TESTS
+          - name: integration, 2 of 2
+            part: 2
+            run: |
+              cargo test -p puns $TESTS
+              cargo build -p puns --example codegen
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
-      # Unit, integration, compile-fail (trybuild) and doc tests. It builds every example, and runs
-      # each of them through its test (`tests/ethernet.rs`...), which asserts its results. With the
-      # job below, this is `cargo test --all`, in two halves that each fit in a minute.
-      - run: cargo test --workspace --exclude puns-model
+        with:
+          # A cache for each job of the matrix: they do not build the same binaries.
+          key: test-${{ matrix.part || 0 }}
+      - name: Select the test files of the job
+        if: matrix.part
+        run: |
+          tests=$(ls puns/tests/*.rs | grep -v '/compile_fail\.rs$' | sed 's|.*/|--test |; s|\.rs$||')
+          tests=$(echo "$tests" | awk -v part="${{ matrix.part }}" 'NR % 2 == part % 2')
+          echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
+      - run: ${{ matrix.run }}
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
-  # as long to build as everything else, so jobs of its own, one for whole puns and one for
-  # parts. Together they are `cargo test -p puns-model`.
+  # as long to build as everything else, so jobs of its own: whole puns, unsized types and
+  # pointers, parts. Together they are `cargo test -p puns-model`.
   model:
     name: Model check (sample, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -37,9 +65,9 @@ jobs:
       matrix:
         include:
           - name: puns
-            tests: >-
-              --lib --test miri_sample --test core_shadowed --test dst --test regressions
-              --test pointers
+            tests: --lib --test miri_sample --test core_shadowed --test regressions
+          - name: unsized, pointers
+            tests: --test dst --test pointers
           - name: parts
             tests: --test parts
     steps:
@@ -113,58 +141,85 @@ jobs:
       matrix:
         include:
           # Of the tests of `puns`, the ones that Miri runs (see the step that selects them), in
-          # two jobs for each run: every other test file each.
-          - name: tree borrows, 1 of 2
+          # three jobs for each run: every third test file each.
+          - name: tree borrows, 1 of 3
             id: tree
             args: -p puns
             select: true
-            half: 1
+            part: 1
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          - name: tree borrows, 2 of 2
+          - name: tree borrows, 2 of 3
             id: tree
             args: -p puns
             select: true
-            half: 2
+            part: 2
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          - name: tree borrows, 3 of 3
+            id: tree
+            args: -p puns
+            select: true
+            part: 3
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           # Stacked borrows, on a big-endian target: what loads integers, sums and CRCs several
           # bytes at a time must not depend on the byte order of the target, and the rules of
-          # stacked borrows do not depend on the target (x86-64 has the two jobs above).
-          - name: stacked borrows, big-endian, 1 of 2
+          # stacked borrows do not depend on the target (x86-64 has the three jobs above).
+          - name: stacked borrows, big-endian, 1 of 3
             id: stacked-s390x
             args: -p puns
             target: s390x-unknown-linux-gnu
             select: true
-            half: 1
+            part: 1
             flags: -Zmiri-strict-provenance
-          - name: stacked borrows, big-endian, 2 of 2
+          - name: stacked borrows, big-endian, 2 of 3
             id: stacked-s390x
             args: -p puns
             target: s390x-unknown-linux-gnu
             select: true
-            half: 2
+            part: 2
+            flags: -Zmiri-strict-provenance
+          - name: stacked borrows, big-endian, 3 of 3
+            id: stacked-s390x
+            args: -p puns
+            target: s390x-unknown-linux-gnu
+            select: true
+            part: 3
             flags: -Zmiri-strict-provenance
           # 32 bits: a smaller `usize`, a `u64` aligned to 4.
-          - name: 32 bits, 1 of 2
+          - name: 32 bits, 1 of 3
             id: i686
             args: -p puns
             target: i686-unknown-linux-gnu
             select: true
-            half: 1
+            part: 1
             flags: -Zmiri-strict-provenance
-          - name: 32 bits, 2 of 2
+          - name: 32 bits, 2 of 3
             id: i686
             args: -p puns
             target: i686-unknown-linux-gnu
             select: true
-            half: 2
+            part: 2
+            flags: -Zmiri-strict-provenance
+          - name: 32 bits, 3 of 3
+            id: i686
+            args: -p puns
+            target: i686-unknown-linux-gnu
+            select: true
+            part: 3
             flags: -Zmiri-strict-provenance
           # The model check under Miri: a selection of pairs that runs every unsafe path it
           # reaches (see `puns-model/tests/miri_sample.rs`); the verdicts of every pair are the
           # job of the full native run, in `model.yml`.
-          # In three jobs: whole puns, parts and unsized types, self-relative pointers.
+          # In four jobs: whole puns (the two tests of the selection, told apart by name), parts
+          # and unsized types, self-relative pointers.
           - name: model, puns
             id: model
             args: -p puns-model --lib --test miri_sample --test core_shadowed --test regressions
+            filter: -- --skip sample_layouts
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          - name: model, layouts
+            id: model
+            args: -p puns-model --test miri_sample
+            filter: -- sample_layouts
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           - name: model, parts
             id: model
@@ -203,15 +258,18 @@ jobs:
         if: matrix.select
         run: |
           tests=$(grep -L 'cfg(not(miri))' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||')
-          case "${{ matrix.half }}" in
-            1) tests="--lib $(echo "$tests" | awk 'NR % 2 == 1')" ;;
-            2) tests=$(echo "$tests" | awk 'NR % 2 == 0') ;;
-            *) tests="--lib $tests" ;;
-          esac
+          part="${{ matrix.part }}"
+          if [ -n "$part" ]; then
+            tests=$(echo "$tests" | awk -v part="$part" 'NR % 3 == part % 3')
+          fi
+          # The unit tests of the library go with the first part.
+          if [ -z "$part" ] || [ "$part" = 1 ]; then
+            tests="--lib $tests"
+          fi
           echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
       - run: >-
           cargo miri test ${{ matrix.args }}
-          ${{ matrix.target && format('--target {0}', matrix.target) }} $TESTS
+          ${{ matrix.target && format('--target {0}', matrix.target) }} $TESTS ${{ matrix.filter }}
         env:
           MIRIFLAGS: ${{ matrix.flags }}
 

@@ -363,7 +363,13 @@ All are `const fn`s.
   their `repr`: each has a set of valid values, and so has each of their bytes.
 - Structs of any `repr` (`C`, `transparent`, `packed`, `align`, or none), tuples, arrays, slices,
   and structs that end with a slice: their padding, and what each of their bytes can be.
-- Enums with fields (`repr(C)`, `repr(u8)`...): their tag, and what each variant is made of.
+- Enums with fields, of any `repr` or of none: their tag, and what each variant is made of.
+  Without `repr`, the layout that `rustc` chose (a tag, or a niche in a field) is found when the
+  program is built, by experiments on a value of each variant; an experiment that goes wrong is
+  a compile error, never a wrong layout. `Option<T>` and `Result<T, E>` are such enums.
+- `repr(C)` unions: as a target, one of their fields; as a source, nothing is known of them.
+- `MaybeUninit<T>`: bytes of which nothing is known, which take anything. `Infallible`, and enums
+  without variants: no value.
 - `str`: bytes that are UTF-8.
 - What the derive is told, above.
 
@@ -396,6 +402,31 @@ assert_eq!(drawings, [Drawing::Rect(3, 1), Drawing::Circle { radius: 9 }]);
 assert_eq!(puns::try_pun(Drawing::Rect(3, 1)), Ok(Shape::Rect(3, true)));
 assert_eq!(puns::try_pun::<_, Shape>(Drawing::Rect(3, 2)), Err(puns::Error::Validity));
 assert_eq!(puns::try_pun::<_, Shape>(Drawing::Nothing), Err(puns::Error::Validity));
+```
+
+The same of enums without `repr`, `Option` included, whose layout is found rather than declared:
+
+```rust
+use core::num::NonZero;
+
+use puns::Pun;
+
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+enum Ticket {
+  Free,
+  Paid(NonZero<u32>),
+}
+
+// A niche: `Free` is the 0 that no `NonZero` is. Every `u32` is a `Ticket`, both ways proven.
+assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
+assert_eq!(puns::pun::<u32, Ticket>(7), Ticket::Paid(NonZero::new(7).unwrap()));
+assert_eq!(puns::pun::<u32, Option<NonZero<u32>>>(7), NonZero::new(7));
+
+// Not every byte is an `Option<bool>`: 0 and 1 are `Some`, `None` is where `rustc` put it.
+let none: u8 = puns::pun(None::<bool>);
+assert_eq!(puns::try_pun::<u8, Option<bool>>(none), Ok(None));
+assert_eq!(puns::try_pun::<u8, Option<bool>>(1), Ok(Some(true)));
+assert!(puns::try_pun::<u8, Option<bool>>(none + 1).is_err());
 ```
 
 Two things follow from "a type is its bytes", by design. Types that differ only by a
@@ -535,6 +566,23 @@ let bytes: &[u8] = puns::pun_ref(text.as_str());
 assert_eq!(bytes, b"text");
 ```
 
+**An enum without `repr`, read as bytes.** Its layout is found, and its padding with it.
+
+```rust,compile_fail
+#[derive(puns::Pun, Clone, Copy)]
+enum Small {
+  A(u8),
+  B(u16),
+}
+
+let bytes: [u8; 4] = puns::pun(Small::B(1));
+```
+
+```text
+cannot pun: a byte that the target requires to be initialized is padding in the source.
+This is at byte 1 of the target.
+```
+
 **A check that can never succeed.** A byte that is always 2 is never a `bool`.
 
 ```rust,compile_fail
@@ -636,6 +684,9 @@ this changes:
   alone asks for a check of its bytes.
 - **Types that have invalid values convert to each other**, by `&mut` too: `&mut [bool; 4]` as
   `&mut [[bool; 2]; 2]`, an enum as another when each accepts what the other holds.
+- **Enums without `repr` are known**, `Option` and `Result` among them: their layout, which
+  `rustc` chose, is found when the program is built, where a derive of a marker trait asks an
+  enum with fields for a `repr` that specifies it. A `bool` is an `Option<bool>`, proven.
 - **The rules of a format are in its type**: sizes and lengths that are in the data, values that
   tell what follows, checksums. With a marker trait, a cast gives a header, and the code that
   finds where the packet ends is still to be written, and to be trusted.
