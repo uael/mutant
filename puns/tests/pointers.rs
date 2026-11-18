@@ -493,3 +493,66 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::try_pun_ref::<Table, (bool, [u8; 8])>(&r).map(|pair| pair.0), Ok(true));
   assert_eq!(r.seq(&r.numbers)[0].get(), 3);
 }
+
+/// `Option` of a pointer whose offset has a niche at zero is the same pointer, that may be null
+/// (what `self_relative!` gives it): it agrees with a pointer declared nullable (`Opt`), both
+/// ways, and is followed as one.
+#[test]
+fn option_of_a_pointer_is_a_nullable_pointer() {
+  use relative::Nz32le;
+
+  #[derive(Pun)]
+  #[repr(C)]
+  struct Declared {
+    id: u8,
+    first: Opt<u32>,
+    second: Opt<u32>,
+  }
+
+  #[derive(Pun)]
+  #[repr(C)]
+  struct WithOption {
+    id: u8,
+    first: Option<One<u32, Nz32le>>,
+    second: Option<One<u32, Nz32le>>,
+  }
+
+  // SAFETY: every pointer, at its position.
+  unsafe impl Fix for Declared {
+    fn fix(&mut self, at: usize) {
+      let whole = addr(self);
+      field(whole, at, &mut self.first);
+      field(whole, at, &mut self.second);
+    }
+  }
+
+  // SAFETY: every pointer, at its position.
+  unsafe impl Fix for WithOption {
+    fn fix(&mut self, at: usize) {
+      let whole = addr(self);
+      field(whole, at, &mut self.first);
+      field(whole, at, &mut self.second);
+    }
+  }
+
+  // The pointer of zeros is `None`, any other a pointer of four bytes.
+  assert_eq!(size_of::<Option<One<u32, Nz32le>>>(), 4);
+  let mut b = Builder::new();
+  let first = b.opt(Some(7u32));
+  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  let r = unsafe { Region::new(b, Declared { id: 1, first, second: Opt::none() }) };
+  let view: &WithOption = puns::view_ref(&*r);
+  let (first, second) = (view.first.as_ref(), view.second.as_ref());
+  assert_eq!((view.id, r.option(first), r.option(second)), (1, Some(&7), None));
+
+  let mut b = Builder::new();
+  let first = Some(b.one(9u32));
+  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  let r = unsafe { Region::new(b, WithOption { id: 2, first, second: None }) };
+  let view: &Declared = puns::view_ref(&*r);
+  assert_eq!((view.id, r.opt(&view.first), r.opt(&view.second)), (2, Some(&9), None));
+  // As a pointer that is not null, checked.
+  let some: &One<u32, Nz32le> = puns::try_view_ref(&r.first).expect("not null");
+  assert_eq!(*r.get(some), 9);
+  assert_eq!(puns::try_view_ref::<_, One<u32>>(&r.second).err(), Some(puns::Error::Validity));
+}

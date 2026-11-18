@@ -198,6 +198,21 @@ pub struct Desc<const V: usize> {
 }
 
 impl<const V: usize> Desc<V> {
+  /// No variant that has values: what an enum whose layout is given otherwise is found to be
+  /// (`Option` of a self-relative pointer, see `Pun::OPTION`), so that nothing is tried of it.
+  #[must_use]
+  pub const fn none() -> Self {
+    Self {
+      tag: (0, 0),
+      dataful: V,
+      inhabited: [false; V],
+      tags: [(0, 0); V],
+      dataful_tags: ([(0, 0); V], 0),
+      dataful_known: None,
+      valid: ([(0, 0); V], 0),
+    }
+  }
+
   /// The offset of the tag.
   #[must_use]
   pub const fn tag_offset(&self) -> usize {
@@ -339,16 +354,7 @@ pub const fn discover<E, const V: usize>(
   samples: &[MaybeUninit<E>; V],
   fields: &[&[Field]; V],
 ) -> Desc<V> {
-  let size = size_of::<E>();
-  let mut desc = Desc {
-    tag: (0, 0),
-    dataful: V,
-    inhabited: [false; V],
-    tags: [(0, 0); V],
-    dataful_tags: ([(0, 0); V], 0),
-    dataful_known: None,
-    valid: ([(0, 0); V], 0),
-  };
+  let (size, mut desc) = (size_of::<E>(), Desc::none());
   // Field: what has values, where the fields are; each sample is its own variant (R3).
   let (mut count, mut first, mut sized, mut start, mut v) = (0, V, false, size, 0);
   while v < V {

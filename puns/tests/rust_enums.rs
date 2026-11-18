@@ -560,3 +560,43 @@ fn from_other_than_enums() {
   // Not every byte is a tag: checked.
   assert_eq!(puns::try_pun::<[u8; 2], Opt>([2, 0]), Err(Error::Validity));
 }
+
+// --- `Option` and `Result` ------------------------------------------------------------------------
+
+#[test]
+fn option_and_result() {
+  // A niche in a `NonZero`: every `u32` is an `Option<NonZero<u32>>`, both ways proven.
+  assert_eq!(puns::pun::<Option<NonZero<u32>>, u32>(None), 0);
+  assert_eq!(puns::pun::<u32, Option<NonZero<u32>>>(5), NonZero::new(5));
+  let none: &[Option<NonZero<u16>>] = puns::pun_ref(&[0u16, 3][..]);
+  assert_eq!(none, &[None, NonZero::new(3)]);
+  // A niche in a `bool`: `None` is 2, checked from a byte, proven from a `bool`.
+  assert_eq!(puns::pun::<Option<bool>, u8>(None), 2);
+  assert_eq!(puns::try_pun::<u8, Option<bool>>(2), Ok(None));
+  assert_eq!(puns::try_pun::<u8, Option<bool>>(1), Ok(Some(true)));
+  assert_eq!(puns::try_pun::<u8, Option<bool>>(3), Err(Error::Validity));
+  assert_eq!(puns::pun::<bool, Option<bool>>(false), Some(false));
+  // Two niches in one byte: `Some(None)` is 2, `None` where `rustc` put it (255 today, below the
+  // valid values rather than after them), which is found, not assumed.
+  let none: u8 = puns::pun(None::<Option<bool>>);
+  assert!(none > 2);
+  assert_eq!(puns::try_pun::<u8, Option<Option<bool>>>(none), Ok(None));
+  assert_eq!(puns::try_pun::<u8, Option<Option<bool>>>(2), Ok(Some(None)));
+  assert_eq!(puns::try_pun::<u8, Option<Option<bool>>>(none ^ 1), Err(Error::Validity));
+  // A niche in a `char`.
+  let none: u32 = puns::pun(None::<char>);
+  assert_eq!(puns::try_pun::<u32, Option<char>>(none), Ok(None));
+  assert_eq!(puns::try_pun::<u32, Option<char>>(0x41), Ok(Some('A')));
+  // A direct tag of two bytes (widened to the alignment of the `u16`): no niche in a `u16`.
+  assert_eq!(puns::try_pun::<[u8; 4], Option<u16>>([0, 0, 9, 9]), Ok(None));
+  assert!(puns::try_pun::<[u8; 4], Option<u16>>([0, 9, 9, 9]).is_err());
+  assert!(puns::try_pun::<[u8; 4], Option<u16>>([2, 0, 0, 0]).is_err());
+  // `Ok` alone has values: a struct of its field.
+  assert_eq!(puns::pun::<Result<u32, Infallible>, u32>(Ok(7)), 7);
+  assert_eq!(puns::pun::<u32, Result<u32, Infallible>>(7), Ok(7));
+  // Both have values: a tag, then the field.
+  let err = puns::pun::<Result<u8, bool>, [u8; 2]>(Err(true));
+  assert_eq!(puns::try_pun::<[u8; 2], Result<u8, bool>>(err), Ok(Err(true)));
+  // Proven between them, variant by variant.
+  assert_eq!(puns::pun::<Result<NonZero<u8>, bool>, Result<u8, u8>>(Err(true)), Err(1));
+}

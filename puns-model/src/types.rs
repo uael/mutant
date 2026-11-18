@@ -650,8 +650,9 @@ impl Oracle for Pair {
   }
 }
 
-/// A niche in the tag of another enum without `repr`: `Other` is 2, the first value that is no tag
-/// of `Pair`.
+/// A niche in the tag of another enum without `repr`.
+///
+/// `Other` is 2, the first value that is no tag of `Pair`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NestPair {
   Inner(Pair),
@@ -792,8 +793,9 @@ impl Oracle for OneOfTwo {
 /// The check of a field.
 type Check = fn(&Bytes, usize, &mut [bool], bool) -> Valid;
 
-/// Valid if one of the `checks` of the fields of a union is, tried in order. The bytes read are
-/// those of the fields tried: of the one that makes it valid, not of the ones after it (they may
+/// Valid if one of the `checks` of the fields of a union is, tried in order.
+///
+/// The bytes read are those of the fields tried: of the one that makes it valid, not of the ones after it (they may
 /// be padding of that value). A field decided by an uninitialized byte decides the union: the
 /// unions of the model have fields that all start with the same bytes, so that what such a byte
 /// decides of one it decides of all.

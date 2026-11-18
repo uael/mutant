@@ -60,7 +60,9 @@
 //! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
 //!   padding, and what each of their bytes can be.
 //! - Enums with fields, of any `repr` (none too: the layout that `rustc` chose is found): their
-//!   tag, and what each variant is made of.
+//!   tag, and what each variant is made of. `Option<T>` and `Result<T, E>` too: every `u32` is an
+//!   `Option<NonZero<u32>>`, a `bool` is an `Option<bool>`, and `Option` of a self-relative pointer
+//!   is the same pointer, that may be null.
 //! - `MaybeUninit<T>`: bytes of which nothing is known, which take anything; `Infallible` and enums
 //!   without variants: no value.
 //! - `str`: bytes that are UTF-8.
@@ -292,6 +294,7 @@ pub mod layout;
 pub mod num;
 mod ptr;
 mod relative;
+mod std_enums;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -332,7 +335,10 @@ pub unsafe trait Scalar {
 ///
 /// # Safety
 /// Not meant to be implemented by hand: use `#[derive(Pun)]`, or [`self_relative!`] for a
-/// self-relative pointer.
+/// self-relative pointer. What an implementation promises is that `LAYOUT` describes the values
+/// of `Self` (every value is valid for it as a source, every valid target is a value), with the
+/// lists of its fields, variants and elements; and that `OPTION`, if it is `Some`, describes the
+/// values of `Option<Self>` the same way, `Option<Self>` having the lists of `Option`.
 pub unsafe trait Pun {
   /// Type of the elements of an array or of a slice, `()` otherwise.
   #[doc(hidden)]
@@ -359,6 +365,16 @@ pub unsafe trait Pun {
   const PROBE: *const Self;
   #[doc(hidden)]
   const LAYOUT: Layout;
+  /// The layout of `Option<Self>`, if `Self` gives it, rather than the one found of `Option` as
+  /// of any enum without `repr` (`discover.rs`).
+  ///
+  /// This is how `Option` of a self-relative pointer is the same pointer, that may be null:
+  /// [`self_relative!`] fills it with [`Layout::nullable`], which checks that `None` is the
+  /// pointer of zeros and nothing else. A crate that implements `Pun` otherwise (which only
+  /// `#[derive(Pun)]` and the macros of this crate do) leaves it `None`. If it is `Some`, it is
+  /// the layout of `Option<Self>`, as `LAYOUT` is of `Self` (see the `# Safety` of the trait).
+  #[doc(hidden)]
+  const OPTION: Option<Layout> = None;
 }
 
 /// A type that goes with a tag, in what carries it: a payload and the value of the field that
@@ -722,11 +738,6 @@ macro_rules! impl_non_zero {
     // SAFETY: anything but 0.
     unsafe impl Scalar for core::num::NonZero<$ty> {
       const SPEC: Spec = Spec::ranges::<$ty>(Endian::NATIVE, &[(1, $ty::MAX as u128)]);
-    }
-
-    // SAFETY: `None` is 0, this is documented.
-    unsafe impl Scalar for Option<core::num::NonZero<$ty>> {
-      const SPEC: Spec = Spec::any::<$ty>();
     }
   )+};
 }

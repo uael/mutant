@@ -80,6 +80,31 @@ offsets! {
   i64be: i64 Big;
 }
 
+/// An offset of four bytes in little-endian byte order that is never zero.
+///
+/// Its zero is a niche, as the one of a `NonZero`, so that `Option` of a pointer of it is the same
+/// pointer, `None` being the pointer of zeros (`puns::layout::Layout::nullable`, which
+/// `self_relative!` gives `Option`). Packed, of no alignment, as the other offsets (packing keeps the niche). For [`One`]
+/// only: a length can be zero.
+#[derive(Clone, Copy, Pun)]
+#[repr(C, packed)]
+pub struct Nz32le(core::num::NonZero<u32>);
+
+impl Offset for Nz32le {
+  const ENDIAN: Endian = Endian::Little;
+
+  fn new(n: isize) -> Self {
+    let n = i32::try_from(n).expect("an offset that holds the distance");
+    // The bytes of `n` in little-endian order, as the bytes of the `u32`.
+    Self(core::num::NonZero::new(u32::from_ne_bytes(n.to_le_bytes())).expect("never zero"))
+  }
+
+  fn get(self) -> isize {
+    let Self(value) = self;
+    i32::from_le_bytes(value.get().to_ne_bytes()) as isize
+  }
+}
+
 macro_rules! pointer {
   ($(#[$doc:meta])* $name:ident [$($param:ident)?] $target:ty, $pointer:expr) => {
     $(#[$doc])*
@@ -203,9 +228,19 @@ macro_rules! plain {
 }
 
 plain! {
-  () bool char u8 u16 u32 u64 i8 i16 i32 i64
+  () bool char u8 u16 u32 u64 i8 i16 i32 i64 Nz32le
   puns::num::u16le puns::num::u32le puns::num::u64le puns::num::u16be
   i16le i32le i64le i16be i32be i64be
+}
+
+// SAFETY: the pointer, if any, at the position of the value: `Some` of a pointer is the pointer,
+// at the same address (`Layout::nullable` checks that `Option` of it has no tag).
+unsafe impl<T: Fix> Fix for Option<T> {
+  fn fix(&mut self, at: usize) {
+    if let Some(value) = self {
+      value.fix(at);
+    }
+  }
 }
 
 // SAFETY: each element, at its position.
@@ -398,6 +433,15 @@ impl<T> Region<T> {
     // value of its target, or one that `puns::view_ref` read as such: a valid `U` (the contract
     // of `SelfRelative`), aligned for it.
     unsafe { &*self.base().add(to).cast::<U>() }
+  }
+
+  /// What `pointer`, `Option` of a pointer, aims at if it is one.
+  ///
+  /// # Panics
+  /// If the pointer is not in this region.
+  #[must_use]
+  pub fn option<'a, U, O: Offset>(&'a self, pointer: Option<&'a One<U, O>>) -> Option<&'a U> {
+    pointer.map(|pointer| self.get(pointer))
   }
 
   /// What `pointer` aims at, if anything.

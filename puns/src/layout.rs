@@ -1184,6 +1184,39 @@ impl Layout {
     }
   }
 
+  /// The layout of `Option<P>`, where `P` is a self-relative pointer whose `POINTER` is `pointer`
+  /// and which aims at `T`: the same pointer, that may be null. [`self_relative!`](crate::self_relative)
+  /// gives it as `Pun::OPTION`, by which `Option<P>` is that pointer.
+  ///
+  /// `Option<P>` is that when it has the size of `P` and `None` is all zero bytes, which is
+  /// checked here. Then `rustc` puts `None` in a niche of the bytes of `P` (all of them are of
+  /// its offset, initialized: S1 of [`SelfRelative`](crate::SelfRelative)), which is zeros, and
+  /// leaves the bytes of `Some(p)` the ones of `p` (R1 of `discover.rs`), which are not all zero:
+  /// a value of all zero bytes aims at nothing, any other is a pointer as `P` is (S5).
+  ///
+  /// # Panics
+  /// If `pointer` may be null already, if `Option<P>` is larger than `P` (an offset without a
+  /// niche at zero, such as a byte array, has a tag of its own in `Option`; a `NonZero` has
+  /// one), or if `None` is not zeros.
+  #[must_use]
+  pub const fn nullable<P, T>(pointer: Pointer) -> Self {
+    assert!(!pointer.is_nullable(), "`Option` of a pointer that may be null is not a pointer");
+    assert!(
+      size_of::<Option<P>>() == size_of::<P>(),
+      "`Option` of this self-relative pointer is larger than it: its offset has no niche at zero \
+       (a `NonZero` has one), so `None` is not the pointer of zeros"
+    );
+    let none = mem::MaybeUninit::new(None::<P>);
+    let mut i = 0;
+    while i < size_of::<P>() {
+      // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2).
+      let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
+      assert!(byte == 0, "`None` of this self-relative pointer is not zeros");
+      i += 1;
+    }
+    Self::pointer::<Option<P>, T>(pointer.or_null())
+  }
+
   /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting
   /// what the pointers aim at.
   #[must_use]

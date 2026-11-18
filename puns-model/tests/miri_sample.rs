@@ -50,7 +50,7 @@ fn sample() {
     puns_model::all_pairs!(4; [u8; 3], Wide, Triple);
     puns_model::all_pairs!(4; u32, char, PadMid, Shape, Drawing);
     // Enums without `repr`: a niche, a direct tag, each with what is next to it.
-    puns_model::all_pairs!(6; u8, bool, MaybeFlag, NzOpt, ChoiceU);
+    puns_model::all_pairs!(6; u8, bool, MaybeFlag, NzOpt, ChoiceU, Option<Option<bool>>);
     puns_model::all_pairs!(4; [u8; 2], (u8, bool), Pair, Mixed, Flags2, FlagsU, NestPair, Opt);
     puns_model::all_pairs!(4; u32, char, Letter, Wid);
   }

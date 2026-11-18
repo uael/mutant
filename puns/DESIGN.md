@@ -454,7 +454,8 @@ description of a pointer (`layout::Pointer`) holds what the proof needs and noth
   the alignment of the type: `nearest` says the larger of it and the width of the offset); or
   **text**, UTF-8. The size and the alignment of the target type (of an element) are kept;
 - whatever it is **nullable** (`Pointer::or_null`): an offset whose bytes are all zero is then no
-  pointer. This is what a nullable pointer, an `Option` of one say, is described with.
+  pointer. This is what a nullable pointer is described with, and `Option` of a pointer is one
+  (section 10).
 
 What a pointer aims at is *not* in the layout: the layout of `struct Node { next: Opt<Node> }`
 would have no end, and const evaluation has no identity of a type by which to stop where it has
@@ -718,6 +719,29 @@ the layout with no tag. The lists of fields and variants are the declared ones: 
 variant without values is not in the layout, and its entry in the list says so (`FIELD` is
 `None`). No field may hold a self-relative pointer (a sample of one is not made of nothing).
 
+**`Option<T>` and `Result<T, E>`** (`std_enums.rs`) are found the same way, for any `T` and `E`,
+when their layout is known: `Option<NonZero<u32>>` is a niche at 0 (every `u32` is one, both ways
+proven), `Option<bool>` the niche 2, `Option<Option<bool>>` two niches (`rustc` puts `None` at 255
+today, below the valid values rather than after them: found, not assumed), `Option<u16>` a tag
+of two bytes, `Result<u32, Infallible>` a struct of its `u32`.
+
+**`Option` of a self-relative pointer** is the same pointer, that may be null. A pointer is not
+looked into by the discovery, so `Pun` has a hidden associated constant, `OPTION`, the layout of
+`Option<Self>` if `Self` gives it (`None` by default: found). `self_relative!` gives
+`Layout::nullable::<Self, Target>(POINTER)`, which is `POINTER.or_null()` after checking, where
+`Option` of the pointer is used, that `Option<Self>` has the size of `Self` and that `None` is all
+zero bytes (read in const evaluation). Then `rustc` has put `None` in a niche of the bytes of the
+pointer (they are all of its offset, initialized: S1), which is zeros, and `Some(p)` is the bytes
+of `p` (R1), which are not all zero: S5 holds of `Option<Self>`. An offset that has no niche at
+zero (a byte array) makes `Option` of the pointer larger, with a tag of its own: that fails to
+build where it is used, with a message (compile-fail test `option_of_pointer_without_niche`). The
+generic `impl Pun for Option<T>` takes `T::OPTION` when it is `Some`: nothing is then found (an
+empty `Desc`), its lists of variants end at once (a pointer is not looked into by `deep.rs` but
+for what it aims at, its `Pointee`, which is `T::Pointee`), and the rules of section 8 apply to
+it as to any pointer. A crate that declares a pointer gets this from the macro alone; the tests
+show it with an offset whose zero is a niche (`Nz32le`), `Option<One<T, Nz32le>>` read as `Opt<T,
+i32le>` and back, through values of a buffer.
+
 ## Model check
 
 `puns-model/` compares every verdict of the analysis with oracles that do not use it,
@@ -786,20 +810,12 @@ as something else, a check that would be behind a pointer.
   marks of each pair of types, which only the crate that has the pointers can make (it knows the
   way to the targets): `puns` would give it the check of one value at a time, with the marks
   (see `validate`), which is not public yet.
-- **`Option` of a pointer**: a nullable pointer is a type of its own (`Pointer::or_null`); an
-  `Option<P>` of a pointer `P` whose `None` is zeros is the same description, once `Option` is
-  a `Pun` type that a pointer type can describe.
 - **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
   part, while the operations of a rule tell which fields and bytes it reads (a rule over other
   fields only could be allowed), and any enum only partly covered, while an enum all of whose
   variants accept what is written could be allowed.
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
-- **`Pun` for `Option<T>` and `Result<T, E>`**: the discovery works on generic enums (the tests
-  have an `Option` and a `Result` of their own), but `impl Pun for Option<T>` would overlap the
-  implementation for `Option<Near<T, O>>` of the feature `nearest`, which is leaving the crate.
-  It comes with a hook by which a pointer type gives `Option` of it the layout of a nullable
-  pointer. Until then, `Option<NonZero<..>>` is a scalar, as it was.
 - **Precise checks of an enum made from something else**: when only some of its variants are
   proven, or some values of the source are no tag, the whole enum is checked at run time (its
   tag, then the fields of its variant), not only what was not proven.

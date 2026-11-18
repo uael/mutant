@@ -149,13 +149,19 @@ pub unsafe trait SelfRelative: Sized {
   const POINTER: Pointer;
 }
 
-/// Makes a [`SelfRelative`] type a [`Pun`] type.
+/// Makes a [`SelfRelative`] type a [`Pun`] type, and `Option` of it the same pointer that may be
+/// null.
 ///
 /// `self_relative!(Type)` for a type without parameters, and `self_relative!(impl[T: Bound, ..]
 /// Type<T, ..>)` with the parameters of its implementation of `SelfRelative`. It writes the
 /// implementation of `Pun` that the pointer needs, from what `SelfRelative` says of it (see there
 /// for an example), and nothing that it does not say: it requires `SelfRelative`, whose
 /// implementation is the promise.
+///
+/// `Option<Type>` is then a `Pun` type too, the pointer of `POINTER.or_null()`, if `None` is the
+/// pointer of zeros: if the offset of the pointer has a niche at zero (a `NonZero` in it), as
+/// `Layout::nullable` checks where it is used (an offset of no niche makes `Option` larger, and
+/// does not compile there).
 ///
 /// The items of `Pun` are not written by hand: they are this crate's own, and may change.
 #[macro_export]
@@ -175,6 +181,13 @@ macro_rules! self_relative {
         Self,
         <$ty as $crate::SelfRelative>::Target,
       >(<$ty as $crate::SelfRelative>::POINTER);
+      // `Option` of the pointer is the same pointer, that may be null: if `None` is the pointer
+      // of zeros, which `nullable` checks where `Option` of it is used (S5).
+      const OPTION: ::core::option::Option<$crate::layout::Layout> =
+        ::core::option::Option::Some($crate::layout::Layout::nullable::<
+          Self,
+          <$ty as $crate::SelfRelative>::Target,
+        >(<$ty as $crate::SelfRelative>::POINTER));
     }
   };
   ($ty:ty) => {
