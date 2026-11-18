@@ -13,10 +13,10 @@
 //! | the BGP marker: 16 bytes of ones                | `[u8c<0xff>; 16]`                           |
 //! | a BGP message tells its type                    | `tag(MessageType = u8c<1>)`                 |
 //! | BGP UPDATE: three parts, each sized before it   | `regions(withdrawn = .., attributes = ..)`  |
-//! | BGP attributes: a length of 1 or 2 bytes        | a struct per form, an enum of references    |
+//! | BGP attributes: a length of 1 or 2 bytes        | `size = if .. { 3 + be(2, 1) } else { .. }` |
 //! | BGP prefixes: a length in bits                  | `size = (bits + 7) / 8 + 1`                 |
 //! | the OSPF checksum skips the authentication      | `assert((sum16(0, 16) + sum16(..)) ..)`     |
-//! | the Fletcher checksum of OSPF LSAs              | `assert({ let state = walk(..); .. })`      |
+//! | the Fletcher checksum of OSPF LSAs              | `assert(fletcher16(2, ..) == 0)`            |
 //! | GRE: optional fields told by flags              | `regions(key = if .. { 4 } else { 0 }, ..)` |
 //! | the GRE checksum, when there is one             | `assert(.. \|\| sum16(..) == 0xffff)`       |
 //! | GRE and Geneve tell what they carry             | `tag(EtherType = u16bec<0x0800>)`           |
@@ -29,11 +29,8 @@
 //!
 //! What is not covered, and why:
 //!
-//! - BGP path attributes: the size of an attribute is in 1 or 2 bytes, as a flag tells. A `size`
-//!   rule reads fields, not `be(..)`: each form is a struct, and an enum of references tells them
-//!   apart. This is the current way: with `be` in `size` (planned), it is one struct. The
-//!   attributes are read one by one by use code: a sequence of things of their own sizes is
-//!   bytes. Their meanings (AS paths, communities, MP-BGP) are more declarations of the same
+//! - BGP path attributes are read one by one by use code: a sequence of things of their own
+//!   sizes is bytes. Their meanings (AS paths, communities, MP-BGP) are more declarations of the same
 //!   kind, left out here.
 //! - The ICMPv6 checksum covers the addresses of the IPv6 packet: it is checked by the packet,
 //!   as in `ethernet.rs`. A message is checked here on its own.
@@ -109,39 +106,17 @@ pub struct Update {
   pub data: [u8],
 }
 
-/// A path attribute whose length is one byte (the "extended length" flag, `0x10`, is not set).
-///
-/// The flags tell the size of the length: a struct for each ([`Attribute8`], [`Attribute16`])
-/// and an enum of references ([`Attribute`]). This is the current way: with `be` in `size`
-/// (planned), it is one struct.
+/// A path attribute: flags, a type, a length of one byte, or two if the "extended length" flag
+/// (`0x10`) is set, then the value.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = length + 3)]
-#[pun(assert(flags & 0x10 == 0 && flags & 0x0f == 0))]
-pub struct Attribute8 {
+#[pun(size = if flags & 0x10 == 0 { 3 + be(2, 1) } else { 4 + be(2, 2) })]
+#[pun(assert(flags & 0x0f == 0))]
+pub struct Attribute {
   pub flags: u8,
   pub kind: u8,
-  pub length: u8,
-  pub value: [u8],
-}
-
-/// A path attribute whose length is two bytes.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = length + 4)]
-#[pun(assert(flags & 0x10 != 0 && flags & 0x0f == 0))]
-pub struct Attribute16 {
-  pub flags: u8,
-  pub kind: u8,
-  pub length: u16be,
-  pub value: [u8],
-}
-
-/// A path attribute.
-#[derive(Pun)]
-pub enum Attribute<'a> {
-  Short(&'a Attribute8),
-  Long(&'a Attribute16),
+  #[pun(regions(length = if flags & 0x10 == 0 { 1 } else { 2 }, value))]
+  pub rest: [u8],
 }
 
 /// ORIGIN: well-known and transitive, a byte of 0 (IGP) to 2 (incomplete).
@@ -194,26 +169,12 @@ pub struct Ospf {
 /// A link state advertisement: a header of 20 bytes, then what it advertises.
 ///
 /// Its checksum is the Fletcher checksum of ISO 8473, over all of it but its age (2 bytes):
-/// over data that holds it, both of its sums are 0. There is no Fletcher checksum in the
-/// expressions: a walk computes it, a byte per step, with a state of three numbers in one,
-/// `c1 << 40 | c0 << 32 | offset`. This is the current way, until a function for it is built in.
+/// over data that holds it, both of its sums are 0.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = length)]
 #[pun(assert(length >= 20))]
-#[pun(assert({
-  let state = walk(
-    2,
-    |s| s & 0xffff_ffff < size_of_val(self),
-    |s| {
-      let at = s & 0xffff_ffff;
-      let c0 = (((s >> 32) & 0xff) + be(at, 1)) % 255;
-      let c1 = ((s >> 40) + c0) % 255;
-      (at + 1) | (c0 << 32) | (c1 << 40)
-    },
-  );
-  state >> 32 == 0
-}))]
+#[pun(assert(fletcher16(2, size_of_val(self)) == 0))]
 pub struct Lsa {
   pub age: u16be,
   pub options: u8,
@@ -571,11 +532,8 @@ pub fn main() {
     (0, 21, &[8, 10][..])
   );
   let (mut rest, mut attributes) = (update.attributes(), vec![]);
-  while let Ok((attribute, next)) = Attribute::from_head(rest) {
-    attributes.push(match attribute {
-      Attribute::Short(attribute) => (attribute.kind, attribute.value.len()),
-      Attribute::Long(attribute) => (attribute.kind, attribute.value.len()),
-    });
+  while let Ok((attribute, next)) = from_head::<Attribute>(rest) {
+    attributes.push((attribute.kind, attribute.value().len()));
     rest = next;
   }
   assert_eq!((attributes, rest.len()), (vec![(1, 1), (2, 6), (3, 4)], 0));
@@ -590,7 +548,7 @@ pub fn main() {
   assert_eq!(try_pun_ref::<_, Origin>(&[0x40u8, 1, 1, 3][..]).err(), Some(Error::Validity));
   assert_eq!(from_head::<Prefix>(&[33, 1, 2, 3, 4, 5]).err(), Some(Error::Validity));
   // The extended length flag on ORIGIN: its length is then `[1, 0]`, beyond the bytes.
-  assert!(Attribute::from_head(&[0x50, 1, 1, 0]).is_err());
+  assert!(from_head::<Attribute>(&[0x50, 1, 1, 0]).is_err());
 
   // ---- OSPF: a checksum that skips the authentication.
   let (hello, rest) = from_head::<Ospf>(&HELLO).unwrap();

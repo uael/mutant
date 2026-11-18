@@ -14,9 +14,9 @@
 //! | stored data agrees with its CRC-32             | `assert(method != 0 \|\| crc32(..) ..)`     |
 //! | the end of a ZIP file is found from its end    | `walk(.., \|at\| at - 1)`                   |
 //! | the central directory ends at the end record   | `assert(le(end + 12, 4) + .. == end)`       |
-//! | tar: sizes are octal ASCII digits              | `size = 512 + ..`, `assert(.. == 0x3030..)` |
+//! | tar: sizes are octal ASCII digits              | `matches(Dfa::OCTAL, ..)`, a decoding walk  |
 //! | tar: data padded to 512 bytes                  | `regions(data = .., padding)`               |
-//! | tar: a checksum, its own field as spaces       | `assert({ let s = walk(0, ..); .. })`       |
+//! | tar: a checksum, its own field as spaces       | `sum(0, 148) + 8 * 32 + sum(156, 512)`      |
 //! | gzip: optional fields told by flags            | `if flags & 4 != 0 { .. } else { 0 }`       |
 //! | gzip: names and comments that end with a NUL   | a `walk` that counts the NULs to find       |
 //! | gzip: the CRC-16 of the header                 | `crc32(0, end) & 0xffff == le(end, 2)`      |
@@ -32,9 +32,8 @@
 //!   directory by use code. The central directory and the entries are found from the end record,
 //!   which is found by a walk: what a walk finds cannot size a region, so they are not regions of
 //!   [`Zip`], but are reached again by use code. ZIP64 is more declarations of the same kind.
-//! - tar: the size of an entry is decoded from 11 octal digits, the 12 bytes of two integer
-//!   fields (an expression reads integer fields, not arrays). The numbers of base-256 (GNU) and
-//!   the headers of pax are more declarations of the same kind.
+//! - tar: the numbers of base-256 (GNU) and the headers of pax are more declarations of the same
+//!   kind.
 //! - gzip: the walk over the name and the comment cannot size regions either: the deflate data is
 //!   a region that starts after the 10 bytes of the fixed header, of everything but the 8 last
 //!   bytes, and it holds the optional fields.
@@ -42,7 +41,8 @@
 
 use puns::{
   Error, Pun, from_head,
-  num::{u8c, u16bec, u16le, u32be, u32le, u32lec, u48bec, u64be},
+  layout::Dfa,
+  num::{u8c, u16bec, u16le, u32le, u32lec, u48bec},
   try_pun_ref,
 };
 
@@ -134,49 +134,24 @@ pub struct Zip(pub [u8]);
 
 /// A ustar header, then the data of its entry, padded to 512 bytes.
 ///
-/// Its numbers are octal ASCII. The size of the data, 11 digits then a NUL or a space, is in two
-/// integer fields (`size_high`, `size_low`): it is decoded digit by digit (`& 7`) where it is
-/// needed, in the `size` rule and in the regions, and its digits are checked to be digits.
+/// Its numbers are octal ASCII: the size of the data is 11 digits then a NUL or a space, which a
+/// walk decodes (its state is the value, then the offset in the low 9 bits); the checksum is the
+/// sum of the bytes of the header, its own 8 bytes counted as spaces, in 6 digits, a NUL, a space.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = 512 + ({
-  let digits = ((((((size_high >> 56) & 7) * 8 + ((size_high >> 48) & 7)) * 8
-    + ((size_high >> 40) & 7)) * 8 + ((size_high >> 32) & 7)) * 8 + ((size_high >> 24) & 7)) * 8
-    + ((size_high >> 16) & 7);
-  let size = ((((digits * 8 + ((size_high >> 8) & 7)) * 8 + (size_high & 7)) * 8
-    + ((size_low >> 24) & 7)) * 8 + ((size_low >> 16) & 7)) * 8 + ((size_low >> 8) & 7);
-  (size + 511) / 512 * 512
-}))]
-#[pun(assert(size_high & 0xf8f8_f8f8_f8f8_f8f8 == 0x3030_3030_3030_3030
-  && size_low & 0xf8f8_f800 == 0x3030_3000))]
-#[pun(assert(size_low & 0xff == 0 || size_low & 0xff == 0x20))]
-// The checksum: the sum of the bytes of the header, its own 8 bytes counted as spaces, is the
-// octal number it holds (6 digits, a NUL, a space). One walk adds the bytes (in bits 16 to 39 of
-// its state) and reads the digits (from bit 40: NUL and space are read as 0).
-#[pun(assert({
-  let s = walk(
-    0,
-    |s| s & 0xffff < 512,
-    |s| {
-      let at = s & 0xffff;
-      let byte = be(at, 1);
-      if at >= 148 && at < 156 {
-        s + 1 + 0x20_0000 + (((s >> 40) * 7 + (byte & 7)) << 40)
-      } else {
-        s + 1 + (byte << 16)
-      }
-    },
-  );
-  (s >> 16) & 0xff_ffff == (s >> 40) / 64
-}))]
+#[pun(size = 512 + (walk(124, |s| s % 512 < 135, |s| (s / 512 * 8 + (be(s % 512, 1) & 7)) * 512 + s % 512 + 1) / 512 + 511) / 512 * 512)]
+#[pun(assert(matches(Dfa::OCTAL, 124, 135) && (be(135, 1) == 0 || be(135, 1) == 32)))]
+#[pun(assert(
+  matches(Dfa::OCTAL, 148, 154)
+    && sum(0, 148) + 8 * 32 + sum(156, 512)
+      == walk(148, |s| s % 512 < 154, |s| (s / 512 * 8 + (be(s % 512, 1) & 7)) * 512 + s % 512 + 1) / 512
+))]
 pub struct TarEntry {
   pub name: [u8; 100],
   pub mode: [u8; 8],
   pub uid: [u8; 8],
   pub gid: [u8; 8],
-  /// The 12 bytes of the size, as two integers.
-  pub size_high: u64be,
-  pub size_low: u32be,
+  pub size: [u8; 12],
   pub mtime: [u8; 12],
   pub checksum: [u8; 8],
   /// A file, a link, a directory...; extended headers.
@@ -193,13 +168,10 @@ pub struct TarEntry {
   pub devminor: [u8; 8],
   pub prefix: [u8; 155],
   pub pad: [u8; 12],
-  #[pun(regions(data = {
-    let digits = ((((((size_high >> 56) & 7) * 8 + ((size_high >> 48) & 7)) * 8
-      + ((size_high >> 40) & 7)) * 8 + ((size_high >> 32) & 7)) * 8 + ((size_high >> 24) & 7)) * 8
-      + ((size_high >> 16) & 7);
-    ((((digits * 8 + ((size_high >> 8) & 7)) * 8 + (size_high & 7)) * 8
-      + ((size_low >> 24) & 7)) * 8 + ((size_low >> 16) & 7)) * 8 + ((size_low >> 8) & 7)
-  }, padding))]
+  #[pun(regions(
+    data = walk(124, |s| s % 512 < 135, |s| (s / 512 * 8 + (be(s % 512, 1) & 7)) * 512 + s % 512 + 1) / 512,
+    padding,
+  ))]
   pub content: [u8],
 }
 
