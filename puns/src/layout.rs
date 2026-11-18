@@ -1423,14 +1423,14 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 /// A deterministic finite automaton over bytes: the language of an unsized type like `str`.
 ///
 /// The first state is the initial one. At most 64 states.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Dfa {
   /// Two automata with the same `id` must be the same.
   pub id: u32,
   pub states: &'static [DfaState],
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DfaState {
   /// Whatever a value can end in this state.
   pub accept: bool,
@@ -1472,6 +1472,97 @@ impl Dfa {
       DfaState { accept: false, edges: &[(0x80, 0x8f, 2)] },
     ],
   };
+
+  /// ASCII: bytes below `0x80`.
+  pub const ASCII: &'static Dfa =
+    &Dfa { id: 2, states: &[DfaState { accept: true, edges: &[(0x00, 0x7f, 0)] }] };
+
+  /// Decimal digits, `0` to `9`.
+  pub const DIGITS: &'static Dfa =
+    &Dfa { id: 3, states: &[DfaState { accept: true, edges: &[(b'0', b'9', 0)] }] };
+
+  /// Octal digits, `0` to `7`.
+  pub const OCTAL: &'static Dfa =
+    &Dfa { id: 4, states: &[DfaState { accept: true, edges: &[(b'0', b'7', 0)] }] };
+
+  /// Hexadecimal digits, of either case.
+  pub const HEX: &'static Dfa = &Dfa {
+    id: 5,
+    states: &[DfaState {
+      accept: true,
+      edges: &[(b'0', b'9', 0), (b'A', b'F', 0), (b'a', b'f', 0)],
+    }],
+  };
+
+  /// UTF-8 without `U+0000` (the strings of MQTT).
+  pub const UTF8_NO_NUL: &'static Dfa = &Dfa {
+    id: 6,
+    states: &[
+      DfaState {
+        accept: true,
+        edges: &[
+          (0x01, 0x7f, 0),
+          (0xc2, 0xdf, 1),
+          (0xe0, 0xe0, 4),
+          (0xe1, 0xec, 2),
+          (0xed, 0xed, 5),
+          (0xee, 0xef, 2),
+          (0xf0, 0xf0, 6),
+          (0xf1, 0xf3, 3),
+          (0xf4, 0xf4, 7),
+        ],
+      },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 0)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 1)] },
+      DfaState { accept: false, edges: &[(0x80, 0xbf, 2)] },
+      DfaState { accept: false, edges: &[(0xa0, 0xbf, 1)] },
+      DfaState { accept: false, edges: &[(0x80, 0x9f, 1)] },
+      DfaState { accept: false, edges: &[(0x90, 0xbf, 2)] },
+      DfaState { accept: false, edges: &[(0x80, 0x8f, 2)] },
+    ],
+  };
+
+  /// Whatever two automata have the same states and edges (what their `id`s do not prove).
+  pub(crate) const fn same(&self, other: &Dfa) -> bool {
+    if self.states.len() != other.states.len() {
+      return false;
+    }
+    let mut state = 0;
+    while state < self.states.len() {
+      let (ours, theirs) = (&self.states[state], &other.states[state]);
+      if ours.accept != theirs.accept || ours.edges.len() != theirs.edges.len() {
+        return false;
+      }
+      let mut edge = 0;
+      while edge < ours.edges.len() {
+        let (first, second) = (ours.edges[edge], theirs.edges[edge]);
+        if first.0 != second.0 || first.1 != second.1 || first.2 != second.2 {
+          return false;
+        }
+        edge += 1;
+      }
+      state += 1;
+    }
+    true
+  }
+
+  /// Whatever the automaton accepts `bytes`, by its states and edges alone.
+  pub(crate) const fn accepts_bytes(&self, bytes: &[u8]) -> bool {
+    let (mut state, mut i) = (0, 0);
+    'bytes: while i < bytes.len() {
+      let (edges, mut j) = (self.states[state].edges, 0);
+      while j < edges.len() {
+        if edges[j].0 <= bytes[i] && bytes[i] <= edges[j].1 {
+          state = edges[j].2 as usize;
+          i += 1;
+          continue 'bytes;
+        }
+        j += 1;
+      }
+      return false;
+    }
+    self.states[state].accept
+  }
 
   const fn check(&self) {
     assert!(!self.states.is_empty() && self.states.len() <= 64, "a DFA has 1 to 64 states");
@@ -1546,20 +1637,7 @@ impl Dfa {
     if self.id == Self::UTF8.id {
       return core::str::from_utf8(bytes).is_ok();
     }
-    let (mut state, mut i) = (0, 0);
-    'bytes: while i < len {
-      let (edges, mut j) = (self.states[state].edges, 0);
-      while j < edges.len() {
-        if edges[j].0 <= bytes[i] && bytes[i] <= edges[j].1 {
-          state = edges[j].2 as usize;
-          i += 1;
-          continue 'bytes;
-        }
-        j += 1;
-      }
-      return false;
-    }
-    self.states[state].accept
+    self.accepts_bytes(bytes)
   }
 }
 
@@ -1609,6 +1687,9 @@ pub enum Op {
   CrcZeros(&'static Crc),
   /// Replace two offsets by a checksum of the bytes between them.
   Checksum(Checksum),
+  /// Replace two offsets by whatever the automaton accepts the bytes between them: a pattern
+  /// that a struct requires of them (which proves nothing of them, as any rule).
+  Matches(&'static Dfa),
   Add,
   Sub,
   Mul,
@@ -1684,6 +1765,14 @@ impl Unsigned for u128 {}
 impl Unsigned for usize {}
 
 impl Op {
+  /// [`Op::Matches`], of an automaton that is checked to be one.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn matches(dfa: &'static Dfa) -> Self {
+    dfa.check();
+    Op::Matches(dfa)
+  }
+
   /// What `as usize` keeps of a value.
   #[doc(hidden)]
   pub const USIZE_MAX: u128 = usize::MAX as u128;
@@ -1756,6 +1845,7 @@ impl Op {
         | Op::Crc(_)
         | Op::CrcZeros(_)
         | Op::Checksum(_)
+        | Op::Matches(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Walk { .. } => {
@@ -1803,6 +1893,7 @@ impl Op {
       }
       (Op::Crc(a), Op::Crc(b)) | (Op::CrcZeros(a), Op::CrcZeros(b)) => a.equals(b),
       (Op::Checksum(a), Op::Checksum(b)) => a as u8 == b as u8,
+      (Op::Matches(a), Op::Matches(b)) => a.same(b),
       (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) | (Op::Let(a), Op::Let(b)) => a == b,
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
@@ -1815,6 +1906,7 @@ impl Op {
         | Op::Crc(_)
         | Op::CrcZeros(_)
         | Op::Checksum(_)
+        | Op::Matches(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1830,6 +1922,7 @@ impl Op {
         | Op::Crc(_)
         | Op::CrcZeros(_)
         | Op::Checksum(_)
+        | Op::Matches(_)
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1876,6 +1969,7 @@ impl Op {
       Op::Crc(_) => 31,
       Op::CrcZeros(_) => 32,
       Op::Checksum(_) => 33,
+      Op::Matches(_) => 34,
       Op::Let(_) => 29,
     }
   }
@@ -2111,7 +2205,8 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
       | Op::Sum16
       | Op::Crc(_)
       | Op::CrcZeros(_)
-      | Op::Checksum(_) => return true,
+      | Op::Checksum(_)
+      | Op::Matches(_) => return true,
       Op::Walk { cond, next, .. } if ops_read_bytes(cond) || ops_read_bytes(next) => return true,
       _ => {}
     }
@@ -2461,7 +2556,12 @@ impl Machine {
           self.set(depth - 1, None);
         }
       }
-      op @ (Op::Crc32 | Op::Sum16 | Op::Crc(_) | Op::CrcZeros(_) | Op::Checksum(_)) => {
+      op @ (Op::Crc32
+      | Op::Sum16
+      | Op::Crc(_)
+      | Op::CrcZeros(_)
+      | Op::Checksum(_)
+      | Op::Matches(_)) => {
         // The range, and the one taken as zeros (none but for `CrcZeros`).
         let operands = if matches!(op, Op::CrcZeros(_)) { 4 } else { 2 };
         let (start, end) = (self.get(depth - operands), self.get(depth - operands + 1));
@@ -2487,6 +2587,7 @@ impl Machine {
             Op::Sum16 => sum16(bytes) as u128,
             Op::Crc(crc) | Op::CrcZeros(crc) => crc.compute(bytes, zeros) as u128,
             Op::Checksum(checksum) => checksum.compute(bytes),
+            Op::Matches(dfa) => dfa.accepts_bytes(bytes) as u128,
             _ => 0,
           })
         } else {
@@ -2660,6 +2761,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     | Op::Crc(_)
     | Op::CrcZeros(_)
     | Op::Checksum(_)
+    | Op::Matches(_)
     | Op::Both
     | Op::Either
     | Op::Select

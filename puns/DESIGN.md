@@ -396,8 +396,14 @@ without its second condition, are caught.
   values); what is missing is a sample of every field type, and the experiments.
 - An enum made from something that is not an enum is always checked at run time, even when
   every value of the source happens to be valid.
-- Patterns other than `str`: the engine takes any DFA of at most 64 states, but there is no way
-  to declare one from the derive.
+- Patterns other than `str` as types: the engine takes any DFA of at most 64 states, as a type
+  that guarantees it, but such a type cannot come from the derive, whose fields safe code can
+  write: a struct requires a pattern of its bytes with a rule, `matches(DFA, start, end)`
+  (`Op::Matches`), proven only by the same rule, as any rule. Automata are compared by their
+  states and edges, not by their `id`, which a user can choose.
+- A byte order that a value tells (`EI_DATA` of ELF, the byte order mark of TIFF): a type has a
+  byte order of its own (`u32be`, `i16le`, `f64be`...), so this is a choice between two types,
+  which an enum of references makes.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
 - An arbitrary function in a rule (getters take any). The validator is `const fn` code, generic
   over the type it validates, and on stable 1.100 such code cannot call a function that the type

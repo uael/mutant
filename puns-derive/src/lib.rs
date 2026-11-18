@@ -32,6 +32,10 @@ use syn::{
 ///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
 /// - `#[pun(crate = path)]`: path of the `puns` crate.
 ///
+/// The byte order of a field is the one of its type: `u32be`, `i16le`, `f64be`... of
+/// `puns::num`. A byte order that a value tells (ELF, TIFF) is a choice between two types, which
+/// an enum of references makes.
+///
 /// Options of a field:
 /// - `#[pun(valid(0x45..=0x4f, 0x60))]`: the field, an integer, only takes these values, which
 ///   are unsigned integers (literals or constants, as in an `EXPR` below);
@@ -103,7 +107,12 @@ use syn::{
 ///   over the header that holds it, as in GPT);
 /// - `fletcher16(start, end)`, `adler32(start, end)`: Fletcher-16 (`0` over data that holds its
 ///   ISO 8473 checksum, as OSPF and IS-IS do) and Adler-32; `sum(start, end)`: the sum of the
-///   bytes (tar).
+///   bytes (tar);
+/// - `matches(DFA, start, end)`: whatever the bytes from `start` to `end` are accepted by an
+///   automaton, a `&'static puns::layout::Dfa` (`Dfa::ASCII`, `Dfa::DIGITS`, `Dfa::OCTAL`,
+///   `Dfa::HEX`, `Dfa::UTF8`, `Dfa::UTF8_NO_NUL`, or one of yours): a pattern that the struct
+///   requires of its bytes. As any rule, it proves nothing of them: a type that guarantees a
+///   pattern, as `str` does, cannot be derived, since its field can be written by safe code.
 /// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for
 ///   as long as `COND` is true of it. This is how what is at an offset that depends on what is
 ///   before is reached: after options, at the end of a chain of headers
@@ -689,8 +698,13 @@ fn propagated(expr: &Expr) -> std::collections::HashSet<String> {
     }
     // The functions of rules need their arguments, `walk` where it starts.
     Expr::Call(call) if ARITIES.iter().any(|(f, _)| is_call(call, f)) || is_crc(call) => {
-      let count = if is_call(call, "walk") { 1 } else { call.args.len() };
-      for arg in call.args.iter().take(count) {
+      // (Not the automaton of `matches`, a constant.)
+      let (skip, count) = match () {
+        () if is_call(call, "walk") => (0, 1),
+        () if is_call(call, "matches") => (1, 2),
+        () => (0, call.args.len()),
+      };
+      for arg in call.args.iter().skip(skip).take(count) {
         names.extend(propagated(arg));
       }
     }
@@ -897,6 +911,14 @@ fn compile(
       ops.push(quote!(#op::At { size: #size, big: #big }));
       Ty::Int
     }
+    // `matches(DFA, start, end)`: whatever the bytes are accepted by an automaton.
+    Expr::Call(call) if call.args.len() == 3 && is_call(call, "matches") => {
+      int(&call.args[1], ops, scope)?;
+      int(&call.args[2], ops, scope)?;
+      let dfa = &call.args[0];
+      ops.push(located(quote!(#op::matches(#dfa)), dfa.span()));
+      Ty::Bool
+    }
     // `leb128(offset)`, `quic_len(offset)`...: a variable-length integer, or its length.
     Expr::Call(call) if call.args.len() == 1 && varint(call).is_some() => {
       let Some((form, length)) = varint(call) else { unreachable!() };
@@ -953,10 +975,10 @@ fn compile(
 /// The functions that a rule can call.
 const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, \
                          `quic_len`, `vlq`, `vlq_len`, `crc32`, `crc::<..>`, `sum16`, `sum`, \
-                         `fletcher16`, `adler32` and `walk`";
+                         `fletcher16`, `adler32`, `matches` and `walk`";
 
 /// The functions of rules, and how many arguments each takes (`crc32` and `crc` also take 4).
-const ARITIES: [(&str, usize); 15] = [
+const ARITIES: [(&str, usize); 16] = [
   ("le", 2),
   ("be", 2),
   ("leb128", 1),
@@ -971,6 +993,7 @@ const ARITIES: [(&str, usize); 15] = [
   ("sum", 2),
   ("fletcher16", 2),
   ("adler32", 2),
+  ("matches", 3),
   ("walk", 3),
 ];
 

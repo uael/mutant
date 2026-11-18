@@ -2,6 +2,7 @@
 //!
 //! - `u16le`, `u32be`...: integers stored in a given byte order. They are byte arrays, hence have
 //!   no alignment requirement.
+//! - `i16le`, `i32be`..., `f32le`, `f64be`...: signed and floating-point numbers, the same way.
 //! - `u8c<V>`, `u16lec<V>`, `u32bec<V>`...: integers whose only valid value is `V`: magic numbers,
 //!   type tags and the like.
 
@@ -190,6 +191,89 @@ ints! {
   u64be u64bec: u64[8] Big;
   u128le u128lec: u128[16] Little;
   u128be u128bec: u128[16] Big;
+}
+
+macro_rules! numbers {
+  ($($name:ident: $raw:ident[$size:literal] $endian:ident;)+) => {$(
+    #[doc = concat!("A `", stringify!($raw), "` of ", stringify!($size), " bytes, most significant ")]
+    #[doc = endian!($endian, "last (little-endian).", "first (big-endian).")]
+    ///
+    /// Its bits are not its value as an unsigned integer: the rules of `#[derive(Pun)]` do not read
+    /// it. Two are equal if their bytes are.
+    #[expect(non_camel_case_types, reason = "named like the primitive numbers they stand for")]
+    #[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
+    #[repr(transparent)]
+    pub struct $name([u8; $size]);
+
+    impl $name {
+      #[inline]
+      pub const fn new(value: $raw) -> Self {
+        Self(endian!($endian, value.to_le_bytes(), value.to_be_bytes()))
+      }
+
+      #[inline]
+      pub const fn get(self) -> $raw {
+        endian!($endian, $raw::from_le_bytes(self.0), $raw::from_be_bytes(self.0))
+      }
+
+      /// The bytes, as they are in memory.
+      #[inline]
+      pub const fn to_bytes(self) -> [u8; $size] {
+        self.0
+      }
+
+      #[inline]
+      pub const fn from_bytes(bytes: [u8; $size]) -> Self {
+        Self(bytes)
+      }
+    }
+
+    // SAFETY: a byte array.
+    unsafe impl Scalar for $name {
+      const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian).not_a_number();
+    }
+
+    impl From<$name> for $raw {
+      #[inline]
+      fn from(value: $name) -> Self {
+        value.get()
+      }
+    }
+
+    impl From<$raw> for $name {
+      #[inline]
+      fn from(value: $raw) -> Self {
+        Self::new(value)
+      }
+    }
+
+    impl fmt::Debug for $name {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.get(), f)
+      }
+    }
+
+    impl fmt::Display for $name {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.get(), f)
+      }
+    }
+  )+};
+}
+
+numbers! {
+  i16le: i16[2] Little;
+  i16be: i16[2] Big;
+  i32le: i32[4] Little;
+  i32be: i32[4] Big;
+  i64le: i64[8] Little;
+  i64be: i64[8] Big;
+  i128le: i128[16] Little;
+  i128be: i128[16] Big;
+  f32le: f32[4] Little;
+  f32be: f32[4] Big;
+  f64le: f64[8] Little;
+  f64be: f64[8] Big;
 }
 
 /// A `u8` that is `V`, and nothing else.
