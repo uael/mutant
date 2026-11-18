@@ -6,7 +6,6 @@ use puns::num::*;
 use puns_model::types::*;
 
 #[test]
-#[ignore = "full model run, a minute in debug: CI runs it with `--profile model`"]
 fn size2() {
   puns_model::all_pairs!(usize::MAX;
     u16, i16, NonZero<u16>, Option<NonZero<u16>>, u16le, u16be, u16lec<0x1234>, u16bec<0x1234>,

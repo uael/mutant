@@ -17,10 +17,6 @@ pub struct Verdict {
   pub try_pun: bool,
   pub pun_ref: bool,
   pub head_ref: bool,
-  pub tail: bool,
-  pub tail_ref: bool,
-  pub head_mut: bool,
-  pub tail_mut: bool,
   pub try_pun_ref: bool,
   pub pun_mut: bool,
   pub try_pun_mut: bool,
@@ -55,14 +51,39 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
     try_pun: ok::<S, D>(Need::TRY),
     pun_ref: ok::<S, D>(Need::REF),
     head_ref: ok::<S, D>(Need::PART_REF),
-    tail: Plan::<S, D>::check_tail(Need::PART).is_none(),
-    tail_ref: Plan::<S, D>::check_tail(Need::PART_REF).is_none(),
-    head_mut: Plan::<S, D>::check_head_mut().is_none(),
-    tail_mut: Plan::<S, D>::check_tail_mut().is_none(),
     try_pun_ref: ok::<S, D>(Need::TRY_REF),
     pun_mut: ok::<S, D>(Need::REF) && mutable,
     try_pun_mut: ok::<S, D>(Need::TRY_REF) && mutable,
     why,
+  }
+}
+
+/// What each function that takes a part of a value would do with a pun from `S` to `D`:
+/// whatever it compiles.
+///
+/// Apart from [`Verdict`], so that what only looks at the whole does not pay for the analyses of
+/// the end of the source and of the `&mut` to a part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "one for each function of the API")]
+pub struct Parts {
+  pub head: bool,
+  pub head_ref: bool,
+  pub head_mut: bool,
+  pub tail: bool,
+  pub tail_ref: bool,
+  pub tail_mut: bool,
+}
+
+/// What the analysis says of the parts of `S` as a `D`.
+#[must_use]
+pub const fn parts<S: ?Sized + Pun, D: ?Sized + Pun>() -> Parts {
+  Parts {
+    head: ok::<S, D>(Need::PART),
+    head_ref: ok::<S, D>(Need::PART_REF),
+    head_mut: Plan::<S, D>::check_head_mut().is_none(),
+    tail: Plan::<S, D>::check_tail(Need::PART).is_none(),
+    tail_ref: Plan::<S, D>::check_tail(Need::PART_REF).is_none(),
+    tail_mut: Plan::<S, D>::check_tail_mut().is_none(),
   }
 }
 
@@ -103,7 +124,7 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
 /// [`tail`](crate::tail), if it compiles.
 #[must_use]
 pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
-  if const { !verdict::<S, D>().tail } {
+  if const { !parts::<S, D>().tail } {
     return None;
   }
   let shift = const { Plan::<S, D>::TAIL_ANALYSIS.shift };
@@ -114,7 +135,7 @@ pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
 /// [`tail_ref`](crate::tail_ref), if it compiles.
 #[must_use]
 pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> {
-  if const { !verdict::<S, D>().tail_ref } {
+  if const { !parts::<S, D>().tail_ref } {
     return None;
   }
   // SAFETY: as in `tail_ref`, which would compile.
@@ -167,7 +188,7 @@ pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
 /// [`head_mut`](crate::head_mut), if it compiles.
 #[must_use]
 pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
-  if const { !verdict::<S, D>().head_mut } {
+  if const { !parts::<S, D>().head_mut } {
     return None;
   }
   let source: *mut S = value;
@@ -178,7 +199,7 @@ pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option
 /// [`tail_mut`](crate::tail_mut), if it compiles.
 #[must_use]
 pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
-  if const { !verdict::<S, D>().tail_mut } {
+  if const { !parts::<S, D>().tail_mut } {
     return None;
   }
   let source: *mut S = value;

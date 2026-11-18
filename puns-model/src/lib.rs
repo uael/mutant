@@ -23,7 +23,7 @@ use std::{collections::BTreeMap, fmt::Write as _, mem::MaybeUninit, sync::Mutex}
 
 use puns::{
   Pun,
-  hook::{self, Verdict},
+  hook::{self, Parts, Verdict},
 };
 
 /// Bytes of a value, `None` where they are uninitialized.
@@ -224,10 +224,11 @@ impl<A: Oracle, B: Oracle, C: Oracle, D: Oracle> Oracle for (A, B, C, D) {
 /// byte: all of them up to 2 bytes, else the bounds of the ranges of the types of the model.
 pub fn alphabet(size: usize) -> Vec<Option<u8>> {
   let bytes: Vec<u8> = match size {
-    // Miri cannot afford them all.
-    0..=1 if cfg!(miri) => vec![0, 1, 2, 3, 5, 7, 0x7f, 0x80, 0xfe, 0xff],
-    2 if cfg!(miri) => vec![0, 1, 2, 0x12, 0x34, 0x7f, 0x80, 0xff],
-    3.. if cfg!(miri) => vec![0, 1, 0x10, 0x34, 0xff],
+    // Miri executes the code (an interpreter is some thousand times slower): just what tells the
+    // valid from the invalid values of the pairs of its sample, `0`, `1`, the high bit, all ones.
+    0..=1 if cfg!(miri) => vec![0, 1, 2, 7, 0x80, 0xff],
+    2 if cfg!(miri) => vec![0, 1, 0x80, 0xff],
+    3.. if cfg!(miri) => vec![0, 1, 0xff],
     0..=2 => (0..=255).collect(),
     3 => vec![
       0, 1, 2, 3, 5, 7, 0x10, 0x11, 0x12, 0x34, 0x56, 0x7f, 0x80, 0xc2, 0xd7, 0xd8, 0xdf, 0xe0,
@@ -657,7 +658,7 @@ fn offset_in<S, D: ?Sized>(whole: &S, part: &D) -> usize {
 /// # Panics
 /// If a conversion that the verdict says compiles does not, or if the report is poisoned.
 pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
-  let v: Verdict = const { hook::verdict::<S, D>() };
+  let v: Parts = const { hook::parts::<S, D>() };
   let pair = format!("{} -> {}", name::<S>(), name::<D>());
   let (ss, ds) = (size_of::<S>(), size_of::<D>());
   let (mut unsound, mut incorrect, mut imprecise) = (vec![], vec![], vec![]);
@@ -823,6 +824,15 @@ macro_rules! all_pairs {
   };
   (@inner $limit:expr; $s:ty; [$($d:ty),+]) => {
     $( $crate::check_pair::<$s, $d>($limit); $crate::check_part::<$s, $d>($limit); )+
+  };
+}
+
+/// The given pairs, through `check_pair` or `check_part` (`$check`): a selection rather than a
+/// product, for Miri.
+#[macro_export]
+macro_rules! pairs {
+  ($check:ident, $limit:expr; $(($s:ty, $d:ty)),+ $(,)?) => {
+    $( $crate::$check::<$s, $d>($limit); )+
   };
 }
 

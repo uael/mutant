@@ -6,7 +6,6 @@ use puns::num::*;
 use puns_model::types::*;
 
 #[test]
-#[ignore = "full model run, a minute in debug: CI runs it with `--profile model`"]
 fn parts4() {
   puns_model::part_pairs!(usize::MAX;
     [

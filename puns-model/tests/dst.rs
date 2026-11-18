@@ -160,14 +160,20 @@ const ORACLES: &[Oracle] = &[
 
 const ALPHABET: [u8; 8] = [0, 1, 2, 0x7f, 0x80, 0xc3, 0xa9, 0xff];
 
+/// Under Miri, which is there for undefined behaviour rather than for the verdicts (the native run
+/// has every pattern): what still accepts and rejects for each type, `0` (not a `NonZero`), `1`
+/// (a `bool`, a length), `0xff` (not ASCII, not UTF-8, not a `bool`), up to 3 bytes.
+const MIRI_ALPHABET: [u8; 3] = [0, 1, 0xff];
+
 /// Compare `try_pun_ref` and `from_head` with the oracle, for every pattern of up to 6 bytes,
 /// at an address that is a multiple of 4 and at one that is not.
 fn check<D: ?Sized + Pun + core::fmt::Debug>(oracle: &Oracle, errors: &mut Vec<String>) -> usize {
   let mut count = 0;
+  let alphabet: &[u8] = if cfg!(miri) { &MIRI_ALPHABET } else { &ALPHABET };
   for len in 0..=if cfg!(miri) { 3 } else { 6 } {
     let mut pattern = vec![0usize; len];
     loop {
-      let bytes: Vec<u8> = pattern.iter().map(|&i| ALPHABET[i]).collect();
+      let bytes: Vec<u8> = pattern.iter().map(|&i| alphabet[i]).collect();
       for misalign in [0usize, 1] {
         // A buffer that is a multiple of 4 bytes, holding the bytes at `misalign`.
         let mut words = [0u32; 4];
@@ -242,7 +248,7 @@ fn check<D: ?Sized + Pun + core::fmt::Debug>(oracle: &Oracle, errors: &mut Vec<S
       let mut i = 0;
       while i < len {
         pattern[i] += 1;
-        if pattern[i] < ALPHABET.len() {
+        if pattern[i] < alphabet.len() {
           break;
         }
         pattern[i] = 0;

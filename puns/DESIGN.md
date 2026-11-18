@@ -344,7 +344,7 @@ Splitting and building wide pointers in generic `const fn` code is done by reint
 time for each unsized type** against a pointer made with a genuine `as` cast (`Pun::PROBE`,
 `ptr::verify`): if it ever changes, the crate stops compiling instead of misbehaving.
 
-The tests, and the part of the model check that Miri affords (below), pass under Miri with strict
+The tests, and the Miri selection of the model check (below), pass under Miri with strict
 provenance, with stacked and with tree borrows, on x86-64 and on i686 (a 32-bit `usize`, a `u64`
 aligned to 4). With `-Zmiri-symbolic-alignment-check`, Miri reports a misaligned reference where
 `try_pun_ref` checked the address of bytes that happened to be aligned: the check reads the
@@ -371,8 +371,16 @@ meets those of the target (which is what a rule of the source over the part, or 
 enum, would break). A wrong shift, in the analysis or in the pointer, and a `mutable_part`
 without its second condition, are caught.
 
-`cargo test` runs a sample of it, which Miri runs too; the full run is
-`cargo test --profile model -p puns-model -- --ignored` (optimized, without LTO). See
+Every check that CI runs on a push takes at most a minute. So `cargo test` runs a sample of the
+model check, and Miri a selection of pairs chosen for the unsafe paths they reach, not for the
+verdicts: no undefined behaviour is what Miri is there to see (`puns-model/tests/miri_sample.rs`
+lists what each pair is for). The examples other than `ethernet` are not run under Miri either:
+they are declarations, and the unsafe code they reach is that of the library, which its own
+tests and `ethernet` run there. The
+exhaustive run, every pair and every part of every type, is behind the `full` feature, which
+`cargo test` does not build: `cargo test --profile model -p puns-model --features full`
+(optimized, without LTO: minutes to build, two to run). The `model.yml` workflow runs it every
+night and on demand. See
 `puns-model/src/lib.rs` for what is checked.
 
 ## Not done yet

@@ -1,0 +1,30 @@
+name: Model check
+
+# The exhaustive model check: every pair of the types of the model, every part, every value over
+# the alphabets (`puns-model/tests/size*.rs` and `parts*.rs`, behind the `full` feature, which
+# `cargo test` does not build). It takes minutes to build and two to run, too long for every push,
+# where CI runs a sample of it: here on demand, and every night.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  model:
+    name: Model check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Optimized: the `model` profile is the release one without LTO.
+      - run: cargo test --profile model -p puns-model --features full
+      # The tests that CI does not build on a push.
+      - run: cargo clippy -p puns-model --tests --features full -- -D warnings
