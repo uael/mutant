@@ -176,9 +176,13 @@ jobs:
             select: true
             half: 2
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          - name: stacked borrows
-            id: stacked
+          # Stacked borrows, on a big-endian target: what loads integers, sums and CRCs several
+          # bytes at a time must not depend on the byte order of the target, and the rules of
+          # stacked borrows do not depend on the target (x86-64 has the two jobs above).
+          - name: stacked borrows, big-endian
+            id: stacked-s390x
             args: -p puns
+            target: s390x-unknown-linux-gnu
             select: true
             flags: -Zmiri-strict-provenance
           # 32 bits: a smaller `usize`, a `u64` aligned to 4.

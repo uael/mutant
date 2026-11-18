@@ -171,15 +171,19 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
 | `from_head::<Frame<Ipv4>>(&[u8])`                  | 43 instructions, no loop, no call          |
 | `Ipv4::options()` (a region)                       | 16 instructions, no branch                 |
-| `&[u8] -> Option<&[bool]>`                         | a loop of one `cmp` per byte               |
+| `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block: 46 |
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 249 instructions, no call                  |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 233 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
-| `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 19, no loop     |
+| `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 18, no loop     |
+
+A count is not a time. The slice of `bool`s was a loop of one `cmp` per byte, 13 instructions,
+which stopped at the first invalid one; it is now 46 and takes a fraction of the time on a long
+slice (`benches/checks.rs` times the checks next to the same ones written by hand).
 
 ### 4. Rules: what is not a property of bytes
 
