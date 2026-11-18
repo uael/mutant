@@ -62,6 +62,10 @@ pub trait Visit {
 
   /// The pointer of type `P` at the position `at` of the bytes.
   ///
+  /// It is called for pointers only, but instantiated for every type that a validated value
+  /// holds (the compiler makes the instances of every branch on a constant): a `const` in it
+  /// must not fail for a type that is no pointer.
+  ///
   /// # Errors
   /// Whatever the visitor finds wrong with it; the validation ends with that error.
   fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Self::Error>;
