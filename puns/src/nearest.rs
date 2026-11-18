@@ -587,11 +587,13 @@ struct Image<'b> {
 
 impl<'b> Image<'b> {
   /// The `size` bytes at `at`.
+  #[inline(always)]
   fn get(&self, at: usize, size: usize) -> Result<&'b [u8], Error> {
     self.bytes.get(at..).and_then(|rest| rest.get(..size)).ok_or(Error::Invalid(at))
   }
 
   /// Whatever the scalar at `at` is one that `spec` accepts.
+  #[inline(always)]
   fn scalar(&self, spec: &Spec, at: usize) -> Result<(), Error> {
     let bytes = self.get(at, spec.size)?;
     // SAFETY: `spec.size` initialized bytes.
@@ -601,6 +603,7 @@ impl<'b> Image<'b> {
   /// The integer at `at` that is an offset (or a length, or a capacity) of `pointer`, as its
   /// `to_isize` reads it.
   #[expect(clippy::cast_possible_truncation, reason = "as `to_isize` does")]
+  #[inline(always)]
   fn offset(&self, pointer: &Pointer, at: usize) -> Result<isize, Error> {
     let bytes = self.get(at, pointer.width)?;
     // SAFETY: `pointer.width` initialized bytes.
@@ -608,6 +611,7 @@ impl<'b> Image<'b> {
   }
 
   /// The length at `at`; a negative one is as out of bounds as any too large.
+  #[inline(always)]
   fn len(&self, pointer: &Pointer, at: usize) -> Result<usize, Error> {
     Ok(usize::try_from(self.offset(pointer, at)?).unwrap_or(usize::MAX))
   }
@@ -620,6 +624,7 @@ impl<'b> Image<'b> {
   /// The next block, of `size` bytes whose byte `inset` is aligned to `align`: the `pointer` at
   /// `ptr` must aim `lead` bytes into it, which is where a deep copy would have put it. This one
   /// rule gives bounds, alignment, no sharing, no cycle and no gap. Returns its position.
+  #[inline(always)]
   fn claim(
     &mut self,
     pointer: &Pointer,
@@ -641,6 +646,7 @@ impl<'b> Image<'b> {
   }
 
   /// Takes `size` more bytes after the last block.
+  #[inline(always)]
   fn extend(&mut self, at: usize, size: Option<usize>) -> Result<(), Error> {
     let end = size.and_then(|s| self.next.checked_add(s)).filter(|&end| end <= self.bytes.len());
     self.next = end.ok_or(Error::Invalid(at))?;
@@ -673,6 +679,7 @@ fn check<T: Flat + Pun>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
 ///
 /// It recurses over the type, as `validate` does: each call is an instance in which the layout is
 /// a constant, and what the layout says cannot be invalid is not compiled.
+#[inline(always)]
 fn value<T: ?Sized + Pun>(image: &mut Image<'_>, at: usize) -> Result<(), Error> {
   if const { T::LAYOUT.leaves == 0 } {
     return Ok(());
@@ -721,6 +728,7 @@ fn value<T: ?Sized + Pun>(image: &mut Image<'_>, at: usize) -> Result<(), Error>
 
 /// The field `F` of the struct (or of the variant) at `at`, and the ones after it, in the order
 /// of their declarations.
+#[inline(always)]
 fn fields<F: Fields>(image: &mut Image<'_>, at: usize) -> Result<(), Error> {
   let Some(field) = (const { F::FIELD }) else { return Ok(()) };
   let place = at + field.offset();
@@ -733,6 +741,7 @@ fn fields<F: Fields>(image: &mut Image<'_>, at: usize) -> Result<(), Error> {
 
 /// The fields of the variant, among `V` and the ones after it, whose tag is `tag`: `None` if
 /// there is none.
+#[inline(always)]
 fn variants<V: Variants>(image: &mut Image<'_>, at: usize, tag: u128) -> Option<Result<(), Error>> {
   match const { V::TAG } {
     None => None,

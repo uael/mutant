@@ -33,6 +33,10 @@ trybuild = "1"
 
 # What needs the feature `nearest` is not built without it.
 [[example]]
+name = "codegen_nearest"
+required-features = ["nearest"]
+
+[[example]]
 name = "ir"
 required-features = ["nearest"]
 
