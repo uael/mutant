@@ -32,10 +32,10 @@
 //! - DER: tags of more than one byte (numbers above 30) are left out: they are base-128 integers
 //!   (`vlq`), which would move every offset after them. `OPTIONAL` elements and `CHOICE`s are a type each: a chain of
 //!   [`Then`] is one sequence of types.
-//! - Protocol Buffers: a varint of any length, or a message made of fields of any form, is a walk
-//!   over its bytes whose step is 208 operations; an expression of a walk has at most 56 (planned:
-//!   more). Here, each form of a field is a struct (varints of 1 or 2 bytes, lengths of 1 or 2
-//!   bytes), and an enum of references tells them apart; nested messages are bytes.
+//! - Protocol Buffers: a [`Message`] is checked whole, by a walk over fields of any form. To read
+//!   values, each form of a field is a struct (varints of 1 or 2 bytes, lengths of 1 or 2 bytes)
+//!   whose getters decode it, and an enum of references tells them apart: a getter reads fields,
+//!   not bytes. Nested messages are bytes.
 //! - MessagePack and CBOR: a single item is a head of one of a few forms: a struct each, and an
 //!   enum of references. Arrays and maps are counts of items of their own sizes, nested: that
 //!   would need recursion and a count, so only their heads are declared. An enum of references is
@@ -251,6 +251,29 @@ pub struct Fixed64 {
   pub key: u8,
   pub value: u64le,
 }
+
+/// A whole message: fields of any form that fill it, of wire type 0, 1, 2 or 5, of a field number
+/// from 1, of keys of at most 5 bytes and varints of at most 10. A walk, of a field per step.
+#[derive(Pun)]
+#[repr(transparent)]
+#[pun(assert(walk(0, |at| at < size_of_val(self), |at| {
+  let kind = leb128(at) & 7;
+  let value = at + leb128_len(at);
+  if leb128(at) >> 3 == 0 || leb128_len(at) > 5 {
+    1 / 0
+  } else if kind == 0 && leb128_len(value) <= 10 {
+    value + leb128_len(value)
+  } else if kind == 1 {
+    value + 8
+  } else if kind == 2 {
+    value + leb128_len(value) + leb128(value)
+  } else if kind == 5 {
+    value + 4
+  } else {
+    1 / 0
+  }
+}) == size_of_val(self)))]
+pub struct Message(pub [u8]);
 
 /// A field, of any of the forms above.
 #[derive(Pun)]
@@ -617,7 +640,17 @@ pub fn main() {
   assert_eq!(time.digits[3].get(), b'6');
   assert_eq!(try_pun_ref::<_, KerberosTime>(b"2026111712000aZ").err(), Some(Error::Validity));
 
-  // ---- Protocol Buffers: fields of their own forms.
+  // ---- Protocol Buffers: a message, then its fields, of their own forms.
+  assert!(try_pun_ref::<_, Message>(&PROTOBUF[..]).is_ok());
+  // A varint that runs into the next field; wire type 3; a length past the end.
+  for (at, value) in [(13, 0x83), (12, 0x1b), (4, 0x30)] {
+    let mut bytes = PROTOBUF;
+    bytes[at] = value;
+    assert_eq!(try_pun_ref::<_, Message>(&bytes[..]).err(), Some(Error::Validity));
+  }
+  let mut bytes = PROTOBUF.to_vec();
+  bytes.extend([0x18, 0x80, 0x80, 0x01]);
+  assert!(try_pun_ref::<_, Message>(&bytes[..]).is_ok());
   let (Field::Varint2(first), rest) = Field::from_head(&PROTOBUF).unwrap() else { panic!() };
   assert_eq!((first.field(), first.value()), (1, 150));
   let (Field::Bytes1(second), rest) = Field::from_head(rest).unwrap() else { panic!() };
