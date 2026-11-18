@@ -354,8 +354,12 @@ unsafe impl<T: Flat + Pun, O: Order> Pun for Option<Near<T, O>> {
 // -------------------------------------------------------------------------------------------------
 // Loading
 
-/// The value whose image is `bytes`, read in place (a mapped file, the buffer of a region): what
-/// `nearest::view` does, checked from the layout of `T`. The slice must be 8-aligned.
+/// The value whose image is `bytes`, read in place: what `nearest::view` does, checked from the
+/// layout of `T`.
+///
+/// The slice must be at an address that is a multiple of 8, as a mapped file is, and the buffer
+/// of a region on 64-bit targets (where a `u64` is aligned to 4, copy the bytes of a region to
+/// such an address, or use [`from_bytes`]).
 ///
 /// The bytes are the *compact image* of a `T`: the value at 0, then everything it points to in
 /// the order a deep copy writes it, each at the next position aligned for it, and nothing else.
@@ -377,7 +381,8 @@ unsafe impl<T: Flat + Pun, O: Order> Pun for Option<Near<T, O>> {
 /// struct Msg { id: u8, body: Near<str> }
 ///
 /// let region = Region::new(Msg::new(1, "hi"));
-/// let bytes = region.as_bytes().unwrap(); // the buffer of a region is 8-aligned
+/// // The buffer of a region is words: at a multiple of 8 wherever a `u64` is aligned to 8.
+/// let bytes = region.as_bytes().unwrap();
 /// let msg: &Msg = puns::nearest::view(bytes)?;
 /// assert_eq!((msg.id, &*msg.body), (1, "hi"));
 /// # Ok::<(), nearest::Error>(())

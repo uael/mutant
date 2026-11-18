@@ -80,6 +80,7 @@
 //! - `executables.rs`: ELF, PE/COFF, Mach-O, Java class files, WebAssembly.
 //! - `storage.rs`: SQLite, FAT, GPT, USB descriptors.
 //! - `encodings.rs`: DER (SNMP, Kerberos), Protocol Buffers, MessagePack, CBOR, text fields.
+//! - `ir.rs` (feature `nearest`): a compiler IR that is its own file format, see below.
 //!
 //! # What deriving `Pun` means
 //!
@@ -238,6 +239,114 @@
 //! #[derive(puns::Pun)]
 //! enum Unspecified { A(u8), B(u16) }
 //! ```
+//!
+//! # Regions of `nearest`
+//!
+//! With the feature `nearest`, the types of a region of the crate
+//! [`nearest`](https://docs.rs/nearest) are `Pun` types: a region keeps a value and everything it
+//! points to in one buffer, whose pointers (`Near<T, O>`) are distances, so that its bytes are
+//! the value wherever they are. `#[derive(Pun)]` goes after `#[flat]`, and the module
+//! `puns::nearest` has:
+//!
+//! - offsets of a given byte order (`Near<T, i32le>`): with numbers of a given byte order as
+//!   fields, the bytes of a region are the same on every machine, a file format;
+//! - loaders (`puns::nearest::view`, `from_bytes`) that check bytes from outside and read them
+//!   in place, with what the derive is told of the types (`valid(..)`, `assert(..)`);
+//! - [`view_ref`]: a value of a region read as another type, the next version of a format say,
+//!   with everything it points to proven at compile time.
+//!
+//! ```
+//! # #[cfg(feature = "nearest")] {
+//! use nearest::{Near, Region, flat};
+//! use puns::{
+//!   Pun,
+//!   num::{i32le, u16le, u32lec},
+//! };
+//!
+//! /// A list of points with a name: a file whose bytes are the same on every machine.
+//! #[flat]
+//! #[derive(Pun, Debug, PartialEq)]
+//! #[pun(assert(visible <= total))]
+//! struct Shape {
+//!   magic: u32lec<0x5348_5031>,
+//!   total: u16le,
+//!   visible: u16le,
+//!   name: Near<str, i32le>,
+//!   points: Near<[Point], i32le>,
+//! }
+//!
+//! #[flat]
+//! #[derive(Pun, Debug, PartialEq)]
+//! struct Point {
+//!   x: u16le,
+//!   y: u16le,
+//!   on: bool,
+//! }
+//!
+//! let point = |x, y, on| Point { x: u16le::new(x), y: u16le::new(y), on };
+//! let shape = Region::new(Shape::new(
+//!   u32lec::new(),
+//!   u16le::new(2),
+//!   u16le::new(1),
+//!   "line",
+//!   [point(0, 0, true), point(3, 4, false)],
+//! ));
+//!
+//! // Saved: the bytes of the region. Loaded: the same bytes, checked.
+//! let file = shape.as_bytes().unwrap().to_vec();
+//! assert_eq!(file[..8], [0x31, 0x50, 0x48, 0x53, 2, 0, 1, 0]);
+//! let loaded = puns::nearest::from_bytes::<Shape>(&file).unwrap();
+//! assert_eq!((&*loaded.name, loaded.points[1].y.get()), ("line", 4));
+//!
+//! // Bytes that are not a shape are refused, where they stop being one: a wrong magic number,
+//! // a rule that does not hold, a `bool` that is 2 in a point, a file cut short.
+//! let invalid = |at: usize, byte: u8| {
+//!   let mut bad = file.clone();
+//!   bad[at] = byte;
+//!   puns::nearest::from_bytes::<Shape>(&bad).err()
+//! };
+//! assert_eq!(invalid(0, 0), Some(nearest::Error::Invalid(0)));
+//! assert_eq!(invalid(6, 3), Some(nearest::Error::Invalid(0)));
+//! assert_eq!(invalid(file.len() - 1, 2), Some(nearest::Error::Invalid(file.len() - 1)));
+//! assert!(puns::nearest::from_bytes::<Shape>(&file[..file.len() - 1]).is_err());
+//!
+//! /// The next version: a point is on, off or selected. It reads the files of the first one
+//! /// as they are, which is proven when this compiles.
+//! #[flat]
+//! #[derive(Pun)]
+//! struct Shape2 {
+//!   magic: u32lec<0x5348_5031>,
+//!   total: u16le,
+//!   visible: u16le,
+//!   name: Near<str, i32le>,
+//!   points: Near<[Point2], i32le>,
+//! }
+//!
+//! #[flat]
+//! #[derive(Pun)]
+//! struct Point2 {
+//!   x: u16le,
+//!   y: u16le,
+//!   state: u8,
+//! }
+//!
+//! let next: &Shape2 = puns::view_ref(&*loaded);
+//! assert_eq!((&*next.name, next.points[0].state, next.points[1].state), ("line", 1, 0));
+//! # }
+//! ```
+//!
+//! What a pointer aims at is not a property of its bytes, so no other function makes a value
+//! that holds one, from bytes or from another value, and none gives a `&mut` to one:
+//!
+//! ```compile_fail
+//! # #[cfg(not(feature = "nearest"))]
+//! # compile_error!("with the feature `nearest`");
+//! use nearest::Near;
+//!
+//! let _ = puns::from_bytes::<Option<Near<u32>>>(&[0; 4]);
+//! ```
+//!
+//! `examples/ir.rs` is a compiler IR declared this way, saved to a file and run from its bytes.
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.

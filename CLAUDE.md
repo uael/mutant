@@ -19,11 +19,19 @@ MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns
 cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
+cargo test -p puns -p puns-model --features nearest --test nearest --test ir --test nearest_compile_fail --test pointers  # The feature `nearest`: its tests, the IR example, its compile-fail tests, the sample of its model check
+cargo test -p puns --features nearest --doc -- nearest view_ref  # Its doc tests
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation" cargo +nightly-2026-11-17 miri test -p puns --features nearest --test nearest --test ir  # Miri on the feature (tree borrows only: `nearest` needs them); add `--target s390x-unknown-linux-gnu` for big-endian
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model --features nearest --test pointers  # Miri on the model check of pointers
+cargo test --profile model -p puns-model --features nearest,full --test pointers_full  # The full model check of pointers
+PUNS_WRITE_IMAGE=1 cargo run -p puns --features nearest --example ir  # Rewrite `examples/ir.image` (then run again: it is compared)
+cargo rustc -p puns --release --features nearest --example codegen_nearest -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code of the feature
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
-cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings) + format check
+cargo xtask lint                     # Clippy (workspace, tests, examples, benches; and with the feature `nearest`; -D warnings) + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p puns --features nearest  # And with the feature `nearest`
 cargo deny check                     # License/advisory/ban auditing
 ```
 
@@ -49,8 +57,9 @@ second to start each test binary, even one that runs nothing. Each pair of types
 the model is an instance of the analysis, about a tenth of a second of build: keep the tests that
 every push builds small.
 
-Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
-functions are in `puns/DESIGN.md`; compare before and after a change of the library.
+Do not let the machine code of `examples/codegen.rs` regress, nor the one of
+`examples/codegen_nearest.rs` (the feature `nearest`): the instruction counts of their functions
+are in `puns/DESIGN.md`; compare before and after a change of the library.
 
 ## Architecture
 
@@ -61,7 +70,12 @@ compiles to nothing), **checked** (only what could not be proven is checked at r
 gives, architecture, soundness, what is not done yet): read it before changing
 the library, and keep it, the crate docs and `README.md` in step with the code.
 
-- **`puns/`** — the library (`#![no_std]`)
+- **`puns/`** — the library (`#![no_std]`). Its optional feature `nearest` (the only
+  dependency, off by default) is `src/nearest.rs`: regions of the crate `nearest`, whose
+  pointers the core knows as a kind of its own (`layout::Pointer`, `deep.rs`). What is only
+  built with the feature has its own tests (`tests/nearest*.rs`, `tests/ir.rs`,
+  `tests/compile-fail-nearest/`), which say `#![cfg(feature = "nearest")]`, and its own CI jobs:
+  the jobs without the feature must stay what they are without it
 - **`puns-derive/`** — `#[derive(Pun)]`, re-exported as `puns::Pun`
 - **`puns-model/`** — model check of the analysis against oracles that do not use it (not
   published; uses the test-only `verdict` feature of `puns`), with `fakecore/`, a `core`
