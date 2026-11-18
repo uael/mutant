@@ -44,6 +44,33 @@ fn leb128() {
   assert!(from_head::<Mqtt>(&[0x30, 0x80, 0x80, 0x80, 0x80, 0x01]).is_err());
 }
 
+/// As many bytes as a LEB128 integer takes.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(size = leb128_len(0))]
+struct Leb128 {
+  bytes: [u8],
+}
+
+/// An integer that a `u128` does not hold is not one, however it is written: neither a panic nor
+/// another value.
+#[test]
+fn leb128_of_more_than_128_bits() {
+  // 18 bytes of 7 bits and 2 bits: the most there is.
+  let mut bytes = vec![0xff; 18];
+  bytes.push(0x03);
+  assert_eq!(from_head::<Leb128>(&bytes).map(|(value, _)| value.bytes.len()), Ok(19));
+  // A third bit in the 19th byte.
+  *bytes.last_mut().unwrap() = 0x04;
+  assert_eq!(from_head::<Leb128>(&bytes).err(), Some(Error::Validity));
+  // A 20th byte, whatever it holds, and even after bytes of no bits.
+  for last in [0x00, 0x01] {
+    let mut bytes = vec![0x80; 19];
+    bytes.push(last);
+    assert_eq!(from_head::<Leb128>(&bytes).err(), Some(Error::Validity));
+  }
+}
+
 /// The examples of RFC 9000, appendix A.1, after the value that they are.
 fn quic(expected: u64, bytes: &[u8]) -> bool {
   let mut value = expected.to_be_bytes().to_vec();

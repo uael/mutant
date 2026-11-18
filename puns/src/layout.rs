@@ -2151,8 +2151,8 @@ impl Varint {
     while i < bytes.len() {
       let bits = (bytes[i] & 0x7f) as u128;
       match self {
-        // 18 bytes are 126 bits: the 19th can only add 2.
-        Varint::Leb128 if i < 18 || bits < 4 => value |= bits << (7 * i),
+        // 18 bytes are 126 bits: the 19th can only add 2, and there is no 20th.
+        Varint::Leb128 if i < 18 || (i == 18 && bits < 4) => value |= bits << (7 * i),
         Varint::Vlq if value >> 121 == 0 => value = value << 7 | bits,
         _ => return None,
       }
