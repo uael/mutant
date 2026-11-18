@@ -43,7 +43,9 @@ is exhaustive (the full model check, behind the `full` feature of `puns-model`) 
 `.github/workflows/model.yml`, every night and on demand. Under Miri, the model check runs a
 selection of pairs that reaches every unsafe path (`puns-model/tests/miri_sample.rs` says which
 pair is for which), not every pair, and of the examples only `ethernet` runs: the others reach
-the same unsafe code of the library. Each pair of types in a test of the model is an instance of
+the same unsafe code of the library. A test file that is not for Miri starts with
+`#![cfg(not(miri))]` and says why; CI gives Miri the other ones by name, since Miri takes a
+second to start each test binary, even one that runs nothing. Each pair of types in a test of the model is an instance of
 the analysis, about a tenth of a second of build: keep the tests that every push builds small.
 
 Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
