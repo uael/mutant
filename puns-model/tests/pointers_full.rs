@@ -64,3 +64,28 @@ fn pointers_in_is_validate_in() {
     + check_pointers_in::<Wood>(&masks);
   println!("{compared} images compared");
 }
+
+/// `puns::copy_in` against the oracle's bytes of a value, on every type of the model, every
+/// single-byte change by every mask of one bit and of all bits that leaves the image valid.
+#[test]
+fn copy_in_is_the_oracle() {
+  use puns_model::pointers::check_copy_in;
+  let masks = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xff];
+  let compared = check_copy_in::<Flags>(&masks)
+    + check_copy_in::<Bytes>(&masks)
+    + check_copy_in::<FlagList>(&masks)
+    + check_copy_in::<ByteList>(&masks)
+    + check_copy_in::<ToFlag>(&masks)
+    + check_copy_in::<ToByte>(&masks)
+    + check_copy_in::<MaybeByte>(&masks)
+    + check_copy_in::<ToByteBe>(&masks)
+    + check_copy_in::<ToWord>(&masks)
+    + check_copy_in::<ToPair>(&masks)
+    + check_copy_in::<ToBytes>(&masks)
+    + check_copy_in::<ToFlags>(&masks)
+    + check_copy_in::<ToText>(&masks)
+    + check_copy_in::<Raw>(&masks)
+    + check_copy_in::<Tree>(&masks)
+    + check_copy_in::<Wood>(&masks);
+  println!("{compared} images compared");
+}

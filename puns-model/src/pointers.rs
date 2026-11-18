@@ -640,6 +640,86 @@ pub fn check_pointers_in<T: Model>(masks: &[u8]) -> usize {
   compared
 }
 
+/// Marks in `data` the bytes of the value at `at`, which `desc` describes, that `copy_in` copies:
+/// those that it holds initialized (its scalars, the tag of an enum and the fields of its
+/// variant), but the bytes of its pointers, except a null one; not what the pointers aim at. The
+/// oracle of [`check_copy_in`].
+///
+/// # Panics
+/// If the bytes are not a value of `desc` (the caller validated them).
+fn data(desc: &Desc, bytes: &[u8], at: usize, out: &mut [bool]) {
+  let fields = match desc {
+    Desc::Plain { size, .. } => {
+      out[at..at + size].fill(true);
+      return;
+    }
+    // The bytes of a pointer are left to the caller, but those of a null one (zeros).
+    Desc::Pointer { nullable, .. } => {
+      if *nullable && bytes[at..at + 4] == [0; 4] {
+        out[at..at + 4].fill(true);
+      }
+      return;
+    }
+    Desc::Struct { fields, .. } => fields,
+    Desc::Enum { variants, .. } => {
+      out[at] = true;
+      &variants.iter().find(|(tag, _)| *tag == bytes[at]).expect("a valid tag").1
+    }
+  };
+  for (offset, field) in fields {
+    data(field, bytes, at + offset, out);
+  }
+}
+
+/// `puns::copy_in` copies the bytes that the oracle says a value holds initialized but its
+/// pointers, and no other.
+///
+/// On every image that `validate_in` accepts (following the pointers through the buffer): the
+/// values of the corpus of `T`, and every copy of one with one byte changed by one of `masks`
+/// that is still valid. The root is copied into bytes all `0x00`, then all `0xee`: a byte of the
+/// value is the source's, every other one what it was. Returns how many images were compared.
+///
+/// # Panics
+/// If a byte is not so.
+#[must_use]
+pub fn check_copy_in<T: Model>(masks: &[u8]) -> usize {
+  let one = |bytes: &[u8], at: usize, what: &str| -> bool {
+    let mut follow = Follow { bytes, fuel: VALIDATE_FUEL };
+    if puns::validate_in::<T, Follow<'_>>(bytes, at, &mut follow).is_err() {
+      return false;
+    }
+    let mut held = vec![false; size_of::<T>()];
+    data(&T::desc(), &bytes[at..], 0, &mut held);
+    for fill in [0x00, 0xee] {
+      let mut dst = vec![fill; size_of::<T>()];
+      // SAFETY: `validate_in` accepted a `T` at `at`, every pointer followed; `dst` is its size.
+      unsafe { puns::copy_in::<T>(bytes[at..].as_ptr(), dst.as_mut_ptr()) };
+      for (i, &byte) in dst.iter().enumerate() {
+        let expected = if held[i] { bytes[at + i] } else { fill };
+        assert_eq!(byte, expected, "{}: {what}: byte {i}", name::<T>());
+      }
+    }
+    true
+  };
+  let mut compared = 0;
+  for region in T::corpus() {
+    let image = image(&region);
+    for fill in [0, 0xa5] {
+      let bytes = initialized(&image, fill);
+      assert!(one(&bytes, region.root(), "the corpus"), "the corpus is valid");
+      compared += 1;
+      for at in 0..bytes.len() {
+        for &mask in masks {
+          let mut changed = bytes.clone();
+          changed[at] ^= mask;
+          compared += usize::from(one(&changed, region.root(), &format!("{mask:#x} at {at}")));
+        }
+      }
+    }
+  }
+  compared
+}
+
 /// The types of the model.
 pub mod types {
   use core::mem::offset_of;
