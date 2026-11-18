@@ -10,8 +10,6 @@ documentation = "https://docs.rs/puns"
 readme = "../README.md"
 keywords = ["transmute", "zero-copy", "parsing", "bytes", "no-std"]
 categories = ["encoding", "parsing", "no-std", "rust-patterns"]
-# The specification, for contributors: not shipped.
-exclude = ["CLAUDE.md"]
 
 [features]
 # Test-only, for `puns-model`: `puns::hook`, what the analysis says of a

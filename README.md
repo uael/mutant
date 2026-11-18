@@ -141,8 +141,9 @@ the tests of this file: the documentation of the crate has it in full, as a test
 
 ## Status
 
-Not released yet: the API may still change. It builds on stable Rust 1.100, is `no_std`, and its
-tests pass under Miri. See "Not done yet" in `puns/DESIGN.md` for what is missing.
+`0.1`: the API may still change before `1.0`. It builds on stable Rust 1.100, is `no_std`, and its
+tests pass under Miri, also on a 32-bit and on a big-endian target. See "Not done yet" in
+`puns/DESIGN.md` for what is missing.
 
 ## License
 
