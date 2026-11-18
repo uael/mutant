@@ -32,6 +32,7 @@
 !puns/DESIGN.md
 !puns/benches/
 !puns/examples/
+!puns/examples/*.image
 !puns/src/
 !puns/tests/
 !puns/tests/compile-fail/

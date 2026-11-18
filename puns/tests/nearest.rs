@@ -7,7 +7,7 @@ use puns::{
   Pun,
   layout::Endian,
   nearest::Order,
-  num::{i16be, i16le, i32be, i32le, i64be, i64le, u16le, u32le},
+  num::{i16be, i16le, i32be, i32le, i64be, i64le, u8c, u8in, u16bec, u16le, u32le, u64lec},
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -558,6 +558,20 @@ fn the_check_is_the_one_of_nearest() {
       Region::new(Table::new(1, u32le::new(2), [u16le::new(3)])).as_bytes().unwrap(),
       &mut stats,
     );
+    // Numbers that are one value, or some: `nearest` checks them as this crate does.
+    let constants = Region::new(Constants::new(
+      u16bec::new(),
+      u8c::new(),
+      u8in::new(3).unwrap(),
+      [u64lec::new(), u64lec::new()],
+    ));
+    corrupt::<Constants>(constants.as_bytes().unwrap(), &mut stats);
+    // And both refuse any other value: here the last byte, of the second mark.
+    let mut bad = constants.as_bytes().unwrap().to_vec();
+    *bad.last_mut().unwrap() = 1;
+    let at = bad.len() - 8;
+    assert_eq!(Region::<Constants>::from_bytes(&bad).err(), Some(Error::Invalid(at)));
+    assert_eq!(puns::nearest::from_bytes::<Constants>(&bad).err(), Some(Error::Invalid(at)));
     total.compared += stats.compared;
   }
   println!("{total:?}");
@@ -595,6 +609,16 @@ fn what_nearest_says_of_a_type() {
   assert_eq!(says::<Expr<i64>>(), (false, false, i64::MAX as u64 & !7));
   // Padding is not initialized (not `PLAIN`), but nothing in it can be invalid (`ANY`).
   assert_eq!(says::<Padded>(), (false, true, u64::MAX));
+}
+
+/// Numbers of a given value, and of given values.
+#[flat]
+#[derive(Pun, Debug, PartialEq, Eq)]
+struct Constants {
+  magic: u16bec<0x0102>,
+  version: u8c<3>,
+  level: u8in<1, 5>,
+  marks: Near<[u64lec<7>], i32le>,
 }
 
 #[flat]

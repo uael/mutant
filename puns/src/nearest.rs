@@ -121,7 +121,66 @@ macro_rules! flat {
 
 flat! {
   u16le[2] u16be[2] u24le[3] u24be[3] u32le[4] u32be[4] u48le[6] u48be[6] u64le[8] u64be[8]
-  u128le[16] u128be[16] i16le[2] i16be[2] i32le[4] i32be[4] i64le[8] i64be[8]
+  u128le[16] u128be[16] i16le[2] i16be[2] i32le[4] i32be[4] i64le[8] i64be[8] i128le[16]
+  i128be[16] f32le[4] f32be[4] f64le[8] f64be[8]
+}
+
+macro_rules! flat_checked {
+  ($([$($generics:tt)*] $ty:ty: $size:literal;)+) => {$(
+    // SAFETY: bytes of which only some are a value, without pointer nor padding (`PLAIN`, not
+    // `ANY`). `store` and `edit` are the ones of the bytes, and `check` accepts the bytes that
+    // are a value: the very check of `try_pun`.
+    unsafe impl<$($generics)*> Flat for $ty {
+      type Edit<'e> = Self;
+      const PLAIN: bool = true;
+
+      unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<isize>) {
+        // Proven at compile time: every `Self` is that many initialized bytes.
+        let bytes: [u8; $size] = crate::pun(*self);
+        // SAFETY: forwarded: `at` is allocated for `Self`, which has the size of its bytes and
+        // their alignment (1).
+        unsafe { bytes.store(sink, at, shift) }
+      }
+
+      unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+        // SAFETY: forwarded: a `Self` at `at` is its bytes.
+        let bytes: &'a mut [u8; $size] = unsafe { <[u8; $size] as Flat>::edit(buf, at) };
+        // SAFETY: the caller has a valid `Self` there, which these bytes are (the same size,
+        // the same alignment); what is written through the result is a `Self`, so they stay
+        // one.
+        unsafe { &mut *core::ptr::from_mut(bytes).cast::<Self>() }
+      }
+
+      fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+        let mut bytes = [0; $size];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+          // Any byte: the "tag" of an enum of 256 variants.
+          *byte = ck.tag(at + i, 256)?;
+        }
+        match crate::try_pun::<[u8; $size], Self>(bytes) {
+          Ok(_) => Ok(()),
+          Err(_) => Err(Error::Invalid(at)),
+        }
+      }
+    }
+  )+};
+}
+
+flat_checked! {
+  [const V: u8] num::u8c<V>: 1;
+  [const MIN: u8, const MAX: u8] num::u8in<MIN, MAX>: 1;
+  [const V: u16] num::u16lec<V>: 2;
+  [const V: u16] num::u16bec<V>: 2;
+  [const V: u32] num::u24lec<V>: 3;
+  [const V: u32] num::u24bec<V>: 3;
+  [const V: u32] num::u32lec<V>: 4;
+  [const V: u32] num::u32bec<V>: 4;
+  [const V: u64] num::u48lec<V>: 6;
+  [const V: u64] num::u48bec<V>: 6;
+  [const V: u64] num::u64lec<V>: 8;
+  [const V: u64] num::u64bec<V>: 8;
+  [const V: u128] num::u128lec<V>: 16;
+  [const V: u128] num::u128bec<V>: 16;
 }
 
 // -------------------------------------------------------------------------------------------------
