@@ -21,7 +21,8 @@
 //! | Mach-O: sections counted by their segment       | `len = nsects`                             |
 //! | Java: entries of a size their tag tells         | a `walk`, a table of sizes in a constant   |
 //! | Java: what follows the pool, from its end       | `be(at + 2, 2) < constant_pool_count`      |
-//! | WebAssembly: sections of a size in LEB128       | a struct per length, an enum of references |
+//! | WebAssembly: sections of a size in LEB128       | `size = 1 + leb128_len(1) + leb128(1)`     |
+//! | WebAssembly: sections in order                  | a walk, ranks in a constant                |
 //! | WebAssembly: value types                        | an enum without fields                     |
 //!
 //! What is not covered, and why:
@@ -33,24 +34,16 @@
 //!   themselves are found by offsets that use code follows.
 //! - PE: the checksum of the image, the import and export tables (addresses that are relative
 //!   to where sections are loaded, not to the file) are not views of the bytes as they are.
-//! - Java: the constant pool is walked in one rule of 65 operations, near the 72 an expression that
-//!   walks may have. Fields and methods are counts of things that have attributes of their own
-//!   sizes, counted as well: a walk inside a walk, which is not allowed, so they are not checked.
-//!   The text of a `CONSTANT_Utf8` is "modified UTF-8", which is not `str`, and no other text
-//!   pattern can be declared yet.
-//! - WebAssembly: the size of a section is LEB128 of 1 to 5 bytes. A `size` rule reads fields,
-//!   not `be(..)`: each length is a struct, and an enum of references tells them apart. This is
-//!   the current way; with `be` in `size` (planned), it is one struct. [`SmallModule`] checks
-//!   that sections fill a module by a walk that reads sizes of 1 or 2 bytes only (below 16 KiB):
-//!   a third byte makes the step of the walk longer than the 56 operations it may have, and so
-//!   would checking that the sections are in order (79). With longer walks (planned), it is any
-//!   module.
+//! - Java: the constant pool is walked. Fields and methods are counts of things that have
+//!   attributes of their own sizes, counted as well: a walk inside a walk, which is not written
+//!   here, so they are not checked. The text of a `CONSTANT_Utf8` is "modified UTF-8", which is
+//!   not `str`, and for which the crate has no automaton (one can be written, for `matches`).
 #![deny(unsafe_code)]
 
 use core::marker::PhantomData;
 
 use puns::{
-  Error, Pun, from_head,
+  Error, Pun, from_bytes, from_head,
   num::{u8c, u16be, u16le, u16lec, u32be, u32bec, u32le, u32lec, u64be, u64le},
   try_pun_ref,
 };
@@ -483,134 +476,52 @@ pub struct Utf8Entry {
 // -------------------------------------------------------------------------------------------------
 // WebAssembly
 
-/// A WebAssembly module: a magic, a version, then sections.
+/// The rank of each id of section in the order of a module, 4 bits each, from id 0.
+///
+/// The order is type, import, function, table, memory, tag (13), global, export, start, element,
+/// data count (12), code, data. Custom sections (0) are anywhere.
+pub const RANKS: u128 = 0x6b_dca9_8754_3210;
+
+/// A WebAssembly module: a magic, a version, then sections that fill it, each of a known id, in
+/// order. The state of the walk is the offset of a section, and the rank of the last one (from
+/// bit 40).
 #[derive(Pun)]
 #[repr(C)]
+#[pun(assert(walk(
+  8,
+  |s| s & 0xffff_ffff < size_of_val(self),
+  |s| {
+    let at = s & 0xffff_ffff;
+    let id = be(at, 1);
+    let rank = (RANKS >> (id * 4)) & 15;
+    let next = at + 1 + leb128_len(at + 1) + leb128(at + 1);
+    if id > 13 || leb128_len(at + 1) > 5 {
+      1 / 0
+    } else if id == 0 {
+      next | (s >> 40 << 40)
+    } else if rank > s >> 40 {
+      next | (rank << 40)
+    } else {
+      1 / 0
+    }
+  },
+) & 0xffff_ffff == size_of_val(self)))]
 pub struct Module {
   pub magic: u32bec<0x0061_736d>,
   pub version: u32lec<1>,
   pub sections: [u8],
 }
 
-/// A module whose sections fill it, each of a known id, of a size below 16 KiB (1 or 2 bytes of
-/// LEB128: see the top of this file).
+/// A section: an id, a size in LEB128 (at most 5 bytes: a `u32`), then that many bytes.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(assert(walk(
-  8,
-  |at| at < size_of_val(self),
-  |at| {
-    // (Written in the `if` below, this is 9 deep: more than the 8 of the stack.)
-    let first = be(at + 1, 1);
-    let size = if first < 0x80 {
-      2 + first
-    } else if be(at + 2, 1) < 0x80 {
-      3 + (first & 0x7f) + (be(at + 2, 1) << 7)
-    } else {
-      1 / 0
-    };
-    if be(at, 1) > 13 { 1 / 0 } else { at + size }
-  },
-) == size_of_val(self)))]
-pub struct SmallModule {
-  pub magic: u32bec<0x0061_736d>,
-  pub version: u32lec<1>,
-  pub sections: [u8],
-}
-
-/// A section whose size is 1 byte of LEB128.
-///
-/// The size of a section is 1 to 5 bytes of LEB128 (7 bits each, least significant first): a
-/// struct for each length ([`Section1`] to [`Section5`]), and an enum of references
-/// ([`Section`]). This is the current way: with `be` in `size` (planned), it is one struct.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = s0 + 2)]
-pub struct Section1 {
+#[pun(size = 1 + leb128_len(1) + leb128(1))]
+#[pun(assert(leb128_len(1) <= 5))]
+pub struct Section {
   #[pun(valid(0..=13))]
   pub id: u8,
-  #[pun(valid(..0x80))]
-  pub s0: u8,
-  pub payload: [u8],
-}
-
-/// A section whose size is 2 bytes of LEB128 (the last one is not 0: the shortest form).
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (s0 & 0x7f) + (s1 << 7) + 3)]
-pub struct Section2 {
-  #[pun(valid(0..=13))]
-  pub id: u8,
-  #[pun(valid(0x80..))]
-  pub s0: u8,
-  #[pun(valid(1..0x80))]
-  pub s1: u8,
-  pub payload: [u8],
-}
-
-/// A section whose size is 3 bytes of LEB128.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (s0 & 0x7f) + ((s1 & 0x7f) << 7) + (s2 << 14) + 4)]
-pub struct Section3 {
-  #[pun(valid(0..=13))]
-  pub id: u8,
-  #[pun(valid(0x80..))]
-  pub s0: u8,
-  #[pun(valid(0x80..))]
-  pub s1: u8,
-  #[pun(valid(1..0x80))]
-  pub s2: u8,
-  pub payload: [u8],
-}
-
-/// A section whose size is 4 bytes of LEB128.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (s0 & 0x7f) + ((s1 & 0x7f) << 7) + ((s2 & 0x7f) << 14) + (s3 << 21) + 5)]
-pub struct Section4 {
-  #[pun(valid(0..=13))]
-  pub id: u8,
-  #[pun(valid(0x80..))]
-  pub s0: u8,
-  #[pun(valid(0x80..))]
-  pub s1: u8,
-  #[pun(valid(0x80..))]
-  pub s2: u8,
-  #[pun(valid(1..0x80))]
-  pub s3: u8,
-  pub payload: [u8],
-}
-
-/// A section whose size is 5 bytes of LEB128: the last one holds the 4 last bits of a `u32`.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (s0 & 0x7f) + ((s1 & 0x7f) << 7) + ((s2 & 0x7f) << 14) + ((s3 & 0x7f) << 21)
-  + (s4 << 28) + 6)]
-pub struct Section5 {
-  #[pun(valid(0..=13))]
-  pub id: u8,
-  #[pun(valid(0x80..))]
-  pub s0: u8,
-  #[pun(valid(0x80..))]
-  pub s1: u8,
-  #[pun(valid(0x80..))]
-  pub s2: u8,
-  #[pun(valid(0x80..))]
-  pub s3: u8,
-  #[pun(valid(1..0x10))]
-  pub s4: u8,
-  pub payload: [u8],
-}
-
-/// A section, of any length of its size.
-#[derive(Pun)]
-pub enum Section<'a> {
-  One(&'a Section1),
-  Two(&'a Section2),
-  Three(&'a Section3),
-  Four(&'a Section4),
-  Five(&'a Section5),
+  #[pun(regions(size = leb128_len(1), payload))]
+  pub rest: [u8],
 }
 
 /// A function type of the type section (with a count of parameters of 1 byte of LEB128).
@@ -912,43 +823,34 @@ pub fn main() {
     assert_eq!(try_pun_ref::<_, Class>(&bytes[..]).err(), Some(Error::Validity));
   }
 
-  // ---- WebAssembly: sections of a size in LEB128.
+  // ---- WebAssembly: sections of a size in LEB128, in order.
   let mut module = WASM.to_vec();
   module.resize(31 + 200, 0);
-  let small: &SmallModule = try_pun_ref(&module[..]).unwrap();
-  let (mut rest, mut sections) = (&small.sections[..], vec![]);
-  while let Ok((section, next)) = Section::from_head(rest) {
-    sections.push(match section {
-      Section::One(section) => (section.id, section.payload.len()),
-      Section::Two(section) => (section.id, section.payload.len()),
-      Section::Three(section) => (section.id, section.payload.len()),
-      Section::Four(section) => (section.id, section.payload.len()),
-      Section::Five(section) => (section.id, section.payload.len()),
-    });
+  let wasm: &Module = try_pun_ref(&module[..]).unwrap();
+  let (mut rest, mut sections) = (&wasm.sections[..], vec![]);
+  while let Ok((section, next)) = from_head::<Section>(rest) {
+    sections.push((section.id, section.payload().len()));
     rest = next;
   }
   assert_eq!((sections, rest.len()), (vec![(1, 7), (0, 5), (3, 2), (10, 200)], 0));
-  let Ok((Section::One(types), _)) = Section::from_head(&small.sections) else { panic!() };
-  let (function, _) = from_head::<FuncType>(&types.payload[1..]).unwrap();
+  let (types, _) = from_head::<Section>(&wasm.sections).unwrap();
+  let (function, _) = from_head::<FuncType>(&types.payload()[1..]).unwrap();
   assert_eq!(function.types, [ValueType::I32, ValueType::I32]);
   assert_eq!(from_head::<FuncType>(&[0x60, 1, 0x7a]).err(), Some(Error::Validity));
-  // An id that is not one; a size past the end.
-  for (at, value) in [(8, 14), (29, 0xc9)] {
+  // An id that is not one; a size past the end; sections out of order.
+  for (at, value) in [(8, 14), (29, 0xc9), (24, 1)] {
     let mut bytes = module.clone();
     bytes[at] = value;
-    assert_eq!(try_pun_ref::<_, SmallModule>(&bytes[..]).err(), Some(Error::Validity));
+    assert_eq!(try_pun_ref::<_, Module>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // Sections out of order are not seen (see the top of this file).
-  let mut bytes = module.clone();
-  bytes[24] = 1;
-  assert!(try_pun_ref::<_, SmallModule>(&bytes[..]).is_ok());
-  // A section of 16 KiB: 3 bytes of LEB128. A module, and a section of the third form, but not a
-  // small module.
+  // A section of 16 KiB: 3 bytes of LEB128.
   let mut large = [&WASM[..8], &[0, 0x80, 0x80, 0x01]].concat();
   large.resize(12 + 16384, 0);
-  let module: &Module = try_pun_ref(&large[..]).unwrap();
-  assert!(matches!(Section::from_bytes(&module.sections), Ok(Section::Three(_))));
-  assert_eq!(try_pun_ref::<_, SmallModule>(&large[..]).err(), Some(Error::Validity));
+  let wasm: &Module = try_pun_ref(&large[..]).unwrap();
+  assert_eq!(
+    from_bytes::<Section>(&wasm.sections).map(|section| section.payload().len()),
+    Ok(16384)
+  );
 
   println!("ok");
 }
