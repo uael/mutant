@@ -474,3 +474,18 @@ fn crcs_are_the_crcs_bit_by_bit() {
   assert_eq!(const { crc32(b"123456789") }, 0xcbf4_3926);
   assert_eq!(const { Crc::new(16, 0x8005, 0xffff, true, 0).check(b"123456789") }, 0x4b37);
 }
+
+/// A CRC with one table, a byte at a time, as on a 16-bit target (`CRC_TABLES`): the same as with
+/// sixteen, for every length around the blocks of sixteen bytes.
+#[test]
+fn a_crc_a_byte_at_a_time_is_the_same() {
+  use crate::layout::Crc;
+  static CRCS: [Crc; 3] =
+    [Crc::CRC32, Crc::new(16, 0x8005, 0xffff, true, 0), Crc::new(15, 0x4599, 0, false, 0)];
+  for crc in &CRCS {
+    let bytes: Vec<u8> = (0..70u32).map(|i| (i.wrapping_mul(97) ^ 0x5a) as u8).collect();
+    for len in 0..bytes.len() {
+      assert_eq!(crc.check(&bytes[..len]), crc.bytewise(&bytes[..len]), "{len} bytes");
+    }
+  }
+}

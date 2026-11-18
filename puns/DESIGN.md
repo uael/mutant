@@ -742,6 +742,20 @@ it as to any pointer. A crate that declares a pointer gets this from the macro a
 show it with an offset whose zero is a niche (`Nz32le`), `Option<One<T, Nz32le>>` read as `Opt<T,
 i32le>` and back, through values of a buffer.
 
+### 11. What `usize` is assumed to be
+
+`puns` builds for every width of `usize` that Rust supports, 16 bits included (`msp430-none-elf`,
+built by CI with `-Zbuild-std=core`; Miri cannot run a 16-bit target, so what holds there is
+asserted). What the code assumes of `usize`, and what holds each:
+
+| Assumption (where) | Held by |
+|---|---|
+| A value is at most `isize::MAX` bytes, so a size plus a little does not overflow (`walk_limit`) | Rust; `const` assertion next to `walk_limit` |
+| An offset, a length or a range read by a rule is compared as a `u128` before it is made a `usize` (`Machine::apply`: `At`, `Varint`, checksums) | the code; on every target the comparison is with the size of the value |
+| The tables of a `Crc` fit a value (`Crc::new`, `Crc::update`) | `CRC_TABLES`: 16 tables (32 KiB), 1 (2 KiB) where `usize` is 16 bits; `const` assertion; the CRCs are the same, the tests of `Crc` compare with references |
+| `sum16` folds before a carry could leave its `u64` (`sum16_inline`) | `SUM16_FOLD`: 2^20 blocks, or every block where `usize` cannot count that far; `const` assertion |
+| The 16 KiB table of `crc32` fits a value | it does on every width (`isize::MAX` is 32 KiB minus 1 on 16 bits) |
+
 ## Model check
 
 `puns-model/` compares every verdict of the analysis with oracles that do not use it,
