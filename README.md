@@ -628,32 +628,40 @@ table is in [`puns/DESIGN.md`][design]):
 
 [`puns/benches/checks.rs`][checks] times each check next to the same check written by hand, with
 the same algorithm for the checksums (`cargo bench -p puns --bench checks`). Nanoseconds per
-check, the best of 7 samples, on a Xeon at 2.1 GHz, release with LTO:
+check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5 runs, a run the
+best of 7 samples:
 
 | Check                                               | `puns` | by hand | ratio |
 |-----------------------------------------------------|-------:|--------:|------:|
-| IPv6, TCP, no extension header                      |    2.5 |     2.6 |   0.9 |
-| IPv6, TCP behind 3 extension headers                |    7.3 |     7.0 |   1.0 |
-| IPv6, TCP behind 12 extension headers               |     32 |      21 |   1.6 |
-| IPv6, UDP, 1400 bytes (its checksum)                |     42 |      39 |   1.1 |
-| UDP, `from_head`                                    |    1.7 |     1.1 |   1.6 |
-| a frame that is one of 6 things: ARP                |    3.5 |     2.6 |   1.3 |
-| a frame that is one of 6 things: the last one       |    3.6 |     2.0 |   1.8 |
-| `[u8]` as `[bool]`, 64 KiB                          |  1 433 |  19 037 |  0.08 |
-| `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    149 |   5 092 |  0.03 |
-| `[u32]` as `[char]`, 4 KiB                          |    175 |     299 |   0.6 |
-| CRC-32, 1518 bytes (by hand: 16 bytes at a time)    |    675 |     566 |   1.2 |
-| CRC-16/Modbus, 1518 bytes (by hand: a byte at once) |    784 |   3 592 |   0.2 |
-| `sum16`, 1500 bytes                                 |     39 |      43 |   0.9 |
-| IPv4, UDP, 64 bytes                                 |    148 |     9.8 |    15 |
-| IPv4, UDP, 1472 bytes                               |    181 |      43 |   4.2 |
+| IPv4, UDP, 64 bytes (two checksums)                 |     12 |      10 |   1.2 |
+| IPv4, UDP, 1472 bytes                               |     53 |      51 |   1.0 |
+| IPv4, TCP, 1460 bytes                               |     53 |      53 |   1.0 |
+| IPv6, TCP, no extension header                      |    1.6 |     1.7 |   0.9 |
+| IPv6, TCP behind 3 extension headers                |    6.0 |     4.7 |   1.3 |
+| IPv6, TCP behind 12 extension headers               |     23 |      16 |   1.4 |
+| IPv6, UDP, 1400 bytes (its checksum)                |     50 |      42 |   1.2 |
+| UDP, `from_head`                                    |    1.3 |     1.3 |   1.0 |
+| a frame that is one of 6 things: UDP over IPv4      |     14 |      11 |   1.2 |
+| a frame that is one of 6 things: ARP                |    2.7 |     2.3 |   1.2 |
+| a frame that is one of 6 things: the last one       |    2.5 |     2.0 |   1.2 |
+| a frame that is one of 6 things: a wrong checksum   |     23 |      11 |   2.0 |
+| `[u8]` as `[bool]`, 64 KiB                          |  1 550 |  21 980 |  0.07 |
+| `[u8]` as `[Kind]` (1, 2, 3 or 7), 4 KiB            |    152 |   5 241 |  0.03 |
+| `[u32]` as `[char]`, 4 KiB                          |    186 |     336 |   0.6 |
+| CRC-32, 1518 bytes (by hand: 16 bytes at a time)    |    710 |     594 |   1.2 |
+| CRC-16/Modbus, 1518 bytes (by hand: a byte at once) |    701 |   3 711 |   0.2 |
+| `sum16`, 1500 bytes                                 |     48 |      48 |   1.0 |
 
 By hand, a slice is checked the way one writes it first, `bytes.iter().all(|&b| b <= 1)`: `puns`
-checks 64 bytes at a time, without a branch in a block. The two IPv4 lines are a known gap, not a
-property of the design: an expression of a rule longer than 24 operations (here the checksums of
-UDP and TCP over the addresses of the packet, one `assert`) is applied by an interpreter instead
-of being compiled to its arithmetic, as shorter ones and every rule with a `walk` are. It is
-being closed.
+checks 64 bytes at a time, without a branch in a block. A rule is compiled to its arithmetic, one
+function per operation that the optimizer inlines; no expression is interpreted at run time.
+
+One line is a known cost, not a property of the design: a view enum tries its variants in order,
+each a check of its own, so bytes that fail a rule which two variants share compute it for each.
+A UDP packet whose checksum is wrong fails `Frame<Ipv4<Udp>>`, then computes the same checksums
+again for `Frame<Ipv4>`: about twice the time by hand. What would remove it (and the repeated test
+of the EtherType that costs the later variants a few instructions) is in [the design][design],
+"Not done yet".
 
 ### What to keep in mind
 
@@ -668,7 +676,7 @@ being closed.
 - **A rule computes on 128-bit integers.** It costs what the arithmetic costs, and the arithmetic
   of a `u128` is two registers and a carry: a `walk` that carries two things in its state (what
   a header is, where it starts) keeps each in a half, `(kind << 64) + start`, not packed in the
-  low bits, which would put a shift on every step.
+  low bits, which would put a shift on every step ([the design][design], "Walks").
 - **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
   the binary, a checked one adds its checks, inlined where it is called.
 - **Measure in release.** In a debug build nothing is inlined: each operation of a rule is a
