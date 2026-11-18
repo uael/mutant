@@ -7,7 +7,7 @@ license = "Apache-2.0 OR MIT"
 description = "Type punning proven at compile time: a safe alternative to transmute and to hand-written parsing of bytes"
 repository = "https://github.com/uael/puns"
 documentation = "https://docs.rs/puns"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["transmute", "zero-copy", "parsing", "bytes", "no-std"]
 categories = ["encoding", "parsing", "no-std", "rust-patterns"]
 
