@@ -5,14 +5,18 @@ error[E0080]: evaluation panicked: zero is not a valid value of this type
   |
  ::: src/lib.rs
   |
-  |   const { assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type") };
-  |           ----------------------------------------------------------------------- in this macro invocation
+  |     assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type");
+  |     ----------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
  --> src/lib.rs
   |
-  |   const { assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type") };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | /   const {
+  | |     assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type");
+  | |     // No `Copy` type holds one; were there one, it would not be made from nothing.
+  | |     assert!(!T::LAYOUT.has_pointers(), "this type holds a self-relative pointer");
+  | |   };
+  | |___^
 
 note: the above error was encountered while instantiating `fn puns::zeroed::<NonZero<u8>>`
  --> tests/compile-fail/zeroed_non_zero.rs:3:11

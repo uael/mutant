@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: a rule of the source (a size, a length, an assertion, a region) holds over bytes that the `&mut` covers, and could stop holding when they are written.
 
-   --> src/lib.rs
-    |
-    |   const TAIL_MUT: () = Self::require(Self::check_tail_mut());
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Ordered, u8>::TAIL_MUT` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL_MUT: () = Self::require(Self::check_tail_mut());
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Ordered, u8>::TAIL_MUT` failed inside this call
+     |
 note: inside `puns::Plan::<Ordered, u8>::require`
  --> src/lib.rs
   |

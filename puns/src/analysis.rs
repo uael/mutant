@@ -24,7 +24,7 @@
 //! The cost of an analysis is therefore proportional to the number of fields of the types, not to
 //! their size.
 
-use crate::layout::{Dfa, Kind, Layout, Spec, Uniform, Valid, max_value};
+use crate::layout::{Dfa, Kind, Layout, Pointer, Spec, Uniform, Valid, max_value};
 
 // -------------------------------------------------------------------------------------------------
 // `Cursor`
@@ -42,6 +42,9 @@ pub enum RunKind {
   Atom(Spec),
   /// Bytes, until the end, that an automaton accepts.
   Pattern(&'static Dfa),
+  /// A self-relative pointer. As a source, its bytes are initialized and nothing more is made of
+  /// them; as a target, only a pointer proves it.
+  Pointer(Pointer),
 }
 
 /// Consecutive bytes of the same nature: `start..end` are offsets from the root of the layout.
@@ -186,6 +189,10 @@ impl Cursor {
         Kind::Pattern(dfa) => {
           return Run { kind: RunKind::Pattern(dfa), start: frame.base, end, leaf: frame.leaf };
         }
+        Kind::Pointer(pointer) => {
+          let kind = RunKind::Pointer(pointer);
+          return Run { kind, start: frame.base, end, leaf: frame.leaf };
+        }
         Kind::Enum(variants) => {
           let Kind::Scalar(spec) = variants.tag.layout.kind else { panic!() };
           let (offset, tag) = (pos - frame.base, variants.tag.offset);
@@ -325,10 +332,21 @@ pub struct Relation {
   pub(crate) partial: Option<usize>,
   /// Scalars of the target that may receive an invalid value.
   pub(crate) marks: Marks,
+  /// Offset of a pointer of the target that is not, in the source, a pointer whose target can be
+  /// read as its own. No check at run time makes up for it: what a pointer guarantees is not a
+  /// property of its bytes.
+  pub(crate) pointer: Option<usize>,
 }
 
 impl Relation {
-  const NEW: Self = Self { uninit: None, disjoint: None, partial: None, marks: Marks::NONE };
+  const NEW: Self =
+    Self { uninit: None, disjoint: None, partial: None, marks: Marks::NONE, pointer: None };
+
+  const fn pointer(&mut self, pos: usize) {
+    if self.pointer.is_none() {
+      self.pointer = Some(pos);
+    }
+  }
 
   /// The thing at `leaf`, which is at `pos`, has to be checked at run time.
   const fn mark(&mut self, leaf: usize, pos: usize) {
@@ -346,7 +364,10 @@ impl Relation {
 
   /// Every value of the source is a valid value of the target.
   pub(crate) const fn infallible(&self) -> bool {
-    self.uninit.is_none() && self.disjoint.is_none() && self.partial.is_none()
+    self.uninit.is_none()
+      && self.disjoint.is_none()
+      && self.partial.is_none()
+      && self.pointer.is_none()
   }
 }
 
@@ -441,8 +462,12 @@ const fn relate_range(
         pos += enum_b.size;
         continue;
       }
-      // Else, what follows only tells whatever the enum can be checked at run time.
+      // Else, what follows only tells whatever the enum can be checked at run time: which a
+      // pointer in one of its variants cannot.
       out.mark(leaf, pos);
+      if enum_b.has_pointers() {
+        out.pointer(pos);
+      }
     }
     let stop = min(run_b.end, end);
     match run_b.kind {
@@ -481,6 +506,25 @@ const fn relate_range(
           }
         }
         pos = run_b.end;
+      }
+      // Only a pointer proves a pointer: one at the same place, whose target can be read as the
+      // target of this one. Its bytes do not: whatever else the source has there is refused,
+      // and so is a part of a pointer.
+      RunKind::Pointer(to) => {
+        match run_a.kind {
+          RunKind::Pointer(from)
+            if run_a.start == pos && run_b.start == pos && run_b.end <= end =>
+          {
+            match from.reads_as(&to) {
+              Some(true) => {}
+              // What is not a pointer (`None`) is not read as one: checked at run time.
+              Some(false) => out.mark(run_b.leaf, pos),
+              None => out.pointer(pos),
+            }
+          }
+          _ => out.pointer(pos),
+        }
+        pos = stop;
       }
       RunKind::Pattern(_) => unreachable!(),
     }
@@ -532,6 +576,9 @@ const fn relate_enums(
     mark_rules(from.layout, to.layout, 0, 0, &mut relation);
     if let Some(offset) = relation.uninit {
       out.uninit(pos + offset);
+    }
+    if let Some(offset) = relation.pointer {
+      out.pointer(pos + offset);
     }
     (some, all) = (some || relation.disjoint.is_none(), all && relation.infallible());
   }
@@ -645,7 +692,11 @@ const fn gather(a: &mut Cursor, start: usize, end: usize) -> ([Piece; 16], usize
   let mut pieces = [Piece { kind: RunKind::Any, from: 0, to: 0, skip: 0 }; 16];
   let (mut len, mut pos) = (0, start);
   while pos < end {
-    let run = a.run_at(pos);
+    let mut run = a.run_at(pos);
+    // The bytes of a pointer are initialized, and that is all that is made of them here.
+    if let RunKind::Pointer(_) = run.kind {
+      run.kind = RunKind::Any;
+    }
     let to = min(run.end, end);
     let skip = if matches!(run.kind, RunKind::Atom(_)) { pos - run.start } else { 0 };
     pieces[len] = Piece { kind: run.kind, from: pos - start, to: to - start, skip };
@@ -669,7 +720,7 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
     match known[i].kind {
       RunKind::Pad => return None,
       // Whatever a pattern accepts is initialized, and that is all that is made of it here.
-      RunKind::Any | RunKind::Pattern(_) => {}
+      RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => {}
       RunKind::Atom(from) => match if soft { from.valid } else { from.known } {
         valid @ Valid::In(_) => {
           known[i].kind = RunKind::Atom(Spec { valid, ..from });
@@ -990,7 +1041,7 @@ const fn pattern_target(
     let stop = min(run.end, end);
     match run.kind {
       RunKind::Pad => return out.uninit(pos),
-      RunKind::Any => {
+      RunKind::Any | RunKind::Pointer(_) => {
         // Any byte, `stop - pos` times, or until it changes nothing.
         let mut steps = 0;
         while steps < stop - pos {
@@ -1121,7 +1172,7 @@ const fn mark_rules(
     }
     // Elements share their leaves: either they are all proven at once (`covered`), or none is.
     Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
-    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => {}
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => {}
   }
 }
 
@@ -1141,7 +1192,7 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
       }
     }
     Kind::Array(elem, _) | Kind::Slice(elem) => mark_all_rules(elem, base, leaf, out),
-    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => {}
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => {}
   }
 }
 
@@ -1178,7 +1229,7 @@ const fn covered(source: &'static Layout, offset: usize, target: &'static Layout
       elem.size > 0 && offset / elem.size < len && covered(elem, offset % elem.size, target)
     }
     Kind::Slice(elem) => elem.size > 0 && covered(elem, offset % elem.size, target),
-    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) => false,
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
   }
 }
 
@@ -1324,9 +1375,19 @@ pub const fn analyze_tail(a: &'static Layout, b: &'static Layout) -> Analysis {
 }
 
 /// Whatever any value written through a `&mut` to the target `b` leaves a valid source `a`.
+///
+/// Never with a self-relative pointer on either side: through a `&mut`, safe code could write
+/// over it, swap it with another or move it elsewhere, where it would aim at something else.
 pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
-  !matches!(fit.exact, Exact::Never(_)) && relate(b, a, fit.end, Checked::No).infallible()
+  !a.has_pointers()
+    && !b.has_pointers()
+    && !matches!(fit.exact, Exact::Never(_))
+    && relate(b, a, fit.end, Checked::No).infallible()
 }
+
+pub const POINTER_MUT: &str = "the source or the target holds a self-relative pointer, which a \
+                               `&mut` would let safe code overwrite, swap or move: a pointer is \
+                               only read";
 
 pub const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
                            where the source is not), and could be written through the `&mut`";
@@ -1356,6 +1417,10 @@ pub const fn mutable_part(
     // Refused by the analysis of the reference already.
     return Some(MUTABLE);
   }
+  // Wherever the pointer is: a part that does not cover it is refused as well.
+  if a.has_pointers() || b.has_pointers() {
+    return Some(POINTER_MUT);
+  }
   let end = shift.saturating_add(fit.end);
   if let Some(why) = cut(a, 0, shift, end) {
     return Some(why);
@@ -1376,7 +1441,8 @@ const fn cut(layout: &'static Layout, base: usize, lo: usize, hi: usize) -> Opti
     return None;
   }
   match layout.kind {
-    Kind::Scalar(_) => None,
+    // No `&mut` covers a pointer, see `mutable_part`.
+    Kind::Scalar(_) | Kind::Pointer(_) => None,
     Kind::Struct(fields, rules) => {
       if !rules.is_empty() {
         return Some(PART_RULE);
@@ -1472,7 +1538,7 @@ const fn has_rules(layout: &'static Layout) -> bool {
       }
       false
     }
-    Kind::Scalar(_) | Kind::Pattern(_) => false,
+    Kind::Scalar(_) | Kind::Pattern(_) | Kind::Pointer(_) => false,
   }
 }
 
@@ -1492,6 +1558,6 @@ const fn is_tagged(layout: &'static Layout) -> bool {
       false
     }
     Kind::Array(elem, _) | Kind::Slice(elem) => is_tagged(elem),
-    Kind::Scalar(_) => false,
+    Kind::Scalar(_) | Kind::Pointer(_) => false,
   }
 }

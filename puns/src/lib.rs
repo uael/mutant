@@ -245,11 +245,17 @@
 //! See `DESIGN.md` for how it works.
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(feature = "nearest")]
+extern crate alloc;
+
 mod analysis;
+mod deep;
 #[cfg(feature = "verdict")]
 #[doc(hidden)]
 pub mod hook;
 pub mod layout;
+#[cfg(feature = "nearest")]
+pub mod nearest;
 pub mod num;
 mod ptr;
 #[cfg(test)]
@@ -264,8 +270,8 @@ struct ReadmeDoctests;
 use core::{marker::PhantomData, mem::ManuallyDrop};
 
 use analysis::{
-  Analysis, Exact, MUTABLE, Marks, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze, analyze_tail,
-  mutable, mutable_part,
+  Analysis, Exact, MUTABLE, Marks, POINTER_MUT, TAIL_UNSIZED_SOURCE, TAIL_UNSIZED_TARGET, analyze,
+  analyze_tail, mutable, mutable_part,
 };
 use layout::{Dfa, Endian, Field, Layout, Rule, Spec, eval};
 pub use layout::{crc32, sum16};
@@ -302,6 +308,13 @@ pub unsafe trait Pun {
   /// First of the rules of a struct whose expression walks, `()` if none.
   #[doc(hidden)]
   type Walks: Walks;
+  /// What a self-relative pointer aims at (the element, if it aims at a list), `()` if `Self`
+  /// is not one or aims at text.
+  ///
+  /// This is how the analysis follows pointers: through types, so that a recursive type is a
+  /// finite set of pairs of types rather than a layout without end (see [`view_ref`]).
+  #[doc(hidden)]
+  type Pointee: Pun;
   /// A null pointer to `Self`, whose slice length is [`ptr::PROBE_LEN`] if `Self` is unsized.
   /// It must be made with `as` casts only: this is what the pointer tricks are checked against.
   #[doc(hidden)]
@@ -488,6 +501,7 @@ unsafe impl<T: Scalar> Pun for T {
   type Fields = ();
   type Variants = ();
   type Walks = ();
+  type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
 }
@@ -498,6 +512,7 @@ unsafe impl<T: Pun, const N: usize> Pun for [T; N] {
   type Fields = ();
   type Variants = ();
   type Walks = ();
+  type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::array(&T::LAYOUT, N);
 }
@@ -508,6 +523,7 @@ unsafe impl<T: Pun> Pun for [T] {
   type Fields = ();
   type Variants = ();
   type Walks = ();
+  type Pointee = ();
   const PROBE: *const Self = core::ptr::slice_from_raw_parts(core::ptr::null(), ptr::PROBE_LEN);
   // SAFETY: the probe of a slice.
   const LAYOUT: Layout = unsafe { Layout::slice::<T>(Self::PROBE, &T::LAYOUT) };
@@ -519,6 +535,7 @@ unsafe impl Pun for str {
   type Fields = ();
   type Variants = ();
   type Walks = ();
+  type Pointee = ();
   const PROBE: *const Self = <[u8] as Pun>::PROBE as *const str;
   // SAFETY: the probe of a `str`, which is the one of a slice.
   const LAYOUT: Layout = unsafe { Layout::pattern::<str>(Self::PROBE, Dfa::UTF8) };
@@ -530,6 +547,7 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   type Fields = T::Fields;
   type Variants = T::Variants;
   type Walks = T::Walks;
+  type Pointee = T::Pointee;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
 }
@@ -558,6 +576,7 @@ macro_rules! tuple {
       type Fields = TupleField<Self, 0>;
       type Variants = ();
       type Walks = ();
+      type Pointee = ();
       const PROBE: *const Self = core::ptr::null();
       // SAFETY: a tuple of `Sized` things is `Sized`.
       const LAYOUT: Layout = unsafe {
@@ -667,6 +686,7 @@ struct Plan<S: ?Sized, D: ?Sized>(PhantomData<S>, PhantomData<D>);
 
 /// What a function requires of a pun.
 #[derive(Copy, Clone)]
+#[expect(clippy::struct_excessive_bools, reason = "each is a question of its own, asked alone")]
 struct Need {
   /// The target may be a part of the source: its first bytes, or with `Plan::TAIL` its last.
   part: bool,
@@ -674,16 +694,29 @@ struct Need {
   fallible: bool,
   /// The target is behind a reference.
   reference: bool,
+  /// The target may hold self-relative pointers: the function proves what they aim at
+  /// ([`view_ref`]). No other function makes a value that holds one.
+  pointers: bool,
 }
 
 impl Need {
-  const VALUE: Need = Need { part: false, fallible: false, reference: false };
+  const VALUE: Need = Need { part: false, fallible: false, reference: false, pointers: false };
   const REF: Need = Need { reference: true, ..Need::VALUE };
   const PART: Need = Need { part: true, ..Need::VALUE };
   const PART_REF: Need = Need { part: true, ..Need::REF };
   const TRY: Need = Need { fallible: true, ..Need::VALUE };
   const TRY_REF: Need = Need { fallible: true, ..Need::REF };
+  const VIEW: Need = Need { pointers: true, ..Need::REF };
+  const TRY_VIEW: Need = Need { pointers: true, ..Need::TRY_REF };
 }
+
+/// A value that holds a self-relative pointer is only made by what proves, or checks, what the
+/// pointer aims at.
+const POINTER_TARGET: &str = "the target holds a self-relative pointer, and what a pointer aims \
+                              at is not a property of its bytes.\nUse `view_ref` to read a value \
+                              that holds pointers as another type (it proves what they aim at), \
+                              or the functions of `puns::nearest` to check the bytes of a whole \
+                              region";
 
 /// Why a pun of which `analysis` is the analysis does not meet the `need`, if it does not.
 const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
@@ -711,6 +744,16 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
     Exact::Never(why) => return Some(Message::new(why)),
   }
   // Offsets of the target.
+  if let Some(offset) = relation.pointer {
+    return Some(
+      Message::new(
+        "a pointer of the target is not, in the source, a pointer whose target it can read (the \
+         same offset type, the same kind of target, not larger nor more aligned): only a pointer \
+         proves a pointer, and no check makes up for it",
+      )
+      .at(offset.saturating_sub(shift)),
+    );
+  }
   if let Some(offset) = relation.uninit {
     return Some(
       Message::new("a byte that the target requires to be initialized is padding in the source")
@@ -758,12 +801,32 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
 
   /// Why the pun does not meet the `need`, if it does not.
   const fn check(need: Need) -> Option<Message> {
+    if let Some(message) = Self::gate(need) {
+      return Some(message);
+    }
     check(&Self::ANALYSIS, need)
   }
+
+  /// Why the function is not one that may make a `D`, if it is not: a `D` that holds a
+  /// self-relative pointer is only made by what proves what the pointer aims at.
+  const fn gate(need: Need) -> Option<Message> {
+    if !need.pointers && D::LAYOUT.has_pointers() {
+      return Some(Message::new(POINTER_TARGET));
+    }
+    None
+  }
+
+  /// Why a `&mut` to a `D` cannot be made from a `&mut` to an `S`, when [`Plan::MUTABLE`] says
+  /// so.
+  const NOT_MUTABLE: &'static str =
+    if S::LAYOUT.has_pointers() || D::LAYOUT.has_pointers() { POINTER_MUT } else { MUTABLE };
 
   /// Why the pun of the last bytes of the source does not meet the `need` (a part), if it does
   /// not.
   const fn check_tail(need: Need) -> Option<Message> {
+    if let Some(message) = Self::gate(need) {
+      return Some(message);
+    }
     if S::LAYOUT.is_unsized() {
       return Some(Message::new(TAIL_UNSIZED_SOURCE));
     }
@@ -784,7 +847,7 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const BY_MUT: () = {
     let () = Self::BY_REF;
     if !Self::MUTABLE {
-      Message::new(MUTABLE).panic();
+      Message::new(Self::NOT_MUTABLE).panic();
     }
   };
   const HEAD: () = Self::require(Self::check(Need::PART));
@@ -799,7 +862,7 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   const FROM_TAIL_MUT: () = {
     let () = Self::FROM_TAIL;
     if !Self::MUTABLE {
-      Message::new(MUTABLE).panic();
+      Message::new(Self::NOT_MUTABLE).panic();
     }
   };
 
@@ -839,10 +902,15 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
     }
   }
 
+  /// [`view_ref`]: by reference, with pointers, whose targets [`deep`] proves.
+  const VIEW: () = Self::require(Self::check(Need::VIEW));
+  /// [`try_view_ref`]: the same, with what is not proven of the value itself checked at run time.
+  const TRY_VIEW: () = Self::require(Self::check(Need::TRY_VIEW));
+
   const TRY_MUT: () = {
     let () = Self::TRY_REF;
     if !Self::MUTABLE {
-      Message::new(MUTABLE).panic();
+      Message::new(Self::NOT_MUTABLE).panic();
     }
   };
 
@@ -1114,6 +1182,101 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
   unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() }
 }
 
+/// Reinterpret a reference to a value that holds self-relative pointers as a reference to
+/// another type, when every `S`, *and everything it points to*, is a valid `D`.
+///
+/// A self-relative pointer (a `Near` of the crate `nearest`, with the feature `nearest`) is an
+/// offset to a target in the same buffer. No other function makes a value that holds one: what a
+/// pointer aims at is not a property of its bytes. This one proves it, at compile time: a
+/// pointer of `D` must be, in `S`, a pointer at the same place whose offset is the same integer
+/// (width and byte order) and whose target can be read as the target of `D`'s: a value as a
+/// prefix of it that is not more aligned, a list as a list of elements of the same size, text
+/// as text. Those targets are related the same way, and so on: a recursive type is proven by
+/// induction over the pairs of types that are met, each once. Then nothing is checked and
+/// nothing is compiled: the result is the same address.
+///
+/// Behind a pointer nothing can be checked, so nothing may be left to check there: every value
+/// must be valid for what it is read as.
+///
+/// ```
+/// # #[cfg(feature = "nearest")] {
+/// use nearest::{Near, Region, flat};
+/// use puns::Pun;
+///
+/// #[flat]
+/// #[derive(Pun)]
+/// struct Old { done: bool, name: Near<str>, next: Option<Near<Old>> }
+///
+/// /// The next version: more states than done or not.
+/// #[flat]
+/// #[derive(Pun)]
+/// struct New { state: u8, name: Near<str>, next: Option<Near<New>> }
+///
+/// let old = Region::new(Old::new(true, "a", Near::new(Old::new(false, "b", None))));
+/// let new: &New = puns::view_ref(&*old);
+/// let next = new.next.as_ref().unwrap();
+/// assert_eq!((new.state, &*new.name, next.state, &*next.name), (1, "a", 0, "b"));
+/// # }
+/// ```
+///
+/// It is not a `const fn`: what the pointers aim at is proven by instances of functions, which
+/// only a build makes (`cargo check` reports nothing of it). It never gives a `&mut`: a pointer
+/// is only read.
+#[inline(always)]
+pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
+  const { Plan::<S, D>::VIEW };
+  // Everything that the pointers of `D` aim at, proven by the instances that this makes.
+  deep::proof::<S, D>();
+  // SAFETY: checked at compile time: the bytes of the value by the plan, what every pointer
+  // reachable from it aims at by `deep`. The value is borrowed, and nothing writes to what a
+  // shared reference to a pointer leads to: all of it stays what it is while the result lives.
+  unsafe { &*Plan::<S, D>::cast(value) }
+}
+
+/// [`view_ref`], when only some values of `S` are a valid `D`: what could not be proven of the
+/// value itself is checked at run time, as [`try_pun_ref`] does.
+///
+/// What is checked is the value that `value` refers to, not what it points to: a variant that
+/// `D` does not have, a scalar that `D` restricts, a pointer that may be null (`Option<Near<T>>`)
+/// read as one that is not (`Near<T>`). Behind its pointers nothing is checked, so everything
+/// must be proven there, as for [`view_ref`].
+///
+/// ```
+/// # #[cfg(feature = "nearest")] {
+/// use nearest::{Near, Region, flat};
+/// use puns::Pun;
+///
+/// #[flat]
+/// #[derive(Pun)]
+/// struct Maybe { id: u8, owner: Option<Near<u32>> }
+///
+/// #[flat]
+/// #[derive(Pun)]
+/// struct Owned { id: u8, owner: Near<u32> }
+///
+/// let owned = Region::new(Maybe::new(1, Near::new(7)));
+/// assert_eq!(*puns::try_view_ref::<Maybe, Owned>(&owned).unwrap().owner, 7);
+/// let orphan = Region::new(Maybe::new(2, None));
+/// assert!(puns::try_view_ref::<Maybe, Owned>(&orphan).is_err());
+/// # }
+/// ```
+///
+/// # Errors
+/// As [`try_pun_ref`]: [`Error::Alignment`], [`Error::Size`], [`Error::Validity`].
+#[inline]
+pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<&D, Error> {
+  const { Plan::<S, D>::TRY_VIEW };
+  // Everything that the pointers of `D` aim at, proven by the instances that this makes.
+  deep::proof::<S, D>();
+  match Plan::<S, D>::try_cast(value) {
+    // SAFETY: validated: the bytes of the value are a valid `D`, each of its pointers a
+    // pointer of `S` that is not null, and what they aim at is proven by `deep`, as in
+    // `view_ref`.
+    Ok(target) => Ok(unsafe { &*target }),
+    Err(error) => Err(error),
+  }
+}
+
 /// Reinterpret a reference as a reference to a type that covers the start of the value.
 ///
 /// If the target has a slice, it takes as many elements as fit. This compiles if those first
@@ -1299,7 +1462,11 @@ pub const fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Res
 #[inline(always)]
 #[must_use]
 pub const fn zeroed<T: Pun + Copy>() -> T {
-  const { assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type") };
+  const {
+    assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type");
+    // No `Copy` type holds one; were there one, it would not be made from nothing.
+    assert!(!T::LAYOUT.has_pointers(), "this type holds a self-relative pointer");
+  };
   // SAFETY: checked at compile time.
   unsafe { core::mem::zeroed() }
 }

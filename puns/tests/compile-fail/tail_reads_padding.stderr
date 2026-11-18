@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
               This is at byte 0 of the target.
 
-   --> src/lib.rs
-    |
-    |   const TAIL: () = Self::require(Self::check_tail(Need::PART));
-    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Padded, u8>::TAIL` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL: () = Self::require(Self::check_tail(Need::PART));
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Padded, u8>::TAIL` failed inside this call
+     |
 note: inside `puns::Plan::<Padded, u8>::require`
  --> src/lib.rs
   |

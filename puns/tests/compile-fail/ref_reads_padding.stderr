@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
               This is at byte 1 of the target.
 
-   --> src/lib.rs
-    |
-    |   const BY_REF: () = Self::require(Self::check(Need::REF));
-    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), [u8; 4]>::BY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const BY_REF: () = Self::require(Self::check(Need::REF));
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), [u8; 4]>::BY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<(u8, u16), [u8; 4]>::require`
  --> src/lib.rs
   |

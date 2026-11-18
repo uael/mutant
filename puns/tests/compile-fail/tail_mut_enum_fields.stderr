@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: an enum of the source is only partly covered by the `&mut`: what its tag says of the bytes on one side depends on the other.
 
-   --> src/lib.rs
-    |
-    |   const TAIL_MUT: () = Self::require(Self::check_tail_mut());
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Code, [u8; 2]>::TAIL_MUT` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL_MUT: () = Self::require(Self::check_tail_mut());
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Code, [u8; 2]>::TAIL_MUT` failed inside this call
+     |
 note: inside `puns::Plan::<Code, [u8; 2]>::require`
  --> src/lib.rs
   |

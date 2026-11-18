@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: the source is unsized: where its last bytes start depends on its length, which is only known at run time.
               Use `from_tail` to take a value from the end of bytes.
 
-   --> src/lib.rs
-    |
-    |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], u8>::TAIL_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], u8>::TAIL_REF` failed inside this call
+     |
 note: inside `puns::Plan::<[u8], u8>::require`
  --> src/lib.rs
   |

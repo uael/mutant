@@ -58,6 +58,16 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
   }
 }
 
+/// Whatever [`view_ref`](crate::view_ref) compiles for `S` and `D`.
+///
+/// This is its plan, and what the pointers of `D` aim at, followed `fuel` times. The function
+/// itself follows them through instances of functions, without a bound: `fuel` must be the
+/// number of pairs of types that can be met for the answer to be the same.
+#[must_use]
+pub const fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
+  ok::<S, D>(Need::VIEW) && crate::deep::local::<S, D>(fuel).is_none()
+}
+
 /// What each function that takes a part of a value would do with a pun from `S` to `D`:
 /// whatever it compiles.
 ///

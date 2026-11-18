@@ -17,12 +17,24 @@ exclude = ["CLAUDE.md"]
 # Test-only, for `puns-model`: `puns::hook`, what the analysis says of a
 # pun without failing to compile. Not part of the API; nothing else changes with it.
 verdict = []
+# Regions of the crate `nearest`: `Pun` for its pointers, its offsets in a given byte order
+# (`i32le`...), and loaders that check the bytes of a region from the layouts (`puns::nearest`).
+nearest = ["dep:nearest"]
 
 [dependencies]
 puns-derive = { version = "=0.1.0", path = "../puns-derive" }
+nearest = { version = "0.7.1", optional = true, default-features = false, features = ["alloc"] }
+
+[package.metadata.docs.rs]
+features = ["nearest"]
 
 [dev-dependencies]
 trybuild = "1"
+
+# What needs the feature `nearest` is not built without it.
+[[test]]
+name = "nearest"
+required-features = ["nearest"]
 
 [lints]
 workspace = true

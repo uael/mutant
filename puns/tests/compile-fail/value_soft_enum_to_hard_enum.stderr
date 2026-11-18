@@ -3,11 +3,11 @@ error[E0080]: evaluation panicked:
               Use a `try_*` function to check them at run time.
               This is at byte 0 of the target.
 
-   --> src/lib.rs
-    |
-    |   const BY_VALUE: () = Self::require(Self::check(Need::VALUE));
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Soft, Hard>::BY_VALUE` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const BY_VALUE: () = Self::require(Self::check(Need::VALUE));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Soft, Hard>::BY_VALUE` failed inside this call
+     |
 note: inside `puns::Plan::<Soft, Hard>::require`
  --> src/lib.rs
   |

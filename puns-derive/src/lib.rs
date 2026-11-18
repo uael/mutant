@@ -694,7 +694,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let predicates = &mut generics.make_where_clause().predicates;
   for field in &fields {
     let ty = field.ty;
-    predicates.push(parse_quote!(#ty: #root::Pun));
+    if needs_bound(ty, input) {
+      predicates.push(parse_quote!(#ty: #root::Pun));
+    }
     // What a region is read as.
     for ty in field.options.regions.iter().flatten().filter_map(|region| region.ty.as_ref()) {
       predicates.push(parse_quote!(#ty: #root::Pun));
@@ -932,6 +934,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         type Fields = #first;
         type Variants = ();
         type Walks = #first_walk;
+        type Pointee = ();
         const PROBE: *const Self = #probe;
         // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
         // is a slice.
@@ -1043,6 +1046,28 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   })
 }
 
+/// Whatever the implementation of `Pun` for the type of `input` is to be bounded by "the type
+/// `ty` of a field is `Pun`".
+///
+/// Only a type that depends on a parameter needs the bound: any other is `Pun` or is not,
+/// whatever the parameters are. And a type that names the type of `input` itself must not have
+/// it: a type that holds itself behind a pointer (`next: Option<Near<Self>>`) would be `Pun` if
+/// its field is, which is `Pun` if the type is, and the compiler does not go round such a cycle.
+/// What such a field needs of the parameters is then told by their own bounds.
+fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
+  fn names(tokens: TokenStream, idents: &[String]) -> bool {
+    tokens.into_iter().any(|token| match token {
+      proc_macro2::TokenTree::Ident(ident) => idents.iter().any(|name| ident == name),
+      proc_macro2::TokenTree::Group(group) => names(group.stream(), idents),
+      _ => false,
+    })
+  }
+  let parameters =
+    input.generics.type_params().map(|param| param.ident.to_string()).collect::<Vec<_>>();
+  let this = [input.ident.to_string(), "Self".to_owned()];
+  names(ty.to_token_stream(), &parameters) && !names(ty.to_token_stream(), &this)
+}
+
 /// An enum with fields, of a specified layout (RFC 2195): the offsets of the fields are the ones
 /// of `repr(C)` structs, which the compiler is asked for.
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
@@ -1061,7 +1086,9 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   let predicates = &mut generics.make_where_clause().predicates;
   for field in data.variants.iter().flat_map(|variant| &variant.fields) {
     let ty = &field.ty;
-    predicates.push(parse_quote!(#ty: #root::Pun));
+    if needs_bound(ty, input) {
+      predicates.push(parse_quote!(#ty: #root::Pun));
+    }
   }
   let where_clause = &generics.where_clause;
 
@@ -1230,6 +1257,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         type Fields = ();
         type Variants = #first #ty_generics;
         type Walks = ();
+        type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::enumeration::<Self>(
           const {

@@ -44,6 +44,11 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
       Shape::Enum(layout) => validate_enum::<T>(ptr, layout),
+      // Only a pointer proves a pointer, which the analysis made sure of: what may be left to
+      // check is that one that may be null is not, where the target has no such value.
+      Shape::Pointer(pointer) => {
+        pointer.nullable || load(ptr.cast(), pointer.width, pointer.endian) != 0
+      }
     }
   }
 }
