@@ -13,13 +13,21 @@ puns = { path = "../puns", features = ["verdict"] }
 fakecore = { path = "fakecore" }
 
 [features]
-# The exhaustive model check (`tests/size2.rs`... and `tests/parts*.rs`): thousands of pairs, which
+# The exhaustive model check (`tests/size*.rs` and `tests/parts2.rs`...): thousands of pairs, which
 # take minutes to build, so not built by `cargo test`. `model.yml` runs it every night:
 # `cargo test --profile model -p puns-model --features full`.
 full = []
 
 [[test]]
+name = "size1"
+required-features = ["full"]
+
+[[test]]
 name = "size2"
+required-features = ["full"]
+
+[[test]]
+name = "size3"
 required-features = ["full"]
 
 [[test]]

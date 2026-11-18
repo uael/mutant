@@ -330,8 +330,9 @@ without its second condition, are caught.
 Every check that CI runs on a push takes at most a minute. So `cargo test` runs a sample of the
 model check, and Miri a selection of pairs chosen for the unsafe paths they reach, not for the
 verdicts: no undefined behaviour is what Miri is there to see (`puns-model/tests/miri_sample.rs`
-lists what each pair is for; three slow examples, `archives`, `link` and `routing`, which walk
-over hundreds of bytes, are not run under Miri, and other tests run the same paths there). The
+lists what each pair is for). The examples other than `ethernet` are not run under Miri either:
+they are declarations, and the unsafe code they reach is that of the library, which its own
+tests and `ethernet` run there. The
 exhaustive run, every pair and every part of every type, is behind the `full` feature, which
 `cargo test` does not build: `cargo test --profile model -p puns-model --features full`
 (optimized, without LTO: minutes to build, two to run). The `model.yml` workflow runs it every

@@ -37,10 +37,14 @@ Most refusals are panics of `const { .. }` blocks in generic functions, evaluate
 monomorphization: `cargo check` does not report them, `cargo build` does. The trybuild test has a
 passing case (`tests/compile-pass/`) so that trybuild builds instead of checking.
 
-Every check that CI runs on a push must take at most a minute with a warm cache: what is
-exhaustive (the full model check) runs in `.github/workflows/model.yml`, every night and on
-demand. Under Miri, the model check runs a selection of pairs that reaches every unsafe path
-(`puns-model/tests/miri_sample.rs` says which pair is for which), not every pair.
+Every check that CI runs on a push must take at most a minute, build included (CI builds the
+crates of the workspace each time): check what matters, and time a check before adding one. What
+is exhaustive (the full model check, behind the `full` feature of `puns-model`) runs in
+`.github/workflows/model.yml`, every night and on demand. Under Miri, the model check runs a
+selection of pairs that reaches every unsafe path (`puns-model/tests/miri_sample.rs` says which
+pair is for which), not every pair, and of the examples only `ethernet` runs: the others reach
+the same unsafe code of the library. Each pair of types in a test of the model is an instance of
+the analysis, about a tenth of a second of build: keep the tests that every push builds small.
 
 Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
 functions are in `puns/DESIGN.md`; compare before and after a change of the library.
