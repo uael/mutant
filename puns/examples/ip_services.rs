@@ -10,7 +10,7 @@
 //! | Specificity                                       | Told by                                   |
 //! |---------------------------------------------------|-------------------------------------------|
 //! | flags of a few bits (DNS opcode, NTP mode)        | `get(..)`, `assert(..)`                   |
-//! | DNS names: labels, then an empty one or a pointer | `assert({ let end = walk(..); .. })`      |
+//! | DNS names: labels, then an empty one or a pointer | `size = { let end = walk(..); .. }`       |
 //! | the name of the first question, pointers followed | `assert(questions == 0 \|\| ..)`          |
 //! | a question: a name, then 4 bytes, from its end    | `regions(name: Name = .., fixed: ..)`     |
 //! | a record whose name is a pointer: a fixed head    | `valid(0xc000..)`, `size = rdlength + 12` |
@@ -33,12 +33,10 @@
 //!
 //! What is not covered, and why:
 //!
-//! - DNS: a message checks the name of its first question only. Checking every name and the
-//!   fixed part of every record is one walk over the message whose step is 61 operations; an
-//!   expression of a walk has at most 56. A name, and a record whose name is not a single
-//!   pointer, cannot be `from_head`ed from a stream: their size is only found by walking them, and a
-//!   `size` rule cannot walk. Name compression is followed, but a name is not decompressed:
-//!   that would be a copy, not a view of the bytes.
+//! - DNS: a message checks the name of its first question only; the questions and the records
+//!   are read one by one by use code (`from_head` in a loop), each of a size found by walking its
+//!   name. Name compression is followed, but a name is not decompressed: that would be a copy,
+//!   not a view of the bytes.
 //! - DHCP options, NTP extensions, RADIUS attributes, STUN attributes are read one by one by use
 //!   code (`from_head` in a loop): a sequence of things of their own sizes is bytes.
 //! - The RADIUS authenticators and the STUN MESSAGE-INTEGRITY are keyed hashes (MD5, HMAC-SHA1)
@@ -97,26 +95,44 @@ pub struct Dns {
 }
 
 /// A name as it is in a message: labels of 0 to 63 bytes, ending with an empty label or a
-/// pointer, of 255 bytes at most.
-///
-/// Its size is not in it: it is only found by walking it, so a name is checked when its extent
-/// is known (as in a [`Question`]), it is not `from_head`ed.
+/// pointer, of 255 bytes at most. Its size is found by walking its labels.
 #[derive(Pun)]
 #[repr(transparent)]
-#[pun(assert({
+#[pun(size = {
   let end = walk(0, |at| be(at, 1) != 0 && be(at, 1) < 0x40, |at| at + 1 + be(at, 1));
-  end < 255
-    && ((be(end, 1) == 0 && end + 1 == size_of_val(self))
-      || (be(end, 1) >= 0xc0 && end + 2 == size_of_val(self)))
-}))]
+  let last = be(end, 1);
+  if end >= 255 { 1 / 0 } else if last == 0 { end + 1 } else if last >= 0xc0 { end + 2 } else { 1 / 0 }
+})]
 pub struct Name(pub [u8]);
 
-/// A question: a name, then a type and a class, which are known from the end.
+/// A question: a name, then a type and a class.
 #[derive(Pun)]
 #[repr(transparent)]
-#[pun(assert(size_of_val(self) >= 5))]
+#[pun(size = {
+  let end = walk(0, |at| be(at, 1) != 0 && be(at, 1) < 0x40, |at| at + 1 + be(at, 1));
+  end + if be(end, 1) == 0 { 1 } else { 2 } + 4
+})]
 pub struct Question {
   #[pun(regions(name: Name = size_of_val(self) - 4, fixed: QuestionFixed))]
+  pub data: [u8],
+}
+
+/// A resource record, of any name: the name, a type, a class, a time to live, and data of the
+/// length that precedes it.
+#[derive(Pun)]
+#[repr(transparent)]
+#[pun(size = {
+  let end = walk(0, |at| be(at, 1) != 0 && be(at, 1) < 0x40, |at| at + 1 + be(at, 1));
+  let name = end + if be(end, 1) == 0 { 1 } else { 2 };
+  name + 10 + be(name + 8, 2)
+})]
+pub struct Record {
+  #[pun(regions(
+    name: Name = walk(0, |at| be(at, 1) != 0 && be(at, 1) < 0x40, |at| at + 1 + be(at, 1))
+      + if be(walk(0, |at| be(at, 1) != 0 && be(at, 1) < 0x40, |at| at + 1 + be(at, 1)), 1) == 0 { 1 } else { 2 },
+    fixed = 10,
+    rdata,
+  ))]
   pub data: [u8],
 }
 
@@ -626,14 +642,29 @@ pub fn main() {
   let address: &A = try_pun_ref(&record.rdata).unwrap();
   assert_eq!(address.0, [93, 184, 216, 34]);
   assert!(try_pun_ref::<_, Name>(&RESPONSE[29..31]).is_ok());
+  // Questions and records from a stream: each is as long as walking its name tells.
+  let (question, rest) = from_head::<Question>(&RESPONSE[12..]).unwrap();
+  assert_eq!((question.name().map(|name| name.0.len()), rest.len()), (Ok(13), 16));
+  let (record, rest) = from_head::<Record>(rest).unwrap();
+  assert_eq!(
+    (record.name().map(|name| name.0.len()), record.rdata(), rest.len()),
+    (Ok(2), &[93, 184, 216, 34][..], 0)
+  );
+  // The same record, its name written out.
+  let written = [&QUERY[12..25], &RESPONSE[31..]].concat();
+  let (record, rest) = from_head::<Record>(&written).unwrap();
+  assert_eq!(
+    (record.name().map(|name| name.0.len()), record.rdata().len(), rest.len()),
+    (Ok(13), 4, 0)
+  );
+  assert_eq!(from_head::<Record>(&written[..written.len() - 1]).err(), Some(Error::Size));
 
   // ---- DNS: what is not a message.
   // A label longer than the name: the message, and the name of its question, are not valid.
   let mut long = QUERY;
   long[20] = 9;
   assert_eq!(try_pun_ref::<_, Dns>(&long[..]).err(), Some(Error::Validity));
-  let question: &Question = try_pun_ref(&long[12..]).unwrap();
-  assert_eq!(question.name().err(), Some(Error::Validity));
+  assert_eq!(try_pun_ref::<_, Question>(&long[12..]).err(), Some(Error::Validity));
   // A label of a reserved form (`0x40`); no end to the name; opcode 3; the Z bit.
   for (at, value) in [(12, 0x47), (2, 0x18), (3, 0x40)] {
     let mut bytes = QUERY;
