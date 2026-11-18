@@ -20,31 +20,26 @@
 //! | HTTP/2 SETTINGS: an array of settings           | `[Setting]`: a multiple of 6 bytes         |
 //! | HTTP/2 padding and priority, told by flags      | `if flags & 8 != 0 { .. }` in `regions`    |
 //! | the HTTP/2 connection preface                   | `u128bec<..>`, `u64bec<..>`                |
-//! | WebSocket lengths of 7, 16 or 64 bits           | a struct per form, an enum of references   |
-//! | WebSocket: shortest forms, short control frames | `valid(126..)`, a head type per kind       |
+//! | WebSocket lengths of 7, 16 or 64 bits           | `size = .. if .. { be(2, 2) } ..`          |
+//! | WebSocket: shortest forms, short control frames | `assert(.. be(2, 2) >= 126)`               |
+//! | WebSocket: masked from clients only             | `WebSocket<MASK>`, `assert(.. == MASK)`    |
 //! | SSH: a MAC whose size the bytes do not tell     | a const parameter: `SshPacket<_, MAC>`     |
 //! | SSH: padding to the block size                  | `assert((packet_length + 4) % BLOCK ..)`   |
 //! | SSH name-lists of US-ASCII                      | `regions(names: [u8in<0x21, 0x7e>] = ..)`  |
-//! | MQTT: a remaining length of 1 to 4 bytes        | a struct per length, an enum of references |
+//! | MQTT: a remaining length of 1 to 4 bytes        | `size = 1 + leb128_len(1) + leb128(1)`     |
 //! | MQTT: flags that depend on the packet type      | `assert({ let kind = ..; .. })`            |
-//! | MQTT strings: a length, then UTF-8              | `regions(text: str = length, rest: R)`     |
+//! | MQTT strings: a length, then UTF-8 without NUL  | `matches(Dfa::UTF8_NO_NUL, ..)`, a `str`   |
 //! | CoAP options: nibbles that tell 0, 1 or 2 bytes | a struct per form, an enum of references   |
+//! | CoAP: options up to a marker, then a payload    | `assert({ let end = walk(..); .. })`       |
 //! | SCTP chunks, padded to 4 bytes                  | `size = (length + 3) / 4 * 4`              |
+//! | SCTP: a CRC-32C, its own field taken as zeros   | `crc::<32, 0x1edc6f41, ..>(0, .., 8, 12)`  |
 //!
 //! What is not covered, and why:
 //!
-//! - WebSocket, MQTT, CoAP: the size of a frame, a packet or an option is at an offset, or of a
-//!   width, that a byte of its head tells. A `size` rule reads fields, not `be(..)`: each form is
-//!   a struct of its own, and an enum of references tells them apart. This is the current way;
-//!   with `be` in `size` (planned), each is one struct.
-//! - CoAP: that the options are well formed, up to the payload marker, is a walk over them whose
-//!   step is 75 operations; an expression of a walk has at most 56 (planned: more). So a payload
-//!   marker without a payload is not rejected by the message, and options are checked one by one
-//!   by use code. The option numbers are sums of the deltas before them: state carried along a
+//! - CoAP options are still a struct for each form of their head, and an enum of references:
+//!   with `be` in `size`, they could be one struct (not rewritten yet).
+//! - CoAP: the option numbers are sums of the deltas before them: state carried along a
 //!   sequence, which use code keeps.
-//! - SCTP: the checksum is a CRC-32C. There is no CRC-32C in the expressions, and computing one
-//!   by a walk, a byte per step, takes 50 operations a step, 2 more than allowed (planned: more).
-//!   It is not checked.
 //! - TLS: a handshake message can span records, and records are encrypted after the handshake;
 //!   reassembly and decryption are not views of the bytes. Typed regions are checked when they
 //!   are read: the cipher suites of a ClientHello are only checked when asked for.
@@ -56,8 +51,9 @@
 use core::marker::PhantomData;
 
 use puns::{
-  Error, Pun, Tag, from_head,
-  num::{u8c, u8in, u16be, u16bec, u24be, u32be, u32bec, u32le, u64be, u64bec, u128bec},
+  Error, Pun, Tag, from_bytes, from_head,
+  layout::Dfa,
+  num::{u8c, u8in, u16be, u16bec, u24be, u32be, u32bec, u32le, u64bec, u128bec},
   try_pun_ref,
 };
 
@@ -362,72 +358,39 @@ pub struct Preface {
 #[pun(get(fin: bool = self.0 & 0x80 != 0, opcode: u8 = self.0 & 0x0f))]
 pub struct Head(pub u8);
 
-/// The first byte of a data frame: the lengths of 16 and 64 bits are not for control frames.
-#[derive(Pun, Debug, Copy, Clone)]
-#[repr(transparent)]
-#[pun(assert(self.0 & 0x70 == 0 && self.0 & 0x0f <= 2))]
-#[pun(get(fin: bool = self.0 & 0x80 != 0, opcode: u8 = self.0 & 0x0f))]
-pub struct DataHead(pub u8);
-
-/// A frame of up to 125 bytes. `L` is the second byte: the mask bit and the length; `K` the key
-/// (`[u8; 4]`, or `[u8; 0]` when not masked).
+/// A WebSocket frame, of a client (`MASK` is 1: masked) or of a server (0).
 ///
-/// The size of a frame depends on the form of its length, which the second byte tells. A `size`
-/// rule reads fields: each form is a struct ([`Short`], [`Medium`], [`Long`]), and an enum of
-/// references ([`ServerFrame`], [`ClientFrame`]) tells them apart. This is the current way: with
-/// `be` in `size` (planned), it is one struct.
+/// A head, a byte of a mask bit and a length of 7 bits (126 and 127: the length is the 16 or 64
+/// bits that follow), the key of the mask if it is masked, the payload.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = (length & 0x7f) + 2 + size_of::<K>())]
-pub struct Short<L, K> {
+#[pun(size = {
+  let form = length & 0x7f;
+  let extended = if form == 126 { 2 } else if form == 127 { 8 } else { 0 };
+  let payload = if form == 126 { be(2, 2) } else if form == 127 { be(2, 8) } else { form };
+  2 + extended + (length >> 7) * 4 + payload
+})]
+#[pun(assert(length >> 7 == MASK as u128))]
+// The shortest form, a length whose first bit is 0, and control frames of the short form.
+#[pun(assert(length & 0x7f != 126 || be(2, 2) >= 126))]
+#[pun(assert(length & 0x7f != 127 || (be(2, 8) >= 0x1_0000 && be(2, 8) >> 63 == 0)))]
+#[pun(assert(head & 0x08 == 0 || length & 0x7f <= 125))]
+pub struct WebSocket<const MASK: u8> {
   pub head: Head,
-  pub length: L,
-  pub key: K,
-  pub payload: [u8],
-}
-
-/// A frame of 126 to 65535 bytes.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = extended + 4 + size_of::<K>())]
-pub struct Medium<L, K> {
-  pub head: DataHead,
-  pub length: L,
-  /// The shortest form is required.
-  #[pun(valid(126..))]
-  pub extended: u16be,
-  pub key: K,
-  pub payload: [u8],
-}
-
-/// A frame of 65536 bytes or more (the most significant bit of the length is 0).
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = extended + 10 + size_of::<K>())]
-pub struct Long<L, K> {
-  pub head: DataHead,
-  pub length: L,
-  #[pun(valid(0x1_0000..=0x7fff_ffff_ffff_ffff))]
-  pub extended: u64be,
-  pub key: K,
-  pub payload: [u8],
+  pub length: u8,
+  #[pun(regions(
+    extended = if length & 0x7f == 126 { 2 } else if length & 0x7f == 127 { 8 } else { 0 },
+    key = (length >> 7) * 4,
+    payload,
+  ))]
+  pub rest: [u8],
 }
 
 /// A frame from a server: never masked.
-#[derive(Pun)]
-pub enum ServerFrame<'a> {
-  Short(&'a Short<u8in<0x00, 0x7d>, [u8; 0]>),
-  Medium(&'a Medium<u8c<0x7e>, [u8; 0]>),
-  Long(&'a Long<u8c<0x7f>, [u8; 0]>),
-}
+pub type ServerFrame = WebSocket<0>;
 
 /// A frame from a client: always masked.
-#[derive(Pun)]
-pub enum ClientFrame<'a> {
-  Short(&'a Short<u8in<0x80, 0xfd>, [u8; 4]>),
-  Medium(&'a Medium<u8c<0xfe>, [u8; 4]>),
-  Long(&'a Long<u8c<0xff>, [u8; 4]>),
-}
+pub type ClientFrame = WebSocket<1>;
 
 // -------------------------------------------------------------------------------------------------
 // SSH
@@ -501,80 +464,24 @@ pub type Lists5 = NameList<NameList<NameList<NameList<NameList<KexEnd>>>>>;
 #[pun(get(kind: u8 = self.0 >> 4, flags: u8 = self.0 & 15))]
 pub struct Fixed(pub u8);
 
-/// A packet whose remaining length is 1 byte.
-///
-/// The remaining length is a variable-length integer of 1 to 4 bytes, 7 bits each, least
-/// significant first: a different head for each of its lengths, so four structs ([`Packet1`] to
-/// [`Packet4`]) and an enum of references ([`Packet`]). This is the current way: with `be` in
-/// `size` (planned), it is one struct.
+/// An MQTT packet: its first byte, then the remaining length, LEB128 of 1 to 4 bytes (the
+/// shortest form: its last byte is not 0, but for a length of 0), then a body of that size.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = length + 2)]
-pub struct Packet1<P: ?Sized = [u8]> {
+#[pun(size = 1 + leb128_len(1) + leb128(1))]
+#[pun(assert(leb128_len(1) <= 4 && (leb128_len(1) == 1 || be(leb128_len(1), 1) != 0)))]
+pub struct Packet<P: ?Sized = [u8]> {
   pub header: Fixed,
-  #[pun(valid(..=0x7f))]
-  pub length: u8,
-  pub body: P,
+  pub body_type: PhantomData<P>,
+  #[pun(regions(length = leb128_len(1), body: P))]
+  pub rest: [u8],
 }
 
-/// A packet whose remaining length is 2 bytes (the last one is not 0: the shortest form).
+/// A UTF-8 string of MQTT, without `U+0000` (a 16 bits length, then the text), then what follows
+/// it.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(size = (l0 & 0x7f) + (l1 << 7) + 3)]
-pub struct Packet2<P: ?Sized = [u8]> {
-  pub header: Fixed,
-  #[pun(valid(0x80..))]
-  pub l0: u8,
-  #[pun(valid(1..=0x7f))]
-  pub l1: u8,
-  pub body: P,
-}
-
-/// A packet whose remaining length is 3 bytes.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (l0 & 0x7f) + ((l1 & 0x7f) << 7) + (l2 << 14) + 4)]
-pub struct Packet3<P: ?Sized = [u8]> {
-  pub header: Fixed,
-  #[pun(valid(0x80..))]
-  pub l0: u8,
-  #[pun(valid(0x80..))]
-  pub l1: u8,
-  #[pun(valid(1..=0x7f))]
-  pub l2: u8,
-  pub body: P,
-}
-
-/// A packet whose remaining length is 4 bytes.
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = (l0 & 0x7f) + ((l1 & 0x7f) << 7) + ((l2 & 0x7f) << 14) + (l3 << 21) + 5)]
-pub struct Packet4<P: ?Sized = [u8]> {
-  pub header: Fixed,
-  #[pun(valid(0x80..))]
-  pub l0: u8,
-  #[pun(valid(0x80..))]
-  pub l1: u8,
-  #[pun(valid(0x80..))]
-  pub l2: u8,
-  #[pun(valid(1..=0x7f))]
-  pub l3: u8,
-  pub body: P,
-}
-
-/// Any MQTT packet.
-#[derive(Pun)]
-pub enum Packet<'a> {
-  One(&'a Packet1),
-  Two(&'a Packet2),
-  Three(&'a Packet3),
-  Four(&'a Packet4),
-}
-
-/// A UTF-8 string of MQTT (a 16 bits length, then UTF-8), then what follows it. (MQTT also
-/// forbids U+0000, which a `str` allows: no other text pattern can be declared yet.)
-#[derive(Pun)]
-#[repr(C)]
+#[pun(assert(matches(Dfa::UTF8_NO_NUL, 2, 2 + length)))]
 pub struct Utf8<R: ?Sized = [u8; 0]> {
   pub length: u16be,
   pub rest_type: PhantomData<R>,
@@ -617,6 +524,32 @@ pub struct Connect {
   class == 0 || class == 2 || class == 4 || class == 5 || class == 7
 }))]
 #[pun(assert(code != 0 || size_of_val(self) == 4))]
+// The options are well formed, up to the end or to a payload marker, which a payload follows.
+// Each nibble of the head of an option is a value (0 to 12), or tells 1 (13) or 2 (14) more
+// bytes; 15 is not one.
+#[pun(assert({
+  let end = walk(
+    4 + (version_type_tkl & 15),
+    |at| at < size_of_val(self) && be(at, 1) != 0xff,
+    |at| {
+      let head = be(at, 1);
+      let delta = head >> 4;
+      let length = head & 15;
+      let after = at + 1 + if delta < 13 { 0 } else if delta < 15 { delta - 12 } else { 1 / 0 };
+      let value = if length < 13 {
+        length
+      } else if length == 13 {
+        13 + be(after, 1)
+      } else if length == 14 {
+        269 + be(after, 2)
+      } else {
+        1 / 0
+      };
+      after + (if length < 13 { 0 } else { length - 12 }) + value
+    },
+  );
+  end == size_of_val(self) || end + 1 < size_of_val(self)
+}))]
 #[pun(get(kind: u8 = (version_type_tkl >> 4) & 3, class: u8 = code >> 5, detail: u8 = code & 31))]
 pub struct Coap {
   /// Version (2 bits, 1), type (2 bits), token length (4 bits).
@@ -746,10 +679,13 @@ pub enum CoapOption<'a> {
 // -------------------------------------------------------------------------------------------------
 // SCTP
 
-/// An SCTP packet: a common header, then chunks. Its checksum is a CRC-32C of the packet, its
-/// own field taken as 0, which is not checked (see the top of this file).
+/// An SCTP packet: a common header, then chunks. Its checksum is the CRC-32C of the packet, its
+/// own field taken as zeros.
 #[derive(Pun)]
 #[repr(C)]
+#[pun(assert(
+  crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>(0, size_of_val(self), 8, 12) == checksum
+))]
 pub struct Sctp {
   pub source_port: u16be,
   pub destination_port: u16be,
@@ -991,65 +927,51 @@ pub fn main() {
     (5, &[0x82, 0x86][..], &[0][..])
   );
 
-  // ---- WebSocket: a form per length, a view per side.
-  let Ok((ServerFrame::Short(frame), rest)) = ServerFrame::from_head(&HELLO) else { panic!() };
+  // ---- WebSocket: a length of 7, 16 or 64 bits, masked from a client.
+  let (frame, rest) = from_head::<ServerFrame>(&HELLO).unwrap();
   assert_eq!(
-    (frame.head.fin(), frame.head.opcode(), &frame.payload, rest.len()),
+    (frame.head.fin(), frame.head.opcode(), frame.payload(), rest.len()),
     (true, 1, &b"Hello"[..], 0)
   );
-  assert!(
-    matches!(ServerFrame::from_bytes(&PING), Ok(ServerFrame::Short(ping)) if ping.head.opcode() == 9)
-  );
-  // What a frame carries, whatever the form of its length.
-  let payload = |frame: ServerFrame<'_>| match frame {
-    ServerFrame::Short(frame) => frame.payload.len(),
-    ServerFrame::Medium(frame) => frame.payload.len(),
-    ServerFrame::Long(frame) => frame.payload.len(),
-  };
+  assert!(matches!(from_bytes::<ServerFrame>(&PING), Ok(ping) if ping.head.opcode() == 9));
   // Unmasking is a transformation: use code.
-  let unmask = |frame: ClientFrame<'_>| {
-    let (key, payload) = match frame {
-      ClientFrame::Short(frame) => (frame.key, &frame.payload),
-      ClientFrame::Medium(frame) => (frame.key, &frame.payload),
-      ClientFrame::Long(frame) => (frame.key, &frame.payload),
-    };
+  let unmask = |frame: &ClientFrame| {
+    let (key, payload) = (frame.key(), frame.payload());
     payload.iter().enumerate().map(|(i, byte)| byte ^ key[i % 4]).collect::<Vec<u8>>()
   };
-  assert_eq!(unmask(ClientFrame::from_bytes(&MASKED_HELLO).unwrap()), b"Hello");
+  assert_eq!(unmask(from_bytes::<ClientFrame>(&MASKED_HELLO).unwrap()), b"Hello");
   // 256 bytes, then 65536 bytes, not masked.
   let mut medium = vec![0x82, 0x7e, 0x01, 0x00];
   medium.resize(4 + 256, 7);
-  assert!(matches!(ServerFrame::from_bytes(&medium), Ok(ServerFrame::Medium(_))));
-  assert_eq!(payload(ServerFrame::from_bytes(&medium).unwrap()), 256);
+  assert_eq!(from_bytes::<ServerFrame>(&medium).map(|frame| frame.payload().len()), Ok(256));
   let mut long = vec![0x82, 0x7f, 0, 0, 0, 0, 0, 1, 0, 0];
   long.resize(10 + 65536, 7);
-  assert!(matches!(ServerFrame::from_bytes(&long), Ok(ServerFrame::Long(_))));
-  assert_eq!(payload(ServerFrame::from_bytes(&long).unwrap()), 65536);
+  assert_eq!(from_bytes::<ServerFrame>(&long).map(|frame| frame.payload().len()), Ok(65536));
   // 256 bytes from a client, masked by a key of zeros.
   let mut masked = vec![0x82, 0xfe, 0x01, 0x00, 0, 0, 0, 0];
   masked.resize(8 + 256, 7);
-  assert_eq!(unmask(ClientFrame::from_bytes(&masked).unwrap()), [7; 256]);
+  assert_eq!(unmask(from_bytes::<ClientFrame>(&masked).unwrap()), [7; 256]);
   // Masked from a server, not masked from a client.
-  assert_eq!(ServerFrame::from_bytes(&MASKED_HELLO).err(), Some(Error::Validity));
-  assert_eq!(ClientFrame::from_bytes(&HELLO).err(), Some(Error::Validity));
+  assert_eq!(from_bytes::<ServerFrame>(&MASKED_HELLO).err(), Some(Error::Validity));
+  assert_eq!(from_bytes::<ClientFrame>(&HELLO).err(), Some(Error::Validity));
   // RSV bits, a reserved opcode, a fragmented control frame; a length that is not the one of
   // the bytes.
   for value in [0xc1, 0x83, 0x09] {
     let mut bytes = HELLO;
     bytes[0] = value;
-    assert_eq!(ServerFrame::from_bytes(&bytes).err(), Some(Error::Validity));
+    assert_eq!(from_bytes::<ServerFrame>(&bytes).err(), Some(Error::Validity));
   }
-  assert!(ServerFrame::from_bytes(&HELLO[..6]).is_err());
+  assert!(from_bytes::<ServerFrame>(&HELLO[..6]).is_err());
   // Not the shortest form; a control frame of a long form; a length whose first bit is set.
   medium[2] = 0;
   medium[3] = 0x7d;
   medium.truncate(4 + 125);
-  assert!(ServerFrame::from_bytes(&medium).is_err());
+  assert!(from_bytes::<ServerFrame>(&medium).is_err());
   let mut ping = vec![0x89, 0x7e, 0x01, 0x00];
   ping.resize(4 + 256, 7);
-  assert!(ServerFrame::from_bytes(&ping).is_err());
+  assert!(from_bytes::<ServerFrame>(&ping).is_err());
   long[2] = 0x80;
-  assert!(ServerFrame::from_bytes(&long).is_err());
+  assert!(from_bytes::<ServerFrame>(&long).is_err());
 
   // ---- SSH: a packet of a block size and a MAC size that the bytes do not tell.
   let (packet, rest) = from_head::<SshPacket<8, 32>>(&KEXINIT).unwrap();
@@ -1085,13 +1007,14 @@ pub fn main() {
   let kex: &KexInit = try_pun_ref(packet.payload()).unwrap();
   assert_eq!(kex.lists.names().err(), Some(Error::Validity));
 
-  // ---- MQTT: a packet of one length form, of a typed body.
-  let connect: &Packet1<Connect> = try_pun_ref(&CONNECT[..]).unwrap();
-  assert_eq!((connect.header.kind(), connect.body.keep_alive.get()), (1, 60));
-  assert!(connect.body.clean_session() && !connect.body.has_user());
-  assert_eq!(connect.body.client_id.text(), Ok("abc"));
-  let Ok((Packet::One(any), rest)) = Packet::from_head(&CONNECT) else { panic!() };
-  assert_eq!((any.body.len(), rest.len()), (15, 0));
+  // ---- MQTT: a remaining length of 1 to 4 bytes, a typed body.
+  let connect = from_bytes::<Packet<Connect>>(&CONNECT).unwrap();
+  let body = connect.body().unwrap();
+  assert_eq!((connect.header.kind(), body.keep_alive.get()), (1, 60));
+  assert!(body.clean_session() && !body.has_user());
+  assert_eq!(body.client_id.text(), Ok("abc"));
+  let (any, rest) = from_head::<Packet>(&CONNECT).unwrap();
+  assert_eq!((any.body().map(<[u8]>::len), rest.len()), (Ok(15), 0));
   // Flags of CONNECT, a reserved type, type 15; the length; the protocol name and level; a
   // reserved flag, a will QoS without a will, will QoS 3.
   for (at, value) in [
@@ -1108,41 +1031,40 @@ pub fn main() {
   ] {
     let mut bytes = CONNECT;
     bytes[at] = value;
-    assert!(try_pun_ref::<_, Packet1<Connect>>(&bytes[..]).is_err());
+    assert!(from_bytes::<Packet<Connect>>(&bytes).and_then(|packet| packet.body()).is_err());
   }
-  // A client identifier that is not UTF-8: checked when read.
-  let mut bytes = CONNECT;
-  bytes[16] = 0xff;
-  let connect: &Packet1<Connect> = try_pun_ref(&bytes[..]).unwrap();
-  assert_eq!(connect.body.client_id.text(), Err(Error::Validity));
+  // A client identifier that is not UTF-8, or that holds a zero.
+  for value in [0xff, 0] {
+    let mut bytes = CONNECT;
+    bytes[16] = value;
+    let connect = from_bytes::<Packet<Connect>>(&bytes).unwrap();
+    assert_eq!(connect.body().err(), Some(Error::Validity));
+  }
   // PUBLISH of QoS 1 and 200 bytes (two bytes of length), then DISCONNECT.
   let mut publish = vec![0x32, 0xc8, 0x01];
   publish.resize(3 + 200, 0);
   publish.extend([0xe0, 0x00]);
-  // What a packet carries, whatever the form of its length.
-  let body = |packet: Packet<'_>| match packet {
-    Packet::One(packet) => packet.body.len(),
-    Packet::Two(packet) => packet.body.len(),
-    Packet::Three(packet) => packet.body.len(),
-    Packet::Four(packet) => packet.body.len(),
-  };
-  assert_eq!(body(Packet::from_bytes(&CONNECT).unwrap()), 15);
-  let Ok((Packet::Two(packet), rest)) = Packet::from_head(&publish) else { panic!() };
-  assert_eq!((packet.header.flags(), packet.body.len(), rest), (2, 200, &[0xe0, 0][..]));
-  let Ok((Packet::One(disconnect), _)) = Packet::from_head(rest) else { panic!() };
+  let (packet, rest) = from_head::<Packet>(&publish).unwrap();
+  assert_eq!(
+    (packet.header.flags(), packet.body().map(<[u8]>::len), rest),
+    (2, Ok(200), &[0xe0, 0][..])
+  );
+  let (disconnect, _) = from_head::<Packet>(rest).unwrap();
   assert_eq!(disconnect.header.kind(), 14);
   // 16384 bytes: three bytes of length.
   let mut big = vec![0x30, 0x80, 0x80, 0x01];
   big.resize(4 + 16384, 0);
-  assert!(matches!(Packet::from_bytes(&big), Ok(Packet::Three(_))));
-  assert_eq!(body(Packet::from_bytes(&big).unwrap()), 16384);
+  assert_eq!(
+    from_bytes::<Packet>(&big).map(|packet| packet.body().map(<[u8]>::len)),
+    Ok(Ok(16384))
+  );
   // Not the shortest form; PUBLISH of QoS 3; SUBSCRIBE without its flags; a fifth byte of length.
   for bytes in
     [&[0x30, 0x80, 0x00][..], &[0x36, 0x00], &[0x80, 0x00], &[0x30, 0xff, 0xff, 0xff, 0xff, 0x01]]
   {
-    assert_eq!(Packet::from_bytes(bytes).err(), Some(Error::Validity));
+    assert_eq!(from_bytes::<Packet>(bytes).err(), Some(Error::Validity));
   }
-  assert!(Packet::from_bytes(&[0x82, 0x00]).is_ok());
+  assert!(from_bytes::<Packet>(&[0x82, 0x00]).is_ok());
 
   // ---- CoAP: a header, a token, then options of their own forms.
   let get: &Coap = try_pun_ref(&GET[..]).unwrap();
@@ -1193,14 +1115,18 @@ pub fn main() {
     bytes[at] = value;
     assert_eq!(try_pun_ref::<_, Coap>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // An option that runs past the message is seen by reading the options (use code), not by the
-  // message: its walk over the options is longer than allowed (see the top of this file).
+  // An option that runs past the message.
   let mut bytes = GET;
   bytes[5] = 0xbc;
-  let get: &Coap = try_pun_ref(&bytes[..]).unwrap();
-  assert!(CoapOption::from_head(get.options_and_payload()).is_err());
+  assert_eq!(try_pun_ref::<_, Coap>(&bytes[..]).err(), Some(Error::Validity));
+  // A payload marker, and no payload.
+  let mut bytes = GET.to_vec();
+  bytes.push(0xff);
+  assert_eq!(try_pun_ref::<_, Coap>(&bytes[..]).err(), Some(Error::Validity));
+  bytes.push(b'!');
+  assert!(try_pun_ref::<_, Coap>(&bytes[..]).is_ok());
 
-  // ---- SCTP: chunks padded to 4 bytes; the checksum is there, but not checked.
+  // ---- SCTP: chunks padded to 4 bytes, a CRC-32C over the packet.
   let sctp: &Sctp = try_pun_ref(&SCTP[..]).unwrap();
   assert_eq!((sctp.source_port.get(), sctp.checksum.get()), (5000, 0x1249_0994));
   let (chunk, rest) = from_head::<Chunk>(&sctp.chunks).unwrap();
@@ -1210,7 +1136,7 @@ pub fn main() {
   assert_eq!(from_head::<Chunk>(&[0, 3, 0, 3, 9, 0, 0, 0]).err(), Some(Error::Validity));
   let mut bytes = SCTP;
   bytes[20] ^= 1;
-  assert!(try_pun_ref::<_, Sctp>(&bytes[..]).is_ok());
+  assert_eq!(try_pun_ref::<_, Sctp>(&bytes[..]).err(), Some(Error::Validity));
 
   println!("ok");
 }
