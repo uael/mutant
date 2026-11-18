@@ -162,11 +162,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Of the tests of `puns`, the ones that Miri runs (see the step that selects them).
-          - name: tree borrows
+          # Of the tests of `puns`, the ones that Miri runs (see the step that selects them). With
+          # tree borrows, the slowest, they are two jobs: every other test file each.
+          - name: tree borrows, 1 of 2
             id: tree
             args: -p puns
             select: true
+            half: 1
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          - name: tree borrows, 2 of 2
+            id: tree
+            args: -p puns
+            select: true
+            half: 2
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           - name: stacked borrows
             id: stacked
@@ -183,9 +191,14 @@ jobs:
           # The model check under Miri: a selection of pairs that runs every unsafe path it
           # reaches (see `puns-model/tests/miri_sample.rs`); the verdicts of every pair are the
           # job of the full native run, in `model.yml`.
-          - name: model
+          # In two jobs: whole puns, then parts and unsized types.
+          - name: model, puns
             id: model
-            args: -p puns-model
+            args: -p puns-model --lib --test miri_sample --test core_shadowed --test regressions
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          - name: model, parts
+            id: model
+            args: -p puns-model --test parts --test dst
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           # The feature `nearest`: its tests and the IR example (which writes a file and reads
           # it back, hence no isolation). Tree borrows: a self-relative pointer is resolved from
@@ -242,8 +255,13 @@ jobs:
       - name: Select the tests that Miri runs
         if: matrix.select
         run: |
-          tests=$(grep -L -e 'cfg(not(miri))' -e 'cfg(feature = "nearest")' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||' | tr '\n' ' ')
-          echo "TESTS=--lib $tests" >> "$GITHUB_ENV"
+          tests=$(grep -L -e 'cfg(not(miri))' -e 'cfg(feature = "nearest")' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||')
+          case "${{ matrix.half }}" in
+            1) tests="--lib $(echo "$tests" | awk 'NR % 2 == 1')" ;;
+            2) tests=$(echo "$tests" | awk 'NR % 2 == 0') ;;
+            *) tests="--lib $tests" ;;
+          esac
+          echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
       - run: >-
           cargo miri test ${{ matrix.args }}
           ${{ matrix.target && format('--target {0}', matrix.target) }} $TESTS
