@@ -234,7 +234,7 @@ const unsafe fn steps<T: ?Sized + Pun, W: Walks, N: Count>(
       return walk::<T, W>(machine, base, size);
     }
     let Some(op) = (const { T::LAYOUT.rule_op(W::RULE, N::VALUE.wrapping_sub(1)) }) else { return };
-    machine.apply(op, base, size);
+    machine.apply(op, N::VALUE.wrapping_sub(1), base, size);
   }
 }
 
@@ -253,13 +253,17 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
   else {
     return;
   };
-  let Some(mut state) = machine.top() else { return };
+  // Not computed: after a failure, or in a part of the expression that is not computed.
+  if !machine.computes(const { T::LAYOUT.walk_at(W::RULE) }) {
+    return;
+  }
+  let mut state = machine.top();
   let (mut steps, limit) = (0, walk_limit(size));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.
     unsafe { walk_steps::<T, W, false, W::Inner>(&mut cond, base, size) };
-    match walk_result::<T, W, false>(&cond) {
+    match cond.result() {
       Some(0) => break Some(state),
       Some(_) => {}
       None => break None,
@@ -270,7 +274,7 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
     steps += 1;
     // SAFETY: guaranteed by the caller.
     unsafe { walk_steps::<T, W, true, W::Inner>(&mut next, base, size) };
-    match walk_result::<T, W, true>(&next) {
+    match next.result() {
       Some(next) => state = next,
       None => break None,
     }
@@ -298,26 +302,8 @@ const unsafe fn walk_steps<T: ?Sized + Pun, W: Walks, const NEXT: bool, N: Count
     let Some(op) = (const { T::LAYOUT.walk_op(W::RULE, NEXT, N::VALUE.wrapping_sub(1)) }) else {
       return;
     };
-    // A strict expression stops at its first failure (see `walk_result`): what follows is then
-    // compiled knowing that nothing failed, rather than carrying failures along.
-    if const { T::LAYOUT.walk_strict(W::RULE, NEXT) } && machine.failed_any() {
-      return;
-    }
-    machine.apply(op, base, size);
+    machine.apply(op, N::VALUE.wrapping_sub(1), base, size);
   }
-}
-
-/// The value of an expression of the walk of the rule `W` of `T` (the condition, or with `NEXT`
-/// what follows), once [`walk_steps`] applied it to `machine`.
-#[inline(always)]
-const fn walk_result<T: ?Sized + Pun, W: Walks, const NEXT: bool>(
-  machine: &Machine,
-) -> Option<u128> {
-  // A strict expression may have stopped at a failure, which is then its result.
-  if const { T::LAYOUT.walk_strict(W::RULE, NEXT) } && machine.failed_any() {
-    return None;
-  }
-  machine.result()
 }
 
 // -------------------------------------------------------------------------------------------------
