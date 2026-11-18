@@ -1885,11 +1885,6 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
   false
 }
 
-/// The operations of an expression can read the whole value, not only its sized fields.
-const fn reads_value(op: &Op) -> bool {
-  matches!(op, Op::Size | Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Walk { .. })
-}
-
 impl Rule {
   const fn ops(&self) -> Option<&'static [Op]> {
     match *self {
@@ -1957,23 +1952,33 @@ const fn check_rules(rules: &[Rule], head: usize) {
   while i < rules.len() {
     if let Some(ops) = rules[i].ops() {
       let sizes = matches!(rules[i], Rule::Size(_) | Rule::Len(_));
-      let walks = matches!(rules[i], Rule::Walk(_));
-      assert!(!walks || ops.len() <= WALK_OPS, "an expression that walks is too long");
-      let walked = check_ops(ops, head, sizes, walks, 0);
-      assert!(walked == walks as usize, "a `walk`, and only one, is in a rule that walks");
+      let first = check_ops(ops, head, sizes, 0);
+      // The first walk of a rule that walks is applied by `validate::check_walks`, whose
+      // recursions over the operations are as long as these limits.
+      if let Rule::Walk(_) = rules[i] {
+        let Some(Op::Walk { cond, next, .. }) = first else {
+          panic!("a rule that walks has a walk")
+        };
+        assert!(ops.len() <= WALK_OPS, "an expression that walks is too long");
+        assert!(
+          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
+          "the expressions of a `walk` are too long"
+        );
+      }
     }
     i += 1;
   }
 }
 
-/// Check an expression, in which the variables of `defined` are (a bit for each): returns the
-/// number of [`Op::Walk`] that it has.
-const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut defined: u8) -> usize {
-  let (mut depth, mut walked, mut i) = (0usize, 0, 0);
+/// Check an expression, in which the variables of `defined` are (a bit for each): returns its
+/// first [`Op::Walk`], if any. With `sizes`, it is a size or a length, which cannot be computed
+/// from the size of the value.
+const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Option<Op> {
+  let (mut depth, mut first, mut i) = (0usize, None, 0);
   while i < ops.len() {
     assert!(
-      !(sizes && reads_value(&ops[i])),
-      "the size of a value cannot be defined from the value itself"
+      !(sizes && matches!(ops[i], Op::Size)),
+      "a size or a length cannot be computed from `size_of_val(self)`, which it defines"
     );
     match ops[i] {
       Op::Lit(_) | Op::Size => depth += 1,
@@ -2002,15 +2007,12 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
       }
       Op::Walk { var, cond, next } => {
         assert!(depth >= 1, "malformed expression");
-        assert!(walks, "`walk` is for `assert`, and cannot be in another `walk`");
-        walked += 1;
+        if first.is_none() {
+          first = Some(ops[i]);
+        }
         assert!((var as usize) < VARIABLES, "too many variables in an expression");
-        assert!(
-          cond.len() <= WALK_INNER_OPS && next.len() <= WALK_INNER_OPS,
-          "the expressions of a `walk` are too long"
-        );
-        check_ops(cond, head, sizes, false, defined | 1 << var);
-        check_ops(next, head, sizes, false, defined | 1 << var);
+        check_ops(cond, head, sizes, defined | 1 << var);
+        check_ops(next, head, sizes, defined | 1 << var);
       }
       _ => {
         assert!(depth >= 2, "malformed expression");
@@ -2021,7 +2023,7 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, walks: bool, mut define
     i += 1;
   }
   assert!(depth == 1, "malformed expression");
-  walked
+  first
 }
 
 /// What evaluates an expression: a stack, and variables.
@@ -2245,8 +2247,15 @@ impl Machine {
         self.depth -= 2;
         self.set(depth - 3, value);
       }
-      // See `validate::check_walks`, which is what evaluates the expressions that walk.
-      Op::Walk { .. } => self.set(depth - 1, None),
+      // `validate::check_walks` applies the first walk of a rule that walks; this, any other.
+      Op::Walk { var, cond, next } => {
+        let value = match self.top() {
+          // SAFETY: guaranteed by the caller.
+          Some(start) => unsafe { self.walk(var, cond, next, start, base, size) },
+          None => None,
+        };
+        self.replace(value);
+      }
       op => {
         let computed = !self.has_failed(depth - 2) && !self.has_failed(depth - 1);
         let value = binary(op, self.get(depth - 2), self.get(depth - 1));
@@ -2264,29 +2273,77 @@ impl Machine {
 ///
 /// # Safety
 /// `ops` must be an expression of a rule of the layout of a struct, and `base` must be valid for
-/// reads of the sized fields of such a struct, initialized. `size` is the size of the struct:
-/// unless the expression is the one of a `size` or `len` rule, `base` must be valid for reads of
-/// that many initialized bytes.
+/// reads of the sized fields of such a struct, and of `size` bytes, initialized. `size` is the
+/// size of the struct, or for a `size` or `len` rule, which tells it, what can be read.
 // Not in debug builds, where this would only make every struct that has rules slow to build.
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) const unsafe fn eval(ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
-  let mut machine = Machine::NEW;
-  macro_rules! unrolled {
-    ($($index:literal)+) => {$(
-      if $index < ops.len() {
-        // SAFETY: guaranteed by the caller.
-        unsafe { machine.apply(ops[$index], base, size) };
+  // SAFETY: guaranteed by the caller.
+  unsafe { Machine::NEW.run(ops, base, size) }
+}
+
+/// So that a walk ends: a step for each bit of a value of `size` bytes, and for each bit of a
+/// `u128`. (`size` is at most `isize::MAX`: adding 16 does not overflow.)
+#[inline(always)]
+pub(crate) const fn walk_limit(size: usize) -> usize {
+  (size + 16).saturating_mul(8)
+}
+
+impl Machine {
+  /// The value of the expression `ops`, evaluated by this machine.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  #[cfg_attr(not(debug_assertions), inline(always))]
+  const unsafe fn run(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
+    macro_rules! unrolled {
+      ($($index:literal)+) => {$(
+        if $index < ops.len() {
+          // SAFETY: guaranteed by the caller.
+          unsafe { self.apply(ops[$index], base, size) };
+        }
+      )+};
+    }
+    unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
+    let mut i = 24;
+    while i < ops.len() {
+      // SAFETY: guaranteed by the caller.
+      unsafe { self.apply(ops[i], base, size) };
+      i += 1;
+    }
+    self.result()
+  }
+
+  /// What `start` becomes when it is replaced by the value of `next` for as long as `cond` is
+  /// true of it, the variable `var` being it in both; `None` if it cannot be computed, or if it
+  /// takes more than [`walk_limit`] steps.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  const unsafe fn walk(
+    &self,
+    var: u8,
+    cond: &[Op],
+    next: &[Op],
+    start: u128,
+    base: *const u8,
+    size: usize,
+  ) -> Option<u128> {
+    let (mut state, mut steps, limit) = (start, 0, walk_limit(size));
+    loop {
+      // SAFETY: guaranteed by the caller.
+      match unsafe { self.enter(var, state).run(cond, base, size) } {
+        Some(0) => return Some(state),
+        Some(_) if steps < limit => steps += 1,
+        _ => return None,
       }
-    )+};
+      // SAFETY: guaranteed by the caller.
+      match unsafe { self.enter(var, state).run(next, base, size) } {
+        Some(next) => state = next,
+        None => return None,
+      }
+    }
   }
-  unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
-  let mut i = 24;
-  while i < ops.len() {
-    // SAFETY: guaranteed by the caller.
-    unsafe { machine.apply(ops[i], base, size) };
-    i += 1;
-  }
-  machine.result()
 }
 
 #[inline(always)]

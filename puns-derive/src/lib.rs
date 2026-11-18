@@ -79,17 +79,23 @@ use syn::{
 /// one of its `let`s does.
 ///
 /// It can also read the value beyond its fields, where `start`, `end` and `offset` are
-/// expressions that count bytes from the start of the value:
+/// expressions that count bytes from the start of the value. A `size` or a `len` can too (but for
+/// `size_of_val(self)`, which it defines): when `from_head` takes a value, it reads in the bytes
+/// that there are, so `size = 2 + if length == 126 { 2 + be(2, 2) } else { length }` takes
+/// WebSocket frames from a stream.
 /// - `le(offset, N)`, `be(offset, N)`: the integer of `N` bytes at `offset`;
 /// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
 /// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
 ///   (`0xffff` over data that holds its own IP checksum);
-/// - `walk(START, |at| COND, |at| NEXT)`, in an `assert`: what `START` becomes when it is
-///   replaced by `NEXT` for as long as `COND` is true of it. This is how what is at an offset
-///   that depends on what is before is reached: after options, at the end of a chain of headers
+/// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for
+///   as long as `COND` is true of it. This is how what is at an offset that depends on what is
+///   before is reached: after options, at the end of a chain of headers
 ///   (`walk(0, |at| be(at, 1) != 0, |at| at + 2 + be(at + 1, 1))` is the offset of the first
-///   "type, length, value" whose type is 0). A walk takes at most `8 * size_of_val(self) + 128`
-///   steps (a step for each bit of the value, or of a `u128`), and the rule fails beyond.
+///   "type, length, value" whose type is 0), or at the end of a string
+///   (`size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1`). A walk can be anywhere: in any
+///   rule, in another walk, several in an expression. It takes at most
+///   `8 * size_of_val(self) + 128` steps (a step for each bit of the value, or of a `u128`), and
+///   fails beyond.
 ///
 /// # Enums
 ///
@@ -388,8 +394,9 @@ struct FieldInfo<'a> {
 }
 
 /// The limits of the evaluator, which `layout::check_rules` checks again: the depth of its stack,
-/// the number of variables of an expression, the number of operations of an expression that
-/// walks, and of each expression of a walk.
+/// and the number of variables of an expression. An `assert` whose first walk is applied by the
+/// code of the walks of its struct, rather than by the evaluator, is of at most `WALK_OPS`
+/// operations, and each expression of that walk of at most `WALK_INNER_OPS`.
 const STACK: usize = 8;
 const VARIABLES: usize = 4;
 const WALK_OPS: usize = 72;
@@ -435,20 +442,8 @@ fn effect(op: &TokenStream) -> (usize, usize) {
   }
 }
 
-/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator, and
-/// are at most `most` (if any).
-fn limits(
-  ops: &[TokenStream],
-  spanned: &impl ToTokens,
-  most: Option<usize>,
-  what: &str,
-) -> Result<()> {
-  if let Some(most) = most.filter(|most| ops.len() > *most) {
-    return Err(Error::new_spanned(
-      spanned,
-      format!("{what} has {} operations, at most {most}", ops.len()),
-    ));
-  }
+/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator.
+fn limits(ops: &[TokenStream], spanned: &impl ToTokens) -> Result<()> {
   let (mut depth, mut deepest) = (0usize, 0);
   for op in ops {
     let (pops, pushes) = effect(op);
@@ -503,10 +498,13 @@ fn expect(found: Ty, expected: Ty, spanned: &impl ToTokens) -> Result<()> {
 #[derive(Default)]
 struct Scope {
   names: Vec<(Ident, u8, Ty)>,
-  /// In a closure of a `walk`.
-  walking: bool,
-  /// For each `walk`: the number of operations of the longest of its two expressions.
+  /// How many closures of `walk`s the expression is in.
+  walking: usize,
+  /// For each `walk` that is not in another one: the number of operations of the longest of its
+  /// two expressions.
   walks: Vec<usize>,
+  /// In a `size` or a `len`, which cannot be computed from `size_of_val(self)`.
+  sizing: bool,
 }
 
 impl Scope {
@@ -836,6 +834,12 @@ fn compile(
           if path.path.segments.last().is_some_and(|segment| segment.ident == "size_of_val"))
         && matches!(&call.args[0], Expr::Path(path) if path.path.is_ident("self")) =>
     {
+      if scope.sizing {
+        return Err(Error::new_spanned(
+          call,
+          "a size or a length cannot be computed from `size_of_val(self)`, which it defines",
+        ));
+      }
       ops.push(quote!(#op::Size));
       Ty::Int
     }
@@ -857,9 +861,6 @@ fn compile(
     }
     // `walk(START, |at| COND, |at| NEXT)`: `START`, replaced by `NEXT` for as long as `COND`.
     Expr::Call(call) if call.args.len() == 3 && is_call(call, "walk") => {
-      if scope.walking {
-        return Err(Error::new(call.span(), "a `walk` cannot be in a `walk`"));
-      }
       int(&call.args[0], ops, scope)?;
       let (mut var, mut programs) = (0, vec![]);
       for (closure, ty) in [(&call.args[1], Ty::Bool), (&call.args[2], Ty::Int)] {
@@ -875,16 +876,18 @@ fn compile(
         };
         let (visible, mut program) = (scope.names.len(), vec![]);
         var = scope.declare(name, Ty::Int)?;
-        scope.walking = true;
+        scope.walking += 1;
         let compiled = compile(body, fields, root, &mut program, scope);
-        scope.walking = false;
+        scope.walking -= 1;
         scope.names.truncate(visible);
         expect(compiled?, ty, body)?;
-        limits(&program, body, Some(WALK_INNER_OPS), "this expression of a `walk`")?;
+        limits(&program, body)?;
         programs.push(program);
       }
       let (cond, next) = (&programs[0], &programs[1]);
-      scope.walks.push(cond.len().max(next.len()));
+      if scope.walking == 0 {
+        scope.walks.push(cond.len().max(next.len()));
+      }
       ops.push(quote!(#op::Walk {
         var: #var,
         cond: const { &[#(#cond),*] },
@@ -1133,37 +1136,42 @@ impl VisitMut for Fielder<'_> {
   }
 }
 
-/// `&[Op, ...]`
-/// An expression, as operations.
+/// An expression, as operations: `&[Op, ...]`.
 struct Expression {
   ops: TokenStream,
   /// Number of operations.
   len: usize,
-  /// The number of operations of the longest of the two expressions of its `walk`, if it has
-  /// one.
+  /// If its first walk can be applied by the code of the walks of its struct (it is short
+  /// enough): the number of operations of the longest of the two expressions of that walk.
   walk: Option<usize>,
 }
 
-/// Compile an expression whose value is a `ty`.
-fn expression(expr: &Expr, ty: Ty, fields: &[FieldInfo], root: &TokenStream) -> Result<Expression> {
-  let (mut ops, mut scope) = (vec![], Scope::default());
+/// Compile an expression whose value is a `ty`; with `sizing`, a size or a length, which
+/// `size_of_val(self)` cannot be in.
+fn expression(
+  expr: &Expr,
+  ty: Ty,
+  sizing: bool,
+  fields: &[FieldInfo],
+  root: &TokenStream,
+) -> Result<Expression> {
+  let (mut ops, mut scope) = (vec![], Scope { sizing, ..Scope::default() });
   let found = compile(expr, fields, root, &mut ops, &mut scope)?;
   expect(found, ty, expr)?;
-  if scope.walks.len() > 1 {
-    return Err(Error::new(expr.span(), "an expression can only have one `walk`"));
-  }
-  let walks = (!scope.walks.is_empty()).then_some(WALK_OPS);
-  limits(&ops, expr, walks, "this expression, which walks,")?;
-  Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk: scope.walks.pop() })
+  limits(&ops, expr)?;
+  let walk =
+    scope.walks.first().copied().filter(|inner| *inner <= WALK_INNER_OPS && ops.len() <= WALK_OPS);
+  Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk })
 }
 
-/// An expression that is not the one of an `assert`, an integer: it cannot `walk`.
-fn plain(expr: &Expr, fields: &[FieldInfo], root: &TokenStream) -> Result<TokenStream> {
-  let expression = expression(expr, Ty::Int, fields, root)?;
-  match expression.walk {
-    Some(_) => Err(Error::new(expr.span(), "`walk` is for `assert`")),
-    None => Ok(expression.ops),
-  }
+/// An expression that is not the one of an `assert`, an integer: the evaluator applies its walks.
+fn plain(
+  expr: &Expr,
+  sizing: bool,
+  fields: &[FieldInfo],
+  root: &TokenStream,
+) -> Result<TokenStream> {
+  Ok(expression(expr, Ty::Int, sizing, fields, root)?.ops)
 }
 
 /// `count`, as a type.
@@ -1364,13 +1372,13 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let rule = quote!(#root::layout::Rule);
   let mut rules = vec![];
   if let Some(size) = &options.size {
-    let ops = plain(size, &fields, &root)?;
+    let ops = plain(size, true, &fields, &root)?;
     rules.push(quote!(#rule::Size(#ops)));
   }
   // The rules that walk: their index, their number of operations and the one of their walk.
   let mut walks = vec![];
   for assert in &options.asserts {
-    let Expression { ops, len, walk } = expression(assert, Ty::Bool, &fields, &root)?;
+    let Expression { ops, len, walk } = expression(assert, Ty::Bool, false, &fields, &root)?;
     let index = rules.len();
     rules.push(walk.map_or_else(
       || quote!(#rule::Assert(#ops)),
@@ -1387,7 +1395,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       if !last {
         return Err(Error::new(len.span(), "`len` is an option of the last field"));
       }
-      let ops = plain(len, &fields, &root)?;
+      let ops = plain(len, true, &fields, &root)?;
       rules.push(quote!(#rule::Len(#ops)));
     }
     if let Some(regions) = &field.options.regions {
@@ -1399,7 +1407,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         let name = &region.name;
         rules.push(match &region.size {
           Some(size) => {
-            let ops = plain(size, &fields, &root)?;
+            let ops = plain(size, false, &fields, &root)?;
             quote!(#rule::Region(::core::option::Option::Some(#ops)))
           }
           None if index + 1 == regions.len() => quote!(#rule::Region(::core::option::Option::None)),

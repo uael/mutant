@@ -168,7 +168,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 365 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 353 instructions, two loops, no call       |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -202,7 +202,10 @@ numbers; the evaluator checks it again.
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
 (the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
-last bytes are the CRC of what is before" is an assertion. A checksum that covers several layers
+last bytes are the CRC of what is before" is an assertion. A size or a length reads the value too
+(not its size, which it defines): `from_head` evaluates it over the bytes that there are, which
+are initialized and in bounds whatever it reads, and the value it takes is then validated as a
+whole, the rule included, over its own bytes; a rule that reads beyond what it sizes fails there. A checksum that covers several layers
 (the one of UDP and TCP covers the addresses of the IP header) is an assertion of the struct that
 holds them all: the IPv4 packet.
 
@@ -212,7 +215,8 @@ and it can **walk**: `walk(START, |at| COND, |at| NEXT)` is what
 `START` becomes when it is replaced by `NEXT` for as long as `COND` is true of it. This is how
 what lies at an offset that depends on what is before is reached: the checksum of UDP, TCP and
 ICMPv6 is checked by the IPv6 packet behind any chain of extension headers, each of which tells
-what follows it and how long it is. A walk takes at most a step for each bit of the value, plus
+what follows it and how long it is; at the end of a string, in a `size`. A walk can be in any rule,
+in another walk, several in an expression. A walk takes at most a step for each bit of the value, plus
 128 (the bits of a `u128`), so that it ends: a walk over the bits of a field fits, whatever the
 size of the value.
 
@@ -245,12 +249,18 @@ are proven only by the same rule, in the same struct, at the same place of the s
 evaluator (`layout::eval`) is written so that a constant program compiles to its arithmetic: no
 loop for the first operations, and a local variable per stack slot rather than an array.
 
-An expression that walks holds two more expressions, which are evaluated in a loop: there, the
-operations are not left to the optimizer to find constant. They are constants of the instances
-of the functions that apply them (`validate::check_walks`), one instance per operation, reached
-by a recursion over a number that is a type. What is compiled is the loop and the arithmetic of
-both expressions, never an interpreter; and the list of the rules that walk is itself a type
-(`Pun::Walks`), so that a struct without any costs nothing more to compile.
+An expression that walks holds two more expressions, which are evaluated in a loop. The evaluator
+applies a walk as it applies anything else (`Machine::walk`): it runs both expressions in a loop,
+which the optimizer makes constant where it inlines the evaluator, at the first level of walks.
+The first walk of an `assert` is applied otherwise, where it must be fast (the IPv6 packet): there,
+the operations are not left to the optimizer to find constant. They are constants of the
+instances of the functions that apply them (`validate::check_walks`), one instance per operation,
+reached by a recursion over a number that is a type. What is compiled is the loop and the
+arithmetic of both expressions, never an interpreter; and the list of the rules that walk is
+itself a type (`Pun::Walks`), so that a struct without any costs nothing more to compile. The
+recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
+first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
+Both apply the same operations, with the same limit of steps.
 
 ### 5. What the type system enforces, and what it does not
 
@@ -379,7 +389,6 @@ without its second condition, are caught.
 - An arbitrary function in a rule (getters take any): it could only be called through a trait,
   hence not in `const` contexts on stable. `crc32`, `sum16` and `walk` are built in for that
   reason.
-- `walk` is for `assert`: once in an expression, not for sizes, lengths or regions.
 
 ## Limits
 

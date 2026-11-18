@@ -1441,8 +1441,9 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
         _ => return Err(Error::Size),
       },
       Some(rule) => {
-        // SAFETY: the sized fields of the target are in the first `head` bytes.
-        let Some(value) = (unsafe { eval(rule.ops, addr.add(rule.base), 0) }) else {
+        // SAFETY: the sized fields of the target are in the first `head` bytes, and what a `size`
+        // or `len` rule reads beyond them in the `n` bytes.
+        let Some(value) = (unsafe { eval(rule.ops, addr.add(rule.base), n - rule.base) }) else {
           return Err(Error::Validity);
         };
         // From the size of the struct that has the rule, down to a number of elements.
