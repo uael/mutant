@@ -158,6 +158,13 @@ jobs:
           - name: nearest, model
             args: -p puns-model --features nearest --test pointers
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          # The same on 32 bits, where a `u64` is aligned to 4 and so is the buffer of a region,
+          # and where an offset of 8 bytes does not fit an `isize`.
+          - name: nearest, 32 bits
+            args: >-
+              -p puns --features nearest --test nearest --test ir
+              --target i686-unknown-linux-gnu
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation
           # The same on a big-endian target, where a region with offsets and numbers of a given
           # byte order must be the same bytes: the image of the IR example is compared with the
           # one that is committed.

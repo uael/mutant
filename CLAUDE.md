@@ -21,7 +21,7 @@ MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo test -p puns -p puns-model --features nearest --test nearest --test ir --test nearest_compile_fail --test pointers  # The feature `nearest`: its tests, the IR example, its compile-fail tests, the sample of its model check
 cargo test -p puns --features nearest --doc -- nearest view_ref  # Its doc tests
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation" cargo +nightly-2026-11-17 miri test -p puns --features nearest --test nearest --test ir  # Miri on the feature (tree borrows only: `nearest` needs them); add `--target s390x-unknown-linux-gnu` for big-endian
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation" cargo +nightly-2026-11-17 miri test -p puns --features nearest --test nearest --test ir  # Miri on the feature (tree borrows only: `nearest` needs them); add `--target s390x-unknown-linux-gnu` for big-endian, `--target i686-unknown-linux-gnu` for 32 bits
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model --features nearest --test pointers  # Miri on the model check of pointers
 cargo test --profile model -p puns-model --features nearest,full --test pointers_full  # The full model check of pointers
 PUNS_WRITE_IMAGE=1 cargo run -p puns --features nearest --example ir  # Rewrite `examples/ir.image` (then run again: it is compared)
@@ -57,6 +57,16 @@ that is not for Miri starts with `#![cfg(not(miri))]` and says why; CI gives Mir
 name, since Miri takes a second to start each test binary, even one that runs nothing. Each pair of
 types in a test of the model is an instance of the analysis, about a tenth of a second of build:
 keep the tests that every push builds small.
+
+What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and of
+`isize`, the byte order) is asserted in a `const` where it is used, or derived from the target, and
+the code is run under Miri on a target where the assumption does not hold: `i686-unknown-linux-gnu`
+(32 bits, a `u64` aligned to 4) and `s390x-unknown-linux-gnu` (big-endian), with and without the
+feature `nearest`. A target that is only built finds no undefined behavior, and a sentence of the
+design is not a check: `nearest` 0.7.1 was released with "memory is `u64` words, so 8-aligned",
+which no test ever ran where it is false. A new `unsafe` block that reads a type at an address comes
+with the test that stresses it (an over-aligned type, an integer wider than `isize`, the other byte
+order).
 
 Do not let the machine code of `examples/codegen.rs` regress, nor the one of
 `examples/codegen_nearest.rs` (the feature `nearest`): the instruction counts of their functions
