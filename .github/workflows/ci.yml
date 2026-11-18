@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # On demand, on any branch: to read the times of the jobs again without a commit (the first
+  # run after a change of a cache key has nothing cached).
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
