@@ -126,3 +126,39 @@ fn long_walks() {
   // More steps than 8 per bit of the value, and 128.
   assert!(from_bytes::<LongExpression>(&[200]).is_err());
 }
+
+/// A DER "type, length, value": the length is short (below 0x80) or long (0x81 to 0x84, then that
+/// many bytes). Five forms in a sum: deeper than 8 values. And six names at once.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(size = 2 + (if length < 0x80 {
+  length
+} else if length == 0x81 {
+  1 + be(2, 1)
+} else if length == 0x82 {
+  2 + be(2, 2)
+} else if length == 0x83 {
+  3 + be(2, 3)
+} else if length == 0x84 {
+  4 + be(2, 4)
+} else {
+  1 / 0
+}))]
+#[pun(assert({
+  let a = kind; let b = a; let c = b; let d = c; let e = d; let f = e;
+  a + b + c + d + e + f == kind * 6
+}))]
+struct Der {
+  kind: u8,
+  length: u8,
+  rest: [u8],
+}
+
+#[test]
+fn deeper_expressions() {
+  let (der, rest) = from_head::<Der>(&[0x30, 2, 1, 2, 9]).unwrap();
+  assert_eq!((der.rest.len(), rest), (2, &[9][..]));
+  let (der, rest) = from_head::<Der>(&[0x30, 0x82, 0, 3, 1, 2, 3]).unwrap();
+  assert_eq!((der.rest.len(), rest.len()), (5, 0));
+  assert_eq!(from_head::<Der>(&[0x30, 0x85, 0, 3, 1, 2, 3]).err(), Some(Error::Validity));
+}

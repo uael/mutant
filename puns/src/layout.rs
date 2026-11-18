@@ -1938,9 +1938,9 @@ pub(crate) struct LengthRule {
 }
 
 /// Depth of the stack of [`eval`].
-const STACK: usize = 8;
-/// Number of variables of an expression.
-const VARIABLES: usize = 4;
+const STACK: usize = 16;
+/// Number of variables of an expression (at most 8, a bit for each in [`Op::Let`]).
+const VARIABLES: usize = 8;
 /// An expression that has a [`Op::Walk`] is, as each expression of the walk, of at most that
 /// many operations: they are counted with types, see `validate::check_walks`.
 const WALK_OPS: usize = 72;
@@ -2033,36 +2033,59 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Opt
 /// of the optimizer: the stack is not an array but a variable for each of its slots.
 #[derive(Copy, Clone)]
 pub(crate) struct Machine {
-  stack: (u128, u128, u128, u128, u128, u128, u128, u128),
-  variables: (u128, u128, u128, u128),
+  stack: Stack,
+  variables: Variables,
   depth: usize,
   /// A bit for each slot whose value could not be computed (an overflow, a read out of bounds).
-  failed: u8,
+  failed: u16,
   /// The same, for each variable.
   unknown: u8,
 }
 
+/// `slots!(Name: [0 1 2 ..] last)`: values in fields, one for each index, rather than in an array: so
+/// that the optimizer makes a variable of each, whatever the index asked for (see [`Machine`]).
+macro_rules! slots {
+  ($($name:ident: [$($index:tt)+] $last:tt)+) => {$(
+    #[derive(Copy, Clone)]
+    struct $name($(slots!(@u128 $index),)+ u128);
+
+    impl $name {
+      const NEW: Self = Self($(slots!(@zero $index),)+ 0);
+
+      // The last one is the one of any other index, which is not asked for: no other case.
+      #[inline(always)]
+      const fn get(&self, index: usize) -> u128 {
+        match index {
+          $($index => self.$index,)+
+          _ => self.$last,
+        }
+      }
+
+      #[inline(always)]
+      const fn set(&mut self, index: usize, value: u128) {
+        match index {
+          $($index => self.$index = value,)+
+          _ => self.$last = value,
+        }
+      }
+    }
+  )+};
+  (@u128 $index:tt) => { u128 };
+  (@zero $index:tt) => { 0 };
+}
+
+slots! {
+  Stack: [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14] 15
+  Variables: [0 1 2 3 4 5 6] 7
+}
+
 impl Machine {
-  pub(crate) const NEW: Self = Self {
-    stack: (0, 0, 0, 0, 0, 0, 0, 0),
-    variables: (0, 0, 0, 0),
-    depth: 0,
-    failed: 0,
-    unknown: 0,
-  };
+  pub(crate) const NEW: Self =
+    Self { stack: Stack::NEW, variables: Variables::NEW, depth: 0, failed: 0, unknown: 0 };
 
   #[inline(always)]
   const fn get(&self, slot: usize) -> u128 {
-    match slot {
-      0 => self.stack.0,
-      1 => self.stack.1,
-      2 => self.stack.2,
-      3 => self.stack.3,
-      4 => self.stack.4,
-      5 => self.stack.5,
-      6 => self.stack.6,
-      _ => self.stack.7,
-    }
+    self.stack.get(slot)
   }
 
   /// Set a slot to a value, or mark it as failed.
@@ -2071,16 +2094,7 @@ impl Machine {
     match value {
       Some(value) => {
         self.failed &= !(1 << slot);
-        match slot {
-          0 => self.stack.0 = value,
-          1 => self.stack.1 = value,
-          2 => self.stack.2 = value,
-          3 => self.stack.3 = value,
-          4 => self.stack.4 = value,
-          5 => self.stack.5 = value,
-          6 => self.stack.6 = value,
-          _ => self.stack.7 = value,
-        }
+        self.stack.set(slot, value);
       }
       None => self.failed |= 1 << slot,
     }
@@ -2101,12 +2115,7 @@ impl Machine {
     if self.unknown & (1 << index) != 0 {
       return None;
     }
-    Some(match index {
-      0 => self.variables.0,
-      1 => self.variables.1,
-      2 => self.variables.2,
-      _ => self.variables.3,
-    })
+    Some(self.variables.get(index as usize))
   }
 
   #[inline(always)]
@@ -2114,12 +2123,7 @@ impl Machine {
     match value {
       Some(value) => {
         self.unknown &= !(1 << index);
-        match index {
-          0 => self.variables.0 = value,
-          1 => self.variables.1 = value,
-          2 => self.variables.2 = value,
-          _ => self.variables.3 = value,
-        }
+        self.variables.set(index as usize, value);
       }
       None => self.unknown |= 1 << index,
     }

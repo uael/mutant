@@ -168,7 +168,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 353 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 363 instructions, two loops, no call       |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -246,7 +246,10 @@ Two more options are not rules, but save the code that would otherwise be writte
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
 are proven only by the same rule, in the same struct, at the same place of the source. The
-evaluator (`layout::eval`) is written so that a constant program compiles to its arithmetic: no
+evaluator (`layout::eval`) has a stack of 16 values and 8 variables, each a variable of the
+machine rather than an element of an array, reached by a `match` whose cases are all values (the
+last one is the default case: a `match` with one more case costs instructions); it is written so
+that a constant program compiles to its arithmetic: no
 loop for the first operations, and a local variable per stack slot rather than an array.
 
 An expression that walks holds two more expressions, which are evaluated in a loop. The evaluator

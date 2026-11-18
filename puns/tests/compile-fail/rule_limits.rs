@@ -2,14 +2,17 @@
 
 #[derive(puns::Pun)]
 #[repr(C)]
-#[pun(assert(a + (a + (a + (a + (a + (a + (a + (a + a))))))) > 0))]
+#[pun(assert(a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a)))))))))))))))) > 0))]
 struct Deep {
   a: u8,
 }
 
 #[derive(puns::Pun)]
 #[repr(C)]
-#[pun(assert({ let b = 1; let c = 2; let d = 3; let e = 4; let f = 5; a + b + c + d + e + f > 0 }))]
+#[pun(assert({
+  let b = 1; let c = 2; let d = 3; let e = 4; let f = 5; let g = 6; let h = 7; let i = 8; let j = 9;
+  a + b + c + d + e + f + g + h + i + j > 0
+}))]
 struct Variables {
   a: u8,
 }

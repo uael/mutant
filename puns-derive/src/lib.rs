@@ -73,10 +73,11 @@ use syn::{
 /// A rule names the integer fields of its struct, not the fields of a field or the elements of
 /// an array, which `le` and `be` read; it calls no method and no function but the ones below.
 ///
-/// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 4 names at
+/// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 8 names at
 /// once, `let name: u128` or `let name: bool` if the type is written), `if EXPR { EXPR } else {
 /// EXPR }`. As in Rust, what a `let` binds is computed whether it is used or not: a block fails if
-/// one of its `let`s does.
+/// one of its `let`s does. Its evaluator has a stack of 16 values: `a + (b + (c + ..))` needs
+/// one more for each level, which a `let` or another order saves (the derive tells).
 ///
 /// It can also read the value beyond its fields, where `start`, `end` and `offset` are
 /// expressions that count bytes from the start of the value. A `size` or a `len` can too (but for
@@ -416,8 +417,8 @@ struct FieldInfo<'a> {
 /// and the number of variables of an expression. An `assert` whose first walk is applied by the
 /// code of the walks of its struct, rather than by the evaluator, is of at most `WALK_OPS`
 /// operations, and each expression of that walk of at most `WALK_INNER_OPS`.
-const STACK: usize = 8;
-const VARIABLES: usize = 4;
+const STACK: usize = 16;
+const VARIABLES: usize = 8;
 const WALK_OPS: usize = 72;
 const WALK_INNER_OPS: usize = 56;
 
