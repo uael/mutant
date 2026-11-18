@@ -761,12 +761,17 @@ walked field by field, so that its pointers are handed over in order with the ch
 the same calls that `validate_in` makes on the same bytes, in the same order, and checks nothing:
 for a crate that copies a value with what it aims at, or moves it in its buffer and re-aims its
 pointers, where validating again would cost a check of every scalar for nothing. It is `unsafe`:
-the bytes at `base + at` hold a `T` as `validate_in` accepts one (what `validate_in` reads of them
-is initialized and valid; padding, and what the variant does not hold, may be uninitialized,
-since neither is read), at any alignment. It reads the tags of enums (niches included, as
-`validate_in` does: `variants` and `follow_variants` choose the variant by the same test) and the
-offsets of pointers that may be null, nothing else, and goes by the same lists of types (`listed`)
-and refuses the same unions. A type without pointers is not walked at all.
+the bytes at `base + at` hold a `T` as its types say (every scalar initialized and valid for its
+type, the tag of every enum or its niche initialized and telling a variant, whose bytes are so in
+turn; padding, and what the variant does not hold, may be uninitialized, since neither is read),
+at any alignment. Its rules need not hold, nor the `valid(..)` of its fields, which `validate_in`
+checks: safe code can break them in a value it makes (`Span { lo: 2, hi: 1 }` of
+`assert(lo <= hi)`), which `nearest` walks and copies all the same. They cannot matter here: the
+walk goes by types, reads the tags of enums (niches included, as `validate_in` does: `variants`
+and `follow_variants` choose the variant by the same test) and the offsets of pointers that may be
+null, nothing else, and evaluates no rule; a restricted field is a scalar, which holds no pointer.
+It goes by the same lists of types (`listed`) and refuses the same unions. A type without pointers
+is not walked at all.
 
 **The copy of a valid value.** `copy_in::<T>(src, dst)` copies the bytes that a valid `T` holds
 initialized, but those of its pointers: each scalar (one that may be uninitialized,
@@ -785,7 +790,9 @@ pointers (`is_plain`) is copied whole, at once; the rest is walked by the same l
 per type: 3 instructions for a struct of a `bool` and a pointer, 8 for an enum of an `i64` or two
 pointers, 19 for a struct of a `u32` and an enum of four variants (x86-64), against 29 for the code
 that `nearest` generated per type for the last. A union does not compile there (`copy_in_union`):
-which of its fields it is, and so which bytes are initialized, cannot be told.
+which of its fields it is, and so which bytes are initialized, cannot be told. Its source is what
+`pointers_in` reads, as its types say, whatever its rules say: no rule is read, and a restricted
+field is copied as the scalar of its type that it is.
 
 The model check holds it to the oracle of pointers (below): with a visitor that follows the
 pointers of the tests through their buffer, `validate_in` accepts exactly what the oracle accepts,
@@ -795,14 +802,19 @@ every image that it accepts, `pointers_in`, following the pointers in turn, hand
 pointers (position and type) in the same order (`check_pointers_in`, the same sample and the same
 `full`); and `copy_in` writes the bytes that the oracle says the value holds (its scalars, the tag
 and the fields of its variant, a null pointer; not the bytes of the other pointers), and only
-those, into bytes of two fills (`check_copy_in`, the same sample and the same `full`).
+those, into bytes of two fills (`check_copy_in`, the same sample and the same `full`). It checks
+`pointers_in` and `copy_in` on images that `validate_in` accepts only, so on none whose rules do
+not hold: that they need not is held by the argument above (no rule is read), and by a test.
 `tests/validate_in.rs` gives each kind its answer, the positions of errors, and random bytes,
 positions and counts (some that overflow) under Miri on every target of CI; and on what
 `validate_in` accepts there, that `pointers_in` and `pointers_elems_in` hand over the same
 pointers, at any alignment, with the bytes that they need not read uninitialized; and that
 `copy_in` of a value on the stack (padding and the other variant uninitialized) into memory that
 is then read whole as a `&[u8]` copies its value and nothing else, and of random accepted bytes a
-value that `validate_in` accepts again.
+value that `validate_in` accepts again. And on a value with pointers that breaks its `assert` and
+the `valid(..)` of a field, in a buffer, which `validate_in` refuses: that `pointers_in` hands over
+its pointers, and `copy_in` copies its scalars and its null pointer, as for a value that keeps them
+(`rules_need_not_hold_for_pointers_in_and_copy_in`).
 
 ### 10. Enums without `repr` (`discover.rs`)
 

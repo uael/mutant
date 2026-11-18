@@ -237,10 +237,19 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// # Safety
 ///
 /// `base + at` is valid for reads of `size_of::<T>()` bytes, at any alignment, that hold a `T` as
-/// [`validate_in`] accepts one, whatever its visitor answers: what `validate_in` reads of them is
-/// initialized and valid. Padding, and what the variant of an enum does not hold, may be anything,
-/// uninitialized too: it is not read. Nothing is required of what the pointers aim at, which is
-/// not read either. A valid `T` (a `&T`, the bytes of a buffer that were validated) is such.
+/// its types say, whatever its rules say:
+///
+/// - every scalar is initialized and a valid value of its type (`bool`, `char`, `NonZero`, an
+///   enum without fields, the offset of a pointer);
+/// - the tag of every enum (or its niche) is initialized and tells one of its variants, and the
+///   bytes that this variant holds are so in turn.
+///
+/// The rules of its structs need not hold (`assert`, `size`, `len`, regions), nor the `valid(..)`
+/// of a field: safe code can break them, and nothing here reads them (a restricted field is a
+/// scalar, which holds no pointer). Padding, and what the variant of an enum does not hold, may be
+/// anything, uninitialized too: it is not read. Nothing is required of what the pointers aim at,
+/// which is not read either. A valid `T` (a `&T`, whatever values safe code wrote to its fields;
+/// the bytes of a buffer that [`validate_in`] accepted) is such.
 ///
 /// # Errors
 /// The first error of the visitor.
@@ -415,10 +424,13 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 ///
 /// # Safety
 ///
-/// `src` is valid for reads of the `size_of::<T>()` bytes of a valid `T`, at any alignment: what
-/// [`validate_in`] would accept, whatever its visitor answers (the bytes that may be uninitialized
-/// may be so). `dst` is valid for writes of `size_of::<T>()` bytes, at any alignment, and the two
-/// do not overlap.
+/// `src` is valid for reads of the `size_of::<T>()` bytes of a `T` as its types say, whatever its
+/// rules say, at any alignment, as for [`pointers_in`]: every scalar initialized and valid for its
+/// type, the tag of every enum (or its niche) initialized and telling one of its variants, whose
+/// bytes are so in turn. The rules of its structs and the `valid(..)` of its fields need not hold:
+/// none is read, and a restricted field is copied as the scalar of its type that it is. The bytes
+/// that may be uninitialized may be so. `dst` is valid for writes of `size_of::<T>()` bytes, at
+/// any alignment, and the two do not overlap.
 #[inline]
 pub unsafe fn copy_in<T: Pun>(src: *const u8, dst: *mut u8) {
   // SAFETY: per the caller.
