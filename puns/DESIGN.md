@@ -756,12 +756,29 @@ left a field out would leave it unchecked (compile-fail `validate_lists_not_the_
 walked field by field, so that its pointers are handed over in order with the checks of the rest
 (a visitor whose queue is full stops the walk where it is).
 
+**The walk of the pointers of a valid value.** `pointers_in::<T, V>(base, at, visit)` (and
+`pointers_elems_in` for `count` values) hands the visitor the pointers of a `T` known to be valid,
+the same calls that `validate_in` makes on the same bytes, in the same order, and checks nothing:
+for a crate that copies a value with what it aims at, or moves it in its buffer and re-aims its
+pointers, where validating again would cost a check of every scalar for nothing. It is `unsafe`:
+the bytes at `base + at` hold a `T` as `validate_in` accepts one (what `validate_in` reads of them
+is initialized and valid; padding, and what the variant does not hold, may be uninitialized,
+since neither is read), at any alignment. It reads the tags of enums (niches included, as
+`validate_in` does: `variants` and `follow_variants` choose the variant by the same test) and the
+offsets of pointers that may be null, nothing else, and goes by the same lists of types (`listed`)
+and refuses the same unions. A type without pointers is not walked at all.
+
 The model check holds it to the oracle of pointers (below): with a visitor that follows the
 pointers of the tests through their buffer, `validate_in` accepts exactly what the oracle accepts,
 on the corpus and on every copy with one byte changed, padding and gaps included
-(`check_validate`; a sample on a push, every type and every mask of one bit with `full`).
+(`check_validate`; a sample on a push, every type and every mask of one bit with `full`); and on
+every image that it accepts, `pointers_in`, following the pointers in turn, hands over the same
+pointers (position and type) in the same order (`check_pointers_in`, the same sample and the same
+`full`).
 `tests/validate_in.rs` gives each kind its answer, the positions of errors, and random bytes,
-positions and counts (some that overflow) under Miri on every target of CI.
+positions and counts (some that overflow) under Miri on every target of CI; and on what
+`validate_in` accepts there, that `pointers_in` and `pointers_elems_in` hand over the same
+pointers, at any alignment, with the bytes that they need not read uninitialized.
 
 ### 10. Enums without `repr` (`discover.rs`)
 

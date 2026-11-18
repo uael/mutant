@@ -100,7 +100,9 @@
 //! [`SelfRelative`], and [`view_ref`] reads a value that holds them as another type, with
 //! everything they aim at proven at compile time. The crate that has the pointers checks a
 //! buffer of them with [`validate_in`]: each value from its layout, its pointers handed to the
-//! crate's [`Visit`], which follows them as its scheme says.
+//! crate's [`Visit`], which follows them as its scheme says; and walks the pointers of a value
+//! known to be valid (to copy it, or to move it in its buffer) with [`pointers_in`], which hands
+//! the visitor the same pointers and checks nothing.
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.
@@ -137,7 +139,9 @@ pub use relative::SelfRelative;
 #[doc(hidden)]
 pub use relative::sized_probe as __sized_probe;
 use validate::{Checks, validate};
-pub use visit::{Invalid, Pointee, Visit, validate_elems_in, validate_in};
+pub use visit::{
+  Invalid, Pointee, Visit, pointers_elems_in, pointers_in, validate_elems_in, validate_in,
+};
 
 // -------------------------------------------------------------------------------------------------
 // Traits

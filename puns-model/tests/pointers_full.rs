@@ -39,3 +39,28 @@ fn validate_in_is_the_oracle() {
     + check_validate::<Wood>(&masks);
   println!("{compared} images compared");
 }
+
+/// `puns::pointers_in` against `validate_in`, on every type of the model, every single-byte change
+/// by every mask of one bit and of all bits that leaves the image valid.
+#[test]
+fn pointers_in_is_validate_in() {
+  use puns_model::pointers::check_pointers_in;
+  let masks = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xff];
+  let compared = check_pointers_in::<Flags>(&masks)
+    + check_pointers_in::<Bytes>(&masks)
+    + check_pointers_in::<FlagList>(&masks)
+    + check_pointers_in::<ByteList>(&masks)
+    + check_pointers_in::<ToFlag>(&masks)
+    + check_pointers_in::<ToByte>(&masks)
+    + check_pointers_in::<MaybeByte>(&masks)
+    + check_pointers_in::<ToByteBe>(&masks)
+    + check_pointers_in::<ToWord>(&masks)
+    + check_pointers_in::<ToPair>(&masks)
+    + check_pointers_in::<ToBytes>(&masks)
+    + check_pointers_in::<ToFlags>(&masks)
+    + check_pointers_in::<ToText>(&masks)
+    + check_pointers_in::<Raw>(&masks)
+    + check_pointers_in::<Tree>(&masks)
+    + check_pointers_in::<Wood>(&masks);
+  println!("{compared} images compared");
+}

@@ -1,5 +1,7 @@
 //! Validation of a value in a buffer that holds self-relative pointers, for the crate that has
-//! them: [`validate_in`], [`validate_elems_in`], and what they hand each pointer to, [`Visit`].
+//! them: [`validate_in`], [`validate_elems_in`], and what they hand each pointer to, [`Visit`];
+//! and the walk of the pointers of a valid value, which checks nothing: [`pointers_in`],
+//! [`pointers_elems_in`].
 //!
 //! The functions recurse over types, as `validate` does: each call is an instance in which the
 //! layout is a constant, and what it says cannot be invalid is not compiled. A part of a value
@@ -19,7 +21,9 @@ use crate::{
 ///
 /// [`validate_in`] and [`validate_elems_in`] hand each pointer of the value they validate to the
 /// visitor: the crate that has the pointers follows them, as its scheme says, and validates what
-/// they aim at in turn (or queues it).
+/// they aim at in turn (or queues it). [`pointers_in`] and [`pointers_elems_in`] hand it the same
+/// pointers of a value known to be valid, which they do not check: to copy what they aim at, or
+/// to re-aim them when the value moves.
 ///
 /// `pointer::<P>(at)` is called once for each pointer that the value holds where it is (in its
 /// fields, in the variant that its tag tells, in the elements of its arrays), in the order of
@@ -214,6 +218,170 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
     return Err(Invalid::at(at).into());
   }
   Ok(())
+}
+
+/// Hands `visit` each self-relative pointer of the valid `T` at the position `at` from `base`,
+/// as [`validate_in`] would, and checks nothing.
+///
+/// It is for a value already known to be valid, such as one being copied or moved in its buffer.
+///
+/// `visit.pointer::<P>(at)` is called once for each pointer that the value holds where it is (in
+/// its fields, in the variant that its tag tells, in the elements of its arrays), with its type
+/// and its position, in the order of their positions; bytes of a pointer that are all zero are not
+/// handed over if the pointer may be null (no pointer), and are handed over otherwise. These are
+/// the calls that [`validate_in`] makes on the same bytes, in the same order (the model check
+/// compares them). It reads the tags of enums (and their niches) and the offsets of pointers that
+/// may be null, nothing else, at any alignment; it does not recurse through pointers. An error
+/// returned by `pointer` ends the walk, with that error.
+///
+/// # Safety
+///
+/// `base + at` is valid for reads of `size_of::<T>()` bytes, at any alignment, that hold a `T` as
+/// [`validate_in`] accepts one, whatever its visitor answers: what `validate_in` reads of them is
+/// initialized and valid. Padding, and what the variant of an enum does not hold, may be anything,
+/// uninitialized too: it is not read. Nothing is required of what the pointers aim at, which is
+/// not read either. A valid `T` (a `&T`, the bytes of a buffer that were validated) is such.
+///
+/// # Errors
+/// The first error of the visitor.
+#[inline]
+pub unsafe fn pointers_in<T: Pun, V: Visit>(
+  base: *const u8,
+  at: usize,
+  visit: &mut V,
+) -> Result<(), V::Error> {
+  // SAFETY: per the caller.
+  unsafe { follow::<T, V>(base, at, visit) }
+}
+
+/// [`pointers_in`] for the `count` values of `T` from the position `at` of `base`,
+/// `size_of::<T>()` apart, in order. Elements that hold no pointer are not looked at.
+///
+/// # Safety
+/// As [`pointers_in`], for each of the `count` values.
+///
+/// # Errors
+/// The first error of the visitor.
+#[inline]
+pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
+  base: *const u8,
+  at: usize,
+  count: usize,
+  visit: &mut V,
+) -> Result<(), V::Error> {
+  if const { !T::LAYOUT.has_pointers() } {
+    return Ok(());
+  }
+  let size = const { T::LAYOUT.size() };
+  let mut i = 0;
+  while i < count {
+    // SAFETY: per the caller, the element `i`.
+    unsafe { follow::<T, V>(base, at + i * size, visit)? };
+    i += 1;
+  }
+  Ok(())
+}
+
+/// The pointers of the valid `T` at `at`, handed over in order ([`pointers_in`]).
+///
+/// # Safety
+/// As [`pointers_in`].
+#[inline(always)]
+unsafe fn follow<T: ?Sized + Pun, V: Visit>(
+  base: *const u8,
+  at: usize,
+  visit: &mut V,
+) -> Result<(), V::Error> {
+  if const { !T::LAYOUT.has_pointers() } {
+    return Ok(());
+  }
+  const {
+    assert!(
+      !(matches!(T::LAYOUT.kind, Kind::Enum(layout) if layout.union) && T::LAYOUT.has_pointers()),
+      "a union that holds a self-relative pointer: which field it is cannot be told, so neither \
+       can the pointer"
+    );
+  };
+  // The walk goes by the lists of types of `T`, as `validate_in` does.
+  const { assert!(listed::<T>(), "{}", LISTS) };
+  // SAFETY: per the caller; the layout of `T` tells what is at `at`.
+  unsafe {
+    match const { T::LAYOUT.shape() } {
+      Shape::Array(len) => {
+        let size = const { <T::Elem as Pun>::LAYOUT.size() };
+        let mut i = 0;
+        while i < len {
+          follow::<T::Elem, V>(base, at + i * size, visit)?;
+          i += 1;
+        }
+        Ok(())
+      }
+      Shape::Struct => follow_fields::<T::Fields, V>(base, at, visit),
+      Shape::Enum(layout) => {
+        // A tag that is not a scalar has no value: no valid `T` is given.
+        let Kind::Scalar(spec) = layout.tag.layout.kind else { return Ok(()) };
+        let tag = load(base.add(at + layout.tag.offset), spec.size, spec.endian);
+        follow_variants::<T::Variants, V>(base, at, tag, visit).unwrap_or(Ok(()))
+      }
+      // All zeros, where the pointer may be null: no pointer.
+      Shape::Pointer(pointer) => {
+        if pointer.nullable && load(base.add(at), pointer.width, pointer.endian) == 0 {
+          Ok(())
+        } else {
+          visit.pointer::<T>(at)
+        }
+      }
+      // No pointer there.
+      Shape::Scalar(_) | Shape::Slice | Shape::Pattern(_) => Ok(()),
+    }
+  }
+}
+
+/// The pointers of the field `F` of the struct (or of the variant) at `at`, and of the ones after
+/// it, in the order of their declarations.
+///
+/// # Safety
+/// As [`pointers_in`], for the struct (or the enum) that `F` is a field of.
+#[inline(always)]
+unsafe fn follow_fields<F: Fields, V: Visit>(
+  base: *const u8,
+  at: usize,
+  visit: &mut V,
+) -> Result<(), V::Error> {
+  let Some(field) = (const { F::FIELD }) else { return Ok(()) };
+  // SAFETY: per the caller; the field is where its layout says. A restricted field is a scalar,
+  // which holds no pointer.
+  unsafe {
+    if field.restriction().is_none() {
+      follow::<F::Type, V>(base, at + field.offset(), visit)?;
+    }
+    follow_fields::<F::Next, V>(base, at, visit)
+  }
+}
+
+/// The pointers of the variant, among `W` and the ones after it, whose tag is `tag`: `None` if
+/// there is none.
+///
+/// # Safety
+/// As [`pointers_in`], for the enum at `at`.
+#[inline(always)]
+unsafe fn follow_variants<W: Variants, V: Visit>(
+  base: *const u8,
+  at: usize,
+  tag: u128,
+  visit: &mut V,
+) -> Option<Result<(), V::Error>> {
+  let expected = const { W::TAG }?;
+  // As `variants`: the variant of a niche, or one that no value is, has ranges of tags.
+  let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
+  // SAFETY: per the caller.
+  unsafe {
+    if this {
+      Some(follow_fields::<W::Fields, V>(base, at, visit))
+    } else {
+      follow_variants::<W::Next, V>(base, at, tag, visit)
+    }
+  }
 }
 
 /// Whatever the `count` values of `T` at `base` are valid: the slice validation of `validate`.
