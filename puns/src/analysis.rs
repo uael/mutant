@@ -1387,7 +1387,8 @@ pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool 
 
 pub const POINTER_MUT: &str = "the source or the target holds a self-relative pointer, which a \
                                `&mut` would let safe code overwrite, swap or move: a pointer is \
-                               only read";
+                               only read.\nEdit the value where it is, in its region, with what \
+                               made the pointer (the handles of `nearest::Region::edit`)";
 
 pub const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
                            where the source is not), and could be written through the `&mut`";

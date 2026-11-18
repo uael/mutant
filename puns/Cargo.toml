@@ -44,5 +44,9 @@ required-features = ["nearest"]
 name = "nearest"
 required-features = ["nearest"]
 
+[[test]]
+name = "nearest_compile_fail"
+required-features = ["nearest"]
+
 [lints]
 workspace = true

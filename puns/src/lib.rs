@@ -780,10 +780,13 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
   }
   if let (Some(offset), false) = (relation.partial, need.fallible) {
     return Some(
-      Message::new(
+      Message::new(if need.pointers {
         "some values of the source are not valid for the target, or do not prove one of its \
-         rules.\nUse a `try_*` function to check them at run time",
-      )
+         rules.\nUse `try_view_ref` to check them at run time"
+      } else {
+        "some values of the source are not valid for the target, or do not prove one of its \
+         rules.\nUse a `try_*` function to check them at run time"
+      })
       .at(offset.saturating_sub(shift)),
     );
   }

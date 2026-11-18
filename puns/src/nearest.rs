@@ -283,7 +283,11 @@ offsets! {
 const fn pointer<P, T: Flat, O: Order>(aim: Aim, nullable: bool) -> Layout {
   // Alignment at most 8, a size, no drop glue: what a region holds.
   fits::<T>();
-  assert!(T::REACH >= O::LIMIT, "a `Near` cannot lead to a type holding a narrower `Near`");
+  assert!(
+    T::REACH >= O::LIMIT,
+    "a `Near` cannot lead to a type holding a narrower `Near`: the pointers of the root of a \
+     region bound it, so give the pointers below an offset that is at least as wide"
+  );
   let width = size_of::<O>();
   assert!(
     size_of::<O::NonZero>() == width
@@ -481,11 +485,20 @@ fn load<T: Flat + Pun>(bytes: &[u8], todo: Stack<'_>) -> Result<Region<T>, Error
 const fn agrees<T: Flat + Pun>() {
   const {
     let layout = T::LAYOUT;
-    assert!(!T::PLAIN || layout.is_plain(), "`nearest` copies as bytes a type with padding");
-    assert!(!T::ANY || layout.is_free(), "`nearest` does not check a type that can be invalid");
+    assert!(
+      !T::PLAIN || layout.is_plain(),
+      "the implementation of `nearest::Flat` for this type says `PLAIN` (no padding, no pointer), \
+       which its layout denies: one of the two is wrong"
+    );
+    assert!(
+      !T::ANY || layout.is_free(),
+      "the implementation of `nearest::Flat` for this type says `ANY` (every bit pattern is a \
+       value), which its layout denies: one of the two is wrong"
+    );
     assert!(
       T::REACH == layout.reach(),
-      "the pointers of the type do not reach what `nearest` says"
+      "the implementation of `nearest::Flat` for this type says `REACH` (what its pointers \
+       reach), which its layout denies: one of the two is wrong"
     );
   };
 }

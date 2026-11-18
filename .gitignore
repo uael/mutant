@@ -38,6 +38,9 @@
 !puns/tests/compile-fail/
 !puns/tests/compile-fail/*.stderr
 !puns/tests/compile-pass/
+!puns/tests/compile-fail-nearest/
+!puns/tests/compile-fail-nearest/*.stderr
+!puns/tests/compile-pass-nearest/
 !puns/**/*.rs
 !puns-derive/
 !puns-derive/Cargo.toml
