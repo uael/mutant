@@ -276,8 +276,8 @@ numbers! {
   f64be: f64[8] Big;
 }
 
-/// Signed integers are ordered by their value, whatever their bytes: what the offsets of
-/// `nearest` (feature `nearest`) must be, among other uses.
+/// Signed integers are ordered by their value, whatever their bytes: what the offsets of a
+/// crate of self-relative pointers must be (`nearest`), among other uses.
 macro_rules! ordered {
   ($($name:ident)+) => {$(
     impl PartialOrd for $name {

@@ -27,7 +27,8 @@
 //! when a constant rules the branch out. So it pairs by position (the fields of two structs and
 //! the variants of two enums in the order of their declarations, elements with elements), which
 //! names more pairs than matter: where the source has nothing, its side is `()`, and `target`
-//! has nothing to prove of what has no size (no pointer aims at such a type: [`Pointer::new`]).
+//! has nothing to prove of what has no size (no pointer aims at such a type: [`Pointer::one`],
+//! [`Pointer::sequence`]; the target type of text is `()`).
 //! The pairs that matter are decided exactly by `local`, which is `const` code: every pointer of
 //! the target must be, in the source, a pointer at the same offset that `pair` pairs it with,
 //! or the build fails. Hence two limits, which are refusals: a field that holds a pointer keeps
@@ -35,12 +36,13 @@
 //! the variants of its enum (new ones go last), and a struct that only holds a pointer is not
 //! that pointer.
 //!
-//! [`Pointer::new`]: crate::layout::Pointer::new
+//! [`Pointer::one`]: crate::layout::Pointer::one
+//! [`Pointer::sequence`]: crate::layout::Pointer::sequence
 
 use crate::{
   Fields, Message, Pun, Variants,
   analysis::{Analysis, analyze},
-  layout::{Aim, Field, Kind, Variant},
+  layout::{Field, Kind, Variant},
 };
 
 const LARGER: &str = "behind a pointer, the target is larger than what it is read from";
@@ -53,8 +55,8 @@ const UNCHECKED: &str = "behind a pointer, some values of the source are not val
                          pointer.\nGive the target a type that every value of the source is valid \
                          for";
 const UNPAIRED: &str = "a pointer of the target is not, in the source, a pointer of the same \
-                        offset type that aims at the same kind of thing (a value, a list, text): \
-                        only a pointer proves a pointer";
+                        scheme and offset that aims at the same kind of thing (a value, a \
+                        sequence, text): only a pointer proves a pointer";
 const FIELDS: &str = "a field of the target that holds a pointer is not paired with a field of \
                       the source at the same offset.\nFields are paired in the order of their \
                       declarations: give both structs the same fields, in the same order, up to \
@@ -128,10 +130,11 @@ fn variants<VA: Variants, VB: Variants>() {
 
 /// Why an `X` that a pointer aims at cannot be read as a `Y`, if it cannot: a `Y` is the first
 /// bytes of an `X` (the pointers themselves told that it is not more aligned, and that elements
-/// of lists have the same size), every value of which is valid for it, with nothing left to
+/// of sequences have the same size), every value of which is valid for it, with nothing left to
 /// check: nothing is checked behind a pointer.
 pub const fn behind<X: Pun, Y: Pun>(fuel: usize) -> Option<&'static str> {
-  // Not a pair of pointers: no pointer aims at a type without size (`Pointer::new`).
+  // Not a pair of pointers: no pointer aims at a type without size (`Pointer::one`,
+  // `Pointer::sequence`), and the target type of text is `()`.
   if X::LAYOUT.size() == 0 || Y::LAYOUT.size() == 0 {
     return None;
   }
@@ -226,7 +229,8 @@ const fn local_variants<A0: Variants, VA: Variants, VB: Variants>(
 
 /// Whatever the lists of `T` are what its layout holds, as [`Pun`] requires: its fields in the
 /// order of their declarations, its variants, the type of its elements, and the size and the
-/// alignment of what it aims at if it is a pointer. One level: [`local`] asks again further down.
+/// alignment of what it aims at if it is a pointer (of `()` for text). One level: [`local`] asks
+/// again further down.
 const fn listed<T: ?Sized + Pun>() -> bool {
   match T::LAYOUT.kind {
     Kind::Struct(fields, _) => listed_fields::<T::Fields>(fields, 0),
@@ -234,8 +238,7 @@ const fn listed<T: ?Sized + Pun>() -> bool {
     Kind::Array(elem, _) | Kind::Slice(elem) => <T::Elem as Pun>::LAYOUT.equals(elem),
     Kind::Pointer(pointer) => {
       let target = <T::Pointee as Pun>::LAYOUT;
-      matches!(pointer.aim, Aim::Str)
-        || (target.size() == pointer.size && target.align() == pointer.align)
+      target.size() == pointer.size && target.align() == pointer.align
     }
     Kind::Scalar(_) | Kind::Pattern(_) => true,
   }

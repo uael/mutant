@@ -10,9 +10,12 @@
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
 )]
 
+use core::marker::PhantomData;
+
 use puns::{
-  Pun, Tag, from_head, from_tail, head_ref,
-  num::{u16be, u16bec, u32bec},
+  Pun, SelfRelative, Tag, from_head, from_tail, head_ref,
+  layout::{Endian, Pointer},
+  num::{i32le, u16be, u16bec, u32bec, u32le},
   pun, pun_ref, tail_ref, try_pun, try_pun_ref,
 };
 
@@ -129,6 +132,75 @@ pub enum Drawing {
   Line(u8, u8) = 9,
 }
 
+/// Self-relative pointers, declared as a crate of its own would: an offset of 4 bytes,
+/// little-endian, of no alignment. No value of them is made here, only the views are compiled.
+macro_rules! pointers {
+  ($($(#[$doc:meta])* $name:ident[$($param:ident)?] $target:ty, $pointer:expr;)+) => {$(
+    $(#[$doc])*
+    #[repr(transparent)]
+    pub struct $name<$($param)?>(i32le, PhantomData<($($param,)?)>);
+
+    // SAFETY: the type is its offset, a byte array; no value of it is made.
+    unsafe impl<$($param: Pun)?> SelfRelative for $name<$($param)?> {
+      type Target = $target;
+      const POINTER: Pointer = $pointer;
+    }
+
+    puns::self_relative!(impl[$($param: Pun)?] $name<$($param)?>);
+  )+};
+}
+
+const SCHEME: &str = "codegen";
+
+/// The alignment of the first element of a sequence of `T`.
+const fn first<T>() -> usize {
+  if align_of::<T>() > 4 { align_of::<T>() } else { 4 }
+}
+
+pointers! {
+  /// To one `T`.
+  Rel[T] T, Pointer::one::<T>(SCHEME, 4, Endian::Little);
+  /// To one `T`, or none.
+  RelOpt[T] T, Pointer::one::<T>(SCHEME, 4, Endian::Little).or_null();
+  /// To a sequence of `T`, at least 4-aligned.
+  RelSeq[T] T, Pointer::sequence::<T>(SCHEME, 4, Endian::Little, first::<T>());
+  /// To text.
+  RelStr[] (), Pointer::text(SCHEME, 4, Endian::Little);
+}
+
+/// An expression, and the next version of it: a `bool` read as a `u8`, one more variant.
+#[derive(Pun)]
+#[repr(u8)]
+pub enum Old {
+  Leaf(bool),
+  Neg(Rel<Old>),
+  Call(RelStr, RelSeq<Old>),
+}
+
+#[derive(Pun)]
+#[repr(u8)]
+pub enum New {
+  Leaf(u8),
+  Neg(Rel<New>),
+  Call(RelStr, RelSeq<New>),
+  Pair(Rel<New>, Rel<New>),
+}
+
+/// A pointer that may be null, read as one that is not.
+#[derive(Pun)]
+#[repr(C)]
+pub struct Maybe {
+  pub id: u32le,
+  pub owner: RelOpt<Old>,
+}
+
+#[derive(Pun)]
+#[repr(C)]
+pub struct Owned {
+  pub id: u32le,
+  pub owner: Rel<New>,
+}
+
 // Nothing to check.
 #[unsafe(no_mangle)]
 pub const fn position_bytes(p: &Position) -> &[u8; 2] {
@@ -218,6 +290,21 @@ pub fn front_position(b: &[u8]) -> Option<&Position> {
 #[unsafe(no_mangle)]
 pub fn back_trailer(b: &[u8]) -> Option<&Trailer> {
   from_tail::<Trailer>(b).ok().map(|(_, t)| t)
+}
+
+// Proven, pointers followed through a recursive type: nothing is compiled.
+#[unsafe(no_mangle)]
+pub fn view_new(old: &Old) -> &New {
+  puns::view_ref(old)
+}
+#[unsafe(no_mangle)]
+pub fn view_slice(old: &[Old]) -> &[New] {
+  puns::view_ref(old)
+}
+// What is not proven of the value itself: here that a pointer is not null.
+#[unsafe(no_mangle)]
+pub fn try_view_owned(maybe: &Maybe) -> Option<&Owned> {
+  puns::try_view_ref(maybe).ok()
 }
 
 fn main() {}
