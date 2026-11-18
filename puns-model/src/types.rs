@@ -11,7 +11,7 @@ use puns::{
   },
 };
 
-use crate::{Bytes, Oracle, Uninit, Valid, all, int, require};
+use crate::{Bytes, Oracle, Uninit, Valid, all, int, require, require_whole};
 
 /// A struct whose oracle is the one of its fields, at the offsets that the compiler gives.
 macro_rules! model_struct {
@@ -806,14 +806,19 @@ type Check = fn(&Bytes, usize, &mut [bool], bool) -> Valid;
 /// # Errors
 /// [`Uninit`] if a field is decided by an uninitialized byte before one is valid.
 pub fn any(b: &Bytes, off: usize, reads: &mut [bool], target: bool, checks: &[Check]) -> Valid {
-  for check in checks {
-    match check(b, off, reads, target) {
-      Ok(true) => return Ok(true),
-      Ok(false) => {}
-      Err(Uninit) => return Err(Uninit),
+  let mut one = || {
+    for check in checks {
+      match check(b, off, reads, target) {
+        Ok(true) => return Ok(true),
+        Ok(false) => {}
+        Err(Uninit) => return Err(Uninit),
+      }
     }
-  }
-  Ok(false)
+    Ok(false)
+  };
+  // What a union requires is that one of its fields is valid, requirements included: one
+  // requirement, not those of each field, which a value that is another field need not meet.
+  if target { require_whole(off, "one of the fields of a union", one) } else { one() }
 }
 
 /// A `bool`, or a number up to 3: a byte up to 3.

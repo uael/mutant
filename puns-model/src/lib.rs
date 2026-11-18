@@ -110,6 +110,19 @@ pub fn require(off: usize, what: &'static str, holds: Valid) -> Valid {
   holds
 }
 
+/// What `holds` is, as one requirement (`off`, `what`) whatever it requires within: the requirements
+/// that it records are not, as they are not requirements of the value on their own (the fields of
+/// a union, of which one must be valid).
+///
+/// # Errors
+/// What `holds` returns, if it is [`Uninit`].
+pub fn require_whole(off: usize, what: &'static str, holds: impl FnOnce() -> Valid) -> Valid {
+  let outer = REQUIRED.with(|required| required.borrow_mut().take());
+  let valid = holds();
+  REQUIRED.with(|required| *required.borrow_mut() = outer);
+  require(off, what, valid)
+}
+
 /// The requirements of `p[off..off + size_of::<D>()]` as a `D`, each with where it is in the `D`.
 fn requirements<D: Oracle>(p: &Bytes, off: usize) -> Vec<Requirement> {
   let p = &p[off..off + size_of::<D>()];
