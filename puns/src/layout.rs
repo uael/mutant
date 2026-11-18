@@ -2544,21 +2544,19 @@ const fn effect(op: Op) -> (usize, usize) {
 ///
 /// This is written so that, once inlined in a function where the expression is a constant, which
 /// is how it is used, what remains is the arithmetic of the expression, without relying on much
-/// of the optimizer: the stack is not an array but a variable for each of its slots, and what is
-/// not computed is told by an index (`skip`), which is a constant on each path through the code.
+/// of the optimizer: the stack is not an array but a variable for each of its slots, what is not
+/// computed is told by an index (`skip`), which is a constant on each path through the code, and
+/// a failure, which is the one of the expression (nothing that is computed is left out of its
+/// value), returns at once.
 #[derive(Copy, Clone)]
 pub(crate) struct Machine {
   stack: Stack,
   variables: Variables,
   depth: usize,
   /// The operations before this index are not computed: the part that an [`Op::Shortcut`], an
-  /// [`Op::Then`] or an [`Op::Else`] skips, or, at [`FAILED`], all of them after a failure,
-  /// which is the one of the expression (nothing that is computed is left out of its value).
+  /// [`Op::Then`] or an [`Op::Else`] skips.
   skip: usize,
 }
-
-/// [`Machine::skip`] after a failure.
-const FAILED: usize = usize::MAX;
 
 /// `slots!(Name: [0 1 2 ..] last)`: values in fields, one for each index, rather than in an array: so
 /// that the optimizer makes a variable of each, whatever the index asked for (see [`Machine`]).
@@ -2623,16 +2621,10 @@ impl Machine {
     at >= self.skip
   }
 
-  /// The expression fails: nothing more is computed.
+  /// The value of the expression, once all of its operations are applied without a failure.
   #[inline(always)]
-  const fn fail(&mut self) {
-    self.skip = FAILED;
-  }
-
-  /// The value of the expression, once all of its operations are applied.
-  #[inline(always)]
-  pub(crate) const fn result(&self) -> Option<u128> {
-    if self.skip == FAILED { None } else { Some(self.get(0)) }
+  pub(crate) const fn result(&self) -> u128 {
+    self.get(0)
   }
 
   /// The value at the top of the stack.
@@ -2641,12 +2633,17 @@ impl Machine {
     self.get(self.depth - 1)
   }
 
-  /// Replace the value at the top of the stack, or fail.
+  /// Replace the value at the top of the stack: whatever there is one (else the expression
+  /// fails).
+  #[must_use]
   #[inline(always)]
-  pub(crate) const fn replace(&mut self, value: Option<u128>) {
+  pub(crate) const fn replace(&mut self, value: Option<u128>) -> bool {
     match value {
-      Some(value) => self.set(self.depth - 1, value),
-      None => self.fail(),
+      Some(value) => {
+        self.set(self.depth - 1, value);
+        true
+      }
+      None => false,
     }
   }
 
@@ -2660,15 +2657,22 @@ impl Machine {
   }
 
   /// Apply the operation `op`, at the index `at` of an expression, over the struct at `base`,
-  /// whose size is `size`.
+  /// whose size is `size`: `false` if it fails, which is then the failure of the expression.
   ///
   /// # Safety
   /// See [`eval`].
   // Not in debug builds, where this would only make every struct that has rules slow to build.
+  #[must_use]
   #[cfg_attr(not(debug_assertions), inline(always))]
-  pub(crate) const unsafe fn apply(&mut self, op: Op, at: usize, base: *const u8, size: usize) {
+  pub(crate) const unsafe fn apply(
+    &mut self,
+    op: Op,
+    at: usize,
+    base: *const u8,
+    size: usize,
+  ) -> bool {
     if !self.computes(at) {
-      return;
+      return true;
     }
     let depth = self.depth;
     match op {
@@ -2696,7 +2700,7 @@ impl Machine {
         } else {
           None
         };
-        self.replace(value);
+        return self.replace(value);
       }
       Op::At { size: width, big } => {
         let (offset, endian) =
@@ -2705,7 +2709,7 @@ impl Machine {
           // SAFETY: in the bounds of the value.
           self.set(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
         } else {
-          self.fail();
+          return false;
         }
       }
       op @ (Op::Crc32
@@ -2737,7 +2741,7 @@ impl Machine {
           };
           self.set(depth - operands, value);
         } else {
-          self.fail();
+          return false;
         }
       }
       // The left side decides: it is the value, and the right side is not computed.
@@ -2775,16 +2779,17 @@ impl Machine {
       Op::Walk { var, cond, next } => {
         // SAFETY: guaranteed by the caller.
         let value = unsafe { self.walk(var, cond, next, self.get(depth - 1), base, size) };
-        self.replace(value);
+        return self.replace(value);
       }
       op => {
         match binary(op, self.get(depth - 2), self.get(depth - 1)) {
           Some(value) => self.set(depth - 2, value),
-          None => self.fail(),
+          None => return false,
         }
         self.depth -= 1;
       }
     }
+    true
   }
 }
 
@@ -2820,28 +2825,53 @@ impl Machine {
   const unsafe fn run(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
     macro_rules! unrolled {
       ($($index:literal)+) => {$(
-        if $index < ops.len() {
-          // SAFETY: guaranteed by the caller.
-          unsafe { self.apply(ops[$index], $index, base, size) };
+        // SAFETY: guaranteed by the caller.
+        if $index < ops.len() && !unsafe { self.apply(ops[$index], $index, base, size) } {
+          return None;
         }
       )+};
     }
     unrolled!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23);
     let mut i = 24;
-    while i < ops.len() && self.skip != FAILED {
+    while i < ops.len() {
       // SAFETY: guaranteed by the caller.
-      unsafe { self.apply(ops[i], i, base, size) };
+      if !unsafe { self.apply(ops[i], i, base, size) } {
+        return None;
+      }
       i += 1;
     }
-    self.result()
+    Some(self.result())
+  }
+
+  /// The value of the expression `ops`, evaluated by this machine an operation at a time: for
+  /// expressions that are not constants where they are evaluated, which unrolling would only
+  /// make slower to compile.
+  ///
+  /// # Safety
+  /// See [`eval`].
+  const unsafe fn run_loop(mut self, ops: &[Op], base: *const u8, size: usize) -> Option<u128> {
+    let mut i = 0;
+    while i < ops.len() {
+      // SAFETY: guaranteed by the caller.
+      if !unsafe { self.apply(ops[i], i, base, size) } {
+        return None;
+      }
+      i += 1;
+    }
+    Some(self.result())
   }
 
   /// What `start` becomes when it is replaced by the value of `next` for as long as `cond` is
   /// true of it, the variable `var` being it in both; `None` if it cannot be computed, or if it
   /// takes more than [`walk_limit`] steps.
   ///
+  /// A walk in an expression is a function of its own, which is not inlined (it would be too
+  /// big), so its expressions are not constants there: they are evaluated a step at a time. (The
+  /// first walk of a rule is applied otherwise, see `validate::check_walks`.)
+  ///
   /// # Safety
   /// See [`eval`].
+  #[inline(never)]
   const unsafe fn walk(
     &self,
     var: u8,
@@ -2854,13 +2884,13 @@ impl Machine {
     let (mut state, mut steps, limit) = (start, 0, walk_limit(size));
     loop {
       // SAFETY: guaranteed by the caller.
-      match unsafe { self.enter(var, state).run(cond, base, size) } {
+      match unsafe { self.enter(var, state).run_loop(cond, base, size) } {
         Some(0) => return Some(state),
         Some(_) if steps < limit => steps += 1,
         _ => return None,
       }
       // SAFETY: guaranteed by the caller.
-      match unsafe { self.enter(var, state).run(next, base, size) } {
+      match unsafe { self.enter(var, state).run_loop(next, base, size) } {
         Some(next) => state = next,
         None => return None,
       }
