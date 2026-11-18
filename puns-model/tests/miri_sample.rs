@@ -41,8 +41,7 @@ fn sample() {
   // with the full alphabets.
   puns_model::pairs!(check_pair, 3;
     (bool, u8), ([bool; 2], u16), (u8, bool), (u16, (u8, bool)), (u16, NotOneOne), (u8, SoftBit),
-    ([u8; 2], u16), (u32, Shape), ([u8; 4], PadMid), (u8, MaybeFlag), ([u8; 4], Wid),
-    (u8, ChoiceU),
+    ([u8; 2], u16), (u32, Shape),
   );
   // Natively, every pair of a few types of each size as well: about a hundred pairs, which is
   // what builds in seconds (each pair is an instance of the analysis). Not compiled under Miri.
@@ -65,6 +64,16 @@ fn sample() {
     );
   }
   puns_model::finish("sample");
+}
+
+/// The rest of the selection, a test of its own: under Miri each of the two is a job of CI (a
+/// minute at most), told apart by name.
+#[test]
+fn sample_layouts() {
+  puns_model::pairs!(check_pair, 3;
+    ([u8; 4], PadMid), (u8, MaybeFlag), ([u8; 4], Wid), (u8, ChoiceU),
+  );
+  puns_model::finish("sample_layouts");
 }
 
 /// An address that is not aligned for the target, whatever where the allocator put the bytes.
