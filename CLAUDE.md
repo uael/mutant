@@ -45,8 +45,7 @@ counts is the one of the job on GitHub, which this machine does not tell: about 
 job go to the checkout and the toolchain before anything runs, its runners are slower and vary by a
 third from one run to the next, so aim at 45 seconds and read the times of the jobs after a change
 of the workflow (the first run after a change of a cache key has nothing cached). This is why `cargo
-test --all` is five jobs there (the tests in three, and the two halves of the sample of the model
-check), and why each Miri run of the tests of `puns` is three jobs (every third test file each:
+test --all` is six jobs there (the tests in three, the sample of the model check in three), and why each Miri run of the tests of `puns` is three jobs (every third test file each:
 split a job again rather than let it pass 45 seconds), with a cache of the standard library that Miri builds and
 of the sources it builds it from (Miri builds it again when the modification time of a source
 changes, which a fresh install of the toolchain does). What is exhaustive (the full model check,

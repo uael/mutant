@@ -55,8 +55,8 @@ jobs:
       - run: ${{ matrix.run }}
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
-  # as long to build as everything else, so jobs of its own, one for whole puns and one for
-  # parts. Together they are `cargo test -p puns-model`.
+  # as long to build as everything else, so jobs of its own: whole puns, unsized types and
+  # pointers, parts. Together they are `cargo test -p puns-model`.
   model:
     name: Model check (sample, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -65,9 +65,9 @@ jobs:
       matrix:
         include:
           - name: puns
-            tests: >-
-              --lib --test miri_sample --test core_shadowed --test dst --test regressions
-              --test pointers
+            tests: --lib --test miri_sample --test core_shadowed --test regressions
+          - name: unsized, pointers
+            tests: --test dst --test pointers
           - name: parts
             tests: --test parts
     steps:
