@@ -186,13 +186,20 @@ struct Ordered {
 /// the blocks and after them.
 #[test]
 fn an_invalid_element_anywhere() {
-  let lengths = if cfg!(miri) { 36 } else { 150 };
-  for len in 0..lengths {
+  // Under Miri, lengths around the blocks (of about 64 bytes) and places around their ends;
+  // natively, every length up to 150 and every place.
+  let lengths: Vec<usize> = if cfg!(miri) { vec![1, 65, 129] } else { (0..150).collect() };
+  for len in lengths {
     let valid = vec![1u8; 2 * len];
     assert!(from_bytes::<[bool]>(&valid[..len]).is_ok());
     assert!(from_bytes::<[Few]>(&valid[..len]).is_ok());
     assert!(from_bytes::<[Ordered]>(&valid).is_ok());
-    for at in 0..len {
+    let places: Vec<usize> = if cfg!(miri) {
+      [0, 63, 64, len.saturating_sub(1)].into_iter().filter(|&at| at < len).collect()
+    } else {
+      (0..len).collect()
+    };
+    for at in places {
       let mut bytes = valid.clone();
       bytes[at] = 2;
       assert!(from_bytes::<[bool]>(&bytes[..len]).is_err(), "{len} {at}");

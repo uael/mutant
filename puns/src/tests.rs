@@ -359,8 +359,10 @@ fn noise(len: usize, seed: &mut u64) -> Vec<u8> {
 fn sum16_is_the_sum_word_by_word() {
   use crate::layout::sum16;
   let mut seed = 0x9e37_79b9_7f4a_7c15;
-  let lengths = if cfg!(miri) { 40 } else { 300 };
-  for len in 0..lengths {
+  // Under Miri, the lengths around the blocks of eight bytes; natively, every one up to 300.
+  let lengths: Vec<usize> =
+    if cfg!(miri) { vec![0, 1, 7, 8, 9, 17, 33] } else { (0..300).collect() };
+  for len in lengths {
     for bytes in [noise(len, &mut seed), vec![0; len], vec![0xff; len]] {
       // From several offsets, so that blocks are read at any alignment.
       for start in 0..bytes.len().min(9) {
@@ -413,7 +415,18 @@ fn crcs_are_the_crcs_bit_by_bit() {
   use crate::layout::{Crc, crc32};
   // CRC-32, CRC-32C, CRC-16/MODBUS, CRC-16/XMODEM, CRC-15/CAN, CRC-5/USB, CRC-8/SMBUS,
   // CRC-64/XZ, CRC-64/ECMA-182: both orientations, widths below and above a byte.
-  let params = [
+  // Their tables are made at compile time: under Miri, making them would be most of the test.
+  macro_rules! crcs {
+    ($(($width:expr, $poly:expr, $init:expr, $reflect:expr, $xorout:expr)),* $(,)?) => {
+      [$((
+        const { &Crc::new($width, $poly, $init, $reflect, $xorout) },
+        ($width, $poly, $init, $reflect, $xorout),
+      )),*]
+    };
+  }
+  /// The width, the polynomial, the initial value, whether it is reflected, the final xor.
+  type Params = (u32, u64, u64, bool, u64);
+  let crcs: [(&Crc, Params); 9] = crcs![
     (32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff),
     (32, 0x1edc_6f41, 0xffff_ffff, true, 0xffff_ffff),
     (16, 0x8005, 0xffff, true, 0),
@@ -424,25 +437,27 @@ fn crcs_are_the_crcs_bit_by_bit() {
     (64, 0x42f0_e1eb_a9ea_3693, u64::MAX, true, u64::MAX),
     (64, 0x42f0_e1eb_a9ea_3693, 0, false, 0),
   ];
-  let crcs = params.map(|(width, poly, init, reflect, xorout)| {
-    (Crc::new(width, poly, init, reflect, xorout), (width, poly, init, reflect, xorout))
-  });
   let mut seed = 0x2545_f491_4f6c_dd1d;
-  let lengths = if cfg!(miri) { 40 } else { 300 };
-  for len in 0..lengths {
+  // Under Miri, the lengths around the blocks of sixteen bytes; natively, every one up to 300.
+  let lengths: Vec<usize> =
+    if cfg!(miri) { vec![0, 1, 15, 16, 17, 33] } else { (0..300).collect() };
+  for len in lengths {
     let bytes = noise(len, &mut seed);
     // From several offsets, so that blocks are read at any alignment.
     for start in 0..bytes.len().min(3) {
       let bytes = &bytes[start..];
       let reference = crc_reference(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff, bytes);
       assert_eq!(u64::from(crc32(bytes)), reference, "{bytes:?}");
-      for (crc, (width, poly, init, reflect, xorout)) in &crcs {
+      // Under Miri, three of them: both orientations, the widths of 32, 15 and 64 bits.
+      for (crc, (width, poly, init, reflect, xorout)) in
+        crcs.iter().step_by(if cfg!(miri) { 4 } else { 1 })
+      {
         let reference = crc_reference(*width, *poly, *init, *reflect, *xorout, bytes);
         assert_eq!(crc.check(bytes), reference, "{width} {poly:x}: {bytes:?}");
       }
     }
     // With bytes taken as zeros, anywhere, and past the end.
-    let crc = &crcs[1].0;
+    let crc = crcs[1].0;
     for (from, to) in [(0, len), (len / 3, len / 2), (len / 2, len + 7), (len, len)] {
       let mut zeroed = bytes.clone();
       zeroed[from.min(len)..to.min(len)].fill(0);
