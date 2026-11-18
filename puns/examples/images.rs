@@ -27,9 +27,9 @@
 //!   not a view of the bytes. The CRCs of PNG are checked; the Adler-32 at the end of the zlib
 //!   stream is in the compressed data, and is not.
 //! - The checksum of each font table is a sum of 32 bits words over the table that a record
-//!   points to: a walk over the records, inside of which is a walk over each table. A walk cannot
-//!   be in a walk, so it is not checked; neither are the tables themselves (more declarations of
-//!   the same kind).
+//!   points to (the one of `head` with a field taken as 0): a walk over the records, inside of
+//!   which is a walk over each table, which is not written here; neither are the tables
+//!   themselves (more declarations of the same kind).
 //! - BMP: the height is an `i32le`, but a rule computes on unsigned integers: the rule that
 //!   needs its magnitude reads its bits.
 #![deny(unsafe_code)]

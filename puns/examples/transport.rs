@@ -563,8 +563,8 @@ pub struct Coap {
 /// An option whose delta and length are both below 13: in the first byte.
 ///
 /// Each nibble of the first byte is the value (0 to 12), or tells 1 (13) or 2 (14) more bytes:
-/// nine forms of head, a struct each, and an enum of references ([`CoapOption`]). This is the
-/// current way: with `be` in `size` (planned), it is one struct.
+/// nine forms of head, a struct each, and an enum of references ([`CoapOption`]). With `be` in
+/// `size`, they could be one struct, whose value would be a region (not rewritten).
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = (head & 15) + 1)]

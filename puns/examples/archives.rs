@@ -30,13 +30,11 @@
 //! - ZIP: an entry with a data descriptor (flag 3) has its sizes after its data, so its size is
 //!   not in its header: such entries are refused by [`LocalHeader`], and found from the central
 //!   directory by use code. The central directory and the entries are found from the end record,
-//!   which is found by a walk: what a walk finds cannot size a region, so they are not regions of
-//!   [`Zip`], but are reached again by use code. ZIP64 is more declarations of the same kind.
+//!   which is found by a walk from the end; they could be regions of [`Zip`] sized by it (not
+//!   written here), and are reached again by use code. ZIP64 is more declarations of the same
+//!   kind.
 //! - tar: the numbers of base-256 (GNU) and the headers of pax are more declarations of the same
 //!   kind.
-//! - gzip: the walk over the name and the comment cannot size regions either: the deflate data is
-//!   a region that starts after the 10 bytes of the fixed header, of everything but the 8 last
-//!   bytes, and it holds the optional fields.
 #![deny(unsafe_code)]
 
 use puns::{
@@ -208,7 +206,28 @@ pub struct Gzip {
   #[pun(valid(0, 2, 4))]
   pub extra_flags: u8,
   pub os: u8,
-  #[pun(regions(rest = size_of_val(self) - 18, crc32 = 4, isize = 4))]
+  // The optional fields, up to the end of the strings and of the CRC of the header (the walk
+  // above), then the deflate data.
+  #[pun(regions(
+    fields = {
+      let start = 10 + if flags & 4 != 0 { 2 + le(10, 2) } else { 0 };
+      walk(
+        start + ((((flags >> 3) & 1) + ((flags >> 4) & 1)) << 32),
+        |s| s >> 32 != 0,
+        |s| if be(s & 0xffff_ffff, 1) == 0 { s + 1 - 0x1_0000_0000 } else { s + 1 },
+      ) + (flags & 2) as u128 - 10
+    },
+    deflate = {
+      let start = 10 + if flags & 4 != 0 { 2 + le(10, 2) } else { 0 };
+      size_of_val(self) - 8 - (walk(
+        start + ((((flags >> 3) & 1) + ((flags >> 4) & 1)) << 32),
+        |s| s >> 32 != 0,
+        |s| if be(s & 0xffff_ffff, 1) == 0 { s + 1 - 0x1_0000_0000 } else { s + 1 },
+      ) + (flags & 2) as u128)
+    },
+    crc32 = 4,
+    isize = 4,
+  ))]
   pub data: [u8],
 }
 
@@ -326,7 +345,7 @@ pub fn main() {
     );
   }
   let member: &Gzip = try_pun_ref(&GZIP_ALL[..]).unwrap();
-  assert_eq!((member.flags, member.rest().len()), (0x1e, 35));
+  assert_eq!((member.flags, member.fields().len(), member.deflate().len()), (0x1e, 28, 7));
   // A reserved flag; a byte of the name, of the comment, of the CRC of the header.
   for (at, value) in [(3, 0x3e), (17, b'E'), (29, b'C'), (36, 0x40)] {
     let mut bytes = GZIP_ALL;
