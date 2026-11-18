@@ -19,6 +19,10 @@ fakecore = { path = "fakecore" }
 full = []
 
 [[test]]
+name = "pointers_full"
+required-features = ["full"]
+
+[[test]]
 name = "size1"
 required-features = ["full"]
 

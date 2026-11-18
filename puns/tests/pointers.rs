@@ -484,11 +484,12 @@ fn pointers_are_read_as_bytes() {
   let numbers = b.seq([u16le::new(3)]);
   // SAFETY: every pointer made by `b`, with what it aims at, in one value.
   let r = unsafe { Region::new(b, Table { version: 1, count: u32le::new(2), numbers }) };
-  // The numbers are at 8 (their length at 4), the table at 10: its pointer, at 15, is -7.
-  assert_eq!(r.root(), 10);
-  assert_eq!(puns::as_bytes(&*r), [1, 2, 0, 0, 0, 0xf9, 0xff, 0xff, 0xff]);
+  // The numbers are at 8 (their length at 4), the table at 11 (after a byte that nothing
+  // writes): its pointer, at 16, is -8.
+  assert_eq!(r.root(), 11);
+  assert_eq!(puns::as_bytes(&*r), [1, 2, 0, 0, 0, 0xf8, 0xff, 0xff, 0xff]);
   assert_eq!(puns::head_ref::<Table, u8>(&r), &1);
-  assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), -7);
+  assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), -8);
   assert_eq!(puns::try_pun_ref::<Table, (bool, [u8; 8])>(&r).map(|pair| pair.0), Ok(true));
   assert_eq!(r.seq(&r.numbers)[0].get(), 3);
 }

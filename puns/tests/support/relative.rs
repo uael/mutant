@@ -1,6 +1,7 @@
-//! Self-relative pointers of the tests, declared through the public API of `puns` only, as a
-//! crate of its own would ([`puns::SelfRelative`], [`puns::self_relative!`]), and a minimal way
-//! to build values that hold them in a buffer and to follow them.
+//! Self-relative pointers of the tests, and a way to build values that hold them.
+//!
+//! They are declared through the public API of `puns` only, as a crate of its own would
+//! ([`puns::SelfRelative`], [`puns::self_relative!`]).
 //!
 //! The scheme, [`SCHEME`]: a pointer is an offset `O`, a signed integer of a given byte order
 //! ([`Offset`]: the numbers of `puns::num`, byte arrays of no alignment), from the address of the
@@ -237,18 +238,22 @@ impl Default for Builder {
 }
 
 impl Builder {
-  /// An empty buffer. Nothing is put at 0, which is no pointer to an `Opt`.
+  /// An empty buffer. Nothing is put at 0, which is a null `Opt` while a value is built.
   #[must_use]
   pub const fn new() -> Self {
     Self { blocks: Vec::new(), len: 1 }
   }
 
   /// `size` bytes at a position that is a multiple of `align`, after `before` more.
+  ///
+  /// A byte that nothing writes follows: what reads past a value reads it (which Miri, and the
+  /// oracle of the model check, report), and a pointer, which is put after what it aims at, never
+  /// aims at itself (even at an empty sequence), so that it is zero only if null.
   fn reserve(&mut self, before: usize, size: usize, align: usize) -> usize {
     // What the buffer holds is at most as aligned as the buffer.
     assert!(align.is_power_of_two() && align <= ALIGN, "a buffer is aligned to {ALIGN}");
     let at = (self.len + before).next_multiple_of(align);
-    self.len = at + size;
+    self.len = at + size + 1;
     self.blocks.resize(self.len.div_ceil(ALIGN), Block([MaybeUninit::uninit(); ALIGN]));
     at
   }
