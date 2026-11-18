@@ -120,6 +120,9 @@ mod discover;
 #[doc(hidden)]
 pub mod hook;
 pub mod layout;
+mod narrow;
+#[cfg(test)]
+mod narrow_tests;
 pub mod num;
 mod ptr;
 mod relative;
@@ -508,6 +511,23 @@ pub mod steps {
   /// An expression of the layout of a struct, as a type: the one of a rule, or of a walk of one.
   pub trait Ops: Sealed {
     const OPS: &'static [Op];
+    /// What its variables may be where it starts: the evaluator computes what fits 64 or 32 bits
+    /// in that width (`narrow`).
+    const ENTRY: Entry;
+  }
+
+  /// What the variables of an expression may be where it starts, and the number of walks that it
+  /// is in (see `narrow`).
+  #[derive(Copy, Clone)]
+  pub struct Entry {
+    pub(crate) vars: crate::narrow::Vars,
+    pub(crate) walks: usize,
+  }
+
+  impl Entry {
+    /// The expression of a rule: its variables are not defined yet.
+    pub(crate) const RULE: Entry =
+      Entry { vars: [crate::narrow::Range::ANY; crate::layout::VARIABLES], walks: 0 };
   }
 
   /// The expression of the rule `R::RULE` of `T`.
@@ -521,6 +541,7 @@ pub mod steps {
 
   impl<T: ?Sized + Pun, R: Rules> Ops for InRule<T, R> {
     const OPS: &'static [Op] = T::LAYOUT.rule_ops(R::RULE);
+    const ENTRY: Entry = Entry::RULE;
   }
 
   impl<X: Ops, W: Steps, const NEXT: bool> Ops for InWalk<X, W, NEXT> {
@@ -534,6 +555,8 @@ pub mod steps {
       }
       _ => &[],
     };
+    // Where the walk is in `X`, with its state.
+    const ENTRY: Entry = crate::narrow::walk_entry(X::OPS, &X::ENTRY, W::AT);
   }
 }
 
