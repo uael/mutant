@@ -24,10 +24,19 @@ jobs:
       - run: cargo test --workspace --exclude puns-model
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
-  # as long to build as everything else, so a job of its own.
+  # as long to build as everything else, so jobs of its own, one for whole puns and one for
+  # parts. Together they are `cargo test -p puns-model`.
   model:
-    name: Model check (sample)
+    name: Model check (sample, ${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: puns
+            tests: --lib --test miri_sample --test core_shadowed --test dst --test regressions
+          - name: parts
+            tests: --test parts
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -36,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: model
-      - run: cargo test -p puns-model
+      - run: cargo test -p puns-model ${{ matrix.tests }}
 
   clippy:
     name: Clippy
@@ -203,12 +212,13 @@ jobs:
         with:
           toolchain: nightly-2026-11-17
           components: miri, rust-src
-      # With the standard library that Miri builds for the target (half a minute otherwise).
+      # With the standard library that Miri builds for the target (twenty seconds otherwise).
+      # Its path is written out: the action does not expand `~`.
       - uses: Swatinem/rust-cache@v2
         with:
           # Not the name: a key of a cache has no comma.
-          key: ${{ matrix.id }}
-          cache-directories: ~/.cache/miri
+          key: sysroot-${{ matrix.id }}
+          cache-directories: /home/runner/.cache/miri
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
       # `--tests`, each would still be a binary that Miri starts to run nothing, a second each.
