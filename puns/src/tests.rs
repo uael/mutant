@@ -625,3 +625,23 @@ fn a_crc_a_byte_at_a_time_is_the_same() {
     }
   }
 }
+
+/// Two patterns are the same by their states and edges: an `id` is a field that safe code writes,
+/// which only tells two apart. Nor is an automaton checked as UTF-8 for having its `id`.
+#[test]
+fn patterns_are_the_same_by_their_states() {
+  use crate::layout::{Dfa, DfaState, Layout};
+  /// Any bytes, with the `id` of UTF-8.
+  const ANY: &Dfa =
+    &Dfa { id: Dfa::UTF8.id, states: &[DfaState { accept: true, edges: &[(0, 0xff, 0)] }] };
+  /// The states of UTF-8, with another `id`.
+  const AGAIN: &Dfa = &Dfa { id: 7, states: Dfa::UTF8.states };
+  // SAFETY: the probe of a slice of bytes, a type of bytes.
+  let pattern = |dfa: &'static Dfa| unsafe { Layout::pattern::<[u8]>(<[u8] as Pun>::PROBE, dfa) };
+  assert!(pattern(Dfa::UTF8).equals(&pattern(Dfa::UTF8)));
+  assert!(!pattern(ANY).equals(&pattern(Dfa::UTF8)));
+  // Two `id`s tell two apart: less is proven, never more.
+  assert!(!pattern(AGAIN).equals(&pattern(Dfa::UTF8)));
+  assert!(Dfa::UTF8.is_utf8());
+  assert!(!ANY.is_utf8() && !AGAIN.is_utf8());
+}

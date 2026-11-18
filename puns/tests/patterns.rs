@@ -2,7 +2,7 @@
 
 use puns::{
   Pun, from_bytes, from_head,
-  layout::{Dfa, DfaState},
+  layout::{Dfa, DfaState, Layout},
   num::{f64be, i16be, i32le},
 };
 
@@ -80,4 +80,39 @@ fn numbers_of_a_byte_order() {
   let numbers = from_bytes::<Numbers>(&bytes).unwrap();
   assert_eq!((numbers.height.get(), numbers.latitude.get(), numbers.offset.get()), (-3, 48.85, -2));
   assert_eq!((i32le::new(-3).to_bytes(), i16be::from(-2).get()), ([0xfd, 0xff, 0xff, 0xff], -2));
+}
+
+/// Bytes 0 and 1, with the `id` of UTF-8: an automaton of the user, stricter than UTF-8.
+const BITS: &Dfa =
+  &Dfa { id: Dfa::UTF8.id, states: &[DfaState { accept: true, edges: &[(0, 1, 0)] }] };
+
+/// A pattern type of the user: bytes that `BITS` accepts.
+#[repr(transparent)]
+struct Bits([u8]);
+
+// SAFETY: a type of bytes that `BITS` accepts, which nothing else makes; `Layout::pattern`, with
+// the probe of a slice of bytes, is its layout.
+unsafe impl Pun for Bits {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Rules = ();
+  type Pointee = ();
+  const PROBE: *const Self = <[u8] as Pun>::PROBE as *const Self;
+  // SAFETY: the probe of a slice of bytes.
+  const LAYOUT: Layout = unsafe { Layout::pattern::<Self>(Self::PROBE, BITS) };
+}
+
+/// A pattern is checked by its states and edges, whatever its `id`: `BITS`, which has the one of
+/// UTF-8, was checked as UTF-8 (`str::from_utf8`), so that `"a"` was a `Bits`.
+#[test]
+fn a_pattern_is_checked_by_its_states() {
+  assert_eq!(from_bytes::<Bits>(&[0, 1, 1]).map(|bits| &bits.0), Ok(&[0, 1, 1][..]));
+  assert_eq!(from_bytes::<Bits>(&[]).map(|bits| &bits.0), Ok(&[][..]));
+  // UTF-8, which `BITS` does not accept.
+  assert!(from_bytes::<Bits>(b"a").is_err());
+  assert!(from_bytes::<Bits>(&[0, 2]).is_err());
+  // A `str` is still UTF-8.
+  assert_eq!(from_bytes::<str>("h\u{e9}".as_bytes()), Ok("h\u{e9}"));
+  assert!(from_bytes::<str>(b"h\xc3").is_err());
 }

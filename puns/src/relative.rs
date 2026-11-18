@@ -168,6 +168,51 @@ pub unsafe trait SelfRelative: Sized {
 /// does not compile there).
 ///
 /// The items of `Pun` are not written by hand: they are this crate's own, and may change.
+///
+/// ```
+/// use core::{marker::PhantomData, num::NonZero};
+///
+/// use puns::{
+///   Pun, SelfRelative,
+///   layout::{Endian, Pointer},
+/// };
+///
+/// /// A pointer to a `T` in the same buffer, never to itself: an offset that is not zero.
+/// #[repr(transparent)]
+/// pub struct Ptr<T> {
+///   offset: NonZero<i32>,
+///   target: PhantomData<T>,
+/// }
+///
+/// // SAFETY: a `Ptr<T>` is its offset, the distance from its own address to a `T` of the same
+/// // buffer, at an address aligned for it. None is made in this example.
+/// unsafe impl<T: Pun> SelfRelative for Ptr<T> {
+///   type Target = T;
+///   const POINTER: Pointer =
+///     Pointer::one::<T>("ptr, an example", size_of::<i32>(), Endian::NATIVE);
+/// }
+///
+/// puns::self_relative!(impl[T: Pun] Ptr<T>);
+///
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Maybe {
+///   next: Option<Ptr<u8>>,
+/// }
+///
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Sure {
+///   next: Ptr<u8>,
+/// }
+///
+/// // `None` is the pointer of zeros, which aims at nothing: it is no `Ptr`.
+/// let none = Maybe { next: None };
+/// assert_eq!(size_of::<Maybe>(), size_of::<i32>());
+/// assert_eq!(puns::try_view_ref::<Maybe, Sure>(&none).err(), Some(puns::Error::Validity));
+/// // Read as plain data, a pointer is the bytes of its offset.
+/// assert_eq!(puns::as_bytes(&none), [0; 4]);
+/// ```
 #[macro_export]
 macro_rules! self_relative {
   (impl [$($generics:tt)*] $ty:ty) => {

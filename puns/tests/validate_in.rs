@@ -4,7 +4,8 @@
 //! where an error is, and that no input makes them read out of the bytes or panic (under Miri on
 //! every target of CI). And `pointers_in` and `pointers_elems_in`: on what `validate_in` accepts,
 //! the same pointers, in the same order. And `copy_in`: the bytes that a value holds initialized,
-//! and no other, from a source whose other bytes are uninitialized.
+//! and no other, from a source whose other bytes are uninitialized. Neither needs the rules of the
+//! value to hold, which safe code can break: they read no rule.
 
 #[path = "support/relative.rs"]
 #[expect(dead_code, reason = "what the model check uses, and these tests do not")]
@@ -13,7 +14,7 @@ mod relative;
 use core::{mem::MaybeUninit, num::NonZero};
 
 use puns::{Invalid, Pun, Visit, num::u8in};
-use relative::{One, Opt, Seq, Text};
+use relative::{Builder, Fix, One, Opt, Region, Seq, Text, addr, field};
 
 /// Records every pointer handed over: its position, and what it is.
 #[derive(Default)]
@@ -568,5 +569,71 @@ fn copy_in_copies_the_value_and_nothing_else() {
     // SAFETY: a `Node` that `validate_in` accepts (`pointers_are_handed_over`), `dst` its size.
     unsafe { puns::copy_in::<Node>(node.as_ptr(), dst.as_mut_ptr()) };
     assert_eq!(dst, [&[5, a, a, a, a, a, a, a, a][..], &copied, &[1]].concat()[..]);
+  }
+}
+
+/// A struct with pointers and rules: `lo <= hi`, and `level` up to 9.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(lo <= hi))]
+struct Ruled {
+  lo: u8,
+  hi: u8,
+  #[pun(valid(..=9))]
+  level: u8,
+  first: One<u8>,
+  next: Opt<u8>,
+}
+
+// SAFETY: every pointer, at its position.
+unsafe impl Fix for Ruled {
+  fn fix(&mut self, at: usize) {
+    let whole = addr(self);
+    field(whole, at, &mut self.first);
+    field(whole, at, &mut self.next);
+  }
+}
+
+/// `pointers_in` and `copy_in` need a value whose scalars, tags and pointers are what its type
+/// says, not its rules: a `Ruled` that breaks both of its rules, as safe code can make one, in a
+/// buffer, with a `next` and without. The pointers handed over are those of the value, the bytes
+/// copied its scalars (the restricted one too) and its null pointer; `validate_in` refuses it.
+#[test]
+fn rules_need_not_hold_for_pointers_in_and_copy_in() {
+  use puns::layout::Aim;
+  let (first, next) = (core::mem::offset_of!(Ruled, first), core::mem::offset_of!(Ruled, next));
+  for some in [true, false] {
+    let mut b = Builder::new();
+    let (one, opt) = (b.one(7u8), b.opt(some.then_some(9u8)));
+    let broken = Ruled { lo: 2, hi: 1, level: 12, first: one, next: opt };
+    // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+    let region = unsafe { Region::new(b, broken) };
+    assert_eq!(*region.get(&region.first), 7);
+    assert_eq!(region.opt(&region.next).copied(), some.then_some(9));
+    let (base, root) = (region.bytes().as_ptr().cast::<u8>(), region.root());
+
+    let mut record = Record::default();
+    // SAFETY: a `Ruled` at `root` whose scalars and pointers are valid for their types, which is
+    // all that `pointers_in` requires: its rules need not hold.
+    unsafe { puns::pointers_in::<Ruled, _>(base, root, &mut record) }.expect("no refusal");
+    let mut handed = vec![(root + first, Aim::One, false)];
+    if some {
+      handed.push((root + next, Aim::One, true));
+    }
+    assert_eq!(record.pointers, handed);
+
+    let a = 0xaa;
+    let mut dst = [a; size_of::<Ruled>()];
+    // SAFETY: as above, all that `copy_in` requires; `dst` is the size of a `Ruled`.
+    unsafe { puns::copy_in::<Ruled>(base.add(root), dst.as_mut_ptr()) };
+    assert_eq!(dst[..3], [2, 1, 12]);
+    // A pointer is left to the caller; a null one is copied.
+    assert_eq!(dst[first..first + 4], [a; 4]);
+    assert_eq!(dst[next..next + 4], if some { [a; 4] } else { [0; 4] });
+
+    // What `validate_in` refuses: `level` (12), then `lo <= hi`, after the pointers.
+    assert_eq!(check::<Ruled>(&dst, 0), (Err(Stop::Invalid(2)), vec![]));
+    dst[2] = 3;
+    assert_eq!(check::<Ruled>(&dst, 0).0, Err(Stop::Invalid(0)));
   }
 }

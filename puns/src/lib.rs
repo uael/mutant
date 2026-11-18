@@ -110,6 +110,8 @@
 //!
 //! See `DESIGN.md` for how it works.
 #![cfg_attr(not(test), no_std)]
+// Every public item has documentation, as docs.rs counts it; CI checks that each has an example.
+#![deny(missing_docs)]
 
 mod analysis;
 mod deep;
@@ -149,15 +151,76 @@ pub use visit::{
 
 /// Leaf types: integers and the like, see [`Spec`].
 ///
-/// This is what `#[derive(Pun)]` implements for enums without fields.
+/// This is what `#[derive(Pun)]` implements for enums without fields. Every `Scalar` is a
+/// [`Pun`] type.
+///
+/// A type of a few bytes whose valid values are checked by its constructor implements it by hand:
+///
+/// ```
+/// mod percent {
+///   use puns::layout::{Endian, Spec};
+///
+///   /// A byte from 0 to 100.
+///   #[derive(Clone, Copy)]
+///   #[repr(transparent)]
+///   pub struct Percent(u8);
+///
+///   impl Percent {
+///     pub const fn new(value: u8) -> Option<Self> {
+///       if value <= 100 { Some(Self(value)) } else { None }
+///     }
+///
+///     pub const fn get(self) -> u8 {
+///       self.0
+///     }
+///   }
+///
+///   // SAFETY: `new` makes the bytes from 0 to 100, and nothing else makes one.
+///   unsafe impl puns::Scalar for Percent {
+///     const SPEC: Spec = Spec::ranges::<Percent>(Endian::NATIVE, &[(0, 100)]);
+///   }
+/// }
+///
+/// use percent::Percent;
+///
+/// assert_eq!(puns::from_bytes::<Percent>(&[42]).unwrap().get(), 42);
+/// assert_eq!(puns::from_bytes::<Percent>(&[101]).err(), Some(puns::Error::Validity));
+/// // Proven: every `Percent` is a `u8`.
+/// assert_eq!(puns::pun::<Percent, u8>(Percent::new(7).unwrap()), 7);
+/// ```
 ///
 /// # Safety
 /// `SPEC` must describe every valid value of `Self`, and nothing more.
 pub unsafe trait Scalar {
+  /// The size, the byte order and the valid values of `Self`.
   const SPEC: Spec;
 }
 
 /// Types made of plain data, whose layout and valid values are known at compile time.
+///
+/// Every function of this crate takes `Pun` types: the integer and floating-point types, `bool`,
+/// `char`, `NonZero`, `()`, `PhantomData`, arrays, slices, `str`, tuples of up to 4, `Option` and
+/// `Result` of them, `MaybeUninit`, `ManuallyDrop`, `Infallible`, the types of [`num`], the
+/// self-relative pointers of [`self_relative!`], and what derives it.
+///
+/// ```
+/// use puns::{Pun, num::u16le};
+///
+/// #[derive(Pun, Clone, Copy)]
+/// #[repr(C)]
+/// struct Point {
+///   x: u16le,
+///   y: u16le,
+/// }
+///
+/// /// The first `T` of `bytes`, and what follows it.
+/// fn first<T: Pun>(bytes: &[u8]) -> Option<(&T, &[u8])> {
+///   puns::from_head(bytes).ok()
+/// }
+///
+/// let (point, rest) = first::<Point>(&[1, 0, 2, 0, 9]).unwrap();
+/// assert_eq!((point.x.get(), point.y.get(), rest), (1, 2, &[9][..]));
+/// ```
 ///
 /// # Safety
 /// Not meant to be implemented by hand: use `#[derive(Pun)]`, or [`self_relative!`] for a
@@ -246,6 +309,8 @@ pub unsafe trait Pun {
 /// assert!(puns::try_pun_ref::<_, Message<Ping>>(&[7u8, 0, 1]).is_ok());
 /// ```
 pub trait Tag<K: ?Sized>: Pun {
+  /// What goes with `Self` where it is carried with a `K`: the type of the field that tells what
+  /// is carried, which bytes of it must be for them to be a `Self`.
   type Tag: Pun + Copy;
 }
 
@@ -727,6 +792,20 @@ impl_signed_non_zero!(i8 i16 i32 i64 i128 isize);
 // `Error`
 
 /// Why a value cannot be seen as another type.
+///
+/// ```
+/// use puns::Error;
+///
+/// let words = [0u32; 2];
+/// // At an address aligned for a `u32`: one byte further is not.
+/// let bytes: &[u8] = puns::as_bytes(&words);
+///
+/// assert_eq!(puns::from_bytes::<u32>(&bytes[..4]), Ok(&0));
+/// assert_eq!(puns::from_bytes::<u32>(&bytes[..3]), Err(Error::Size));
+/// assert_eq!(puns::from_bytes::<u32>(&bytes[1..5]), Err(Error::Alignment));
+/// assert_eq!(puns::from_bytes::<bool>(&[2]), Err(Error::Validity));
+/// assert_eq!(Error::Validity.to_string(), "value is not valid for the target type");
+/// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Error {
   /// The address of the value is not a multiple of the alignment of the target.
@@ -1271,7 +1350,56 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// Behind a pointer nothing can be checked, so nothing may be left to check there: every value
 /// must be valid for what it is read as.
 ///
-/// See [`SelfRelative`] for an example.
+/// With `Rel<T>`, an `i32` from its own address to a `T`, as declared in the example of
+/// [`SelfRelative`]:
+///
+/// ```
+/// # use core::marker::PhantomData;
+/// # use puns::{Pun, SelfRelative, layout::{Endian, Pointer}};
+/// # /// A pointer to a `T` in the same buffer: the distance from its own address, an `i32`.
+/// # #[repr(transparent)]
+/// # pub struct Rel<T> { offset: i32, target: PhantomData<T> }
+/// # // SAFETY: as in the example of `SelfRelative`: the only ones of this example are made where
+/// # // they aim at a valid `T`, and nothing writes to the buffer while it is read.
+/// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
+/// #   type Target = T;
+/// #   const POINTER: Pointer =
+/// #     Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
+/// # }
+/// # puns::self_relative!(impl[T: Pun] Rel<T>);
+/// use puns::num::u8in;
+///
+/// /// A list of digits: each points to the next one, the last one to itself.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Digits {
+///   digit: u8in<b'0', b'9'>,
+///   next: Rel<Digits>,
+/// }
+///
+/// /// A list of bytes.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Bytes {
+///   byte: u8,
+///   next: Rel<Bytes>,
+/// }
+///
+/// #[repr(C, align(4))]
+/// struct Buffer([u8; 8]);
+///
+/// // The digit 7, whose pointer, at 4, aims at the list itself, at 0.
+/// let mut bytes = [b'7', 0, 0, 0, 0, 0, 0, 0];
+/// bytes[4..].copy_from_slice(&(-4i32).to_ne_bytes());
+/// let buffer = Buffer(bytes);
+/// // SAFETY: the bytes at 0 are `Digits`, whose pointer aims at `Digits` of the same buffer.
+/// let digits: &Digits = unsafe { &*core::ptr::from_ref(&buffer).cast::<Digits>() };
+///
+/// // Proven at compile time, through the pointers of the recursive type.
+/// let bytes: &Bytes = puns::view_ref(digits);
+/// assert!(core::ptr::addr_eq(bytes, digits));
+/// assert_eq!(bytes.byte, b'7');
+/// ```
 ///
 /// It is not a `const fn`: what the pointers aim at is proven by instances of functions, which
 /// only a build makes (`cargo check` reports nothing of it). It never gives a `&mut`: a pointer
@@ -1295,7 +1423,85 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// ([`Pointer::or_null`](layout::Pointer::or_null)) read as one that is not. Behind its pointers nothing is checked, so everything
 /// must be proven there, as for [`view_ref`].
 ///
-/// See [`SelfRelative`] for an example.
+/// With `Rel<T>` as in the example of [`view_ref`]:
+///
+/// ```
+/// # use core::marker::PhantomData;
+/// # use puns::{Pun, SelfRelative, layout::{Endian, Pointer}};
+/// # /// A pointer to a `T` in the same buffer: the distance from its own address, an `i32`.
+/// # #[repr(transparent)]
+/// # pub struct Rel<T> { offset: i32, target: PhantomData<T> }
+/// # // SAFETY: as in the example of `SelfRelative`: the only ones of this example are made where
+/// # // they aim at a valid `T`, and nothing writes to the buffer while it is read.
+/// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
+/// #   type Target = T;
+/// #   const POINTER: Pointer =
+/// #     Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
+/// # }
+/// # puns::self_relative!(impl[T: Pun] Rel<T>);
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Loose {
+///   byte: u8,
+///   next: Rel<u8>,
+/// }
+///
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Strict {
+///   flag: bool,
+///   next: Rel<u8>,
+/// }
+///
+/// #[repr(C, align(4))]
+/// struct Buffer([u8; 12]);
+///
+/// /// A `Loose` of `byte` at 0, whose pointer, at 4, aims at a byte at 8.
+/// fn buffer(byte: u8) -> Buffer {
+///   let mut bytes = [byte, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0];
+///   bytes[4..8].copy_from_slice(&4i32.to_ne_bytes());
+///   Buffer(bytes)
+/// }
+///
+/// let (a, b) = (buffer(1), buffer(2));
+/// // SAFETY: the bytes at 0 of each are a `Loose`, whose pointer aims at a byte of the buffer.
+/// let one: &Loose = unsafe { &*core::ptr::from_ref(&a).cast::<Loose>() };
+/// let two: &Loose = unsafe { &*core::ptr::from_ref(&b).cast::<Loose>() };
+///
+/// // The `bool` is checked; what the pointer aims at is proven.
+/// assert!(puns::try_view_ref::<Loose, Strict>(one).unwrap().flag);
+/// assert_eq!(puns::try_view_ref::<Loose, Strict>(two).err(), Some(puns::Error::Validity));
+/// ```
+///
+/// What a pointer aims at is not checked: a `u8` there is never read as a `bool`.
+///
+/// ```compile_fail
+/// # use core::marker::PhantomData;
+/// # use puns::{Pun, SelfRelative, layout::{Endian, Pointer}};
+/// # /// A pointer to a `T` in the same buffer: the distance from its own address, an `i32`.
+/// # #[repr(transparent)]
+/// # pub struct Rel<T> { offset: i32, target: PhantomData<T> }
+/// # // SAFETY: as in the example of `SelfRelative`: the only ones of this example are made where
+/// # // they aim at a valid `T`, and nothing writes to the buffer while it is read.
+/// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
+/// #   type Target = T;
+/// #   const POINTER: Pointer =
+/// #     Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
+/// # }
+/// # puns::self_relative!(impl[T: Pun] Rel<T>);
+/// # #[derive(Pun)] #[repr(C)] struct Loose { byte: u8, next: Rel<u8> }
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct Behind {
+///   byte: u8,
+///   next: Rel<bool>,
+/// }
+///
+/// fn check(loose: &Loose) -> Result<&Behind, puns::Error> {
+///   puns::try_view_ref(loose)
+/// }
+/// # let _: fn(&Loose) -> Result<&Behind, puns::Error> = check;
+/// ```
 ///
 /// # Errors
 /// As [`try_pun_ref`]: [`Error::Alignment`], [`Error::Size`], [`Error::Validity`].
@@ -1471,7 +1677,23 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 /// Reinterpret a mutable reference as a mutable reference to another type, if the value is a
 /// valid one.
 ///
-/// See [`try_pun_ref`] and [`pun_mut`].
+/// See [`try_pun_ref`] and [`pun_mut`]: what is checked is what `try_pun_ref` checks, and what
+/// can be written through the result must be a valid `S`, as for `pun_mut`.
+///
+/// ```
+/// let mut byte = 1u8;
+/// let flag: &mut bool = puns::try_pun_mut(&mut byte).unwrap();
+/// *flag = false;
+/// assert_eq!(byte, 0);
+///
+/// let mut two = 2u8;
+/// assert_eq!(puns::try_pun_mut::<u8, bool>(&mut two), Err(puns::Error::Validity));
+/// ```
+///
+/// ```compile_fail
+/// // A `u8` can be written through the result, which a `bool` cannot hold.
+/// let _ = puns::try_pun_mut::<bool, u8>(&mut true);
+/// ```
 ///
 /// # Errors
 /// As [`try_pun_ref`].
@@ -1549,8 +1771,8 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 /// (`try_pun_ref(&[1, 0])` is a pun of `[i32; 2]`: an unsuffixed integer literal is an `i32`
 /// unless something says otherwise), and because it takes one type parameter.
 ///
-/// The size is checked if it depends on a slice length, the address if `D` has an alignment
-/// greater than 1, and then what bytes do not prove of `D`.
+/// The address is checked if `D` has an alignment greater than 1, then the size if it depends on
+/// a slice length, then what bytes do not prove of `D`.
 ///
 /// ```
 /// use puns::{Error, Pun};
