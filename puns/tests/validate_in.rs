@@ -289,13 +289,12 @@ fn any_input() {
 
 /// No value.
 #[derive(Pun)]
-#[expect(dead_code, reason = "a type without values, made of bytes in no test")]
+#[expect(clippy::empty_enums, reason = "a type without values is what is tested")]
 enum Never {}
 
 /// A struct that holds a type without values: none either.
 #[derive(Pun)]
 #[repr(C)]
-#[expect(dead_code, reason = "a type without values")]
 struct Holds {
   id: u8,
   never: Never,
