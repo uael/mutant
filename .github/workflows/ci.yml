@@ -117,7 +117,7 @@ jobs:
       - run: cargo +nightly-2026-11-17 build -p puns -Zbuild-std=core --target msp430-none-elf
 
   fmt:
-    name: Format
+    name: Format, examples of the documentation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -127,6 +127,14 @@ jobs:
           toolchain: nightly-2026-11-17
           components: rustfmt
       - run: cargo +nightly-2026-11-17 fmt --all -- --check
+      # What docs.rs measures: every public item of `puns` documented (`#![deny(missing_docs)]`),
+      # and every item that rustdoc counts with an example, which only a nightly rustdoc tells
+      # (the lint lists the items that have none). Here, where the nightly already is: it builds
+      # the derive and its dependencies, a few seconds without a cache.
+      - run: >-
+          cargo +nightly-2026-11-17 rustdoc -p puns -- -Z unstable-options
+          '-Zcrate-attr=feature(rustdoc_missing_doc_code_examples)'
+          -D rustdoc::missing_doc_code_examples
 
   # One job for each run, side by side: each is a check of its own, of less than a minute.
   miri:
