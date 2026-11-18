@@ -2,7 +2,8 @@
 //! aim at, each pointer handed to a visitor. What each kind of layout answers (scalars, structs
 //! and their rules, enums and niches, unions, `MaybeUninit`, `Option` and `Result`, pointers),
 //! where an error is, and that no input makes them read out of the bytes or panic (under Miri on
-//! every target of CI).
+//! every target of CI). And `pointers_in` and `pointers_elems_in`: on what `validate_in` accepts,
+//! the same pointers, in the same order.
 
 #[path = "support/relative.rs"]
 #[expect(dead_code, reason = "what the model check uses, and these tests do not")]
@@ -58,6 +59,20 @@ fn check<T: Pun>(bytes: &[u8], at: usize) -> (Result<(), Stop>, Vec<Handed>) {
 
 fn ok<T: Pun>(bytes: &[u8], at: usize) -> Result<(), Stop> {
   check::<T>(bytes, at).0
+}
+
+/// `check::<T>`, and if `validate_in` accepts the bytes, the pointers that `pointers_in` hands over
+/// on them, which must be the same.
+fn walk<T: Pun>(bytes: &[u8], at: usize) -> (Result<(), Stop>, Vec<Handed>) {
+  let (result, handed) = check::<T>(bytes, at);
+  if result.is_ok() {
+    let mut record = Record::default();
+    // SAFETY: `validate_in` accepted the bytes as a `T` at `at`, in bounds.
+    let walked = unsafe { puns::pointers_in::<T, Record>(bytes.as_ptr(), at, &mut record) };
+    assert_eq!(walked, Ok(()), "{}: at {at}", core::any::type_name::<T>());
+    assert_eq!(record.pointers, handed, "{}: at {at}", core::any::type_name::<T>());
+  }
+  (result, handed)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -175,10 +190,10 @@ fn pointers_are_handed_over() {
   let mut bytes = vec![5, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1];
   let all =
     vec![(1, Aim::Text, false), (5, Aim::Sequence { align: 4 }, false), (9, Aim::One, true)];
-  assert_eq!(check::<Node>(&bytes, 0), (Ok(()), all.clone()));
+  assert_eq!(walk::<Node>(&bytes, 0), (Ok(()), all.clone()));
   // `next` null: not handed over.
   bytes[9] = 0;
-  assert_eq!(check::<Node>(&bytes, 0), (Ok(()), all[..2].to_vec()));
+  assert_eq!(walk::<Node>(&bytes, 0), (Ok(()), all[..2].to_vec()));
   // `flag` is 2: the pointers before it were handed over.
   bytes[13] = 2;
   assert_eq!(check::<Node>(&bytes, 0), (Err(Stop::Invalid(13)), all[..2].to_vec()));
@@ -188,14 +203,69 @@ fn pointers_are_handed_over() {
   // A pointer of offset zero: one whose offset may be zero is one, handed over (its scheme
   // says what it aims at); one whose offset is a `NonZero` is not valid there.
   let here = [1u8, 0, 0, 0, 0, 1, 0, 0, 0];
-  assert_eq!(check::<Tree>(&here, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
+  assert_eq!(walk::<Tree>(&here, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
   assert_eq!(check::<Strict>(&[0; 4], 0), (Err(Stop::Invalid(0)), vec![]));
-  assert_eq!(check::<Strict>(&[4, 0, 0, 0], 0), (Ok(()), vec![(0, Aim::One, false)]));
+  assert_eq!(walk::<Strict>(&[4, 0, 0, 0], 0), (Ok(()), vec![(0, Aim::One, false)]));
   // The pointers of the variant that the tag tells, and only those.
   let node = [1u8, 4, 0, 0, 0, 8, 0, 0, 0];
-  assert_eq!(check::<Tree>(&node, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
+  assert_eq!(walk::<Tree>(&node, 0), (Ok(()), vec![(1, Aim::One, false), (5, Aim::One, false)]));
   let leaf = [0u8, 1, 0, 0, 0, 1, 0, 0, 0];
-  assert_eq!(check::<Tree>(&leaf, 0), (Ok(()), vec![]));
+  assert_eq!(walk::<Tree>(&leaf, 0), (Ok(()), vec![]));
+}
+
+/// `pointers_in` checks nothing, and hands over what `validate_in` does: the pointers of the
+/// variant that the tag tells, not a null one that may be, in order, and an error of the visitor
+/// ends the walk. It reads only what `validate_in` reads: the bytes that the variant does not
+/// hold are uninitialized here.
+#[test]
+fn pointers_in_hands_over_the_same() {
+  use puns::layout::Aim;
+  let mut node = MaybeUninit::<[u8; 9]>::uninit();
+  let mut leaf = MaybeUninit::<[u8; 9]>::uninit();
+  // SAFETY: the bytes of a `Tree::Node` that are written, then those of a `Tree::Leaf`: the tag
+  // and the `bool`; the rest stays uninitialized.
+  unsafe {
+    node.as_mut_ptr().cast::<[u8; 9]>().write([1, 4, 0, 0, 0, 8, 0, 0, 0]);
+    leaf.as_mut_ptr().cast::<[u8; 2]>().write([0, 1]);
+  }
+  let mut record = Record::default();
+  // SAFETY: the bytes of a `Tree` that `validate_in` accepts (above, `node` and `leaf`); the
+  // uninitialized ones are those it does not read.
+  unsafe {
+    puns::pointers_in::<Tree, _>(node.as_ptr().cast(), 0, &mut record).expect("no refusal");
+    assert_eq!(record.pointers, vec![(1, Aim::One, false), (5, Aim::One, false)]);
+    puns::pointers_in::<Tree, _>(leaf.as_ptr().cast(), 0, &mut record).expect("no refusal");
+    assert_eq!(record.pointers.len(), 2);
+  }
+  // The error of the visitor ends the walk: the second pointer is not handed over.
+  let bytes = [5, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1];
+  let mut record = Record { refuse: Some(5), ..Record::default() };
+  // SAFETY: a `Node` that `validate_in` accepts (`pointers_are_handed_over`).
+  let walked = unsafe { puns::pointers_in::<Node, _>(bytes.as_ptr(), 0, &mut record) };
+  assert_eq!((walked, record.pointers), (Err(Stop::Refused(5)), vec![(1, Aim::Text, false)]));
+  // At any alignment: the same `Node` one byte further.
+  let mut later = vec![0];
+  later.extend_from_slice(&bytes);
+  let (result, handed) = walk::<Node>(&later, 1);
+  assert_eq!(result, Ok(()));
+  assert_eq!(handed.iter().map(|p| p.0).collect::<Vec<_>>(), [2, 6, 10]);
+  // An array of values with pointers, and their elements.
+  let pair = [1u8, 4, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+  let (_, handed) = walk::<[Tree; 2]>(&pair, 0);
+  assert_eq!(handed.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 5]);
+  let mut record = Record::default();
+  // SAFETY: two `Tree`s, which `validate_elems_in` accepts.
+  unsafe {
+    assert_eq!(puns::validate_elems_in::<Tree, _>(&pair, 0, 2, &mut Record::default()), Ok(()));
+    puns::pointers_elems_in::<Tree, _>(pair.as_ptr(), 0, 2, &mut record).expect("no refusal");
+  }
+  assert_eq!(record.pointers.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 5]);
+  // Elements without pointers are not looked at, whatever their count.
+  // SAFETY: no byte is read of them.
+  unsafe {
+    puns::pointers_elems_in::<bool, _>(core::ptr::null(), 0, usize::MAX, &mut record)
+      .expect("nothing");
+  }
 }
 
 /// The elements one after the other: by blocks without pointers, one by one with.
@@ -263,11 +333,17 @@ fn any_input() {
       0 => usize::MAX / (1 + (rng.next() % 3) as usize),
       _ => (rng.next() % 8) as usize,
     };
-    let one = check::<T>(bytes, at).0;
+    let one = walk::<T>(bytes, at).0;
     let mut record = Record::default();
     let many = puns::validate_elems_in::<T, _>(bytes, at, count, &mut record);
     if many.is_ok() && count > 0 {
       assert_eq!(one, Ok(()), "{}: at {at}, {count}", core::any::type_name::<T>());
+      // The same pointers, from `pointers_elems_in`.
+      let mut walked = Record::default();
+      // SAFETY: `validate_elems_in` accepted the `count` values, in bounds.
+      unsafe { puns::pointers_elems_in::<T, _>(bytes.as_ptr(), at, count, &mut walked) }
+        .expect("no refusal");
+      assert_eq!(walked.pointers, record.pointers, "{}: at {at}", core::any::type_name::<T>());
     }
   }
   let mut rng = Rng(0x1234_5678_9abc_def1);

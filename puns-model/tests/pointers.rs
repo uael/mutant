@@ -83,3 +83,19 @@ fn validate_in_is_the_oracle() {
   println!("{compared} images compared");
   assert!(compared > if cfg!(miri) { 100 } else { 10_000 });
 }
+
+/// `puns::pointers_in` hands over the pointers that `validate_in` hands over, on every image that
+/// it accepts, following them through the buffer: a sample of the types (every type in
+/// `pointers_full.rs`). Under Miri, a pointer that may be null and one mask.
+#[test]
+fn pointers_in_is_validate_in() {
+  use puns_model::pointers::check_pointers_in;
+  let masks: &[u8] = if cfg!(miri) { &[0xff] } else { &[0x01, 0x80, 0xff] };
+  let mut compared = check_pointers_in::<MaybeByte>(masks);
+  if !cfg!(miri) {
+    compared += check_pointers_in::<Wood>(masks) + check_pointers_in::<FlagList>(masks);
+    compared += check_pointers_in::<Flags>(masks) + check_pointers_in::<ToText>(masks);
+  }
+  println!("{compared} images compared");
+  assert!(compared > if cfg!(miri) { 20 } else { 1_000 });
+}
