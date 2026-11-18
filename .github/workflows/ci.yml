@@ -155,6 +155,9 @@ jobs:
       # Where Miri keeps the standard library that it builds for its target: twenty seconds of
       # build, so a directory that is cached (below).
       MIRI_SYSROOT: /home/runner/miri-sysroot
+      # The sources that it builds it from, which the toolchain installs.
+      MIRI_SOURCES: >-
+        /home/runner/.rustup/toolchains/nightly-2026-11-17-x86_64-unknown-linux-gnu/lib/rustlib/src
     strategy:
       fail-fast: false
       matrix:
@@ -222,11 +225,15 @@ jobs:
           # Not the name: a key of a cache has no comma.
           key: ${{ matrix.id }}
       # The standard library of Miri, for the toolchain and the target: built by the step after
-      # this one when the cache does not have it.
+      # this one when the cache does not have it. With the sources it was built from: Miri
+      # builds it again when the modification time of one of them is not what it was, and each
+      # run installs them anew. The cache brings them back as they were.
       - uses: actions/cache@v4
         with:
-          path: /home/runner/miri-sysroot
-          key: miri-sysroot-nightly-2026-11-17-${{ matrix.target || 'host' }}
+          path: |
+            ${{ env.MIRI_SYSROOT }}
+            ${{ env.MIRI_SOURCES }}
+          key: miri-std-nightly-2026-11-17-${{ matrix.target || 'host' }}
       - run: cargo miri setup ${{ matrix.target && format('--target {0}', matrix.target) }}
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
