@@ -451,9 +451,11 @@ the optimizations (it has to build the function pointer; `rustc` collects what a
 mentions before it optimizes, so that errors of const evaluation do not depend on the
 optimization level). This is what the compiler does, more than what the Reference promises of a
 `const` block that is not executed: the compile-fail test `view_behind_pointers` (a `u8` read as
-a `bool` two pointers down a recursive type) holds the compiler to it in a debug build, and the
-same program fails to compile in a release build with LTO. For the same reason `view_ref` is not
-a `const fn`: a call in a constant would make no instance.
+a `bool` two pointers down a recursive type) holds the compiler to it in a debug build, and
+`model.yml` builds the same program optimized, with LTO, every night: it must be refused there
+too (to run when `rust-toolchain` changes). For the same reason `view_ref` is not a `const fn`: a
+call in a constant would make no instance. An interpreter that only evaluates the constants of
+the functions it runs, as Miri does, would not refuse such a view: the refusal is one of a build.
 
 The compiler also makes the instances that a branch names when a constant rules the branch out,
 so `pair` cannot choose what it names: it pairs by position (fields with fields and variants with
@@ -463,11 +465,16 @@ of a type without size (no pointer aims at one: `Pointer::new`). The pairs that 
 decided exactly by `local`, which is `const` code: every pointer of the target must be, in the
 source, a pointer at the same offset that `pair` pairs it with, or the build fails. So what
 `local` accepts, `pair` names, by the same walk of the same lists; and a pair that is named
-without mattering has one side without pointers. Hence the limits, which are refusals: a field
-that holds a pointer keeps its position among the fields of its struct, a variant that does keeps
-its position among the variants of its enum (new ones go last: a variant found by its tag at
-another position is refused, compile-fail test `view_variant_moved`), and a struct that only holds
-a pointer is not that pointer.
+without mattering has one side without pointers. Those lists (`Fields`, `Variants`, `Elem`,
+`Pointee`) are types, written next to the layout that the analysis went by: `local` checks, on
+its way, that they are what the layouts hold (`listed`: the same fields in the order of their
+declarations, the same variants, the same elements, a target of the same size), so that a
+pointer is not missed, nor taken for another, by an implementation of `Pun` whose lists and
+layout differ (compile-fail test `lists_not_the_layout`). Hence the limits, which are refusals:
+a field that holds a pointer keeps its position among the fields of its struct, a variant that
+does keeps its position among the variants of its enum (new ones go last: a variant found by its
+tag at another position is refused, compile-fail test `view_variant_moved`), and a struct that
+only holds a pointer is not that pointer.
 
 `try_view_ref` checks what is not proven of the value itself (`validate`, with the marks of the
 analysis: a variant that the target does not have, a restricted scalar, a pointer that may be
@@ -535,7 +542,9 @@ type as `validate` does (what the layout says cannot be invalid is not compiled,
 the order of a deep copy), which `nearest.rs` and `Aim` state again; that its unchecked loaders
 accept bytes that are the compact image of a valid value, which is what its own loaders give
 them; the hidden items above. A release of `nearest` that changes one of them is one that this
-crate has to follow: the corpus tests and the model check compare the two loaders on every push.
+crate has to follow, so the dependency is on that very release (`=0.7.1`): with another one, the
+build fails instead of a loader checking bytes for a format that is no longer the one they are
+read with. The corpus tests and the model check compare the two loaders on every push.
 
 **The invariants of `nearest`** (I1 to I9 of its specification), with this crate in the build:
 
@@ -568,7 +577,8 @@ crate has to follow: the corpus tests and the model check compare the two loader
   `deep::proof` for the same pair of types; neither is a `const fn`.
 - P6. What `deep::local` accepts, `deep::pair` names: both walk the fields, the variants and
   the elements of the two types by position, and `local` refuses whatever is not at the
-  position where `pair` looks for it.
+  position where `pair` looks for it, and a type whose lists are not what its layout holds
+  (`listed`).
 - P7. The offsets: `to_isize` of an `Order` type is the integer of its bytes in `ENDIAN`
   (an `unsafe trait`; for the nine types here, by construction and by the test `contract`).
 - P8. A loader casts or copies only bytes that its walk accepted whole, for the very type.
