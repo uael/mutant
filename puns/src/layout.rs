@@ -128,6 +128,30 @@ impl Spec {
     Self { valid, known: valid, ..self }
   }
 
+  /// Same as `self`, for a scalar that may be uninitialized: what a target requires is still
+  /// `self` (initialized, and one of its values), but nothing is known of what a source holds
+  /// there, not even that it is initialized.
+  ///
+  /// This is a byte that is either a byte of a tag, whose value is the one that `self` accepts,
+  /// or padding, without a way to tell which: the bytes of a tag that `rustc` widened past its
+  /// values, in an enum without `repr` (see `discover.rs`). Requiring the value is right in
+  /// either case, and so is knowing nothing.
+  ///
+  /// # Panics
+  /// If `self` accepts every initialized value, or uninitialized bytes: such a scalar is
+  /// [`Spec::uninit`].
+  #[must_use]
+  pub const fn maybe_uninit(self) -> Self {
+    assert!(matches!(self.valid, Valid::In(_)), "a scalar that may be uninitialized restricts");
+    Self { known: Valid::Uninit, ..self }
+  }
+
+  /// Whatever a source may hold uninitialized bytes in this scalar.
+  #[inline]
+  pub(crate) const fn may_be_uninit(&self) -> bool {
+    matches!(self.known, Valid::Uninit)
+  }
+
   /// Same as `self`, for a scalar whose bits are not the value of an unsigned integer: a signed
   /// or floating-point number, a `bool`, a `char`, an enum. The expressions of `#[pun(..)]`,
   /// which compute on unsigned integers, do not read it.
@@ -190,7 +214,6 @@ impl Spec {
   pub(crate) const fn is_soft(&self) -> bool {
     matches!(self.known, Valid::Any) && matches!(self.valid, Valid::In(_))
   }
-
   /// Same as `self`, read in another byte order.
   #[inline]
   #[must_use]
@@ -1309,7 +1332,11 @@ impl Layout {
       Uniform::No => {}
     }
     match self.kind {
-      Kind::Scalar(spec) => (!matches!(spec.valid, Valid::Uninit), self.size),
+      // What a value holds (`always`) is what is known of it; what is required of one, what is
+      // valid.
+      Kind::Scalar(spec) => {
+        (!matches!(if always { spec.known } else { spec.valid }, Valid::Uninit), self.size)
+      }
       // The bytes of a pointer are initialized.
       Kind::Pointer(_) => (true, self.size),
       Kind::Pattern(_) | Kind::Slice(_) => panic!("not sized"),
@@ -1690,8 +1717,13 @@ impl Layout {
     match (self.kind, other.kind) {
       // What a scalar requires, and what it is known to be: a layout that only requires what
       // another guarantees (`valid(..)` on a `u8`, and a `bool`) is not the same.
+      //
+      // A scalar that may be uninitialized is equal to none: what it is lies between what it
+      // requires and what it is known to be, which two types can have the same of while one has
+      // padding where the other does not.
       (Kind::Scalar(a), Kind::Scalar(b)) => {
-        a.size == b.size
+        !a.may_be_uninit()
+          && a.size == b.size
           && same_valid(a.valid, b.valid, a.endian, b.endian)
           && same_valid(a.known, b.known, a.endian, b.endian)
       }

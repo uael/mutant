@@ -44,8 +44,8 @@ fn sample() {
   // what builds in seconds (each pair is an instance of the analysis). Not compiled under Miri.
   #[cfg(not(miri))]
   {
-    puns_model::all_pairs!(8; u8, bool, NonZero<u8>, E37, SoftBit);
-    puns_model::all_pairs!(6; u16, [bool; 2], (u8, bool), Aligned, Opt, NotOneOne);
+    puns_model::all_pairs!(8; u8, bool, NonZero<u8>, E37, SoftBit, Zero, core::mem::MaybeUninit<u8>);
+    puns_model::all_pairs!(6; u16, [bool; 2], (u8, bool), Aligned, Opt, NotOneOne, ByteZero);
     puns_model::all_pairs!(4; [u8; 3], Wide, Triple);
     puns_model::all_pairs!(4; u32, char, PadMid, Shape, Drawing);
   }

@@ -527,3 +527,45 @@ pub type Size8 = (
   [Drawing; 2],
   (u16, u8, bool, u32),
 );
+
+// --- Uninitialized bytes --------------------------------------------------------------------------
+
+/// A byte that a target requires to be 0, and of which a source knows nothing.
+///
+/// Not even that it is initialized: as a type, it is any byte, since it holds a
+/// `MaybeUninit<u8>`. This is what `Spec::maybe_uninit` describes.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Zero(pub core::mem::MaybeUninit<u8>);
+
+// SAFETY: every value of `SPEC.valid` (0) is a value of a `MaybeUninit<u8>`, and what a source of
+// it is known to be (anything, uninitialized too) is what a `MaybeUninit<u8>` is.
+unsafe impl puns::Scalar for Zero {
+  const SPEC: puns::layout::Spec =
+    puns::layout::Spec::ranges::<u8>(puns::layout::Endian::Little, &[(0, 0)]).maybe_uninit();
+}
+
+impl Oracle for Zero {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    // As a source, anything; what a target requires, a requirement of the library.
+    if !target {
+      return Ok(true);
+    }
+    Ok(int(b, off, 1, true, reads)? == 0)
+  }
+}
+
+impl<T: Copy + 'static> Oracle for core::mem::MaybeUninit<T> {
+  fn check(_: &Bytes, _: usize, _: &mut [bool], _: bool) -> Valid {
+    Ok(true)
+  }
+}
+
+model_struct!(
+  /// A byte, then one that may be uninitialized.
+  #[repr(C)]
+  struct ByteZero {
+    a: u8,
+    z: Zero,
+  }
+);

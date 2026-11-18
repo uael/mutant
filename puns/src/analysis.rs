@@ -47,6 +47,17 @@ pub enum RunKind {
   Pointer(Pointer),
 }
 
+impl RunKind {
+  /// Whatever a source may hold uninitialized bytes there.
+  const fn may_be_uninit(&self) -> bool {
+    match self {
+      RunKind::Pad => true,
+      RunKind::Atom(spec) => spec.may_be_uninit(),
+      RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => false,
+    }
+  }
+}
+
 /// Consecutive bytes of the same nature: `start..end` are offsets from the root of the layout.
 #[derive(Copy, Clone)]
 pub struct Run {
@@ -477,7 +488,7 @@ const fn relate_range(
     match run_b.kind {
       // Padding that a rule reads accepts everything but padding.
       RunKind::Pad if b.padding_is_read(a.stack[0].layout) => {
-        if matches!(run_a.kind, RunKind::Pad) {
+        if run_a.kind.may_be_uninit() {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -486,7 +497,7 @@ const fn relate_range(
       RunKind::Pad => pos = stop,
       // Unconstrained bytes accept everything but padding.
       RunKind::Any => {
-        if matches!(run_a.kind, RunKind::Pad) {
+        if run_a.kind.may_be_uninit() {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -725,6 +736,8 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
       RunKind::Pad => return None,
       // Whatever a pattern accepts is initialized, and that is all that is made of it here.
       RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => {}
+      // Required to be some values, but a source may hold anything there, padding included.
+      RunKind::Atom(from) if from.may_be_uninit() => return None,
       RunKind::Atom(from) => match if soft { from.valid } else { from.known } {
         valid @ Valid::In(_) => {
           known[i].kind = RunKind::Atom(Spec { valid, ..from });
@@ -1060,6 +1073,7 @@ const fn pattern_target(
           (set, steps) = (next, steps + 1);
         }
       }
+      RunKind::Atom(spec) if spec.may_be_uninit() => return out.uninit(pos),
       RunKind::Atom(spec) => {
         // Each box of the scalar goes through the automaton on its own. Only what the type
         // system enforces is known of it.

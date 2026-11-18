@@ -661,6 +661,24 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   const LAYOUT: Layout = T::LAYOUT;
 }
 
+// SAFETY: a `MaybeUninit<T>` holds any bytes, uninitialized ones included, and nothing is known
+// of them: every byte is padding, which a target accepts whatever it is, and which a source does
+// not prove anything of. Its size and alignment are those of `T`.
+//
+// What may be written through a `&mut` to one is anything, uninitialized bytes included: a
+// `&mut MaybeUninit<T>` is only made of a source of which every byte may be uninitialized (the
+// reverse relation of `pun_mut`), and a `&mut T` of a `MaybeUninit<T>` never (a byte that `T`
+// needs initialized would be read from padding).
+unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Walks = ();
+  type Pointee = ();
+  const PROBE: *const Self = core::ptr::null();
+  const LAYOUT: Layout = Layout::padding::<Self>();
+}
+
 /// The `I`th field of the tuple `T`.
 #[doc(hidden)]
 pub struct TupleField<T, const I: usize>(PhantomData<T>);
