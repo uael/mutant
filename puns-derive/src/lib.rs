@@ -75,10 +75,10 @@ use syn::{
 /// Where Rust would panic, the rule fails (does not hold): an overflow of `+`, `-` or `*`, a
 /// division or a remainder by zero, a shift by 128 or more (which Rust also panics on, with debug
 /// assertions), and a read out of the value. `<<` drops the bits that it shifts out, as in Rust:
-/// `(1 << 127) << 1` is `0`. As in Rust, the right side of `&&` and `||` only counts if the left
-/// one does not decide, and the branch of an `if` that is not taken does not count: what is not
-/// computed cannot fail, so `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind
-/// 7, however short.
+/// `(1 << 127) << 1` is `0`. As in Rust, the right side of `&&` and `||` is only computed if the
+/// left one does not decide, and the branch of an `if` that is not taken is not computed: what is
+/// not computed cannot fail and costs nothing, so `kind != 7 || be(40, 2) == 0` holds for a value
+/// that is not of kind 7, however short, without reading it.
 ///
 /// A rule names the integer fields of its struct, not the fields of a field or the elements of
 /// an array, which `le` and `be` read; it calls no method and no function but the ones below.
@@ -495,7 +495,9 @@ fn effect(op: &TokenStream) -> (usize, usize) {
   });
   match name.as_deref() {
     Some("Lit" | "load" | "Size" | "Get") => (0, 1),
-    Some("At" | "Varint" | "Not" | "Let" | "Walk") => (1, 1),
+    Some("At" | "Varint" | "Not" | "Walk" | "Shortcut" | "Then") => (1, 1),
+    // After a branch, which it does not take off: see `layout::check_ops`.
+    Some("Else") => (0, 0),
     Some("Select") => (3, 1),
     Some("CrcZeros") => (4, 1),
     Some("Set") => (1, 0),
@@ -602,7 +604,7 @@ fn compile_block(
   ops: &mut Vec<TokenStream>,
   scope: &mut Scope,
 ) -> Result<Ty> {
-  let (op, visible, mut lets) = (quote!(#root::layout::Op), scope.names.len(), vec![]);
+  let (op, visible) = (quote!(#root::layout::Op), scope.names.len());
   let Some((last, statements)) = block.stmts.split_last() else {
     return Err(Error::new(block.span(), "a block has a value"));
   };
@@ -622,7 +624,6 @@ fn compile_block(
     let Some(syn::LocalInit { expr, diverge: None, .. }) = &local.init else {
       return Err(Error::new(local.span(), "expected `let name = EXPR;`"));
     };
-    let start = ops.len();
     let ty = compile(expr, fields, root, ops, scope)?;
     if let Some(annotation) = annotation {
       let named = match annotation {
@@ -640,121 +641,22 @@ fn compile_block(
         ));
       }
     }
+    // What a `let` binds is computed, as in Rust, whether it is used or not.
     let index = scope.declare(name, ty)?;
-    lets.push((index, name, expr, ops[start..].to_vec()));
     ops.push(quote!(#op::Set(#index)));
   }
   let syn::Stmt::Expr(value, None) = last else {
     return Err(Error::new(last.span(), "a block ends with its value"));
   };
   let ty = compile(value, fields, root, ops, scope)?;
-  // What the `let`s bind is computed, as in Rust: the block fails if one of them does. A
-  // variable that the value cannot be computed without fails it already, and so does one that
-  // can only fail if one of those does; the others are checked.
-  let mut needed = propagated(value);
-  for (_, name, expr, _) in lets.iter().rev() {
-    if needed.contains(&name.to_string()) {
-      needed.extend(propagated(expr));
-    }
-  }
-  // Of the others, the ones that may fail, which const evaluation tells from the sizes of what
-  // they read.
-  let checked = lets
-    .iter()
-    .filter(|(_, name, expr, _)| !needed.contains(&name.to_string()) && may_fail(expr, &needed))
-    .map(|(index, _, _, init)| {
-      let bit = 1u8 << index;
-      quote!(if #op::fallible(&[#(#init),*]) { #bit } else { 0 })
-    })
-    .collect::<Vec<_>>();
-  if !checked.is_empty() {
-    ops.push(quote!(#op::Let(const { 0 #(| #checked)* })));
-  }
   scope.names.truncate(visible);
   Ok(ty)
 }
 
-/// The variables without which `expr` cannot be computed: if one of them could not be, neither
-/// can `expr`. The right side of `&&` and `||` and the branches of an `if` may not be computed.
-fn propagated(expr: &Expr) -> std::collections::HashSet<String> {
-  let mut names = std::collections::HashSet::new();
-  match expr {
-    Expr::Paren(expr) => return propagated(&expr.expr),
-    Expr::Group(expr) => return propagated(&expr.expr),
-    Expr::Cast(cast) => return propagated(&cast.expr),
-    Expr::Unary(unary) => return propagated(&unary.expr),
-    Expr::Path(path) => names.extend(path.path.get_ident().map(ToString::to_string)),
-    Expr::Binary(binary) if matches!(binary.op, BinOp::And(_) | BinOp::Or(_)) => {
-      return propagated(&binary.left);
-    }
-    Expr::Binary(binary) => {
-      names = propagated(&binary.left);
-      names.extend(propagated(&binary.right));
-    }
-    Expr::If(branch) => return propagated(&branch.cond),
-    // Every `let` of a block is computed, and the block fails if one of them does.
-    Expr::Block(block) => {
-      let Some((syn::Stmt::Expr(value, None), statements)) = block.block.stmts.split_last() else {
-        return names;
-      };
-      names = propagated(value);
-      for statement in statements.iter().rev() {
-        if let syn::Stmt::Local(local) = statement {
-          let mut declared_names = vec![];
-          declared(&local.pat, &mut declared_names);
-          for name in declared_names {
-            names.remove(&name.to_string());
-          }
-          if let Some(init) = &local.init {
-            names.extend(propagated(&init.expr));
-          }
-        }
-      }
-    }
-    // The functions of rules need their arguments, `walk` where it starts.
-    Expr::Call(call) if ARITIES.iter().any(|(f, _)| is_call(call, f)) || is_crc(call) => {
-      // (Not the automaton of `matches`, a constant.)
-      let (skip, count) = match () {
-        () if is_call(call, "walk") => (0, 1),
-        () if is_call(call, "matches") => (1, 2),
-        () => (0, call.args.len()),
-      };
-      for arg in call.args.iter().skip(skip).take(count) {
-        names.extend(propagated(arg));
-      }
-    }
-    _ => {}
-  }
-  names
-}
-
-/// Whatever `expr` may fail to be computed, where the variables of `safe` are known to be.
-fn may_fail(expr: &Expr, safe: &std::collections::HashSet<String>) -> bool {
-  match expr {
-    Expr::Paren(expr) => may_fail(&expr.expr, safe),
-    Expr::Group(expr) => may_fail(&expr.expr, safe),
-    Expr::Cast(cast) => may_fail(&cast.expr, safe),
-    Expr::Unary(unary) => may_fail(&unary.expr, safe),
-    Expr::Lit(_) => false,
-    // A variable may not be known; a field or a constant is.
-    Expr::Path(path) => path
-      .path
-      .get_ident()
-      .is_some_and(|ident| !safe.contains(&ident.to_string()) && ident != "self"),
-    Expr::Binary(binary) => {
-      let fails = match binary.op {
-        BinOp::Add(_) | BinOp::Sub(_) | BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_) => true,
-        // By less than 128.
-        BinOp::Shl(_) | BinOp::Shr(_) => {
-          !matches!(&*binary.right, Expr::Lit(ExprLit { lit: Lit::Int(int), .. })
-          if int.base10_parse::<u128>().is_ok_and(|shift| shift < 128))
-        }
-        _ => false,
-      };
-      fails || may_fail(&binary.left, safe) || may_fail(&binary.right, safe)
-    }
-    _ => true,
-  }
+/// The number of operations of a part of an expression that may not be computed (see
+/// `layout::Op::Shortcut`), as an operation holds it.
+fn part(len: usize) -> Result<u16> {
+  u16::try_from(len).map_err(|_| Error::new(Span::call_site(), "this expression is too long"))
 }
 
 /// Compile `expr` to the operations of a postfix expression: returns its type.
@@ -820,9 +722,16 @@ fn compile(
       };
       let cond = compile(&branch.cond, fields, root, ops, scope)?;
       expect(cond, Ty::Bool, &branch.cond)?;
+      // Only the branch that is taken is computed: `Then` skips the first one and its `Else`,
+      // `Else` the second one.
+      let start = ops.len();
       let then = compile_block(&branch.then_branch, fields, root, ops, scope)?;
+      let middle = ops.len();
       let other = compile(otherwise, fields, root, ops, scope)?;
       expect(other, then, otherwise)?;
+      let (first, second) = (part(middle - start + 1)?, part(ops.len() - middle)?);
+      ops.insert(middle, quote!(#op::Else(#second)));
+      ops.insert(start, quote!(#op::Then(#first)));
       ops.push(quote!(#op::Select));
       then
     }
@@ -887,8 +796,14 @@ fn compile(
       if let Some(ty) = operands {
         expect(left, ty, &binary.left)?;
       }
+      let start = ops.len();
       let right = compile(&binary.right, fields, root, ops, scope)?;
       expect(right, left, &binary.right)?;
+      // The right side of `&&` and `||` is only computed if the left one does not decide.
+      if let BinOp::And(_) | BinOp::Or(_) = binary.op {
+        let (either, len) = (matches!(binary.op, BinOp::Or(_)), part(ops.len() - start + 1)?);
+        ops.insert(start, quote!(#op::Shortcut { either: #either, len: #len }));
+      }
       let name = Ident::new(name, binary.op.span());
       ops.push(quote!(#op::#name));
       if compares { Ty::Bool } else { left }
@@ -1809,17 +1724,23 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
     let result = quote!(::core::result::Result);
     let from_heads = references.iter().map(|(variant, reference)| {
       let ty = &reference.elem;
+      // What a variant requires of its first constrained scalar rejects it first: the variants
+      // are then told apart by those bytes, rather than each converted in turn.
       quote! {
-        if let #result::Ok((value, rest)) = #root::from_head::<#ty>(bytes) {
-          return #result::Ok((Self::#variant(value), rest));
+        if !#root::rejects::<#ty>(bytes) {
+          if let #result::Ok((value, rest)) = #root::from_head::<#ty>(bytes) {
+            return #result::Ok((Self::#variant(value), rest));
+          }
         }
       }
     });
     let wholes = references.iter().map(|(variant, reference)| {
       let ty = &reference.elem;
       quote! {
-        if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
-          return #result::Ok(Self::#variant(value));
+        if !#root::rejects::<#ty>(bytes) {
+          if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
+            return #result::Ok(Self::#variant(value));
+          }
         }
       }
     });

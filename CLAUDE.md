@@ -13,8 +13,10 @@ cargo test --test api TESTNAME       # Run a single test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`
 cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
+cargo bench -p puns --bench checks   # Time of the run-time checks, next to the same checks by hand (not in CI)
+cargo bench -p puns --bench checks -- ipv6  # Only the cases whose name has `ipv6`
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, stacked borrows
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target s390x-unknown-linux-gnu  # Miri, stacked borrows, on a big-endian target
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
 cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
@@ -77,7 +79,14 @@ order).
 
 Do not let the machine code of `examples/codegen.rs` regress, nor the one of
 `examples/codegen_nearest.rs` (the feature `nearest`): the instruction counts of their functions
-are in `puns/DESIGN.md`; compare before and after a change of the library.
+are in `puns/DESIGN.md`; compare before and after a change of the library. A count is not a time:
+`puns/benches/checks.rs` times what is checked at run time (IPv4, IPv6 behind extension headers,
+a view enum, slices, CRCs, `sum16`) next to the same check written by hand, the best of 7
+samples, on an idle machine; run it on both trees, back to back, before and after a change of the
+evaluator or the validators. It takes minutes to build (release, LTO), and is not a check of CI.
+With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or `hand`) it runs a case that many times
+instead, for `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`: a count of instructions
+per check, which a loaded machine does not change.
 
 ## Architecture
 
