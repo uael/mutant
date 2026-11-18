@@ -52,17 +52,18 @@ job go to the checkout and the toolchain before anything runs, its runners are s
 third from one run to the next, so aim at 45 seconds and read the times of the jobs after a change
 of the workflow (the first run after a change of a cache key has nothing cached). This is why `cargo
 test --all` is three jobs there (the tests, and the two halves of the sample of the model check),
-and why each Miri run is a job of its own, with the standard library that Miri builds in its cache.
-What is exhaustive (the full model check, behind the `full` feature of `puns-model`) runs in
-`.github/workflows/model.yml`, every night and on demand, with a check of the compiler (an optimized
-build refuses a wrong view behind pointers): run it when `rust-toolchain` changes. Under Miri, the
-model check runs a selection of pairs that reaches every unsafe path
-(`puns-model/tests/miri_sample.rs` says which pair is for which), not every pair, and of the
-examples only `ethernet` runs: the others reach the same unsafe code of the library. A test file
-that is not for Miri starts with `#![cfg(not(miri))]` and says why; CI gives Miri the other ones by
-name, since Miri takes a second to start each test binary, even one that runs nothing. Each pair of
-types in a test of the model is an instance of the analysis, about a tenth of a second of build:
-keep the tests that every push builds small.
+and why each Miri run is a job of its own, with a cache of the standard library that Miri builds and
+of the sources it builds it from (Miri builds it again when the modification time of a source
+changes, which a fresh install of the toolchain does). What is exhaustive (the full model check,
+behind the `full` feature of `puns-model`) runs in `.github/workflows/model.yml`, every night and on
+demand, with a check of the compiler (an optimized build refuses a wrong view behind pointers): run
+it when `rust-toolchain` changes. Under Miri, the model check runs a selection of pairs that reaches
+every unsafe path (`puns-model/tests/miri_sample.rs` says which pair is for which), not every pair,
+and of the examples only `ethernet` runs: the others reach the same unsafe code of the library. A
+test file that is not for Miri starts with `#![cfg(not(miri))]` and says why; CI gives Miri the
+other ones by name, since Miri takes a second to start each test binary, even one that runs nothing.
+Each pair of types in a test of the model is an instance of the analysis, about a tenth of a second
+of build: keep the tests that every push builds small.
 
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and of
 `isize`, the byte order) is asserted in a `const` where it is used, or derived from the target, and
