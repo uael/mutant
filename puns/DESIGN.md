@@ -4,8 +4,9 @@
 
 Type punning proven at compile time, on stable Rust: a safe alternative to `transmute`, and to
 hand-written parsing of bytes. A pun reads a value of one "plain data" type, the *source*, as a
-value of another, the *target*: structs of any `repr`, enums (of any `repr` without fields, of a
-specified one with fields), tuples, arrays, slices and slice-tailed structs, `str`. A pun is
+value of another, the *target*: structs of any `repr`, enums of any `repr` (without one, the
+layout that `rustc` chose is found), `repr(C)` unions, tuples, arrays, slices and slice-tailed
+structs, `str`, `MaybeUninit`, types without values. A pun is
 
 - **refused** (a compile error) when it can never be valid,
 - **proven** (no code at all) when it is always valid,
@@ -76,13 +77,25 @@ therefore out. This is what both previous attempts ran into.
 
 - **scalar**: 1 to 16 bytes, a byte order, a sorted list of valid ranges. `bool` is `0..=1`,
   `char` is two ranges, `NonZero` is `1..`, an enum without fields is the values of its variants
-  (read from the compiler, whatever its `repr`);
+  (read from the compiler, whatever its `repr`). What a scalar requires (`valid`) and what it is
+  known to be (`known`) are two sets, which are the same but for a field restricted by
+  `valid(..)` (required, not known: section 5) and a scalar that may be uninitialized
+  (`Spec::maybe_uninit`: required to be some values, known to be anything, padding included);
 - **struct**: fields at their actual offsets (any `repr`: the offsets come from the compiler);
   bytes that no field covers are padding. A struct may have **rules** (see below);
-- **enum** with fields: a tag (a scalar whose valid values are the tags of the variants), and
-  for each variant a struct of its fields. The representations that Rust specifies (`repr(C)`,
-  `repr(u8)`..., RFC 2195) are made of `repr(C)` structs, which the derive declares and asks the
-  compiler for; the result is checked against the size and the alignment of the enum;
+- **enum** with fields: a tag (a scalar at a fixed place), and for each variant its tags and a
+  struct of its fields. The representations that Rust specifies (`repr(C)`, `repr(u8)`..., RFC
+  2195) are made of `repr(C)` structs, which the derive declares and asks the compiler for; the
+  result is checked against the size and the alignment of the enum. Without `repr`, the layout
+  that `rustc` chose is found by experiments in const evaluation (section 10): a direct tag, or
+  a *niche* in the fields of one variant, which is then the variant of several tags (the values
+  of the scalar that holds the niche) and holds the tag in its fields (`Variant::holds_tag`). A
+  variant that holds a type without values has no tag (none of its values exist);
+- **union** (`repr(C)`): an enum without tag, whose variants are its fields, each at offset 0,
+  of which a value must be one (`Enum::union`, section 5);
+- **no value**: `Infallible` and enums without variants are an enum without variants
+  (`Layout::uninhabited`), whose layout no value is (`Layout::is_inhabited`), and which proves
+  anything as a source (no value of it exists). `MaybeUninit<T>` is padding of the size of `T`;
 - **array** and **slice**: an element layout and a count (or none);
 - **pattern**: a tail of bytes that a DFA accepts. `str` is the UTF-8 automaton (8 states).
 
@@ -104,12 +117,25 @@ both trees in lockstep (a product automaton), with what keeps it cheap:
 - **patterns** are run with sets of states over the runs of the other side, each box of a scalar
   on its own; a repetition is left as soon as one of its elements changes nothing to the set.
   Two patterns are compared by a product of their automata;
-- **enums** are related variant by variant: each variant of the source with the variant of the
-  target that has its tag (none: that variant is not valid), as two structs. What an enum
-  requires of its bytes depends on its tag, so nothing but an enum proves an enum: from
-  anything else, the tag is related as a scalar (a source that never holds a tag is an error),
-  the bytes that some variant needs must be initialized, and the rest is checked at run time.
-  As a source, an enum is known by its tag and by the bytes that every variant initializes.
+- **enums** are related variant by variant: each variant of the source with the variants of the
+  target whose tags it has (none: that variant is not valid), as two structs, *knowing the tag*
+  (`Known`: the tags of both, which prove a niche of the target that the source variant has as
+  padding). A variant of the source is proven if all its tags are of one variant of the target,
+  which it proves. From something that is not an enum (or an enum whose tag is elsewhere),
+  what the source holds at the tag is found (what a scalar of the same size and byte order is
+  known to be, else any value: `tag_values`), and each variant whose tags meet it is related to
+  the source over the bytes of the enum, knowing the tag there: the enum is proven if every
+  value the source may hold there is the tag of a variant that has values, each of which is
+  proven (`relate_enum_from`); else the enum is checked as a whole at run time. A variant that
+  the source can never be is not looked at; a byte that one that it may be needs initialized
+  must be, and a source that may be padding at the tag is an error. As a source, an enum is
+  known by its tag and by the bytes that every variant that has values initializes.
+- **unions** are proven by one of their fields that the source proves; else they are checked
+  field by field at run time, if no field's check would read a byte that may be padding in the
+  source (else refused: `relate_union_from`). As a source, a union is padding. Only the same
+  union proves a union from a union (`Layout::equals`).
+- **types without values** are no value of any type that has some (`relate_at`: `disjoint`), and
+  a variant or a struct that holds one has no value either.
 
 It answers:
 
@@ -314,6 +340,34 @@ short rather than trust the fields that size them. Two layouts are only the same
 (`Layout::equals`, by which an enum proves an enum without looking into it) if they require the
 same *and* guarantee the same: `V(#[pun(valid(0..=1))] u8)` is not `V(bool)`.
 
+**Uninitialized bytes.** A scalar may be required to be some values while nothing is known of it
+as a source, not even that it is initialized (`Spec::maybe_uninit`, `known: Uninit`). Wherever a
+source is read (`atom_relation`, a run of the target without constraint, a pattern, `segment`),
+it is then padding: before, such a scalar was read as initialized. Two of them are never equal
+(`Layout::equals`): what a type described so is lies between what it requires and what it is
+known to be, and two types can have the same of both while one may be padding where the other
+may not. `MaybeUninit<T>` is padding of the size and alignment of `T`: as a target it takes
+anything, as a source it proves nothing but what takes anything. So a `&mut` to one is only made
+of a source that may hold anything there (the reverse relation of `pun_mut`: what is written
+through it may be uninitialized), and a `&mut T` of a `MaybeUninit<T>` never (a byte that `T`
+needs would be read from padding). The same holds of a union as a source, below.
+
+**Unions.** The validity of unions is not settled by the language. Some rules being considered
+let a union hold any bytes, others require them to be one of its fields; safe code may write one
+field over another. So what is taken is what is sound under each: as a target, bytes are a union
+if they are one of its fields (required more than some rules do, never less); as a source,
+nothing is known of a union, not even that its bytes are initialized. A union is proven by one
+field that the source proves, else checked field by field at run time (`validate_union`), each
+field read only if the analysis found that no byte it reads may be padding in the source; if one
+might be, and no field is proven, the pun is refused, rather than check fewer fields than the
+union has (which would be sound, but which the marks of the analysis cannot tell the validation).
+
+**No value.** `Infallible` and an enum without variants are types without values: no value of a
+type that has some is one of them (`relate_at` reports it as never valid), and a variant or a
+struct that holds one has no value either (`Layout::is_inhabited`). Before, a variant of a
+`repr(u8)` enum whose field had no value would have been proven from a variant whose field
+had one (no byte of a type of size 0 is ever compared).
+
 A rule that reads the bytes of its value (`le`, `be`, `crc32`, `sum16`, and `walk` through its
 expressions) reads its padding as well. Where such a rule may be checked (the source does not
 prove it, or it is in the variant of an enum, which is validated as a whole), the padding of its
@@ -347,7 +401,12 @@ of does not depend on any path:
   are what `repr(C)` specifies, from the sizes and alignments of the fields; otherwise the struct
   is `Sized`, and they are found by projecting a pointer to an uninitialized value, which costs
   nothing in const evaluation whatever the size. The variants of enums with fields are laid out
-  as RFC 2195 specifies, from the sizes and alignments of their fields;
+  as RFC 2195 specifies, from the sizes and alignments of their fields. Without `repr`, they are
+  found by `Layout::discover` from samples made by `Layout::sample` (associated functions, as
+  every other), and from offsets in those samples that the generated code finds by matching on
+  them, with `byte_offset_from` (a method of a pointer, of no path): a fake `MaybeUninit` or
+  `Desc` named by a path does not have the type that these functions take or give, and does not
+  compile;
 - `Path` and `Count` are sealed, and the leaf that a list of fields says a field is at is checked
   against the layout;
 - names that start with `__Pun` are reserved, and `Self` in the type of a field is replaced by
@@ -621,6 +680,76 @@ An offset or a length is one load. On a tree of 2^19 enums the check takes 1.09 
 of `nearest`'s (4.1 ms against 3.8 ms); on a table of 4 million numbers and 100 000 names, the
 same time (1.7 ms): what cannot be invalid is not looked at by either.
 
+### 10. Enums without `repr` (`discover.rs`)
+
+The layout of an enum with fields and no `repr` is not specified, and stable Rust names neither
+where its tag is nor its values (`offset_of!` on variants, `mem::variant_count`,
+`discriminant_value` are unstable; nothing tells a niche). But const evaluation runs code on its
+values. `#[derive(Pun)]` makes a *sample* of each variant (`Layout::sample`: every scalar of each
+field the least of its values, padding uninitialized), finds the offsets of its fields by
+matching on it, and `Layout::discover` finds the rest by experiments on copies of the samples,
+which read the variant with `mem::discriminant`:
+
+- **No variant has values**: no tag, no value. **One has**, and no other is laid out (`rustc`
+  lays out a variant without values only if one of its fields has a size), or its fields start
+  at 0 (a niche of its own fields, or none): a struct of its fields. Its gaps are filled with
+  zeros, then with ones, and it must stay that variant.
+- **A direct tag**: the fields of no variant start at 0. `rustc` puts the tag before them, widened
+  to all the bytes before the first field of any variant (`enum { A(u16), B(u32) }` has a tag of
+  2 bytes, in which the high byte of each value is 0). Those bytes are *read* in every sample:
+  a byte that is not of the tag would be padding, uninitialized, and reading it fails the build
+  (R2, R4). So the tag is exact, on either byte order: no claim is made of a byte that may be
+  padding, and the tag is an integer of native byte order whatever where its low byte is.
+- **A niche**: some field starts at 0. The scalars of the fields of each variant that the type
+  restricts (`bool`, `char`, `NonZero`, enums without fields, and tags of enums; not a
+  `valid(..)`, which safe code can break), and that the fields of no other variant cover, are
+  tried, the largest variant first: the bytes of the scalar are moved from the sample of each
+  variant to the sample of a variant that does not hold them, which must become that variant (a
+  wrong scalar changes nothing there and is dropped, without failing). Then the tag of each other
+  variant is read there (initialized, so the tag: R4), and the variant that holds the niche has
+  the values of that scalar, which the tags of the others must not be.
+
+In both cases the gaps of each variant that has one tag, outside the tag, are filled with zeros
+then with ones, which must leave it that variant (a byte of a tag outside would have two values
+for one variant), and the tags must differ. What is found is checked against the size and the
+alignment of the enum (`Layout::enumeration`). An experiment that goes wrong either refuses the
+enum with a message ("no tag found", "unsupported layout"...) or fails the build (an error of const
+evaluation): it never finds a wrong layout. Every experiment copies a sample and reads a variant;
+there are about four for each variant, and none is for a byte of a field: an enum of 300 variants
+takes 3 seconds to build with its tests, an enum of a specified layout 1.5.
+
+What this rests on, of the compiler, and what holds each:
+
+- **R0** the layout of a type is the same in const evaluation as at run time, for a target: const
+  evaluation computes it with the same code, for that target. A property of how `rustc` is made.
+- **R1** the variant of a value is told by one scalar at a fixed place: a direct tag before the
+  fields of every variant, one value per variant, or a niche in a scalar of the fields of one
+  variant, which no field of another variant covers, whose values that are valid for that field
+  are that variant and whose other values are each one other variant, or no value. This is how
+  `rustc` lays out enums (stable since 2017 for one variant with fields, 1.64 for several), not a
+  promise of the language: the experiments verify what they rely on of it (the tag decides, and
+  nothing outside it), and a layout of another shape is refused.
+- **R2** const evaluation fails on reading an uninitialized byte, and on reading the variant of a
+  value whose tag is not the one of a variant that has values. Behaviour of the compiler, which
+  the Reference does not promise of undefined behaviour in const: the compile-fail tests
+  `discover_reads_padding` and `discover_invalid_tag` hold it to it.
+- **R3** `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, the index of
+  the variant (no explicit discriminant is allowed there), as an `isize`: its size is asserted,
+  and every sample is checked to read as its own index.
+- **R4** a value made in const evaluation (`E::A(x)`) has its padding uninitialized: making a
+  variant writes its fields and its tag, nothing else. So a byte of a fresh sample outside its
+  fields that can be read is a byte of the tag. Held by `discover_reads_padding`.
+
+And of the library: the valid values of a type, as `Pun::LAYOUT` gives them, are valid for
+`rustc` (what `Pun` promises). So the values that `rustc` gives to the other variants of a niche,
+which are invalid for the scalar that holds it, are not values of that scalar in its layout.
+
+Such an enum is then what an enum of a specified layout is: proven variant by variant, checked
+by its tag and its variant, with the same precision. A variant whose fields have no value is in
+the layout with no tag. The lists of fields and variants are the declared ones: a field of a
+variant without values is not in the layout, and its entry in the list says so (`FIELD` is
+`None`). No field may hold a self-relative pointer (a sample of one is not made of nothing).
+
 ## Model check
 
 `puns-model/` compares every verdict of the analysis with oracles that do not use it,
@@ -631,6 +760,15 @@ structs from every pattern of up to 6 bytes. It tells what a type requires (`val
 from what it guarantees, and finds unsound verdicts (a value let through that the type system
 does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time) and
 imprecise ones (counted).
+
+The types include enums without `repr` (a niche in a `bool`, a `NonZero`, a `char`, a niche shared
+by two variants next to a field of a third, a direct tag of one byte and one that `rustc` widened,
+one variant, and a variant without values that `rustc` gives a tag), whose oracles are written
+from how `rustc` lays enums out, checked against the bytes of values natively and by Miri on the
+values the oracle makes, with the offsets of the fields taken from values, never from the
+library; unions, whose oracle is "one of its fields"; a variant without values; `MaybeUninit`;
+and a scalar that may be uninitialized (`Zero`), against which the reading of such a scalar as
+initialized is found unsound.
 
 Parts are checked over the same types, for every pair whose target is not larger than its source
 (about four thousand): `head*` and `tail*` against the oracle of the target at offset 0 and at
@@ -690,19 +828,20 @@ another size, a list or text read as something else, a check that would be behin
   variants accept what is written could be allowed.
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
-- **Enums with fields and no `repr`** (the derive asks for `repr(C)` or `repr(u8)`...; enums
-  without fields are supported whatever their `repr`). Their layout is not specified, and stable
-  Rust cannot name it, but it can be *observed* in const evaluation from a sample of each
-  variant: field offsets by matching on the sample; the tag by "transplanting" bytes of one
-  variant over another and matching again. Probed on 1.100: this finds the niche of
-  `enum { A(u8, bool), B(u8), C }` (the `bool` byte, values 2 and 3) and the tag of a directly
-  tagged enum. An experiment that goes wrong is a compile error (const evaluation rejects invalid
-  tags), never undefined behavior. One thing cannot be observed: the *width* of a direct tag
-  (its high bytes are zero in every variant, and const evaluation refuses to read bytes that may
-  be padding). The engine is ready for it (a niche is a tag whose variants have ranges of
-  values); what is missing is a sample of every field type, and the experiments.
-- An enum made from something that is not an enum is always checked at run time, even when
-  every value of the source happens to be valid.
+- **`Pun` for `Option<T>` and `Result<T, E>`**: the discovery works on generic enums (the tests
+  have an `Option` and a `Result` of their own), but `impl Pun for Option<T>` would overlap the
+  implementation for `Option<Near<T, O>>` of the feature `nearest`, which is leaving the crate.
+  It comes with a hook by which a pointer type gives `Option` of it the layout of a nullable
+  pointer. Until then, `Option<NonZero<..>>` is a scalar, as it was.
+- **Precise checks of an enum made from something else**: when only some of its variants are
+  proven, or some values of the source are no tag, the whole enum is checked at run time (its
+  tag, then the fields of its variant), not only what was not proven.
+- **Checking some fields of a union**: when the check of one field would read a byte that may be
+  padding, and no field is proven, the pun is refused; checking the other fields only would be
+  sound, but the marks of the analysis cannot tell the validation which fields to skip.
+- **The identity of an enum whose bytes may be uninitialized**: a scalar of `Spec::maybe_uninit`
+  is equal to none, so a struct or an enum that holds one does not prove itself by
+  `Layout::equals` (the library makes none such today: discovered tags are exact).
 - Patterns other than `str` as types: the engine takes any DFA of at most 64 states, as a type
   that guarantees it, but such a type cannot come from the derive, whose fields safe code can
   write: a struct requires a pattern of its bytes with a rule, `matches(DFA, start, end)`
@@ -762,4 +901,9 @@ another size, a list or text read as something else, a check that would be behin
   "What the type system enforces" for which types must not derive `Pun`.
 - The evaluator of rules has a stack of 16 values and 8 variables (the derive says when an
   expression needs more, and how much), and a walk takes at most `8 * size + 128` steps.
-- Unions are not planned.
+- Unions: of `repr(C)` only (the fields of another are not known to be at 0), without a field
+  that holds a pointer, and known as nothing as a source (section 5).
+- An enum without `repr` holds no self-relative pointer; its direct tag, all the bytes before the
+  first field of any variant, is 1, 2, 4, 8 or 16 bytes (else it is refused: `rustc` makes no
+  other); a variant without values whose fields `rustc` places before those of the others makes
+  the build fail rather than be guessed (its fields cannot be observed, R4).

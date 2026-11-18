@@ -505,7 +505,7 @@ impl Pointer {
 ///
 /// The tag is a scalar at a fixed place: of the representation that Rust specifies, or of the one
 /// that `rustc` chose, as `discover.rs` found it. In the second case it may be a niche: a scalar
-/// of the fields of one variant (the one that [`Variant::holds_tag`]), whose other values are the
+/// of the fields of one variant (the one that holds the tag), whose other values are the
 /// other variants.
 #[derive(Debug)]
 pub struct Enum {

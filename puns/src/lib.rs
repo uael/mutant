@@ -183,8 +183,9 @@
 //!
 //! # Enums with fields
 //!
-//! An enum is known by its tag: a variant proves the variant of the same tag, and nothing else
-//! proves an enum.
+//! An enum is known by its tag: a variant proves the variant of the same tag. Something else
+//! proves an enum when what it holds where the tag is can only be tags of variants, each of which
+//! it proves; else the enum is checked, its tag then its variant.
 //!
 //! ```
 //! use puns::Pun;
@@ -213,6 +214,20 @@
 //! // Bytes are a `Shape` if they start with one of its tags, then are what that variant holds.
 //! assert_eq!(puns::try_pun([1u8, 3, 1, 0]), Ok(Shape::Rect(3, true)));
 //! assert!(puns::try_pun::<_, Shape>([1u8, 3, 2, 0]).is_err());
+//!
+//! /// A byte that is always 1, the tag of `Rect`, then what `Rect` holds.
+//! #[derive(Pun, Clone, Copy)]
+//! #[repr(C)]
+//! struct Rect {
+//!   tag: puns::num::u8c<1>,
+//!   size: u8,
+//!   filled: bool,
+//!   unused: u8,
+//! }
+//!
+//! // A `Rect` is a `Shape`: proven, nothing is checked.
+//! let rect = Rect { tag: puns::num::u8c::new(), size: 3, filled: true, unused: 0 };
+//! assert_eq!(puns::pun::<Rect, Shape>(rect), Shape::Rect(3, true));
 //! assert!(puns::try_pun::<_, Shape>([2u8, 0, 0, 0]).is_err());
 //! ```
 //!

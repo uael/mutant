@@ -7,9 +7,10 @@
 parsing of bytes. On stable Rust, even for dynamically sized types.**
 
 A *pun* reads the bytes of a value of one type of plain data, the *source*, as a value of another,
-the *target*: structs of any `repr`, enums, tuples, arrays, slices, structs that end with a
-slice, `str`. The layouts and valid values of both types are compared at compile time, and a pun
-is
+the *target*: structs of any `repr`, enums of any `repr` (without one, the layout that `rustc`
+chose is found in const evaluation, niches included), `repr(C)` unions, tuples, arrays, slices,
+structs that end with a slice, `str`, `MaybeUninit`. The layouts and valid values of both types are
+compared at compile time, and a pun is
 
 - **proven** when every source is a valid target: it compiles to nothing;
 - **checked** when only some are: a `try_` function (or a `from_*` function, from bytes) checks
