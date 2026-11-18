@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/uael/puns/compare/v0.1.0...v0.1.1) - 2026-11-18
+
+### Added
+
+- `pointers_in` and `copy_in`, the pointers and the bytes of a valid value ([#12](https://github.com/uael/puns/pull/12))
+
 ## [0.1.0](https://github.com/uael/puns/releases/tag/v0.1.0) - 2026-11-18
 
 ### Added
