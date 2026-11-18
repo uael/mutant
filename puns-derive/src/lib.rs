@@ -85,6 +85,13 @@ use syn::{
 /// that there are, so `size = 2 + if length == 126 { 2 + be(2, 2) } else { length }` takes
 /// WebSocket frames from a stream.
 /// - `le(offset, N)`, `be(offset, N)`: the integer of `N` bytes at `offset`;
+/// - `leb128(offset)`, `quic(offset)`, `vlq(offset)`: the variable-length integer at `offset`, of
+///   LEB128 (7 bits a byte, least significant first: Protocol Buffers, WebAssembly, MQTT), of
+///   QUIC (RFC 9000: 1, 2, 4 or 8 bytes, told by the two high bits) or of big-endian base 128
+///   (ASN.1 tag numbers and object identifiers); `leb128_len(offset)`, `quic_len(offset)`,
+///   `vlq_len(offset)`: its number of bytes. They fail if the integer is not over within the
+///   value, or does not fit in a `u128`; a longer encoding than needed is read as it is (a rule
+///   can refuse it: `leb128_len(1) <= 4`);
 /// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
 /// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
 ///   (`0xffff` over data that holds its own IP checksum);
@@ -455,7 +462,7 @@ fn effect(op: &TokenStream) -> (usize, usize) {
   });
   match name.as_deref() {
     Some("Lit" | "load" | "Size" | "Get") => (0, 1),
-    Some("At" | "Not" | "Let" | "Walk") => (1, 1),
+    Some("At" | "Varint" | "Not" | "Let" | "Walk") => (1, 1),
     Some("Select") => (3, 1),
     Some("Set") => (1, 0),
     _ => (2, 1),
@@ -670,8 +677,8 @@ fn propagated(expr: &Expr) -> std::collections::HashSet<String> {
         }
       }
     }
-    // `le`, `be`, `crc32`, `sum16` need their arguments, `walk` where it starts.
-    Expr::Call(call) if ["le", "be", "crc32", "sum16", "walk"].iter().any(|f| is_call(call, f)) => {
+    // The functions of rules need their arguments, `walk` where it starts.
+    Expr::Call(call) if ARITIES.iter().any(|(f, _)| is_call(call, f)) => {
       let count = if is_call(call, "crc32") || is_call(call, "sum16") { 2 } else { 1 };
       for arg in call.args.iter().take(count) {
         names.extend(propagated(arg));
@@ -879,6 +886,14 @@ fn compile(
       ops.push(quote!(#op::At { size: #size, big: #big }));
       Ty::Int
     }
+    // `leb128(offset)`, `quic_len(offset)`...: a variable-length integer, or its length.
+    Expr::Call(call) if call.args.len() == 1 && varint(call).is_some() => {
+      let Some((form, length)) = varint(call) else { unreachable!() };
+      int(&call.args[0], ops, scope)?;
+      let form = Ident::new(form, call.func.span());
+      ops.push(quote!(#op::Varint { form: #root::layout::Varint::#form, length: #length }));
+      Ty::Int
+    }
     // `walk(START, |at| COND, |at| NEXT)`: `START`, replaced by `NEXT` for as long as `COND`.
     Expr::Call(call) if call.args.len() == 3 && is_call(call, "walk") => {
       int(&call.args[0], ops, scope)?;
@@ -925,7 +940,38 @@ fn compile(
 }
 
 /// The functions that a rule can call.
-const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `crc32`, `sum16` and `walk`";
+const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, \
+                         `quic_len`, `vlq`, `vlq_len`, `crc32`, `sum16` and `walk`";
+
+/// The functions of rules, and how many arguments each takes.
+const ARITIES: [(&str, usize); 11] = [
+  ("le", 2),
+  ("be", 2),
+  ("leb128", 1),
+  ("leb128_len", 1),
+  ("quic", 1),
+  ("quic_len", 1),
+  ("vlq", 1),
+  ("vlq_len", 1),
+  ("crc32", 2),
+  ("sum16", 2),
+  ("walk", 3),
+];
+
+/// The form of the variable-length integer that `call` reads, and whatever it is its length.
+fn varint(call: &syn::ExprCall) -> Option<(&'static str, bool)> {
+  [
+    ("leb128", "Leb128", false),
+    ("leb128_len", "Leb128", true),
+    ("quic", "Quic", false),
+    ("quic_len", "Quic", true),
+    ("vlq", "Vlq", false),
+    ("vlq_len", "Vlq", true),
+  ]
+  .into_iter()
+  .find(|(name, ..)| is_call(call, name))
+  .map(|(_, form, length)| (form, length))
+}
 
 /// The value of an integer literal, as a `u128`. Its type is the one of a suffix, if any, which
 /// must be an unsigned integer type.
@@ -995,6 +1041,9 @@ fn constant(expr: &Expr, fields: &[FieldInfo], scope: &Scope) -> Result<()> {
     Expr::Call(call) if matches!(&*call.func, Expr::Path(path) if path.path.get_ident().is_some()) =>
     {
       let name = call.func.to_token_stream();
+      if let Some((_, arity)) = ARITIES.iter().find(|(f, _)| is_call(call, f)) {
+        return error(format!("`{name}` takes {arity} arguments"));
+      }
       error(format!(
         "`{name}` is not a function of rules, which are {FUNCTIONS}; a constant can be computed \
          by a `const fn` named by its path (`self::{name}(..)`)"

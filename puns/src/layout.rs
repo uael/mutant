@@ -1591,6 +1591,12 @@ pub enum Op {
     size: u8,
     big: bool,
   },
+  /// Replace an offset by the variable-length integer of the `form` that is there in the value, or
+  /// with `length`, by its number of bytes.
+  Varint {
+    form: Varint,
+    length: bool,
+  },
   /// Replace two offsets by the CRC-32 (the one of Ethernet) of the bytes between them.
   Crc32,
   /// Replace two offsets by the ones' complement sum of the big-endian 16 bits words between
@@ -1736,7 +1742,13 @@ impl Op {
           };
           (2, value)
         }
-        Op::At { .. } | Op::Crc32 | Op::Sum16 | Op::Set(_) | Op::Get(_) | Op::Walk { .. } => {
+        Op::At { .. }
+        | Op::Varint { .. }
+        | Op::Crc32
+        | Op::Sum16
+        | Op::Set(_)
+        | Op::Get(_)
+        | Op::Walk { .. } => {
           return true;
         }
       };
@@ -1776,6 +1788,9 @@ impl Op {
         a == x && b == y && c == z
       }
       (Op::At { size: a, big: b }, Op::At { size: x, big: y }) => a == x && b == y,
+      (Op::Varint { form: a, length: b }, Op::Varint { form: x, length: y }) => {
+        a as u8 == x as u8 && b == y
+      }
       (Op::Set(a), Op::Set(b)) | (Op::Get(a), Op::Get(b)) | (Op::Let(a), Op::Let(b)) => a == b,
       (Op::Walk { var: a, cond: b, next: c }, Op::Walk { var: x, cond: y, next: z }) => {
         a == x && same_ops(b, y) && same_ops(c, z)
@@ -1784,6 +1799,7 @@ impl Op {
         Op::Lit(_)
         | Op::Load { .. }
         | Op::At { .. }
+        | Op::Varint { .. }
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1795,6 +1811,7 @@ impl Op {
         Op::Lit(_)
         | Op::Load { .. }
         | Op::At { .. }
+        | Op::Varint { .. }
         | Op::Set(_)
         | Op::Get(_)
         | Op::Let(_)
@@ -1837,8 +1854,66 @@ impl Op {
       Op::Set(_) => 26,
       Op::Get(_) => 27,
       Op::Walk { .. } => 28,
+      Op::Varint { .. } => 30,
       Op::Let(_) => 29,
     }
+  }
+}
+
+/// A form of variable-length integer, see [`Op::Varint`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Varint {
+  /// Unsigned LEB128 (Protocol Buffers, WebAssembly, MQTT, DWARF): 7 bits a byte, the least
+  /// significant first, each byte but the last with its high bit set.
+  Leb128,
+  /// The variable-length integer of QUIC (RFC 9000): the two high bits of the first byte tell
+  /// its length (1, 2, 4 or 8 bytes), the rest is the value, big-endian.
+  Quic,
+  /// 7 bits a byte, the most significant first, each byte but the last with its high bit set
+  /// (the tag numbers and the arcs of object identifiers of ASN.1, MIDI).
+  Vlq,
+}
+
+impl Varint {
+  /// The value of the integer at `ptr`, and its number of bytes, of at most `size`: `None` if
+  /// it is not over by then, or does not fit in a `u128`.
+  ///
+  /// # Safety
+  /// `ptr` must be valid for reads of `size` initialized bytes.
+  #[inline]
+  const unsafe fn read(self, ptr: *const u8, size: usize) -> Option<(u128, usize)> {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, size) };
+    if matches!(self, Varint::Quic) {
+      if bytes.is_empty() {
+        return None;
+      }
+      let length = 1 << (bytes[0] >> 6);
+      if bytes.len() < length {
+        return None;
+      }
+      let (mut value, mut i) = ((bytes[0] & 0x3f) as u128, 1);
+      while i < length {
+        value = value << 8 | bytes[i] as u128;
+        i += 1;
+      }
+      return Some((value, length));
+    }
+    let (mut value, mut i) = (0u128, 0);
+    while i < bytes.len() {
+      let bits = (bytes[i] & 0x7f) as u128;
+      match self {
+        // 18 bytes are 126 bits: the 19th can only add 2.
+        Varint::Leb128 if i < 18 || bits < 4 => value |= bits << (7 * i),
+        Varint::Vlq if value >> 121 == 0 => value = value << 7 | bits,
+        _ => return None,
+      }
+      i += 1;
+      if bytes[i - 1] & 0x80 == 0 {
+        return Some((value, i));
+      }
+    }
+    None
   }
 }
 
@@ -1876,7 +1951,7 @@ const fn ops_read_bytes(ops: &[Op]) -> bool {
   let mut i = 0;
   while i < ops.len() {
     match ops[i] {
-      Op::At { .. } | Op::Crc32 | Op::Sum16 => return true,
+      Op::At { .. } | Op::Varint { .. } | Op::Crc32 | Op::Sum16 => return true,
       Op::Walk { cond, next, .. } if ops_read_bytes(cond) || ops_read_bytes(next) => return true,
       _ => {}
     }
@@ -1987,7 +2062,7 @@ const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8) -> Opt
         assert!(size >= 1 && size <= 16 && offset + size as usize <= head, "field out of bounds");
         depth += 1;
       }
-      Op::Not => assert!(depth >= 1, "malformed expression"),
+      Op::Not | Op::Varint { .. } => assert!(depth >= 1, "malformed expression"),
       Op::Select => {
         assert!(depth >= 3, "malformed expression");
         depth -= 2;
@@ -2197,6 +2272,19 @@ impl Machine {
           self.set(depth - 1, Some((self.get(depth - 1) == 0) as u128));
         }
       }
+      Op::Varint { form, length } => {
+        let offset = self.get(depth - 1);
+        let value = if !self.has_failed(depth - 1) && offset <= size as u128 {
+          // SAFETY: in the bounds of the value.
+          match unsafe { form.read(base.add(offset as usize), size - offset as usize) } {
+            Some((value, bytes)) => Some(if length { bytes as u128 } else { value }),
+            None => None,
+          }
+        } else {
+          None
+        };
+        self.set(depth - 1, value);
+      }
       Op::At { size: width, big } => {
         let (offset, endian) =
           (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
@@ -2386,6 +2474,7 @@ const fn binary(op: Op, a: u128, b: u128) -> Option<u128> {
     | Op::Size
     | Op::Not
     | Op::At { .. }
+    | Op::Varint { .. }
     | Op::Crc32
     | Op::Sum16
     | Op::Both

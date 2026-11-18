@@ -1,4 +1,4 @@
-error: `crc16` is not a function of rules, which are `size_of_val(self)`, `le`, `be`, `crc32`, `sum16` and `walk`; a constant can be computed by a `const fn` named by its path (`self::crc16(..)`)
+error: `crc16` is not a function of rules, which are `size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, `quic_len`, `vlq`, `vlq_len`, `crc32`, `sum16` and `walk`; a constant can be computed by a `const fn` named by its path (`self::crc16(..)`)
  --> tests/compile-fail/rule_names.rs:6:14
   |
 6 | #[pun(assert(crc16(0, 4) == check))]
@@ -16,8 +16,14 @@ error: a rule reads the integer fields of its struct, not the fields of a field:
 26 | #[pun(size = header.length)]
    |              ^^^^^^^^^^^^^
 
-error: a rule cannot call methods: it computes with operators, `if`, `let`, and `size_of_val(self)`, `le`, `be`, `crc32`, `sum16` and `walk`
+error: a rule cannot call methods: it computes with operators, `if`, `let`, and `size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, `quic_len`, `vlq`, `vlq_len`, `crc32`, `sum16` and `walk`
   --> tests/compile-fail/rule_names.rs:34:14
    |
 34 | #[pun(assert(a.min(b) == 1))]
    |              ^^^^^^^^
+
+error: `be` takes 2 arguments
+  --> tests/compile-fail/rule_names.rs:42:14
+   |
+42 | #[pun(assert(be(0) == 1))]
+   |              ^^^^^

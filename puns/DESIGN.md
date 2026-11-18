@@ -201,8 +201,11 @@ numbers; the evaluator checks it again.
 
 An expression can read the value beyond its fields: `size_of_val(self)`, `le(offset, N)` and
 `be(offset, N)` (an integer anywhere in the value), `crc32(start, end)` and `sum16(start, end)`
-(the frame check sequence of Ethernet, the checksum of IP). So a trailer is a region, and "the 4
-last bytes are the CRC of what is before" is an assertion. A size or a length reads the value too
+(the frame check sequence of Ethernet, the checksum of IP), and variable-length integers:
+`leb128(offset)`, `quic(offset)` and `vlq(offset)`, and with `_len` the number of bytes of each
+(`Op::Varint`: an offset is replaced by what is there, as `be` does; a read never goes past the
+value). So a trailer is a region, and "the 4 last bytes are the CRC of what is before" is an
+assertion; an MQTT packet is `size = 1 + leb128_len(1) + leb128(1)`. A size or a length reads the value too
 (not its size, which it defines): `from_head` evaluates it over the bytes that there are, which
 are initialized and in bounds whatever it reads, and the value it takes is then validated as a
 whole, the rule included, over its own bytes; a rule that reads beyond what it sizes fails there. A checksum that covers several layers

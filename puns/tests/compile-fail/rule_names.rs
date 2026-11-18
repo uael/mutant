@@ -37,4 +37,11 @@ struct Method {
   b: u8,
 }
 
+#[derive(puns::Pun)]
+#[repr(C)]
+#[pun(assert(be(0) == 1))]
+struct Arity {
+  a: u8,
+}
+
 fn main() {}
