@@ -16,9 +16,8 @@ structs, `str`, `MaybeUninit`, types without values. A pun is
 with sizes, lengths and assertions that are in the data itself, told by `#[derive(Pun)]`.
 
 `tests/` and `examples/` (Ethernet, then services over IP, transports, routing, links, images,
-media, archives, executables, storage and encodings; and with the feature `nearest`, a compiler IR
-that is its own file format) are the reference for what works; each example says what it does
-not cover, and why.
+media, archives, executables, storage and encodings) are the reference for what works; each
+example says what it does not cover, and why.
 
 ## API
 
@@ -43,11 +42,10 @@ its front, its back).
   `from_head`: the first variant that the bytes are.
 - Every function is a `const fn`.
 
-A value that holds self-relative pointers (a region of `nearest`, see "Self-relative pointers")
-is read by these functions as plain data, and made by none of them. It has its own:
-`view_ref` (proven, pointers followed, by reference only) and `try_view_ref`, and with the
-feature `nearest`, `nearest::view` and `nearest::from_bytes`, which check the bytes of a whole
-region. These are not `const fn`s.
+A value that holds self-relative pointers (declared by the crate that has them, as `nearest`
+does: see "Self-relative pointers") is read by these functions as plain data, and made by none
+of them. It has its own: `view_ref` (proven, pointers followed, by reference only) and
+`try_view_ref`, which are not `const fn`s.
 
 ## What stable Rust (1.100) gives us
 
@@ -209,6 +207,9 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
 | `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`: 18, no loop     |
+| `view_ref::<Old, New>` (recursive, with pointers)  | `mov rax, rdi; ret`                        |
+| `view_ref::<[Old], [New]>`                         | `mov rdx, rsi; mov rax, rdi; ret`          |
+| `try_view_ref::<Maybe, Owned>` (checks a pointer)  | one `cmp dword ptr [rdi + 4], 0`: 4        |
 
 A count is not a time. The slice of `bool`s was a loop of one `cmp` per byte, 13 instructions,
 which stopped at the first invalid one; it is now 46 and takes a fraction of the time on a long
@@ -435,36 +436,86 @@ aligned to 4). With `-Zmiri-symbolic-alignment-check`, Miri reports a misaligned
 address as an integer (`ptr::is_aligned`), which Miri's symbolic alignment cannot follow, and the
 stable `align_offset` is not `const`.
 
-### 8. Self-relative pointers (`layout::Pointer`, `deep.rs`)
+### 8. Self-relative pointers (`layout::Pointer`, `relative.rs`, `deep.rs`)
 
 A value may hold a *self-relative pointer*: the distance from its own address to a target in the
-same buffer, as the `Near<T, O>` of the crate `nearest` is (below). The core knows the kind, and
-depends on nothing for it:
+same buffer, as the `Near<T, O>` of the crate `nearest` is. The core knows the kind, and nothing
+of any crate that has such pointers: a crate declares its pointer types (below), and the
+description of a pointer (`layout::Pointer`) holds what the proof needs and nothing else:
 
-- a pointer is its **offset**, a signed integer of 2, 4 or 8 bytes in a given byte order, which
-  holds distances and lengths up to a limit. It **aims** at one value, at a list (a length, an
-  integer like the offset, followed by the elements and preceded by a capacity) or at text (a
-  length, then UTF-8). It may be **nullable**: an offset of 0 is then no pointer;
-- what it aims at is *not* in the layout: the layout of `struct Node { next: Option<Near<Node>> }`
-  would have no end, and const evaluation has no identity of a type by which to stop where it
-  has been (`TypeId` is not compared in `const`, pointers neither, and a static reached through
-  an associated constant is a cycle). It is a type, `Pun::Pointee` (the element, for a list).
-  The layout keeps the size and the alignment of the target, which the compiler gives without
-  looking into it.
+- its **scheme**: a name that the declaring crate chooses, which stands for the way a pointer and
+  the bytes of its buffer tell where its target is and how long it is (a length next to the
+  target, say). `puns` does not know the way, and does not need to: a pointer is only read as a
+  pointer of the same scheme, which finds the same target from the same bytes;
+- its **offset**: an integer of 1 to 16 bytes (the size of the pointer type) in a byte order;
+- what it **aims** at (`Aim`): one value of the target type, at an address aligned for it; a
+  **sequence** of values of the target type, `size_of` apart, the first at an address that is a
+  multiple of an alignment that the declarer guarantees (a number of the description, at least
+  the alignment of the type: `nearest` says the larger of it and the width of the offset); or
+  **text**, UTF-8. The size and the alignment of the target type (of an element) are kept;
+- whatever it is **nullable** (`Pointer::or_null`): an offset whose bytes are all zero is then no
+  pointer. This is what a nullable pointer, an `Option` of one say, is described with.
+
+What a pointer aims at is *not* in the layout: the layout of `struct Node { next: Opt<Node> }`
+would have no end, and const evaluation has no identity of a type by which to stop where it has
+been (`TypeId` is not compared in `const`, pointers neither, and a static reached through an
+associated constant is a cycle). It is a type, `Pun::Pointee` (the element, for a sequence; `()`
+for text). The layout keeps the size and the alignment of the target, which the compiler gives
+without looking into it.
+
+**How a crate declares a pointer.** With an `unsafe impl SelfRelative for P` (`relative.rs`),
+which says what the pointer is (`const POINTER: Pointer`, made by `Pointer::one::<T>`,
+`Pointer::sequence::<T>` or `Pointer::text`, and `or_null`) and what it aims at
+(`type Target: Pun`), then `self_relative!(impl[..] P<..>)`, which writes the implementation of
+`Pun` from it: `Pointee` is the `Target`, the layout is `Layout::pointer::<P, Target>(POINTER)`,
+which asserts that `P` has the size of the offset and that `POINTER` was made for `Target`. The
+trait carries the promise, in words (its `# Safety`): the macro is safe to use, and writes nothing
+that the trait does not say. It is not a blanket implementation of `Pun` for every
+`SelfRelative` type, which would overlap the one for every `Scalar` (coherence cannot tell that
+no type is both); and the items of `Pun` stay the crate's own, which it may change: the macro is
+expanded with the version that defines them. The doc test of `SelfRelative` is such a crate (doc
+tests are outside it), and so are the tests (`tests/support/relative.rs`), the model check and
+`examples/codegen.rs`.
+
+What the declarer promises (S1 to S7, the contract of `SelfRelative`, restated):
+
+- S1. The type is its offset: an integer of the width and byte order of `POINTER`, and nothing
+  else; every byte initialized, none in an `UnsafeCell` (it is read as plain data).
+- S2. The scheme is the way to the target: where a pointer aims and how many elements or bytes
+  it aims at depend only on the scheme, the offset (width, byte order), the kind of aim, the
+  address of the pointer, the bytes of its offset and bytes of its buffer: never on the type
+  that holds it, its `Target`, its alignment or whatever it is nullable. The declaring crate
+  owns the name of its scheme, and changes the way only with the name.
+- S3. What it aims at is there, valid, in the same allocation, as long as a shared reference to
+  the pointer lives: a valid `Target` aligned for it; that many valid `Target`s, the first at a
+  multiple of the declared alignment; that many bytes of UTF-8.
+- S4. What it aims at is its own: nothing writes to it, nor gives a `&mut` to it, while a shared
+  reference to the pointer lives.
+- S5. Null: with `or_null`, all bytes zero is no pointer, never followed; any other value is a
+  pointer as one of the same scheme that is not nullable.
+- S6. The target is the type: `Target` is the type aimed at (an element, `()` for text), and
+  `POINTER` is made with it (asserted).
+- S7. The crate relies on S1 to S6 and on nothing more when it follows a pointer. In return,
+  `puns` makes a value that holds a pointer of the type only by `view_ref` and `try_view_ref`,
+  at the address of a pointer of the same scheme, offset and kind of aim (nullable only where the
+  type is, or checked not null), of which the target is proven to be a valid target of the type;
+  it reads the bytes of a pointer and never writes them.
 
 **What a pointer guarantees is not a property of its bytes**: its target is where it says,
 valid, and its own. Three rules follow, which every function keeps.
 
 1. **No bytes prove a pointer.** A pointer of a target is proven only by a pointer of the source
-   at the same place whose target it can read (`Pointer::reads_as`): the same offset (width and
-   byte order: one is read as the other), the same aim, a target that is not larger nor more
-   aligned (a list: elements of the same size, in a block aligned for them), and not nullable
-   where the target's is not, unless that is checked. Anything else is `Relation::pointer`,
-   which no function accepts and no check makes up for. An enum that holds pointers is proven by
-   an enum, variant by variant, or not at all.
-2. **Only what proves, or checks, what pointers aim at makes a value that holds one.** `view_ref`
-   and `try_view_ref` prove it (below); the loaders of `puns::nearest` check the whole buffer.
-   Every other function refuses a target that holds a pointer (`Plan::gate`).
+   at the same place whose target it can read (`Pointer::reads_as`): the same scheme, the same
+   offset (width and byte order: one is read as the other), the same kind of aim, and a target
+   that is no larger and needs no more alignment (one value: its size and alignment; a sequence:
+   elements of the same size, and a declared alignment of the target's that is not greater than
+   the source's; text: nothing more), and not nullable where the target's is not, unless that is
+   checked. Anything else is `Relation::pointer`, which no function accepts and no check makes up
+   for. An enum that holds pointers is proven by an enum, variant by variant, or not at all.
+2. **Only what proves what pointers aim at makes a value that holds one.** `view_ref` and
+   `try_view_ref` prove it (below). Every other function refuses a target that holds a pointer
+   (`Plan::gate`). A crate that has pointers checks bytes from outside with a walk of its own
+   (`nearest` does): `puns` does not load a buffer.
 3. **No `&mut` to a pointer, nor next to one.** `mutable` and `mutable_part` refuse a source or a
    target that holds a pointer, wherever it is: through a `&mut`, safe code could write over a
    pointer, swap two, or move one to where it aims at something else.
@@ -474,8 +525,8 @@ pointers is read as plain data by any function that reads (`as_bytes`, `head_ref
 
 Every public function, and why it is safe with a pointer in its target or in its source:
 
-- `pun`, `head`, `tail`, `try_pun`, `zeroed`: they take and make `Copy` values, and no value that
-  holds a pointer is `Copy`. The target is gated all the same (2), and `zeroed` asserts it.
+- `pun`, `head`, `tail`, `try_pun`, `zeroed`: they take and make `Copy` values. The target is
+  gated (2), and `zeroed` asserts it. A source that holds a pointer is read as bytes.
 - `pun_ref`, `head_ref`, `tail_ref`, `try_pun_ref`: a target that holds a pointer is refused (2).
   Of a source that does, the bytes are read, and nothing is made of them.
 - `pun_mut`, `head_mut`, `tail_mut`, `try_pun_mut`: refused with a pointer on either side (3),
@@ -497,11 +548,11 @@ Every public function, and why it is safe with a pointer in its target or in its
 - `Tag`, `num::*`, `crc32`, `sum16`: no pointer.
 - `view_ref`, `try_view_ref`: a pointer of the target is a pointer of the source (1), what it aims
   at is proven (`deep`, below), and the result is a `&`.
-- `nearest::view`, `nearest::view_with`: the buffer is checked whole; the result is a `&` into it.
-- `nearest::from_bytes`, `nearest::from_bytes_with`: the bytes are checked whole, then copied by
-  `nearest` into a region of its own.
-- `layout::*`: values that describe layouts, for the code that the derive writes. They make no
-  value of a type, and a layout only stands for a type through `Pun`, an `unsafe trait`.
+- `SelfRelative`, `self_relative!`: a declaration, whose promise is the `unsafe impl`; the macro
+  writes `Pun` from it, and asserts what can be (P1).
+- `layout::*`: values that describe layouts, for the code that the derive and `self_relative!`
+  write. They make no value of a type, and a layout only stands for a type through `Pun`, an
+  `unsafe trait`. `Pointer` is public, made by its constructors only (its fields are the crate's).
 - `hook::*` (the test-only feature `verdict`): the same plans, answered instead of enforced. Its
   `view_ref` follows pointers a bounded number of times: it is for the model check, whose types
   that bound covers.
@@ -528,122 +579,44 @@ the optimizations (it has to build the function pointer; `rustc` collects what a
 mentions before it optimizes, so that errors of const evaluation do not depend on the
 optimization level). This is what the compiler does, more than what the Reference promises of a
 `const` block that is not executed: the compile-fail test `view_behind_pointers` (a `u8` read as
-a `bool` two pointers down a recursive type) holds the compiler to it in a debug build, and
+a `bool` behind pointers of a recursive type) holds the compiler to it in a debug build, and
 `model.yml` builds the same program optimized, with LTO, every night: it must be refused there
-too (to run when `rust-toolchain` changes). For the same reason `view_ref` is not a `const fn`: a
-call in a constant would make no instance. An interpreter that only evaluates the constants of
-the functions it runs, as Miri does, would not refuse such a view: the refusal is one of a build.
+too (to run when `rust-toolchain` changes; the program declares its own pointer, and needs no
+other crate). For the same reason `view_ref` is not a `const fn`: a call in a constant would make
+no instance. An interpreter that only evaluates the constants of the functions it runs, as Miri
+does, would not refuse such a view: the refusal is one of a build.
 
 The compiler also makes the instances that a branch names when a constant rules the branch out,
 so `pair` cannot choose what it names: it pairs by position (fields with fields and variants with
 variants, in the order of their declarations; elements with elements), which names more pairs
 than matter. Where the source has nothing, its side is `()`, and `target` has nothing to prove
-of a type without size (no pointer aims at one: `Pointer::new`). The pairs that matter are
-decided exactly by `local`, which is `const` code: every pointer of the target must be, in the
-source, a pointer at the same offset that `pair` pairs it with, or the build fails. So what
-`local` accepts, `pair` names, by the same walk of the same lists; and a pair that is named
-without mattering has one side without pointers. Those lists (`Fields`, `Variants`, `Elem`,
-`Pointee`) are types, written next to the layout that the analysis went by: `local` checks, on
-its way, that they are what the layouts hold (`listed`: the same fields in the order of their
-declarations, the same variants, the same elements, a target of the same size), so that a
-pointer is not missed, nor taken for another, by an implementation of `Pun` whose lists and
-layout differ (compile-fail test `lists_not_the_layout`). Hence the limits, which are refusals:
-a field that holds a pointer keeps its position among the fields of its struct, a variant that
-does keeps its position among the variants of its enum (new ones go last: a variant found by its
-tag at another position is refused, compile-fail test `view_variant_moved`), and a struct that
-only holds a pointer is not that pointer.
+of a type without size (no pointer aims at one: `Pointer::one`, `Pointer::sequence`; the target
+type of text is `()`). The pairs that matter are decided exactly by `local`, which is `const`
+code: every pointer of the target must be, in the source, a pointer at the same offset that
+`pair` pairs it with, or the build fails. So what `local` accepts, `pair` names, by the same walk
+of the same lists; and a pair that is named without mattering has one side without pointers.
+Those lists (`Fields`, `Variants`, `Elem`, `Pointee`) are types, written next to the layout that
+the analysis went by: `local` checks, on its way, that they are what the layouts hold (`listed`:
+the same fields in the order of their declarations, the same variants, the same elements, a
+target of the size and alignment that the pointer says), so that a pointer is not missed, nor
+taken for another, by an implementation of `Pun` whose lists and layout differ (compile-fail
+test `lists_not_the_layout`). Hence the limits, which are refusals: a field that holds a pointer
+keeps its position among the fields of its struct, a variant that does keeps its position among
+the variants of its enum (new ones go last: a variant found by its tag at another position is
+refused, compile-fail test `view_variant_moved`), and a struct that only holds a pointer is not
+that pointer.
 
 `try_view_ref` checks what is not proven of the value itself (`validate`, with the marks of the
 analysis: a variant that the target does not have, a restricted scalar, a pointer that may be
-null read as one that is not), and requires of what it points to what `view_ref` does.
+null read as one that is not: its bytes are not all zero), and requires of what it points to what
+`view_ref` does.
 
-### 9. Regions of `nearest` (`nearest.rs`, feature `nearest`)
+**Invariants**, each kept where it is said:
 
-[`nearest`](https://docs.rs/nearest) keeps a value and everything it points to in one buffer, a
-region, with `Near<T, O>` pointers whose offset `O` is an `unsafe trait` (`Offset`). The feature
-makes a type of a region a `Pun` type, declared once (`#[flat]`, then `#[derive(Pun)]`). It lives
-in this crate, not in `nearest` nor in a third one: `Pun` for `Option<Near<T, O>>` can only be
-implemented where `Pun` is (`Option` is foreign to `nearest`, everything is to a third crate),
-`nearest` has no dependency and an older minimum compiler, and the invariants at stake (bytes
-that become a `Near`, a `&mut` to one) are broken or kept by the functions of *this* crate. Without
-the feature there is no dependency, and the crate stays `no_std` with it (`nearest` without its
-`std`, with `alloc`).
-
-**Offsets of a given byte order.** `i16le`, `i32le`, `i64le` and their big-endian counterparts
-(`num.rs`: byte arrays, of no alignment) implement `Offset`, so that the bytes of a region do not
-depend on the machine: `from_isize` and `to_isize` are `new` and `get`. The contract of `Offset`
-asks for a `NonZero`: the offset without zero, of its size and alignment, of which `Option` has
-the size with `None` as zeros. It is `#[repr(C, packed)] struct(NonZero<i32>)`: packing gives the
-alignment of the byte array (1) and keeps the niche; `Option` of it is asserted to have its size,
-and since every other bit pattern is a value, `None` can only be zeros. `nearest` checks the
-layout half of the contract where a region uses the offset; the tests run those of `nearest` for
-its own offsets (`tests/width.rs`) with these, and check the rest on values (`contract`).
-`Order` (an `unsafe trait`) tells the byte order of an offset to the layout: `to_isize` must be
-the integer that the bytes are; it is implemented for `i16`, `i32`, `i64` (the byte order of the
-target) and for the six above.
-
-**`Flat` for numbers.** A field of a region is `Flat`. The numbers of a byte order implement it
-by forwarding to the byte array they are (`store`, `edit`, `check` of `[u8; N]`; `edit` gives a
-`&mut` through `pun_mut`, proven), and the numbers of given values (`u32lec<V>`, `u8in`) the same
-way with a `check` that is `try_pun` from the bytes: a magic number is checked by `nearest`'s own
-loader as by this one. This uses the hidden items of `Flat` (`PLAIN`, `ANY`, `store`, `edit`,
-`check`) and `__private::{Buf, Sink, Check, fits}`, which are the plumbing of `#[flat]`.
-
-**Loaders.** `view` (in place, at an address that is a multiple of 8) and `from_bytes` (a copy in
-a region), and `view_with` and `from_bytes_with` with the memory of the caller, check that bytes
-are the *compact image* of a value, as `nearest::view` does, by a walk that recurses over the
-type as `validate` does (what the layout says cannot be invalid is not compiled, nor walked):
-
-- the walk mirrors the one of `nearest` (`bytes.rs`), so that both stop at the same place: the
-  root, then every target in the order a deep copy writes it, each at the next position aligned
-  for it. A pointer must aim at the very position where the copy puts its target (`claim`), which
-  gives at once bounds, alignment, a tree (no target shared, no cycle) and no gap; lists have
-  `cap == len`, lengths are not negative, text is UTF-8, nothing follows the last target, and the
-  whole is no longer than the pointers of the root reach;
-- it is safe code that does not recurse through pointers (what is left to check waits on a
-  stack, a vector or the scratch of the caller: `Error::ScratchFull` when that runs out) and does
-  not panic, but for the reads of scalars and of offsets, which are in bounds;
-- what `#[derive(Pun)]` is told of the types is checked on the way: `valid(..)` on a field,
-  `assert(..)` and the other rules of a struct (`validate::check_rules`). These are requirements
-  of this crate, which `nearest` does not know: with them the loaders accept *fewer* bytes than
-  `nearest`'s; without, the same bytes, with the same errors (tests: a corpus of images and
-  their corruptions, both loaders compared, also with every size of scratch);
-- then the bytes are cast by `nearest::view_unchecked`, or copied by `Region::from_bytes_unchecked`
-  (into the heap, which holds any image): no `Near` is made here.
-
-`agrees` compares, at compile time, what `nearest` is told of a type with its layout: a type that
-`nearest` copies as bytes (`PLAIN`) or does not check (`ANY`) must be one, and the largest region
-(`REACH`) must be the same for both. An `unsafe impl Flat` that says more is refused.
-
-**What this relies on of `nearest`**, 0.7.1: its byte format (the blocks of lists and of text,
-the order of a deep copy), which `nearest.rs` and `Aim` state again; that its unchecked loaders
-accept bytes that are the compact image of a valid value, which is what its own loaders give
-them; the hidden items above. A release of `nearest` that changes one of them is one that this
-crate has to follow, so the dependency is on that very release (`=0.7.1`): with another one, the
-build fails instead of a loader checking bytes for a format that is no longer the one they are
-read with. The corpus tests and the model check compare the two loaders on every push.
-
-**The invariants of `nearest`** (I1 to I9 of its specification), with this crate in the build:
-
-- I1, a `Near` only exists in a region, where its target is at its offset: rules 1 and 2. No
-  function makes a pointer from bytes or from another value; a view is of a value that is in a
-  region already, or of bytes checked whole; a pointer read as another is the same offset, to a
-  target proven to be what the other aims at.
-- I2, no `&mut` to a pointer: rule 3: every `&mut` refuses a pointer on either side.
-- I3, one handle chain: untouched: nothing here makes a handle; a view borrows what it is made
-  from, as a `&`.
-- I4, a tree: checked by `claim` when bytes are loaded; a view reads the same tree.
-- I5 to I8, append only, copies, panics, provenance: untouched: nothing here writes to a region,
-  copies inside one or reaches its buffer.
-- I9, an edit stays on one thread: untouched: only `&T` and `Region` are made, which are `Send` and
-  `Sync` as `nearest` makes them.
-- the buffer, `len <= cap <= mem <= max`: a region is only made by `Region::from_bytes_unchecked`,
-  from bytes no longer than the limit.
-
-**Invariants that this adds**, each kept where it is said:
-
-- P1. A `Kind::Pointer` layout is made by `Layout::pointer` only, for a type that is the offset
-  and nothing else (its size is asserted), aiming at a type with a size (`Pointer::new`).
+- P1. A `Kind::Pointer` layout is made by `Layout::pointer` only, which `self_relative!` calls for
+  a `SelfRelative` type (an `unsafe trait`): a type that is the offset and nothing else (its size
+  is asserted), aiming at its `Target`, for which the description was made (size and alignment
+  asserted), a type with a size (`Pointer::one`, `Pointer::sequence`) or `()` for text.
 - P2. `Relation::pointer` is set for every pointer of a target that a pointer of the source does
   not prove (`relate_range`, `relate_enums`, the two places that give up on proving), and every
   plan refuses it, fallible or not (`check`).
@@ -656,32 +629,24 @@ read with. The corpus tests and the model check compare the two loaders on every
   the elements of the two types by position, and `local` refuses whatever is not at the
   position where `pair` looks for it, and a type whose lists are not what its layout holds
   (`listed`).
-- P7. The offsets: `to_isize` of an `Order` type is the integer of its bytes in `ENDIAN`
-  (an `unsafe trait`; for the nine types here, by construction and by the test `contract`).
-- P8. A loader casts or copies only bytes that its walk accepted whole, for the very type.
-- P9. The `Flat` implementations of this crate forward to the bytes of the type, and say `ANY`
-  only of types of which every bit pattern is a value (`agrees` compares them with the layouts
-  wherever a loader is used).
+- P7. `Pointer::reads_as` relates only pointers of the same scheme, width, byte order and kind of
+  aim, with the numbers of their descriptions (sizes, alignments, the declared alignment of a
+  sequence), and says when nullability is to be checked; `Pointer::same` (by which two layouts
+  are equal) compares every field of the description.
+- P8. What the declarer promises is S1 to S7, which `puns` relies on and nothing more: S2 for a
+  pointer read as another of the same scheme, S3 and S4 for what `deep` proves of the targets,
+  S5 for `try_view_ref`'s check of a nullable pointer.
 
-Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen_nearest.rs`):
+### 9. Who builds on this
 
-| Function                                            | Machine code                               |
-|-----------------------------------------------------|--------------------------------------------|
-| `view_ref::<Old, New>` (a recursive enum)           | `mov rax, rdi; ret`                        |
-| `view_ref::<[Old], [New]>`                          | `mov rdx, rsi; mov rax, rdi; ret`          |
-| `try_view_ref::<Maybe, Owned>` (a pointer not null) | one `cmp dword ptr [rdi + 4], 0`: 4        |
-| `view_with::<Table>`: the entry                     | 149 instructions (`nearest`'s: 145)        |
-| `view_with::<Table>`: its steps (lists, text, rows) | 469 instructions (`nearest`'s: 455)        |
-| the step of a list of numbers                       | 83, no loop: its elements are not walked   |
-
-The tests of the feature pass under Miri with tree borrows (which `nearest` needs: a
-self-relative pointer is resolved from its own address, which stacked borrows do not allow) and
-strict provenance, on x86-64, on i686 and on s390x, a big-endian target, where the image that
-`examples/ir.rs` builds is, byte for byte, the one that is committed (`examples/ir.image`).
-
-An offset or a length is one load. On a tree of 2^19 enums the check takes 1.09 times the time
-of `nearest`'s (4.1 ms against 3.8 ms); on a table of 4 million numbers and 100 000 names, the
-same time (1.7 ms): what cannot be invalid is not looked at by either.
+[`nearest`](https://docs.rs/nearest) (regions: a value and everything it points to in one
+buffer, with `Near<T, O>` pointers) declares its pointers with `SelfRelative`, and depends on
+`puns`, not the reverse. The layout and the validity of bytes are the general thing; a region is
+one structure made of them, with a byte format of its own, which `puns` does not state again (a
+scheme is a name for it). One validator of values, the one of `puns`, serves both: what a field
+may be, enums, rules, `try_view_ref`; what is a region's (where its targets are, its blocks, its
+walk of an image) is `nearest`'s. Until that dependency is in place, the version of `puns` that
+had a feature `nearest` (and the loaders, the IR example, the corpus tests) is at `e5875f5`.
 
 ### 10. Enums without `repr` (`discover.rs`)
 
@@ -794,37 +759,36 @@ exhaustive run, every pair and every part of every type, is behind the `full` fe
 night and on demand. See
 `puns-model/src/lib.rs` for what is checked.
 
-Self-relative pointers have a model of their own (`puns_model::pointers`, with the feature
-`nearest` of the model, which `cargo test` does not turn on). Sixteen types that hold pointers
-(recursive structs, through an optional pointer and through a list; enums; one pointer to a
-`bool`, a `u8`, two bytes, a list, text; another byte order; bytes) are each described by hand,
-and the oracle is a reference validator that walks concrete bytes with such a description:
-every byte it reads is in bounds and was written to, every value is valid, every pointer leads
-to a place aligned for its target, which holds one. Every value of a corpus of regions of a
-source is read as each target: what `view_ref` accepts must be valid (else it is unsound), and
-is then read through under Miri; `try_view_ref` must accept the values that are valid and only
-them; and the loaders of `puns` and of `nearest` are given every image and its corruptions,
-must agree, and must only accept what the oracle finds valid. What the oracle alone says of
-pairs whose answer is known is asserted, so that it is not an oracle that accepts everything.
+Self-relative pointers have a model of their own (`puns_model::pointers`), on the pointers of
+the tests of `puns` (`tests/support/relative.rs`: one value, a sequence, text, and nullable,
+declared through the public API only; built in a buffer, and followed through it). Sixteen types
+that hold pointers (recursive structs, through a pointer that may be null and through a
+sequence; enums; one pointer to a `bool`, a `u8`, two bytes, a sequence, text; another byte
+order; bytes) are each described by hand, and the oracle is a reference validator that walks
+concrete bytes with such a description: every byte it reads is in bounds and was written to,
+every value is valid, every pointer leads to a place aligned for its target, which holds one.
+Every value of a corpus of a source is read as each target: what `view_ref` accepts must be
+valid (else it is unsound), and is then read through (under Miri too); `try_view_ref` must
+accept the values that are valid and only them. What the oracle alone says of pairs whose answer
+is known is asserted, so that it is not an oracle that accepts everything; the builder leaves a
+byte that nothing writes after every value, so that a target read past its end is seen.
 `hook::views` answers with the `const` code that decides the pairing (`deep::local`, pointers
 followed a bounded number of times); the functions themselves are called for pairs that it
 accepts, and the compile-fail tests are the pairs that they refuse. A sample runs on a push
-(`cargo test -p puns-model --features nearest`), every pair of every type and every value of
-every byte with `full`, at night. It counts as imprecise what is refused by design: a target of
-another size, a list or text read as something else, a check that would be behind a pointer.
+(`cargo test -p puns-model --test pointers`), every pair of every type with `full`, at night. It
+counts as imprecise what is refused by design: a target of another size, a sequence or text read
+as something else, a check that would be behind a pointer.
 
 ## Not done yet
 
 - **Checks behind pointers**: `try_view_ref` checks the value it is given, and asks of what that
-  value points to what `view_ref` does. Checking behind pointers is a walk of the region with
-  the marks of each pair of types, which the loaders are close to (they walk with every mark).
-- **A region as a region of another type**: `view_ref` reads a value where it is; making a
-  `Region<B>` of a `Region<A>` without a copy needs the two images to be the same bytes (the
-  same sizes behind every pointer), which the analysis does not tell yet. Today it is a deep
-  copy, `Region::new(view)`.
-- **`from_bytes` into a storage other than the heap** (`nearest`'s `Inline<N>`...): the loader
-  of `nearest` that copies without checking panics when the storage is full, where the checked
-  one returns an error, so only the heap is offered. See also "Limits" for 32-bit targets.
+  value points to what `view_ref` does. Checking behind pointers is a walk of the buffer with the
+  marks of each pair of types, which only the crate that has the pointers can make (it knows the
+  way to the targets): `puns` would give it the check of one value at a time, with the marks
+  (see `validate`), which is not public yet.
+- **`Option` of a pointer**: a nullable pointer is a type of its own (`Pointer::or_null`); an
+  `Option<P>` of a pointer `P` whose `None` is zeros is the same description, once `Option` is
+  a `Pun` type that a pointer type can describe.
 - **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
   part, while the operations of a rule tell which fields and bytes it reads (a rule over other
   fields only could be allowed), and any enum only partly covered, while an enum all of whose
@@ -884,14 +848,10 @@ another size, a list or text read as something else, a check that would be behin
 - The derive bounds its implementation by "the type of each field that depends on a parameter is
   `Pun`", but for the fields that name the type itself (a recursive type would be `Pun` if it
   is). So the parameter that is the offset of a recursive type is declared with what its
-  pointers need, `O: puns::nearest::Order`; and two generic types that hold each other, whose
-  bounds would be found in a circle (`overflow evaluating the requirement`), tell theirs:
-  `#[pun(bound())]` on both when the bounds that the types declare are enough, as `O: Order` is.
-- `nearest` keeps the buffer of a region in `u64`s, which are aligned to 4 on some 32-bit targets
-  (i686): there, the bytes of a region are not always at a multiple of 8, which `view` requires
-  (give it a copy that is), and `nearest` 0.7.1 itself reads a type aligned to 8 misaligned.
-  This crate's loaders are not concerned (they check the address, and cast what they checked),
-  the regions that `nearest` builds are.
+  pointers need (`O: Offset` in the tests, a trait of the crate that declares the pointers); and
+  two generic types that hold each other, whose bounds would be found in a circle (`overflow
+  evaluating the requirement`), tell theirs: `#[pun(bound())]` on both when the bounds that the
+  types declare are enough, as `O: Offset` is.
 - The types of the fields of a struct must be at least as visible as the struct: the list of
   fields is an associated type, which the privacy rules of Rust do not allow to name a less
   visible type.

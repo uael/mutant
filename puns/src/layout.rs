@@ -383,70 +383,136 @@ pub(crate) enum Kind {
   Pointer(Pointer),
 }
 
-/// What a self-relative pointer aims at, somewhere else in the buffer that holds it.
+/// What a self-relative pointer aims at, elsewhere in the buffer that holds it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Aim {
-  /// One value: the offset is the distance to it.
+  /// One value of the target type, at an address that is aligned for it.
   One,
-  /// A list: the offset is the distance to a length, an integer like the offset. The elements
-  /// follow the length, aligned to the greater of their alignment and the width of the offset,
-  /// and a capacity, such an integer too, precedes the length.
-  List,
-  /// Text: the offset is the distance to a length, an integer like the offset, aligned to its
-  /// width; as many bytes of UTF-8 follow.
-  Str,
+  /// Values of the target type one after the other, `size_of` apart, the first at an address
+  /// that is a multiple of `align`. How many there are is told by the bytes of the buffer, as
+  /// the scheme of the pointer says.
+  Sequence {
+    /// The alignment of the first element that the declarer of the pointer guarantees: a power
+    /// of two, at least the alignment of the element type.
+    align: usize,
+  },
+  /// Bytes that are UTF-8. How many there are is told by the bytes of the buffer, as the scheme
+  /// of the pointer says.
+  Text,
 }
 
-/// A self-relative pointer: the distance from its own address to its target.
+/// A self-relative pointer: an offset from its own address to its target, in the same buffer.
 ///
-/// The distance is a signed integer of `width` bytes in a given byte order (the *offset*). The
-/// target is elsewhere in the same buffer: a region, which holds a value and everything it points
-/// to.
+/// This is what the analysis needs to know of a pointer, and nothing of how the crate that
+/// declares it keeps its targets ([`SelfRelative`](crate::SelfRelative) says how it is
+/// declared). [`Pointer::one`], [`Pointer::sequence`] and [`Pointer::text`] make one, with:
+///
+/// - a **scheme**: a name that the declaring crate chooses, which stands for the way a pointer
+///   and the bytes of its buffer tell where its target is, and how long it is. A pointer is only
+///   read as a pointer of the same scheme;
+/// - its **offset**: the width in bytes of the integer (the size of the pointer) and its byte
+///   order;
+/// - what it **aims** at ([`Aim`]), with the size and the alignment of the target type (of an
+///   element, for a sequence);
+/// - whatever it is **nullable** ([`Pointer::or_null`]): an offset whose bytes are all zero is
+///   then no pointer.
 ///
 /// What is at the target is not part of the layout (the layout of a recursive type would have no
 /// end): it is the [`Pun::Pointee`](crate::Pun::Pointee) of the type, which the analysis reaches
-/// through types (see `deep.rs`). The layout keeps what relates two pointers themselves: the
-/// width and the byte order of the offset, what it aims at, the size and the alignment of that.
+/// through types (see `deep.rs`).
 ///
 /// What a pointer guarantees is not a property of its bytes. So no bytes ever prove one (only a
-/// pointer does, whose target can be read as the target of the other), nothing checks one but a
-/// walk of the whole buffer, and no `&mut` to one is ever handed out.
+/// pointer does, whose target can be read as the target of the other), no check makes up for
+/// one, and no `&mut` to one is ever handed out.
 #[derive(Copy, Clone, Debug)]
 pub struct Pointer {
+  pub(crate) scheme: &'static str,
   pub(crate) aim: Aim,
-  /// An offset of `0` is no pointer (`None`).
+  /// An offset whose bytes are all zero is no pointer.
   pub(crate) nullable: bool,
-  /// Size of the offset: 2, 4 or 8 bytes.
+  /// Size of the offset, which is the size of the pointer: 1 to 16 bytes.
   pub(crate) width: usize,
-  /// Byte order of the offset, and of the lengths and capacities behind it.
+  /// Byte order of the offset.
   pub(crate) endian: Endian,
-  /// The largest buffer whose distances and lengths the offset holds, in bytes.
-  pub(crate) limit: u64,
-  /// Size and alignment of the target (`One`) or of an element (`List`); `(1, 1)` for `Str`.
+  /// Size and alignment of the target type (`One`) or of an element (`Sequence`); those of
+  /// `()` for `Text`.
   pub(crate) size: usize,
   pub(crate) align: usize,
 }
 
 impl Pointer {
-  /// A pointer whose offset is an integer of `width` bytes in the byte order `endian`, which
-  /// holds distances and lengths up to `limit`, and aims at a `T`, at a list of `T`, or at
-  /// text (see [`Aim`]; `T` is then not looked at). With `nullable`, an offset of `0` is no
-  /// pointer.
+  const fn new(
+    scheme: &'static str,
+    aim: Aim,
+    width: usize,
+    endian: Endian,
+    (size, align): (usize, usize),
+  ) -> Self {
+    assert!(width >= 1 && width <= 16, "the offset of a pointer is 1 to 16 bytes");
+    Self { scheme, aim, nullable: false, width, endian, size, align }
+  }
+
+  /// The size and the alignment of `T`, which a pointer aims at.
+  const fn target<T>() -> (usize, usize) {
+    // A target without size could be anywhere, the pointer itself included, and is nothing that
+    // a pointer can be read as: the proof stops at it (`deep::behind`).
+    assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
+    (size_of::<T>(), align_of::<T>())
+  }
+
+  /// A pointer of the scheme `scheme` to one `T`, whose offset is an integer of `width` bytes in
+  /// the byte order `endian`.
   ///
   /// # Panics
-  /// If `width` is not 2, 4 or 8, if `limit` is more than an integer of that width holds, or if
-  /// `T` has no size.
+  /// If `width` is not 1 to 16, or if `T` has no size.
   #[must_use]
-  pub const fn new<T>(aim: Aim, nullable: bool, width: usize, endian: Endian, limit: u64) -> Self {
-    assert!(matches!(width, 2 | 4 | 8), "the offset of a pointer is 2, 4 or 8 bytes");
-    assert!(limit < (1 << (8 * width - 1)), "an offset does not hold its limit");
-    // An offset of 0 is no pointer, and a target without size could be where its pointer is.
-    assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
-    let (size, align) = match aim {
-      Aim::Str => (1, 1),
-      Aim::One | Aim::List => (size_of::<T>(), align_of::<T>()),
-    };
-    Self { aim, nullable, width, endian, limit, size, align }
+  pub const fn one<T>(scheme: &'static str, width: usize, endian: Endian) -> Self {
+    Self::new(scheme, Aim::One, width, endian, Self::target::<T>())
+  }
+
+  /// A pointer of the scheme `scheme` to a sequence of `T`, the first of which is at an address
+  /// that is a multiple of `align`, whose offset is an integer of `width` bytes in the byte
+  /// order `endian`.
+  ///
+  /// # Panics
+  /// If `width` is not 1 to 16, if `T` has no size, or if `align` is not a power of two at least
+  /// as large as the alignment of `T`.
+  #[must_use]
+  pub const fn sequence<T>(
+    scheme: &'static str,
+    width: usize,
+    endian: Endian,
+    align: usize,
+  ) -> Self {
+    assert!(
+      align.is_power_of_two() && align >= align_of::<T>(),
+      "the elements of a sequence are at an address aligned for them: a power of two, at least \
+       the alignment of their type"
+    );
+    Self::new(scheme, Aim::Sequence { align }, width, endian, Self::target::<T>())
+  }
+
+  /// A pointer of the scheme `scheme` to text, whose offset is an integer of `width` bytes in the
+  /// byte order `endian`. Its target type is `()`: there is nothing to relate behind it.
+  ///
+  /// # Panics
+  /// If `width` is not 1 to 16.
+  #[must_use]
+  pub const fn text(scheme: &'static str, width: usize, endian: Endian) -> Self {
+    Self::new(scheme, Aim::Text, width, endian, (size_of::<()>(), align_of::<()>()))
+  }
+
+  /// The same pointer, but nullable: an offset whose bytes are all zero is no pointer, and aims
+  /// at nothing.
+  #[must_use]
+  pub const fn or_null(self) -> Self {
+    Self { nullable: true, ..self }
+  }
+
+  /// Whatever an offset whose bytes are all zero is no pointer ([`Pointer::or_null`]).
+  #[must_use]
+  pub const fn is_nullable(&self) -> bool {
+    self.nullable
   }
 
   /// Whatever the target of the pointer `self` can be read through the pointer `to`, as far as
@@ -454,20 +520,21 @@ impl Pointer {
   /// `deep.rs`): `None` if never, `Some(false)` if only when `self` is not null, which is then to
   /// be checked at run time.
   ///
-  /// Both offsets must be the same integers (width and byte order: one is read as the other).
-  /// A value is read as a prefix of it, at an address that is at least as aligned; a list as a
-  /// list of elements of the same size, which are aligned to the greater of the alignment of
-  /// the elements they were written as and the width of the offset; text as text.
+  /// Both are of the same scheme, with the same offset (width and byte order: one is read as the
+  /// other), so they find the same target in the same buffer. A value is read as a prefix of it
+  /// that needs no more alignment than it has; a sequence as a sequence of elements of the same
+  /// size (its length is a number of elements) that needs no more alignment than the declarer of
+  /// `self` guarantees; text as text.
   pub(crate) const fn reads_as(&self, to: &Pointer) -> Option<bool> {
-    let fits = self.width == to.width
+    let fits = str_equals(self.scheme, to.scheme)
+      && self.width == to.width
       && self.endian.equals(to.endian)
       && match (self.aim, to.aim) {
         (Aim::One, Aim::One) => to.size <= self.size && to.align <= self.align,
-        (Aim::List, Aim::List) => {
-          let block = if self.align > self.width { self.align } else { self.width };
-          to.size == self.size && to.align <= block
+        (Aim::Sequence { align: from }, Aim::Sequence { align: into }) => {
+          to.size == self.size && into <= from
         }
-        (Aim::Str, Aim::Str) => true,
+        (Aim::Text, Aim::Text) => true,
         _ => false,
       };
     if fits { Some(to.nullable || !self.nullable) } else { None }
@@ -475,30 +542,35 @@ impl Pointer {
 
   /// Whatever two pointers are the same, as far as the pointers themselves go.
   const fn same(&self, other: &Pointer) -> bool {
-    matches!(
-      (self.aim, other.aim),
-      (Aim::One, Aim::One) | (Aim::List, Aim::List) | (Aim::Str, Aim::Str)
-    ) && self.nullable == other.nullable
+    let aims = match (self.aim, other.aim) {
+      (Aim::One, Aim::One) | (Aim::Text, Aim::Text) => true,
+      (Aim::Sequence { align: a }, Aim::Sequence { align: b }) => a == b,
+      _ => false,
+    };
+    aims
+      && str_equals(self.scheme, other.scheme)
+      && self.nullable == other.nullable
       && self.width == other.width
       && self.endian.equals(other.endian)
-      && self.limit == other.limit
       && self.size == other.size
       && self.align == other.align
   }
+}
 
-  /// The integer of the offset (or of a length, or of a capacity) whose bytes are at `ptr`.
-  ///
-  /// # Safety
-  /// `ptr` must be valid for reads of `width` initialized bytes.
-  #[cfg(feature = "nearest")]
-  #[inline(always)]
-  pub(crate) const unsafe fn offset(&self, ptr: *const u8) -> i64 {
-    // SAFETY: guaranteed by the caller.
-    let bits = unsafe { load(ptr, self.width, self.endian) } as u64;
-    // Sign-extended from `width` bytes.
-    let unused = 64 - 8 * self.width as u32;
-    (bits << unused).cast_signed() >> unused
+/// Whatever two strings are the same, in `const`.
+const fn str_equals(a: &str, b: &str) -> bool {
+  let (a, b) = (a.as_bytes(), b.as_bytes());
+  if a.len() != b.len() {
+    return false;
   }
+  let mut i = 0;
+  while i < a.len() {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  true
 }
 
 /// Layout of an enum with fields, see [`Layout::enumeration`].
@@ -1086,13 +1158,19 @@ impl Layout {
     }
   }
 
-  /// Layout of the self-relative pointer `P`, which is the offset of `pointer` and nothing else.
+  /// Layout of the self-relative pointer `P`, which is the offset of `pointer` and nothing else,
+  /// to a `T` (an element of a sequence, `()` for text), for [`self_relative!`](crate::self_relative).
   ///
   /// # Panics
-  /// If `P` does not have the size of the offset.
+  /// If `P` does not have the size of the offset, or if `pointer` was not made for a `T`.
+  #[doc(hidden)]
   #[must_use]
-  pub const fn pointer<P>(pointer: Pointer) -> Self {
+  pub const fn pointer<P, T>(pointer: Pointer) -> Self {
     assert!(size_of::<P>() == pointer.width, "a self-relative pointer is its offset");
+    assert!(
+      size_of::<T>() == pointer.size && align_of::<T>() == pointer.align,
+      "the `POINTER` of a `SelfRelative` type is made for its `Target`"
+    );
     Self {
       kind: Kind::Pointer(pointer),
       size: pointer.width,
@@ -1138,94 +1216,6 @@ impl Layout {
         }
         false
       }
-    }
-  }
-
-  /// The largest buffer with a value of the layout at its start: the least of the limits of the
-  /// pointers it holds (not counting what they aim at), `u64::MAX` without any.
-  #[cfg(feature = "nearest")]
-  pub(crate) const fn reach(&self) -> u64 {
-    if self.leaves == 0 {
-      return u64::MAX;
-    }
-    let mut reach = u64::MAX;
-    match self.kind {
-      Kind::Pointer(pointer) => reach = pointer.limit,
-      Kind::Scalar(_) | Kind::Pattern(_) => {}
-      Kind::Array(elem, _) | Kind::Slice(elem) => reach = elem.reach(),
-      Kind::Struct(fields, _) => {
-        let mut i = 0;
-        while i < fields.len() {
-          let field = fields[i].layout.reach();
-          if field < reach {
-            reach = field;
-          }
-          i += 1;
-        }
-      }
-      Kind::Enum(layout) => {
-        let mut i = 0;
-        while i < layout.variants.len() {
-          let variant = layout.variants[i].layout.reach();
-          if variant < reach {
-            reach = variant;
-          }
-          i += 1;
-        }
-      }
-    }
-    reach
-  }
-
-  /// Whatever every byte of every value is initialized, and no value holds a pointer: values
-  /// that can be copied as bytes. Enums with fields are not looked into.
-  #[cfg(feature = "nearest")]
-  pub(crate) const fn is_plain(&self) -> bool {
-    if self.unsized_ {
-      return false;
-    }
-    match self.kind {
-      Kind::Scalar(spec) => !matches!(spec.valid, Valid::Uninit),
-      Kind::Array(elem, len) => len == 0 || elem.is_plain(),
-      Kind::Struct(fields, _) => {
-        let (mut i, mut end) = (0, 0);
-        while i < fields.len() {
-          let field = &fields[i];
-          if field.layout.size > 0 {
-            if field.offset != end || !field.layout.is_plain() {
-              return false;
-            }
-            end = field.offset + field.layout.size;
-          }
-          i += 1;
-        }
-        end == self.size
-      }
-      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
-    }
-  }
-
-  /// Whatever the type system lets every bit pattern be a value, padding aside, and no value
-  /// holds a pointer: there is nothing to check but what a struct requires (`valid(..)`, rules).
-  #[cfg(feature = "nearest")]
-  pub(crate) const fn is_free(&self) -> bool {
-    if self.unsized_ {
-      return false;
-    }
-    match self.kind {
-      Kind::Scalar(spec) => !matches!(spec.known, Valid::In(_)),
-      Kind::Array(elem, len) => len == 0 || elem.is_free(),
-      Kind::Struct(fields, _) => {
-        let mut i = 0;
-        while i < fields.len() {
-          if !fields[i].layout.is_free() {
-            return false;
-          }
-          i += 1;
-        }
-        true
-      }
-      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
     }
   }
 
