@@ -32,7 +32,9 @@ its front, its back).
 - The first row is proven (nothing at run time) but for `try_pun*`, which is checked. A part is
   the first or the last `size_of::<D>()` bytes (or, for `head*`, as many elements of a slice as
   fit); `tail*` needs a sized source.
-- The second row is checked: the size, the address, then what bytes do not prove of the target.
+- The second row is checked: the address, the size, then what bytes do not prove of the target
+  (`from_tail*` takes the size first, since where the last bytes start depends on it, and
+  `from_head*` that there are enough bytes for the sized part, then the address).
   `from_bytes*` and `as_bytes` are sugar for `try_pun_ref::<[u8], D>`, `try_pun_mut::<[u8], D>`
   and `pun_ref::<S, [u8]>`, with identical behaviour: they pin one side to bytes (an unsuffixed
   integer literal array would otherwise be an `[i32; N]`) and take one type parameter.

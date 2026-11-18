@@ -1771,8 +1771,8 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 /// (`try_pun_ref(&[1, 0])` is a pun of `[i32; 2]`: an unsuffixed integer literal is an `i32`
 /// unless something says otherwise), and because it takes one type parameter.
 ///
-/// The size is checked if it depends on a slice length, the address if `D` has an alignment
-/// greater than 1, and then what bytes do not prove of `D`.
+/// The address is checked if `D` has an alignment greater than 1, then the size if it depends on
+/// a slice length, then what bytes do not prove of `D`.
 ///
 /// ```
 /// use puns::{Error, Pun};
