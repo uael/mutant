@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/uael/puns/compare/v0.1.4...v0.1.5) - 2026-11-18
+
+### Fixed
+
+- rust-version 1.99, the first stable release that has what puns needs ([#21](https://github.com/uael/puns/pull/21))
+
 ## [0.1.4](https://github.com/uael/puns/compare/v0.1.3...v0.1.4) - 2026-11-18
 
 ### Other
