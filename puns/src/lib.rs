@@ -276,7 +276,9 @@
 //! A crate declares its self-relative pointers (offsets from their own address to a target in the
 //! same buffer, as the regions of [`nearest`](https://docs.rs/nearest) have) with
 //! [`SelfRelative`], and [`view_ref`] reads a value that holds them as another type, with
-//! everything they aim at proven at compile time.
+//! everything they aim at proven at compile time. The crate that has the pointers checks a
+//! buffer of them with [`validate_in`]: each value from its layout, its pointers handed to the
+//! crate's [`Visit`], which follows them as its scheme says.
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.
