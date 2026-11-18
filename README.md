@@ -3,7 +3,7 @@
 [![CI](https://github.com/uael/puns/workflows/CI/badge.svg)](https://github.com/uael/puns/actions)
 [![docs.rs](https://img.shields.io/docsrs/puns)](https://docs.rs/puns)
 [![crates.io](https://img.shields.io/crates/v/puns)](https://crates.io/crates/puns)
-[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](LICENSE-MIT)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)][mit]
 
 **Type punning, proven at compile time: a safe alternative to `transmute`, and to hand-written
 parsing of bytes.**
@@ -665,6 +665,10 @@ being closed.
 - **A CRC is 32 KiB of tables in the binary** for each set of parameters that is used (16 bytes
   at a time; 16 KiB of them are read for a CRC of up to 32 bits); `sum16` adds 8 bytes at a time
   and needs none.
+- **A rule computes on 128-bit integers.** It costs what the arithmetic costs, and the arithmetic
+  of a `u128` is two registers and a carry: a `walk` that carries two things in its state (what
+  a header is, where it starts) keeps each in a half, `(kind << 64) + start`, not packed in the
+  low bits, which would put a shift on every step.
 - **Each checked pun is code**, specialized for its pair of types: a proven pun adds nothing to
   the binary, a checked one adds its checks, inlined where it is called.
 - **Measure in release.** In a debug build nothing is inlined: each operation of a rule is a
@@ -762,11 +766,13 @@ Rust 1.100 or later. `puns` is `no_std` and depends on nothing but its derive. B
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0][apache] or [MIT license][mit] at your
+option.
 
 [ethernet]: https://github.com/uael/puns/blob/main/puns/examples/ethernet.rs
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
 [examples]: https://github.com/uael/puns/tree/main/puns/examples
 [design]: https://github.com/uael/puns/blob/main/puns/DESIGN.md
+[apache]: https://github.com/uael/puns/blob/main/LICENSE-APACHE
+[mit]: https://github.com/uael/puns/blob/main/LICENSE-MIT

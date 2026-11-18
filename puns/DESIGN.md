@@ -950,7 +950,10 @@ as something else, a check that would be behind a pointer.
   part that the target does not have over the same extent, while the operations of a rule tell
   which fields and bytes it reads (a rule over other fields only could be allowed), and any enum
   only partly covered, while an enum all of whose variants accept what is written could be
-  allowed.
+  allowed. A `pun_mut` of a whole value does not ask this of rules: through `&mut Plain`, a
+  struct read from a `&mut S` whose rule `Plain` does not have can be written past that rule, as
+  through the fields of `S` itself (a rule is a requirement, see "What the type system enforces").
+  The two could be made the same, either way.
 - **Rules implied by other rules**: a rule is proven by the same rules, not by others that imply
   it (`v % 6 == 0` implies `v % 3 == 0`), nor by the same rule of a struct of another extent that
   does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check
