@@ -300,9 +300,10 @@ mod tests;
 mod validate;
 mod visit;
 
-/// The example of `README.md`, run with the doc tests.
+/// The examples of `README.md`, run with the doc tests. `puns/README.md` is a link to the one of
+/// the repository, which a package holds as a file: the path is the same in both.
 #[cfg(doctest)]
-#[doc = include_str!("../../README.md")]
+#[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
 use core::{marker::PhantomData, mem::ManuallyDrop};

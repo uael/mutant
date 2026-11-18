@@ -430,6 +430,9 @@ pub struct Pointer {
   pub(crate) aim: Aim,
   /// An offset whose bytes are all zero is no pointer.
   pub(crate) nullable: bool,
+  /// The type of the pointer has no value whose bytes are all zero (its offset is a `NonZero`):
+  /// found by [`Layout::pointer`], not told.
+  pub(crate) nonzero: bool,
   /// Size of the offset, which is the size of the pointer: 1 to 16 bytes.
   pub(crate) width: usize,
   /// Byte order of the offset.
@@ -449,7 +452,7 @@ impl Pointer {
     (size, align): (usize, usize),
   ) -> Self {
     assert!(width >= 1 && width <= 16, "the offset of a pointer is 1 to 16 bytes");
-    Self { scheme, aim, nullable: false, width, endian, size, align }
+    Self { scheme, aim, nullable: false, nonzero: false, width, endian, size, align }
   }
 
   /// The size and the alignment of `T`, which a pointer aims at.
@@ -506,7 +509,7 @@ impl Pointer {
   /// at nothing.
   #[must_use]
   pub const fn or_null(self) -> Self {
-    Self { nullable: true, ..self }
+    Self { nullable: true, nonzero: false, ..self }
   }
 
   /// Whatever an offset whose bytes are all zero is no pointer ([`Pointer::or_null`]).
@@ -574,7 +577,10 @@ impl Pointer {
         (Aim::Text, Aim::Text) => true,
         _ => false,
       };
-    if fits { Some(to.nullable || !self.nullable) } else { None }
+    // What may be zero (a null, or an offset of zero of a type that has one) is read as what may
+    // not be only when it is not, which is then checked at run time.
+    let zero = self.nullable || !self.nonzero;
+    if fits { Some(to.nullable || !to.nonzero && !self.nullable || !zero) } else { None }
   }
 
   /// Whatever two pointers are the same, as far as the pointers themselves go.
@@ -587,6 +593,7 @@ impl Pointer {
     aims
       && str_equals(self.scheme, other.scheme)
       && self.nullable == other.nullable
+      && self.nonzero == other.nonzero
       && self.width == other.width
       && self.endian.equals(other.endian)
       && self.size == other.size
@@ -967,6 +974,32 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
   }
 }
 
+/// Whatever the type `P`, the offset of a self-relative pointer, has no value whose bytes are all
+/// zero: `Option<P>` has the size of `P` (a niche in it), with `None` all zeros.
+///
+/// # Panics
+/// If `Option<P>` has the size of `P` with a `None` that is not zeros: a niche that is not zero,
+/// which tells of values of the offset that are no pointer, and which is not supported.
+const fn excludes_zero<P>() -> bool {
+  if size_of::<Option<P>>() != size_of::<P>() {
+    return false;
+  }
+  let none = mem::MaybeUninit::new(None::<P>);
+  let mut i = 0;
+  while i < size_of::<P>() {
+    // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2 of
+    // `discover.rs`).
+    let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
+    assert!(
+      byte == 0,
+      "the offset of a self-relative pointer excludes values other than zero (a niche that is not \
+       zero): not supported, nothing tells which"
+    );
+    i += 1;
+  }
+  true
+}
+
 /// The tag of an enum that no value can be.
 const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 
@@ -1204,6 +1237,15 @@ impl Layout {
   #[must_use]
   pub const fn pointer<P, T>(pointer: Pointer) -> Self {
     assert!(size_of::<P>() == pointer.width, "a self-relative pointer is its offset");
+    // Whatever the type has no value of zeros: `Option` of it has its size, `None` being zeros (a
+    // `NonZero`). A niche elsewhere would tell of values of the offset that are no pointer, which
+    // nothing here can name: refused.
+    let nonzero = excludes_zero::<P>();
+    assert!(
+      !(nonzero && pointer.nullable),
+      "a self-relative pointer that may be null has a value of zeros: its offset is no `NonZero`"
+    );
+    let pointer = Pointer { nonzero, ..pointer };
     assert!(
       size_of::<T>() == pointer.size && align_of::<T>() == pointer.align,
       "the `POINTER` of a `SelfRelative` type is made for its `Target`"

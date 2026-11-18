@@ -600,3 +600,38 @@ fn option_and_result() {
   // Proven between them, variant by variant.
   assert_eq!(puns::pun::<Result<NonZero<u8>, bool>, Result<u8, u8>>(Err(true)), Err(1));
 }
+
+/// A field restricted to a value, in a struct whose rule no value meets: safe code makes values of
+/// it all the same (`valid(..)` and rules are requirements, not what the type system enforces).
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(x == 1 && x == 2))]
+struct Impossible {
+  #[pun(valid(3))]
+  x: u8,
+}
+
+#[derive(Pun, Clone, Copy)]
+enum HoldsImpossible {
+  A(Impossible),
+  B(u16),
+}
+
+/// "No value" is only said of what the type system makes so (a field of a type without values),
+/// never of what a requirement excludes: a variant believed to have no value would be left out of
+/// what a source can be.
+#[test]
+fn no_value_is_what_the_type_system_says() {
+  assert!(<Impossible as puns::Pun>::LAYOUT.is_inhabited());
+  let layout = <HoldsImpossible as puns::Pun>::LAYOUT;
+  assert!(layout.is_inhabited());
+  // Both variants have tags: `A` is one that a value can be.
+  assert_ne!(layout.variant_ranges(0), Some(&[][..]));
+  assert_ne!(layout.variant_ranges(1), Some(&[][..]));
+  // And a type without values is said to have none, as is what holds one.
+  assert!(!<Infallible as puns::Pun>::LAYOUT.is_inhabited());
+  assert!(!<(u8, Infallible) as puns::Pun>::LAYOUT.is_inhabited());
+  assert!(<[Infallible; 0] as puns::Pun>::LAYOUT.is_inhabited());
+  assert!(<Never as puns::Pun>::LAYOUT.is_inhabited());
+  assert_eq!(<Never as puns::Pun>::LAYOUT.variant_ranges(1), None);
+}

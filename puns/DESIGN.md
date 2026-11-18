@@ -481,7 +481,10 @@ tests are outside it), and so are the tests (`tests/support/relative.rs`), the m
 What the declarer promises (S1 to S7, the contract of `SelfRelative`, restated):
 
 - S1. The type is its offset: an integer of the width and byte order of `POINTER`, and nothing
-  else; every byte initialized, none in an `UnsafeCell` (it is read as plain data).
+  else; every byte initialized, none in an `UnsafeCell` (it is read as plain data). A type whose
+  offset has no zero (a `NonZero`) is told apart, found by `Layout::pointer` (`Pointer::nonzero`:
+  `Option` of it has its size, `None` all zeros); any other restriction of the values of the
+  offset is not supported (a niche that is not zero is refused there).
 - S2. The scheme is the way to the target: where a pointer aims and how many elements or bytes
   it aims at depend only on the scheme, the offset (width, byte order), the kind of aim, the
   address of the pointer, the bytes of its offset and bytes of its buffer: never on the type
@@ -510,8 +513,9 @@ valid, and its own. Three rules follow, which every function keeps.
    offset (width and byte order: one is read as the other), the same kind of aim, and a target
    that is no larger and needs no more alignment (one value: its size and alignment; a sequence:
    elements of the same size, and a declared alignment of the target's that is not greater than
-   the source's; text: nothing more), and not nullable where the target's is not, unless that is
-   checked. Anything else is `Relation::pointer`, which no function accepts and no check makes up
+   the source's; text: nothing more), and not nullable where the target's is not, nor of a type
+   that has an offset of zero where the target's has none (a `NonZero`), unless that is checked
+   (`try_view_ref`: not zero; `view_ref` refuses it). Anything else is `Relation::pointer`, which no function accepts and no check makes up
    for. An enum that holds pointers is proven by an enum, variant by variant, or not at all.
 2. **Only what proves what pointers aim at makes a value that holds one.** `view_ref` and
    `try_view_ref` prove it (below). Every other function refuses a target that holds a pointer
@@ -632,7 +636,8 @@ null read as one that is not: its bytes are not all zero), and requires of what 
   (`listed`).
 - P7. `Pointer::reads_as` relates only pointers of the same scheme, width, byte order and kind of
   aim, with the numbers of their descriptions (sizes, alignments, the declared alignment of a
-  sequence), and says when nullability is to be checked; `Pointer::same` (by which two layouts
+  sequence), and says when nullability, or an offset of zero read as a `NonZero`, is to be
+  checked; `Pointer::same` (by which two layouts
   are equal) compares every field of the description.
 - P8. What the declarer promises is S1 to S7, which `puns` relies on and nothing more: S2 for a
   pointer read as another of the same scheme, S3 and S4 for what `deep` proves of the targets,
@@ -726,7 +731,9 @@ which read the variant with `mem::discriminant`:
 
 In both cases the gaps of each variant that has one tag, outside the tag, are filled with zeros
 then with ones, which must leave it that variant (a byte of a tag outside would have two values
-for one variant), and the tags must differ. What is found is checked against the size and the
+for one variant), and so are all the gaps of the variant that holds a niche (its scalar must tell
+it alone: a layout in which another place took part, a two-level encoding say, is refused), and
+the tags must differ. The header of `discover.rs` says which fact each experiment holds. What is found is checked against the size and the
 alignment of the enum (`Layout::enumeration`). An experiment that goes wrong either refuses the
 enum with a message ("no tag found", "unsupported layout"...) or fails the build (an error of const
 evaluation): it never finds a wrong layout. Every experiment copies a sample and reads a variant;
@@ -883,6 +890,10 @@ as something else, a check that would be behind a pointer.
 - **Precise checks of an enum made from something else**: when only some of its variants are
   proven, or some values of the source are no tag, the whole enum is checked at run time (its
   tag, then the fields of its variant), not only what was not proven.
+- **An enum checked into what is not an enum**: `try_pun::<Shape, CirclePad>` is refused for a
+  byte of padding of a variant that the check of the tag would exclude. As a source, an enum is
+  known by the bytes that every variant initializes, not variant by variant; relating the target
+  to each variant of the source whose tag it may accept would make it checked.
 - **Checking some fields of a union**: when the check of one field would read a byte that may be
   padding, and no field is proven, the pun is refused; checking the other fields only would be
   sound, but the marks of the analysis cannot tell the validation which fields to skip.

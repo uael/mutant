@@ -26,7 +26,20 @@
 //!
 //! R2 and R4 are held by compile-fail tests (`discover_reads_padding`, `discover_invalid_tag`),
 //! R1 by the experiments themselves (a layout that is not of that shape is refused), R3 by an
-//! assertion on every sample.
+//! assertion on every sample. Each experiment, and what it holds:
+//!
+//! - every sample reads as its own variant: R3 (and that the samples are values);
+//! - the bytes of the tag, moved from the sample of each variant to the one of another (`try_tag`),
+//!   make it that variant: R1, the tag is there (a wrong candidate changes nothing, and is
+//!   dropped; a byte moved that is padding stays padding);
+//! - the gaps of each variant that has one tag, outside the tag, filled with zeros then with ones,
+//!   leave it that variant (`decided_by`): R1, nothing else tells it (a byte of a tag outside would
+//!   take two values for one variant); and the same of every gap of the dataful variant of a niche,
+//!   and of the only variant of an enum laid out as a struct: R1, its fields tell it alone;
+//! - the tag of each variant but the dataful one is read in its sample, and must be initialized:
+//!   R4 makes it a byte of the tag, R2 fails the build if it is padding; for a direct tag, every
+//!   byte before the first field of any variant is read so (which `rustc` widens the tag to);
+//! - the tags differ, and are not values of the scalar of a niche: R1.
 //!
 //! The library's own validity of a type is a subset of the one of `rustc` (what `Pun::LAYOUT`
 //! promises): the values that `rustc` gives to the other variants of a niche are invalid for the
@@ -519,6 +532,12 @@ const fn try_tag<E, const V: usize>(
       return false;
     }
     v += 1;
+  }
+  // Nor anything outside its fields the dataful variant: its gaps filled with zeros, then with
+  // ones, leave it that variant (R1 says that a niche is told by its scalar alone; a layout in
+  // which another place takes part, a two-level encoding say, is refused here).
+  if dataful < V && !decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) {
+    return false;
   }
   // Their tags: initialized, so bytes of the tag (R4), and different.
   let (mut values, mut single, mut v) = ([0; V], [false; V], 0);
