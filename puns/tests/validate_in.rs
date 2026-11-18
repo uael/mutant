@@ -286,3 +286,50 @@ fn any_input() {
     all::<()>(&mut rng, &bytes);
   }
 }
+
+/// No value.
+#[derive(Pun)]
+#[expect(dead_code, reason = "a type without values, made of bytes in no test")]
+enum Never {}
+
+/// A struct that holds a type without values: none either.
+#[derive(Pun)]
+#[repr(C)]
+#[expect(dead_code, reason = "a type without values")]
+struct Holds {
+  id: u8,
+  never: Never,
+}
+
+/// A type that has no value is never valid, whatever the bytes: it has something to check (its
+/// layout is not free of constraints, `is_free` is `leaves == 0`), so `validate_in` does not
+/// return early, and what it checks fails.
+#[test]
+fn types_without_values() {
+  use core::convert::Infallible;
+  fn never<T: Pun>(bytes: &[u8]) {
+    assert!(!const { T::LAYOUT.is_free() }, "{}", core::any::type_name::<T>());
+    assert!(!const { T::LAYOUT.is_inhabited() }, "{}", core::any::type_name::<T>());
+    for at in 0..=bytes.len() {
+      assert!(ok::<T>(bytes, at).is_err(), "{} at {at}", core::any::type_name::<T>());
+    }
+    let mut record = Record::default();
+    for count in 1..3 {
+      assert!(puns::validate_elems_in::<T, _>(bytes, 0, count, &mut record).is_err());
+    }
+  }
+  let bytes = [0u8, 1, 2, 0xff];
+  never::<Never>(&bytes);
+  never::<Infallible>(&bytes);
+  never::<Holds>(&bytes);
+  never::<[Never; 2]>(&bytes);
+  never::<(u8, Infallible)>(&bytes);
+  never::<Result<Infallible, Never>>(&bytes);
+  // No element of a type without values: one value, of no byte.
+  assert_eq!(ok::<[Never; 0]>(&bytes, 4), Ok(()));
+  // `Option<Infallible>`: `None` only, whatever its bytes (it has none).
+  assert_eq!(size_of::<Option<Infallible>>(), 0);
+  assert_eq!(ok::<Option<Infallible>>(&bytes, 0), Ok(()));
+  // `Result<u8, Infallible>`: an `Ok` only.
+  assert_eq!(ok::<Result<u8, Infallible>>(&[7], 0), Ok(()));
+}
