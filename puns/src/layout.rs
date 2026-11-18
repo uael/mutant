@@ -17,9 +17,18 @@ use crate::ptr;
 // `Endian`
 
 /// Byte order of a scalar.
+///
+/// ```
+/// use puns::layout::Endian;
+///
+/// let native = if cfg!(target_endian = "little") { Endian::Little } else { Endian::Big };
+/// assert_eq!(Endian::NATIVE, native);
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Endian {
+  /// The least significant byte first.
   Little,
+  /// The most significant byte first.
   Big,
 }
 
@@ -54,6 +63,17 @@ pub(crate) enum Valid {
 }
 
 /// Specification of a scalar: its size, its byte order and the values it accepts.
+///
+/// It is the [`SPEC`](crate::Scalar::SPEC) of a [`Scalar`](crate::Scalar) type, and the layout of
+/// one ([`Layout::scalar`]).
+///
+/// ```
+/// use puns::Scalar;
+///
+/// assert!(bool::SPEC.contains(1) && !bool::SPEC.contains(2));
+/// // A surrogate is not a `char`.
+/// assert!(char::SPEC.contains(0x41) && !char::SPEC.contains(0xd800));
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub struct Spec {
   pub(crate) size: usize,
@@ -78,6 +98,15 @@ pub(crate) const fn max_value(size: usize) -> u128 {
 
 impl Spec {
   /// A scalar the size of `T` that accepts every initialized bit pattern.
+  ///
+  /// ```
+  /// use puns::layout::Spec;
+  ///
+  /// let spec = Spec::any::<u16>();
+  /// assert!(spec.contains(0) && spec.contains(0xffff));
+  /// // Not a value of 2 bytes.
+  /// assert!(!spec.contains(0x1_0000));
+  /// ```
   #[inline]
   #[must_use]
   pub const fn any<T>() -> Self {
@@ -93,6 +122,14 @@ impl Spec {
   }
 
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
+  ///
+  /// ```
+  /// use puns::layout::{Layout, Spec};
+  ///
+  /// // Its bytes may be uninitialized: it is not plain data, as one of `Spec::any` is.
+  /// assert!(!Layout::scalar::<u16>(Spec::uninit::<u16>()).is_plain());
+  /// assert!(Layout::scalar::<u16>(Spec::any::<u16>()).is_plain());
+  /// ```
   #[inline]
   #[must_use]
   pub const fn uninit<T>() -> Self {
@@ -105,6 +142,17 @@ impl Spec {
   ///
   /// `ranges` are inclusive and must be sorted, disjoint and non-adjacent; this is checked at
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Spec};
+  ///
+  /// let spec = Spec::ranges::<u8>(Endian::NATIVE, &[(1, 3), (7, 7)]);
+  /// assert!(spec.contains(1) && spec.contains(3) && spec.contains(7));
+  /// assert!(!spec.contains(0) && !spec.contains(5));
+  /// ```
+  ///
+  /// # Panics
+  /// As [`Spec::with_ranges`].
   #[must_use]
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
     let size = size_of::<T>();
@@ -112,6 +160,21 @@ impl Spec {
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
+  ///
+  /// ```
+  /// use puns::layout::Spec;
+  ///
+  /// let digit = Spec::any::<u8>().with_ranges(&[(b'0' as u128, b'9' as u128)]);
+  /// assert!(digit.contains(b'7'.into()) && !digit.contains(b'a'.into()));
+  /// ```
+  ///
+  /// Ranges that are adjacent are one range, which must be written so:
+  ///
+  /// ```should_panic
+  /// use puns::layout::Spec;
+  ///
+  /// let _ = Spec::any::<u8>().with_ranges(&[(0, 4), (5, 9)]);
+  /// ```
   ///
   /// # Panics
   /// If the scalar is not 1 to 16 bytes wide, or if `ranges` is empty, not sorted, overlapping,
@@ -146,6 +209,17 @@ impl Spec {
   /// values, in an enum without `repr` (see `discover.rs`). Requiring the value is right in
   /// either case, and so is knowing nothing.
   ///
+  /// ```
+  /// use puns::layout::{Endian, Layout, Spec};
+  ///
+  /// let tag = Spec::ranges::<u8>(Endian::NATIVE, &[(0, 2)]);
+  /// // Required: the same values.
+  /// assert!(tag.maybe_uninit().contains(2) && !tag.maybe_uninit().contains(3));
+  /// // Known: nothing, not even that its bytes are initialized.
+  /// assert!(Layout::scalar::<u8>(tag).is_plain());
+  /// assert!(!Layout::scalar::<u8>(tag.maybe_uninit()).is_plain());
+  /// ```
+  ///
   /// # Panics
   /// If `self` accepts every initialized value, or uninitialized bytes: such a scalar is
   /// [`Spec::uninit`].
@@ -164,6 +238,16 @@ impl Spec {
   /// Same as `self`, for a scalar whose bits are not the value of an unsigned integer: a signed
   /// or floating-point number, a `bool`, a `char`, an enum. The expressions of `#[pun(..)]`,
   /// which compute on unsigned integers, do not read it.
+  ///
+  /// The `Spec` of `i16` is `Spec::any::<i16>().not_a_number()`, of which a rule reads nothing:
+  ///
+  /// ```should_panic
+  /// use puns::layout::Op;
+  ///
+  /// // A `u16` is read by a rule; an `i16` is not.
+  /// let _ = Op::load::<u16>(0);
+  /// let _ = Op::load::<i16>(0);
+  /// ```
   #[must_use]
   pub const fn not_a_number(self) -> Self {
     Self { number: false, ..self }
@@ -224,6 +308,26 @@ impl Spec {
     matches!(self.known, Valid::Any) && matches!(self.valid, Valid::In(_))
   }
   /// Same as `self`, read in another byte order.
+  ///
+  /// ```
+  /// use puns::{
+  ///   Scalar,
+  ///   layout::{Endian, Op, Spec},
+  /// };
+  ///
+  /// /// Two bytes, the most significant first.
+  /// #[derive(Clone, Copy)]
+  /// #[repr(transparent)]
+  /// struct Be16([u8; 2]);
+  ///
+  /// // SAFETY: any two bytes are one.
+  /// unsafe impl Scalar for Be16 {
+  ///   const SPEC: Spec = Spec::any::<Be16>().with_endian(Endian::Big);
+  /// }
+  ///
+  /// // What a rule reads of it.
+  /// assert_eq!(Op::load::<Be16>(0), Op::Load { offset: 0, size: 2, big: true });
+  /// ```
   #[inline]
   #[must_use]
   pub const fn with_endian(self, endian: Endian) -> Self {
@@ -256,6 +360,14 @@ impl Spec {
   }
 
   /// Whatever `value` is valid for this scalar.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Spec};
+  ///
+  /// let spec = Spec::ranges::<u8>(Endian::NATIVE, &[(1, 9)]);
+  /// assert!(spec.contains(1) && spec.contains(9));
+  /// assert!(!spec.contains(0) && !spec.contains(10));
+  /// ```
   #[must_use]
   pub const fn contains(&self, value: u128) -> bool {
     match self.valid {
@@ -384,6 +496,14 @@ pub(crate) enum Kind {
 }
 
 /// What a self-relative pointer aims at, elsewhere in the buffer that holds it.
+///
+/// ```
+/// use puns::layout::{Aim, Endian, Pointer};
+///
+/// let list = Pointer::sequence::<u32>("my crate", 4, Endian::Little, 8);
+/// assert_eq!(list.aim(), Aim::Sequence { align: 8 });
+/// assert_eq!(Pointer::text("my crate", 4, Endian::Little).aim(), Aim::Text);
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Aim {
   /// One value of the target type, at an address that is aligned for it.
@@ -424,6 +544,18 @@ pub enum Aim {
 /// What a pointer guarantees is not a property of its bytes. So no bytes ever prove one (only a
 /// pointer does, whose target can be read as the target of the other), no check makes up for
 /// one, and no `&mut` to one is ever handed out.
+///
+/// ```
+/// use puns::layout::{Aim, Endian, Pointer};
+///
+/// // An offset of 4 bytes, little-endian, to a `u64`.
+/// const NEXT: Pointer = Pointer::one::<u64>("my crate: an offset", 4, Endian::Little);
+///
+/// assert_eq!(NEXT.scheme(), "my crate: an offset");
+/// assert_eq!((NEXT.width(), NEXT.endian(), NEXT.aim()), (4, Endian::Little, Aim::One));
+/// assert_eq!((NEXT.size(), NEXT.align()), (size_of::<u64>(), align_of::<u64>()));
+/// assert!(!NEXT.is_nullable() && NEXT.or_null().is_nullable());
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub struct Pointer {
   pub(crate) scheme: &'static str,
@@ -466,6 +598,14 @@ impl Pointer {
   /// A pointer of the scheme `scheme` to one `T`, whose offset is an integer of `width` bytes in
   /// the byte order `endian`.
   ///
+  /// ```
+  /// use puns::layout::{Aim, Endian, Pointer};
+  ///
+  /// let pointer = Pointer::one::<[u16; 3]>("my crate", 2, Endian::Big);
+  /// assert_eq!(pointer.aim(), Aim::One);
+  /// assert_eq!((pointer.size(), pointer.align()), (size_of::<[u16; 3]>(), align_of::<u16>()));
+  /// ```
+  ///
   /// # Panics
   /// If `width` is not 1 to 16, or if `T` has no size.
   #[must_use]
@@ -476,6 +616,22 @@ impl Pointer {
   /// A pointer of the scheme `scheme` to a sequence of `T`, the first of which is at an address
   /// that is a multiple of `align`, whose offset is an integer of `width` bytes in the byte
   /// order `endian`.
+  ///
+  /// ```
+  /// use puns::layout::{Aim, Endian, Pointer};
+  ///
+  /// // Elements of 2 bytes, the first at a multiple of 4.
+  /// let pointer = Pointer::sequence::<u16>("my crate", 4, Endian::Little, 4);
+  /// assert_eq!(pointer.aim(), Aim::Sequence { align: 4 });
+  /// assert_eq!(pointer.size(), size_of::<u16>());
+  /// ```
+  ///
+  /// ```should_panic
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// // Not a power of two.
+  /// let _ = Pointer::sequence::<u8>("my crate", 4, Endian::Little, 3);
+  /// ```
   ///
   /// # Panics
   /// If `width` is not 1 to 16, if `T` has no size, or if `align` is not a power of two at least
@@ -498,6 +654,13 @@ impl Pointer {
   /// A pointer of the scheme `scheme` to text, whose offset is an integer of `width` bytes in the
   /// byte order `endian`. Its target type is `()`: there is nothing to relate behind it.
   ///
+  /// ```
+  /// use puns::layout::{Aim, Endian, Pointer};
+  ///
+  /// let pointer = Pointer::text("my crate", 4, Endian::Little);
+  /// assert_eq!((pointer.aim(), pointer.size(), pointer.align()), (Aim::Text, 0, 1));
+  /// ```
+  ///
   /// # Panics
   /// If `width` is not 1 to 16.
   #[must_use]
@@ -507,18 +670,41 @@ impl Pointer {
 
   /// The same pointer, but nullable: an offset whose bytes are all zero is no pointer, and aims
   /// at nothing.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// let pointer = Pointer::one::<u32>("my crate", 4, Endian::Little).or_null();
+  /// assert!(pointer.is_nullable());
+  /// assert_eq!(pointer.size(), size_of::<u32>());
+  /// ```
   #[must_use]
   pub const fn or_null(self) -> Self {
     Self { nullable: true, nonzero: false, ..self }
   }
 
   /// Whatever an offset whose bytes are all zero is no pointer ([`Pointer::or_null`]).
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// let pointer = Pointer::one::<u32>("my crate", 4, Endian::Little);
+  /// assert!(!pointer.is_nullable());
+  /// assert!(pointer.or_null().is_nullable());
+  /// ```
   #[must_use]
   pub const fn is_nullable(&self) -> bool {
     self.nullable
   }
 
   /// The scheme: the name that the declaring crate gave the way to the target.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// let pointer = Pointer::text("my crate: a length before the text", 4, Endian::Little);
+  /// assert_eq!(pointer.scheme(), "my crate: a length before the text");
+  /// ```
   #[must_use]
   pub const fn scheme(&self) -> &'static str {
     self.scheme
@@ -526,30 +712,64 @@ impl Pointer {
 
   /// What the pointer aims at: one value, a sequence (and the alignment that the declarer
   /// guarantees of its first element), or text.
+  ///
+  /// ```
+  /// use puns::layout::{Aim, Endian, Pointer};
+  ///
+  /// let pointer = Pointer::sequence::<u8>("my crate", 4, Endian::Little, 16);
+  /// assert_eq!(pointer.aim(), Aim::Sequence { align: 16 });
+  /// ```
   #[must_use]
   pub const fn aim(&self) -> Aim {
     self.aim
   }
 
   /// The size of the offset in bytes, which is the size of the pointer.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// assert_eq!(Pointer::one::<u64>("my crate", 2, Endian::Little).width(), 2);
+  /// ```
   #[must_use]
   pub const fn width(&self) -> usize {
     self.width
   }
 
   /// The byte order of the offset.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// assert_eq!(Pointer::one::<u64>("my crate", 4, Endian::Big).endian(), Endian::Big);
+  /// ```
   #[must_use]
   pub const fn endian(&self) -> Endian {
     self.endian
   }
 
   /// The size of the target type (of an element of a sequence; 0 for text).
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// let pointer = Pointer::sequence::<[u8; 3]>("my crate", 4, Endian::Little, 1);
+  /// assert_eq!(pointer.size(), 3);
+  /// ```
   #[must_use]
   pub const fn size(&self) -> usize {
     self.size
   }
 
   /// The alignment of the target type (of an element of a sequence; 1 for text).
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Pointer};
+  ///
+  /// // Not the alignment that the declarer guarantees of the first element: see `aim`.
+  /// let pointer = Pointer::sequence::<u16>("my crate", 4, Endian::Little, 8);
+  /// assert_eq!(pointer.align(), align_of::<u16>());
+  /// ```
   #[must_use]
   pub const fn align(&self) -> usize {
     self.align
@@ -623,6 +843,43 @@ const fn str_equals(a: &str, b: &str) -> bool {
 /// that `rustc` chose, as `discover.rs` found it. In the second case it may be a niche: a scalar
 /// of the fields of one variant (the one that holds the tag), whose other values are the
 /// other variants.
+///
+/// The layout of `#[repr(u8)] enum Shape { Dot, Square(u16) }`, as `#[derive(Pun)]` makes it:
+///
+/// ```
+/// use core::mem::offset_of;
+///
+/// use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+///
+/// #[derive(Clone, Copy)]
+/// #[repr(u8)]
+/// enum Shape {
+///   Dot,
+///   Square(u16),
+/// }
+///
+/// // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+/// #[repr(C)]
+/// struct Dot(u8);
+/// #[repr(C)]
+/// struct Square(u8, u16);
+///
+/// // The tags are 0 and 1.
+/// const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+/// const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+/// // The fields of each variant, from the start of the enum.
+/// const SQUARE_FIELDS: [Field; 1] =
+///   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+/// const DOT: Layout = Layout::variant::<Shape>(&[]);
+/// const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+/// const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+/// const SHADOWS: [(usize, usize); 2] =
+///   [(size_of::<Dot>(), align_of::<Dot>()), (size_of::<Square>(), align_of::<Square>())];
+/// const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
+/// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
+///
+/// assert_eq!((LAYOUT.size(), LAYOUT.align()), (size_of::<Shape>(), align_of::<Shape>()));
+/// ```
 #[derive(Debug)]
 pub struct Enum {
   /// A scalar whose valid values are the tags of the variants.
@@ -643,6 +900,44 @@ impl Enum {
   /// With `repr(C)`, the tag is `outside`: the fields of a variant are at the offset of the
   /// shadows (`fields`) plus their offset in the shadow of the variant. Without, the tag is the
   /// first field of each shadow.
+  ///
+  /// With the types of the example of [`Enum`]:
+  ///
+  /// ```
+  /// # use core::mem::offset_of;
+  /// #
+  /// # use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+  /// #
+  /// # #[derive(Clone, Copy)]
+  /// # #[repr(u8)]
+  /// # enum Shape {
+  /// #   Dot,
+  /// #   Square(u16),
+  /// # }
+  /// #
+  /// # // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+  /// # #[repr(C)]
+  /// # struct Dot(u8);
+  /// # #[repr(C)]
+  /// # struct Square(u8, u16);
+  /// #
+  /// # // The tags are 0 and 1.
+  /// # const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  /// # const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+  /// # // The fields of each variant, from the start of the enum.
+  /// # const SQUARE_FIELDS: [Field; 1] =
+  /// #   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+  /// # const DOT: Layout = Layout::variant::<Shape>(&[]);
+  /// # const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+  /// # const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+  /// const SHADOWS: [(usize, usize); 2] =
+  ///   [(size_of::<Dot>(), align_of::<Dot>()), (size_of::<Square>(), align_of::<Square>())];
+  /// const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
+  /// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
+  ///
+  /// // Each variant has a tag of its own: which bytes are padding depends on it.
+  /// assert!(!LAYOUT.is_plain());
+  /// ```
   ///
   /// # Panics
   /// If `fields` is not where the fields of the variants are.
@@ -702,6 +997,16 @@ impl Enum {
 
   /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
   /// `shadows` (see [`Enum::new`]).
+  ///
+  /// ```
+  /// use puns::layout::{Enum, Layout, Spec};
+  ///
+  /// // `#[repr(C, u8)] enum E { A(u8), B(u16) }`: the tag, then the fields of a variant, aligned
+  /// // for the most aligned of the variants.
+  /// const TAG: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// let shadows = [(size_of::<u8>(), align_of::<u8>()), (size_of::<u16>(), align_of::<u16>())];
+  /// assert_eq!(Enum::fields(&TAG, &shadows), align_of::<u16>());
+  /// ```
   #[must_use]
   pub const fn fields(tag: &Layout, shadows: &[(usize, usize)]) -> usize {
     let (mut align, mut i) = (1, 0);
@@ -716,6 +1021,44 @@ impl Enum {
 }
 
 /// A variant of an enum with fields, see [`Layout::enumeration`].
+///
+/// With the types of the example of [`Enum`]:
+///
+/// ```
+/// # use core::mem::offset_of;
+/// #
+/// # use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+/// #
+/// # #[derive(Clone, Copy)]
+/// # #[repr(u8)]
+/// # enum Shape {
+/// #   Dot,
+/// #   Square(u16),
+/// # }
+/// #
+/// # // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+/// # #[repr(C)]
+/// # struct Dot(u8);
+/// # #[repr(C)]
+/// # struct Square(u8, u16);
+/// #
+/// # // The tags are 0 and 1.
+/// # const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+/// # const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+/// # // The fields of each variant, from the start of the enum.
+/// # const SQUARE_FIELDS: [Field; 1] =
+/// #   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+/// # const DOT: Layout = Layout::variant::<Shape>(&[]);
+/// # const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+/// const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+/// const SHADOWS: [(usize, usize); 2] =
+///   [(size_of::<Dot>(), align_of::<Dot>()), (size_of::<Square>(), align_of::<Square>())];
+/// const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
+/// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
+///
+/// // A value of it exists: one of its variants has one.
+/// assert!(LAYOUT.is_inhabited());
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub struct Variant {
   /// Value of the tag; with `ranges`, what tells the variant from the others in the lists of
@@ -829,6 +1172,44 @@ impl Tags {
 impl Variant {
   /// - `tag` is what the tag of the enum is for this variant, as an integer of native endianness,
   /// - `layout` is the [`Layout::variant`] of its fields.
+  ///
+  /// With the types of the example of [`Enum`]:
+  ///
+  /// ```
+  /// # use core::mem::offset_of;
+  /// #
+  /// # use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+  /// #
+  /// # #[derive(Clone, Copy)]
+  /// # #[repr(u8)]
+  /// # enum Shape {
+  /// #   Dot,
+  /// #   Square(u16),
+  /// # }
+  /// #
+  /// # // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+  /// # #[repr(C)]
+  /// # struct Dot(u8);
+  /// # #[repr(C)]
+  /// # struct Square(u8, u16);
+  /// #
+  /// # // The tags are 0 and 1.
+  /// # const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  /// # const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+  /// # // The fields of each variant, from the start of the enum.
+  /// # const SQUARE_FIELDS: [Field; 1] =
+  /// #   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+  /// # const DOT: Layout = Layout::variant::<Shape>(&[]);
+  /// # const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+  /// const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+  /// const SHADOWS: [(usize, usize); 2] =
+  ///   [(size_of::<Dot>(), align_of::<Dot>()), (size_of::<Square>(), align_of::<Square>())];
+  /// const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
+  /// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
+  ///
+  /// // Checked at compile time: the tags are values of the tag of the enum, and its own.
+  /// assert_eq!(LAYOUT.size(), size_of::<Shape>());
+  /// ```
   #[must_use]
   pub const fn new(tag: u128, layout: &'static Layout) -> Self {
     Self { tag, ranges: None, holds_tag: false, layout }
@@ -866,6 +1247,29 @@ impl Variant {
 }
 
 /// A field of a struct, see [`Layout::structure`].
+///
+/// ```
+/// use core::mem::offset_of;
+///
+/// use puns::layout::{Field, Layout, Spec};
+///
+/// #[repr(C)]
+/// struct Pair {
+///   low: u8,
+///   high: u16,
+/// }
+///
+/// const LOW: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+/// const HIGH: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+/// const FIELDS: [Field; 2] = Layout::sort_fields([
+///   Field::new(offset_of!(Pair, low), &LOW),
+///   Field::new(offset_of!(Pair, high), &HIGH),
+/// ]);
+/// // SAFETY: `Pair` is sized.
+/// const PAIR: Layout = unsafe { Layout::structure::<Pair>(core::ptr::null(), &FIELDS, &[]) };
+///
+/// assert_eq!((PAIR.size(), PAIR.align()), (size_of::<Pair>(), align_of::<Pair>()));
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub struct Field {
   pub(crate) offset: usize,
@@ -879,6 +1283,24 @@ pub struct Field {
 }
 
 impl Field {
+  /// A field at `offset` in its struct (in its enum, for the field of a variant), of the layout
+  /// `layout`.
+  ///
+  /// ```
+  /// use puns::layout::{Field, Layout, Spec};
+  ///
+  /// #[repr(C)]
+  /// struct Wrapper(u32);
+  ///
+  /// const VALUE: Layout = Layout::scalar::<u32>(Spec::any::<u32>());
+  /// const FIELDS: [Field; 1] = [Field::new(0, &VALUE)];
+  /// // SAFETY: `Wrapper` is sized.
+  /// const WRAPPER: Layout =
+  ///   unsafe { Layout::structure::<Wrapper>(core::ptr::null(), &FIELDS, &[]) };
+  ///
+  /// // Every byte is the field's: plain data, which nothing is checked of.
+  /// assert!(WRAPPER.is_plain() && WRAPPER.is_free());
+  /// ```
   #[inline]
   #[must_use]
   pub const fn new(offset: usize, layout: &'static Layout) -> Self {
@@ -886,7 +1308,24 @@ impl Field {
   }
 
   /// A scalar field that only accepts some of the values of its type, see
-  /// [`Layout::restricted`].
+  /// [`Layout::restricted`]: what `#[pun(valid(..))]` makes of a field.
+  ///
+  /// ```
+  /// use puns::layout::{Field, Layout, Spec};
+  ///
+  /// #[repr(C)]
+  /// struct Version(u8);
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// const DIGIT: Layout = BYTE.restricted(&[(0, 9)]);
+  /// const FIELDS: [Field; 1] = [Field::restricted(0, &DIGIT)];
+  /// // SAFETY: `Version` is sized.
+  /// const VERSION: Layout =
+  ///   unsafe { Layout::structure::<Version>(core::ptr::null(), &FIELDS, &[]) };
+  ///
+  /// // Its byte is checked where a `Version` is made.
+  /// assert!(!VERSION.is_free());
+  /// ```
   ///
   /// # Panics
   /// If `layout` is not a scalar.
@@ -921,6 +1360,20 @@ impl Field {
 }
 
 /// Memory layout and valid bit patterns of a type.
+///
+/// Every [`Pun`](crate::Pun) type has one, which `#[derive(Pun)]` makes with the functions
+/// below; the analysis of the crate compares them at compile time.
+///
+/// ```
+/// use puns::layout::{Layout, Spec};
+///
+/// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+/// const WORD: Layout = Layout::array(&BYTE, 4);
+///
+/// assert_eq!((WORD.size(), WORD.align()), (4, 1));
+/// // Any 4 bytes are one.
+/// assert!(WORD.is_plain() && WORD.is_free());
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub struct Layout {
   pub(crate) kind: Kind,
@@ -1113,6 +1566,16 @@ impl Layout {
 
   /// Layout of a scalar.
   ///
+  /// ```
+  /// use puns::layout::{Endian, Layout, Spec};
+  ///
+  /// const HALF: Layout =
+  ///   Layout::scalar::<u16>(Spec::ranges::<u16>(Endian::NATIVE, &[(0, 0x7fff)]));
+  /// assert_eq!((HALF.size(), HALF.align()), (size_of::<u16>(), align_of::<u16>()));
+  /// // Some values are not one: they are checked.
+  /// assert!(!HALF.is_free());
+  /// ```
+  ///
   /// # Panics
   /// If `spec` does not have the size of `T`.
   #[must_use]
@@ -1156,6 +1619,22 @@ impl Layout {
   /// Same scalar, that only accepts the values of `ranges` (see [`Spec::ranges`]), which must
   /// all be valid for the scalar.
   ///
+  /// ```
+  /// use puns::layout::{Layout, Spec};
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// assert!(BYTE.is_free());
+  /// assert!(!BYTE.restricted(&[(1, 9)]).is_free());
+  /// ```
+  ///
+  /// ```should_panic
+  /// use puns::layout::{Endian, Layout, Spec};
+  ///
+  /// // Not values of the scalar: it is 0 or 1.
+  /// let bit = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  /// let _ = bit.restricted(&[(1, 2)]);
+  /// ```
+  ///
   /// # Panics
   /// If `self` is not an initialized scalar, or if `ranges` are not valid values of it (see
   /// [`Spec::with_ranges`]).
@@ -1193,6 +1672,25 @@ impl Layout {
   /// `probe` must be a pointer to a type whose pointers have a slice length, which is
   /// `PROBE_LEN` (see `Pun::PROBE`).
   ///
+  /// ```
+  /// use puns::{
+  ///   Pun,
+  ///   layout::{Dfa, Layout},
+  /// };
+  ///
+  /// /// Decimal digits.
+  /// #[repr(transparent)]
+  /// struct Digits([u8]);
+  ///
+  /// // SAFETY: the probe of a slice of bytes, as a pointer to `Digits`, which is one.
+  /// const DIGITS: Layout =
+  ///   unsafe { Layout::pattern::<Digits>(<[u8] as Pun>::PROBE as *const Digits, Dfa::DIGITS) };
+  ///
+  /// // Unsized: its size is where its bytes start.
+  /// assert_eq!((DIGITS.size(), DIGITS.align()), (0, 1));
+  /// assert!(!DIGITS.is_free());
+  /// ```
+  ///
   /// # Panics
   /// If `probe` is not a pointer to bytes, or if `dfa` is not well formed.
   pub const unsafe fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
@@ -1214,6 +1712,17 @@ impl Layout {
   }
 
   /// Layout of a type the size and alignment of `T` whose bytes are all padding.
+  ///
+  /// This is the layout of `MaybeUninit<T>`.
+  ///
+  /// ```
+  /// use puns::layout::Layout;
+  ///
+  /// const PADDING: Layout = Layout::padding::<u32>();
+  /// assert_eq!(PADDING.size(), size_of::<u32>());
+  /// // Nothing to check, and nothing that is known to be initialized.
+  /// assert!(PADDING.is_free() && !PADDING.is_plain());
+  /// ```
   #[must_use]
   pub const fn padding<T>() -> Self {
     Self {
@@ -1273,6 +1782,27 @@ impl Layout {
   /// leaves the bytes of `Some(p)` the ones of `p` (R1 of `discover.rs`), which are not all zero:
   /// a value of all zero bytes aims at nothing, any other is a pointer as `P` is (S5).
   ///
+  /// ```
+  /// use core::num::NonZero;
+  ///
+  /// use puns::layout::{Endian, Layout, Pointer};
+  ///
+  /// // An offset that is never zero, to a `u32`.
+  /// const POINTER: Pointer = Pointer::one::<u32>("my crate", 4, Endian::NATIVE);
+  /// const OPTION: Layout = Layout::nullable::<NonZero<i32>, u32>(POINTER);
+  ///
+  /// assert!(OPTION.as_pointer().unwrap().is_nullable());
+  /// assert_eq!(OPTION.size(), size_of::<Option<NonZero<i32>>>());
+  /// ```
+  ///
+  /// ```should_panic
+  /// use puns::layout::{Endian, Layout, Pointer};
+  ///
+  /// // An `i32` has no niche: `Option<i32>` is larger.
+  /// let pointer = Pointer::one::<u32>("my crate", 4, Endian::NATIVE);
+  /// let _ = Layout::nullable::<i32, u32>(pointer);
+  /// ```
+  ///
   /// # Panics
   /// If `pointer` may be null already, if `Option<P>` is larger than `P` (an offset without a
   /// niche at zero, such as a byte array, has a tag of its own in `Option`; a `NonZero` has
@@ -1298,6 +1828,19 @@ impl Layout {
 
   /// The pointer that a value of the layout is, if it is a self-relative pointer (see
   /// [`Pointer`]); `None` for anything else, a struct that holds one included.
+  ///
+  /// ```
+  /// use core::num::NonZero;
+  ///
+  /// use puns::layout::{Endian, Layout, Pointer, Spec};
+  ///
+  /// const POINTER: Pointer = Pointer::one::<u32>("my crate", 4, Endian::NATIVE);
+  /// const OPTION: Layout = Layout::nullable::<NonZero<i32>, u32>(POINTER);
+  ///
+  /// assert_eq!(OPTION.as_pointer().map(|pointer| pointer.scheme()), Some("my crate"));
+  /// assert!(Layout::scalar::<i32>(Spec::any::<i32>()).as_pointer().is_none());
+  /// assert!(Layout::array(&OPTION, 2).as_pointer().is_none());
+  /// ```
   #[must_use]
   pub const fn as_pointer(&self) -> Option<Pointer> {
     match self.kind {
@@ -1309,6 +1852,16 @@ impl Layout {
   /// Whatever validation has nothing to check of a value of the layout: every bit pattern of its
   /// bytes (initialized) is a value, it holds no pointer, no enum and no rule. A value of it is
   /// made of any initialized bytes; [`validate_in`](crate::validate_in) reads nothing of it.
+  ///
+  /// ```
+  /// use puns::layout::{Endian, Layout, Spec};
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// const BIT: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  ///
+  /// assert!(BYTE.is_free() && Layout::array(&BYTE, 3).is_free());
+  /// assert!(!BIT.is_free() && !Layout::array(&BIT, 3).is_free());
+  /// ```
   #[must_use]
   pub const fn is_free(&self) -> bool {
     self.leaves == 0
@@ -1318,6 +1871,32 @@ impl Layout {
   /// uninitialized), and no pointer. Such a value can be copied as bytes, and its bytes are
   /// initialized. An enum with fields is never one (which bytes are padding depends on its tag),
   /// nor a slice or a pattern (unsized).
+  ///
+  /// ```
+  /// use core::mem::offset_of;
+  ///
+  /// use puns::layout::{Field, Layout, Spec};
+  ///
+  /// #[repr(C)]
+  /// struct Padded {
+  ///   byte: u8,
+  ///   word: u32,
+  /// }
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// const WORD: Layout = Layout::scalar::<u32>(Spec::any::<u32>());
+  /// const FIELDS: [Field; 2] = Layout::sort_fields([
+  ///   Field::new(offset_of!(Padded, byte), &BYTE),
+  ///   Field::new(offset_of!(Padded, word), &WORD),
+  /// ]);
+  /// // SAFETY: `Padded` is sized.
+  /// const PADDED: Layout =
+  ///   unsafe { Layout::structure::<Padded>(core::ptr::null(), &FIELDS, &[]) };
+  ///
+  /// assert!(WORD.is_plain());
+  /// // Its bytes between the fields are padding, where `u32` is aligned to more than 1.
+  /// assert_eq!(PADDED.is_plain(), align_of::<u32>() == 1);
+  /// ```
   #[must_use]
   pub const fn is_plain(&self) -> bool {
     match self.kind {
@@ -1341,6 +1920,18 @@ impl Layout {
 
   /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting
   /// what the pointers aim at.
+  ///
+  /// ```
+  /// use core::num::NonZero;
+  ///
+  /// use puns::layout::{Endian, Layout, Pointer, Spec};
+  ///
+  /// const POINTER: Pointer = Pointer::one::<u32>("my crate", 4, Endian::NATIVE);
+  /// const OPTION: Layout = Layout::nullable::<NonZero<i32>, u32>(POINTER);
+  ///
+  /// assert!(OPTION.has_pointers() && Layout::array(&OPTION, 2).has_pointers());
+  /// assert!(!Layout::scalar::<i32>(Spec::any::<i32>()).has_pointers());
+  /// ```
   #[must_use]
   pub const fn has_pointers(&self) -> bool {
     // A pointer is a leaf.
@@ -1376,6 +1967,14 @@ impl Layout {
 
   /// Layout of `[T; len]`.
   ///
+  /// ```
+  /// use puns::layout::{Layout, Spec};
+  ///
+  /// const WORD: Layout = Layout::scalar::<u32>(Spec::any::<u32>());
+  /// const WORDS: Layout = Layout::array(&WORD, 3);
+  /// assert_eq!((WORDS.size(), WORDS.align()), (size_of::<[u32; 3]>(), align_of::<u32>()));
+  /// ```
+  ///
   /// # Panics
   /// If `elem` is unsized, or if the array is larger than `usize::MAX` bytes.
   #[must_use]
@@ -1397,6 +1996,21 @@ impl Layout {
   }
 
   /// Layout of `[T]`.
+  ///
+  /// ```
+  /// use puns::{
+  ///   Pun,
+  ///   layout::{Layout, Spec},
+  /// };
+  ///
+  /// const WORD: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+  /// // SAFETY: the probe of a slice.
+  /// const WORDS: Layout = unsafe { Layout::slice::<u16>(<[u16] as Pun>::PROBE, &WORD) };
+  ///
+  /// // Unsized: its size is where its elements start.
+  /// assert_eq!((WORDS.size(), WORDS.align()), (0, align_of::<u16>()));
+  /// assert!(!WORDS.is_plain());
+  /// ```
   ///
   /// # Safety
   /// The length of `probe` must be `PROBE_LEN` (see `Pun::PROBE`).
@@ -1431,6 +2045,38 @@ impl Layout {
   /// # Safety
   /// If `T` is unsized, its tail must be a slice, and the slice length of `probe` must be
   /// `PROBE_LEN` (see `Pun::PROBE`).
+  ///
+  /// ```
+  /// use core::mem::offset_of;
+  ///
+  /// use puns::layout::{Field, Layout, Op, Rule, Spec};
+  ///
+  /// #[repr(C)]
+  /// struct Range {
+  ///   start: u8,
+  ///   end: u8,
+  /// }
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// const FIELDS: [Field; 2] = Layout::sort_fields([
+  ///   Field::new(offset_of!(Range, start), &BYTE),
+  ///   Field::new(offset_of!(Range, end), &BYTE),
+  /// ]);
+  /// // `start < end`.
+  /// const OPS: [Op; 3] = [
+  ///   Op::load::<u8>(offset_of!(Range, start)),
+  ///   Op::load::<u8>(offset_of!(Range, end)),
+  ///   Op::Lt,
+  /// ];
+  /// const RULES: [Rule; 1] = [Rule::Assert(&OPS)];
+  /// // SAFETY: `Range` is sized.
+  /// const RANGE: Layout =
+  ///   unsafe { Layout::structure::<Range>(core::ptr::null(), &FIELDS, &RULES) };
+  ///
+  /// assert_eq!(RANGE.size(), size_of::<Range>());
+  /// // Any bytes are its fields, not its rule: it is checked.
+  /// assert!(!RANGE.is_free());
+  /// ```
   ///
   /// # Panics
   /// If the fields overlap, are not sorted or are out of the bounds of `T`, if a rule is
@@ -1527,6 +2173,41 @@ impl Layout {
 
   /// Layout of a variant of the enum `T`: its `fields`, as returned by [`Layout::sort_fields`],
   /// with their offsets from the start of the enum.
+  ///
+  /// With the types of the example of [`Enum`]:
+  ///
+  /// ```
+  /// # use core::mem::offset_of;
+  /// #
+  /// # use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+  /// #
+  /// # #[derive(Clone, Copy)]
+  /// # #[repr(u8)]
+  /// # enum Shape {
+  /// #   Dot,
+  /// #   Square(u16),
+  /// # }
+  /// #
+  /// # // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+  /// # #[repr(C)]
+  /// # struct Dot(u8);
+  /// # #[repr(C)]
+  /// # struct Square(u8, u16);
+  /// #
+  /// # // The tags are 0 and 1.
+  /// # const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  /// # const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+  /// // The fields of each variant, from the start of the enum.
+  /// const SQUARE_FIELDS: [Field; 1] =
+  ///   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+  /// const DOT: Layout = Layout::variant::<Shape>(&[]);
+  /// const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+  /// # const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+  ///
+  /// // As large as the enum, whose bytes the fields do not cover are padding.
+  /// assert_eq!(SQUARE.size(), size_of::<Shape>());
+  /// assert!(!SQUARE.is_plain());
+  /// ```
   #[must_use]
   pub const fn variant<T>(fields: &'static [Field]) -> Self {
     let (mut i, mut leaves, mut has_rules) = (0, 0, false);
@@ -1553,6 +2234,45 @@ impl Layout {
   /// What is known of such an enum is its tag, and which of its bytes are initialized; what it
   /// requires is checked as a whole, at run time, unless the source is an enum whose variants
   /// each prove the variant of the same tag.
+  ///
+  /// With the types of the example of [`Enum`]:
+  ///
+  /// ```
+  /// # use core::mem::offset_of;
+  /// #
+  /// # use puns::layout::{Endian, Enum, Field, Layout, Spec, Variant};
+  /// #
+  /// # #[derive(Clone, Copy)]
+  /// # #[repr(u8)]
+  /// # enum Shape {
+  /// #   Dot,
+  /// #   Square(u16),
+  /// # }
+  /// #
+  /// # // The `repr(C)` structs of the variants that `repr(u8)` specifies: a tag, then fields.
+  /// # #[repr(C)]
+  /// # struct Dot(u8);
+  /// # #[repr(C)]
+  /// # struct Square(u8, u16);
+  /// #
+  /// # // The tags are 0 and 1.
+  /// # const TAG: Layout = Layout::scalar::<u8>(Spec::ranges::<u8>(Endian::NATIVE, &[(0, 1)]));
+  /// # const SIDE: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
+  /// # // The fields of each variant, from the start of the enum.
+  /// # const SQUARE_FIELDS: [Field; 1] =
+  /// #   Layout::sort_fields([Field::new(offset_of!(Square, 1), &SIDE)]);
+  /// # const DOT: Layout = Layout::variant::<Shape>(&[]);
+  /// # const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
+  /// # const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
+  /// # const SHADOWS: [(usize, usize); 2] =
+  /// #   [(size_of::<Dot>(), align_of::<Dot>()), (size_of::<Square>(), align_of::<Square>())];
+  /// # const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
+  /// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
+  ///
+  /// assert_eq!(LAYOUT.size(), size_of::<Shape>());
+  /// // Its tag is checked.
+  /// assert!(!LAYOUT.is_free());
+  /// ```
   ///
   /// # Panics
   /// If `T` is not laid out as its representation specifies, or if the variants do not fit it:
@@ -1654,6 +2374,16 @@ impl Layout {
   }
 
   /// Layout of a type that has no value, such as `Infallible` or an enum without variants.
+  ///
+  /// ```
+  /// use core::convert::Infallible;
+  ///
+  /// use puns::layout::Layout;
+  ///
+  /// const NEVER: Layout = Layout::uninhabited::<Infallible>();
+  /// assert!(!NEVER.is_inhabited());
+  /// assert_eq!(NEVER.size(), 0);
+  /// ```
   #[must_use]
   pub const fn uninhabited<T>() -> Self {
     Self {
@@ -1670,6 +2400,17 @@ impl Layout {
 
   /// Whatever a value of the layout can exist: one of a type without values is not. (A slice
   /// can be empty, an array of no element too.)
+  ///
+  /// ```
+  /// use core::convert::Infallible;
+  ///
+  /// use puns::layout::Layout;
+  ///
+  /// const NEVER: Layout = Layout::uninhabited::<Infallible>();
+  /// assert!(!Layout::array(&NEVER, 1).is_inhabited());
+  /// // The empty array.
+  /// assert!(Layout::array(&NEVER, 0).is_inhabited());
+  /// ```
   #[must_use]
   pub const fn is_inhabited(&self) -> bool {
     match self.kind {
@@ -1706,6 +2447,34 @@ impl Layout {
   /// (where no rule requires less, this requires more); as a source, nothing is known of them, not
   /// even that they are initialized (a field may be written over another, and some rules let a
   /// union hold any bytes).
+  ///
+  /// What `#[derive(Pun)]` makes of a union:
+  ///
+  /// ```
+  /// use puns::{Pun, num::u8in};
+  ///
+  /// #[derive(Pun, Clone, Copy)]
+  /// #[repr(C)]
+  /// union Choice {
+  ///   flag: bool,
+  ///   small: u8in<0, 3>,
+  /// }
+  ///
+  /// // As a target: one of its fields.
+  /// assert!(puns::try_pun::<u8, Choice>(1).is_ok());
+  /// assert!(puns::try_pun::<u8, Choice>(3).is_ok());
+  /// assert!(puns::try_pun::<u8, Choice>(4).is_err());
+  /// ```
+  ///
+  /// As a source, nothing is known of it:
+  ///
+  /// ```compile_fail
+  /// # use puns::{Pun, num::u8in};
+  /// # #[derive(Pun, Clone, Copy)]
+  /// # #[repr(C)]
+  /// # union Choice { flag: bool, small: u8in<0, 3> }
+  /// let _: u8 = puns::pun(Choice { flag: true });
+  /// ```
   ///
   /// # Panics
   /// If a field is not at offset 0 or out of the union, or holds a self-relative pointer.
@@ -1825,6 +2594,30 @@ impl Layout {
   }
 
   /// Number the fields of a struct (given in declaration order) and sort them by offset.
+  ///
+  /// ```
+  /// use core::mem::offset_of;
+  ///
+  /// use puns::layout::{Field, Layout, Spec};
+  ///
+  /// // Without `repr`, `rustc` chooses the order of the fields.
+  /// struct Mixed {
+  ///   narrow: u8,
+  ///   wide: u32,
+  /// }
+  ///
+  /// const NARROW: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// const WIDE: Layout = Layout::scalar::<u32>(Spec::any::<u32>());
+  /// const FIELDS: [Field; 2] = Layout::sort_fields([
+  ///   Field::new(offset_of!(Mixed, narrow), &NARROW),
+  ///   Field::new(offset_of!(Mixed, wide), &WIDE),
+  /// ]);
+  /// // SAFETY: `Mixed` is sized.
+  /// const MIXED: Layout =
+  ///   unsafe { Layout::structure::<Mixed>(core::ptr::null(), &FIELDS, &[]) };
+  ///
+  /// assert_eq!(MIXED.size(), size_of::<Mixed>());
+  /// ```
   #[must_use]
   pub const fn sort_fields<const N: usize>(mut fields: [Field; N]) -> [Field; N] {
     let (mut i, mut leaf) = (0, 0);
@@ -1846,7 +2639,15 @@ impl Layout {
     fields
   }
 
-  /// Size and alignment of the type.
+  /// Alignment of the type.
+  ///
+  /// ```
+  /// use puns::layout::{Layout, Spec};
+  ///
+  /// const WORD: Layout = Layout::scalar::<u64>(Spec::any::<u64>());
+  /// assert_eq!(WORD.align(), align_of::<u64>());
+  /// assert_eq!(Layout::array(&WORD, 2).align(), align_of::<u64>());
+  /// ```
   #[inline]
   #[must_use]
   pub const fn align(&self) -> usize {
@@ -1854,6 +2655,19 @@ impl Layout {
   }
 
   /// Size of the type if it is `Sized`, otherwise the offset of its tail slice.
+  ///
+  /// ```
+  /// use puns::{
+  ///   Pun,
+  ///   layout::{Layout, Spec},
+  /// };
+  ///
+  /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
+  /// assert_eq!(Layout::array(&BYTE, 5).size(), 5);
+  /// // SAFETY: the probe of a slice.
+  /// const BYTES: Layout = unsafe { Layout::slice::<u8>(<[u8] as Pun>::PROBE, &BYTE) };
+  /// assert_eq!(BYTES.size(), 0);
+  /// ```
   #[inline]
   #[must_use]
   pub const fn size(&self) -> usize {
@@ -2305,13 +3119,56 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 /// A deterministic finite automaton over bytes: the language of an unsized type like `str`.
 ///
 /// The first state is the initial one. At most 64 states.
+///
+/// A rule of `#[derive(Pun)]` can require bytes of a struct to be accepted by one,
+/// `matches(DFA, start, end)`, of this crate or of yours:
+///
+/// ```
+/// use puns::{
+///   Pun,
+///   layout::{Dfa, DfaState},
+/// };
+///
+/// /// Binary digits, at least one.
+/// const BINARY: &Dfa = &Dfa {
+///   id: u32::from_be_bytes(*b"bits"),
+///   states: &[
+///     // Nothing yet.
+///     DfaState { accept: false, edges: &[(b'0', b'1', 1)] },
+///     // A digit or more.
+///     DfaState { accept: true, edges: &[(b'0', b'1', 1)] },
+///   ],
+/// };
+///
+/// #[derive(Pun, Clone, Copy)]
+/// #[repr(C)]
+/// #[pun(assert(matches(BINARY, 0, 4)))]
+/// struct Nibble([u8; 4]);
+///
+/// assert!(puns::try_pun::<_, Nibble>(*b"0110").is_ok());
+/// assert!(puns::try_pun::<_, Nibble>(*b"0120").is_err());
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct Dfa {
-  /// Two automata with the same `id` must be the same.
+  /// Two automata with the same `id` must be the same: where a pattern type (see
+  /// [`Layout::pattern`]) is compared with another, their automata are compared by their `id`s,
+  /// and one of the `id` of [`Dfa::UTF8`] is checked as UTF-8. Those of this crate are 1 to 6.
+  /// The automata of rules (`matches(..)`) are compared by their states, and their `id`s are not
+  /// read.
   pub id: u32,
+  /// The states: the first is the initial one. An edge leads to the index of a state in it.
   pub states: &'static [DfaState],
 }
 
+/// A state of a [`Dfa`]: whatever a value may end in it, and where each byte leads from it.
+///
+/// ```
+/// use puns::layout::Dfa;
+///
+/// let start = &Dfa::HEX.states[0];
+/// let leads = |byte: u8| start.edges.iter().any(|edge| (edge.0..=edge.1).contains(&byte));
+/// assert!(start.accept && leads(b'c') && leads(b'C') && !leads(b'g'));
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct DfaState {
   /// Whatever a value can end in this state.
@@ -2537,27 +3394,57 @@ impl Dfa {
 /// that is too short. As nothing that is computed can then be left out of the result, the first
 /// failure is the one of the expression, and its evaluation stops there. `<<` drops the bits that
 /// it shifts out, as in Rust.
+///
+/// A binary operation replaces the two values at the top of the stack, the one pushed first on
+/// its left side, by its result; a comparison by `1` if it holds, else `0`.
+///
+/// `#[derive(Pun)]` compiles the expressions of its rules to them:
+///
+/// ```
+/// use puns::Pun;
+///
+/// #[derive(Pun, Clone, Copy)]
+/// #[repr(C)]
+/// // `Load` of `end`, `Load` of `start`, `Sub`, `Lit(2)`, `Ge`.
+/// #[pun(assert(end - start >= 2))]
+/// struct Span {
+///   start: u8,
+///   end: u8,
+/// }
+///
+/// assert!(puns::try_pun::<_, Span>([1u8, 3]).is_ok());
+/// assert!(puns::try_pun::<_, Span>([1u8, 2]).is_err());
+/// // `end - start` would overflow: where Rust panics, the rule fails.
+/// assert!(puns::try_pun::<_, Span>([3u8, 1]).is_err());
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
   /// Push a constant.
   Lit(u128),
   /// Push the unsigned integer of `size` bytes at `offset` in the struct.
   Load {
+    /// Where the integer is, in bytes from the start of the struct.
     offset: usize,
+    /// Its size in bytes.
     size: u8,
+    /// `true` if it is big-endian, `false` if little-endian.
     big: bool,
   },
   /// Push the size in bytes of the struct (not in `size` and `len` rules, which define it).
   Size,
   /// Replace an offset by the unsigned integer of `size` bytes that is there in the value.
   At {
+    /// The size in bytes of the integer.
     size: u8,
+    /// `true` if it is big-endian, `false` if little-endian.
     big: bool,
   },
   /// Replace an offset by the variable-length integer of the `form` that is there in the value, or
   /// with `length`, by its number of bytes.
   Varint {
+    /// The form of the integer.
     form: Varint,
+    /// `true` for its number of bytes, `false` for its value.
     length: bool,
   },
   /// Replace two offsets by the CRC-32 (the one of Ethernet) of the bytes between them.
@@ -2575,21 +3462,37 @@ pub enum Op {
   /// Replace two offsets by whatever the automaton accepts the bytes between them: a pattern
   /// that a struct requires of them (which proves nothing of them, as any rule).
   Matches(&'static Dfa),
+  /// `+`: fails if the sum overflows.
   Add,
+  /// `-`: fails if the difference is below zero.
   Sub,
+  /// `*`: fails if the product overflows.
   Mul,
+  /// `/`, rounded down: fails if the right side is zero.
   Div,
+  /// `%`: fails if the right side is zero.
   Rem,
+  /// `&`, bitwise.
   And,
+  /// `|`, bitwise.
   Or,
+  /// `^`, bitwise.
   Xor,
+  /// `<<`, which drops the bits that it shifts out: fails if the right side is 128 or more.
   Shl,
+  /// `>>`: fails if the right side is 128 or more.
   Shr,
+  /// `==`.
   Eq,
+  /// `!=`.
   Ne,
+  /// `<`.
   Lt,
+  /// `<=`.
   Le,
+  /// `>`.
   Gt,
+  /// `>=`.
   Ge,
   /// `&&`, after its [`Op::Shortcut`] and its right side: replace the left side, which did not
   /// decide, and the right side by the right side.
@@ -2600,7 +3503,10 @@ pub enum Op {
   /// decides (it is `either`), it is the result, and the `len` operations that follow, which are
   /// the right side and the [`Op::Both`] or [`Op::Either`], are not computed.
   Shortcut {
+    /// `true` after the left side of a `||`, `false` after the one of a `&&`: the value of the
+    /// left side that decides.
     either: bool,
+    /// The number of operations that follow and are not computed if the left side decides.
     len: u16,
   },
   /// `!`, on a boolean.
@@ -2628,8 +3534,11 @@ pub enum Op {
   /// chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is the size of
   /// the value in bytes: a step for each bit of the value, and for each bit of a `u128`.
   Walk {
+    /// The variable that is the value, in `cond` and in `next`.
     var: u8,
+    /// What must be true of the value for the walk to take a step.
     cond: &'static [Op],
+    /// What the value becomes at each step.
     next: &'static [Op],
   },
 }
@@ -2684,6 +3593,18 @@ impl Op {
 
   /// Push the value of the field of type `T` at `offset`: an integer, or a struct that only
   /// holds one.
+  ///
+  /// ```
+  /// use puns::{Pun, layout::Op, num::u16be};
+  ///
+  /// #[derive(Pun)]
+  /// #[repr(transparent)]
+  /// struct Port(u16be);
+  ///
+  /// assert_eq!(Op::load::<u16be>(4), Op::Load { offset: 4, size: 2, big: true });
+  /// // A struct that holds one integer is that integer.
+  /// assert_eq!(Op::load::<Port>(4), Op::load::<u16be>(4));
+  /// ```
   ///
   /// # Panics
   /// If `T` is not an integer.
@@ -2860,8 +3781,18 @@ impl Crc {
   /// The CRC-32 of Ethernet, zlib, PNG: what `crc32(..)` is.
   pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
 
+  /// The CRC of these parameters, see [`Crc`].
+  ///
   /// Its tables are 32 KiB (16 KiB of them are used for a CRC of up to 32 bits): a `Crc` is
   /// meant to be a constant, made in const evaluation.
+  ///
+  /// ```
+  /// use puns::layout::Crc;
+  ///
+  /// // CRC-16/MODBUS, of its check value.
+  /// const MODBUS: Crc = Crc::new(16, 0x8005, 0xffff, true, 0);
+  /// assert_eq!(MODBUS.check(b"123456789"), 0x4b37);
+  /// ```
   ///
   /// # Panics
   /// If `width` is not 1 to 64, or a parameter has more bits than that.
@@ -2924,6 +3855,14 @@ impl Crc {
   }
 
   /// The CRC of `bytes`.
+  ///
+  /// ```
+  /// use puns::layout::Crc;
+  ///
+  /// let bytes = b"The quick brown fox jumps over the lazy dog";
+  /// assert_eq!(Crc::CRC32.check(bytes), u64::from(puns::crc32(bytes)));
+  /// assert_eq!(Crc::CRC32.check(&[]), 0);
+  /// ```
   #[must_use]
   pub const fn check(&self, bytes: &[u8]) -> u64 {
     self.compute(bytes, (0, 0))
@@ -3114,6 +4053,33 @@ impl Crc {
 }
 
 /// A checksum of bytes, see [`Op::Checksum`].
+///
+/// `sum(start, end)`, `fletcher16(start, end)` and `adler32(start, end)` in the rules of
+/// `#[derive(Pun)]`:
+///
+/// ```
+/// use puns::Pun;
+///
+/// /// Four bytes and their sum, modulo 256.
+/// #[derive(Pun, Clone, Copy)]
+/// #[repr(C)]
+/// #[pun(assert(sum(0, 4) % 256 == check))]
+/// struct Summed {
+///   data: [u8; 4],
+///   check: u8,
+/// }
+///
+/// /// The Adler-32 of "Wikipedia".
+/// #[derive(Pun, Clone, Copy)]
+/// #[repr(C)]
+/// #[pun(assert(adler32(0, 9) == 0x11e6_0398))]
+/// struct Wikipedia([u8; 9]);
+///
+/// assert!(puns::try_pun::<_, Summed>([1u8, 2, 3, 250, 0]).is_ok());
+/// assert!(puns::try_pun::<_, Summed>([1u8, 2, 3, 250, 1]).is_err());
+/// assert!(puns::try_pun::<_, Wikipedia>(*b"Wikipedia").is_ok());
+/// assert!(puns::try_pun::<_, Wikipedia>(*b"wikipedia").is_err());
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Checksum {
   /// The sum of the bytes (not reduced: `% 256` makes it the one of a byte).
@@ -3150,6 +4116,37 @@ impl Checksum {
 }
 
 /// A form of variable-length integer, see [`Op::Varint`].
+///
+/// `leb128(offset)`, `quic(offset)` and `vlq(offset)` in the rules of `#[derive(Pun)]`, and with
+/// `_len`, their number of bytes:
+///
+/// ```
+/// use puns::Pun;
+///
+/// /// A kind, then the length of what follows in LEB128, then that.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// #[pun(size = 1 + leb128_len(1) + leb128(1))]
+/// struct Packet {
+///   kind: u8,
+///   rest: [u8],
+/// }
+///
+/// /// A kind, then the length of what follows as QUIC writes it, then that.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// #[pun(size = 1 + quic_len(1) + quic(1))]
+/// struct Frame {
+///   kind: u8,
+///   rest: [u8],
+/// }
+///
+/// let (packet, after) = puns::from_head::<Packet>(&[0x30, 2, 0xaa, 0xbb, 0xcc]).unwrap();
+/// assert_eq!((packet.rest.len(), after), (3, &[0xcc][..]));
+/// // Two bytes (`0b01` in the high bits of the first), whose value is 2.
+/// let (frame, after) = puns::from_head::<Frame>(&[7, 0x40, 2, 0xaa, 0xbb, 0xcc]).unwrap();
+/// assert_eq!((frame.rest.len(), after), (4, &[0xcc][..]));
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Varint {
   /// Unsigned LEB128 (Protocol Buffers, WebAssembly, MQTT, DWARF): 7 bits a byte, the least
@@ -3246,6 +4243,26 @@ pub(crate) const fn same_ops(a: &[Op], b: &[Op]) -> bool {
 /// Rules are checked when a value is made from something else (`try_pun*`, `from_head`), and
 /// tell `from_head` how long a value is. They are not invariants that unsafe code may rely on: safe
 /// code can write to the fields of a struct.
+///
+/// `#[derive(Pun)]` makes them of `#[pun(size = ..)]` and `#[pun(assert(..))]` on a struct, and
+/// of `#[pun(len = ..)]` and `#[pun(regions(..))]` on its last field:
+///
+/// ```
+/// use puns::{Pun, num::u16be};
+///
+/// /// A count, then as many numbers.
+/// #[derive(Pun)]
+/// #[repr(C)]
+/// struct List {
+///   count: u8,
+///   #[pun(len = count)]
+///   numbers: [u16be],
+/// }
+///
+/// let (list, after) = puns::from_head::<List>(&[2, 0, 1, 0, 2, 9]).unwrap();
+/// assert_eq!((list.numbers.len(), after), (2, &[9][..]));
+/// assert!(puns::from_bytes::<List>(&[2, 0, 1]).is_err());
+/// ```
 #[derive(Copy, Clone, Debug)]
 pub enum Rule {
   /// The size in bytes of the value is the result of the expression.
