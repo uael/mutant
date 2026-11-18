@@ -24,7 +24,7 @@
 //! The cost of an analysis is therefore proportional to the number of fields of the types, not to
 //! their size.
 
-use crate::layout::{Dfa, Kind, Layout, Pointer, Spec, Uniform, Valid, max_value};
+use crate::layout::{Dfa, Endian, Kind, Layout, Pointer, Spec, Tags, Uniform, Valid, max_value};
 
 // -------------------------------------------------------------------------------------------------
 // `Cursor`
@@ -99,6 +99,7 @@ struct Repeat {
 }
 
 /// Forward-only iterator over the runs of a layout.
+#[derive(Copy, Clone)]
 pub struct Cursor {
   stack: [Frame; MAX_DEPTH],
   depth: usize,
@@ -107,6 +108,64 @@ pub struct Cursor {
   target: bool,
   /// What of the target may be checked at run time, see [`Checked`].
   checked: Checked,
+  /// What the source is known to hold under some bytes of the target, whatever its own layout
+  /// says there: the tag of an enum, when a variant of the target is related to a variant of the
+  /// source, or to a source whose bytes there are one of the tags of that variant.
+  known: Known,
+}
+
+/// The most ranges that [`Known`] holds: past them, nothing is known.
+const KNOWN: usize = 8;
+
+/// Values that the source is known to hold at `start..end`, as an integer of `endian` byte order:
+/// the tag of an enum. Nothing is known if there are no ranges.
+#[derive(Copy, Clone)]
+struct Known {
+  start: usize,
+  end: usize,
+  endian: Endian,
+  ranges: [(u128, u128); KNOWN],
+  len: usize,
+}
+
+impl Known {
+  const NONE: Self =
+    Self { start: 0, end: 0, endian: Endian::Little, ranges: [(0, 0); KNOWN], len: 0 };
+
+  /// The values of both `a` and `b`, at `start..start + size`; nothing if they are too many.
+  const fn both(start: usize, size: usize, endian: Endian, a: &Tags, b: &Tags) -> Self {
+    let mut known = Self { start, end: start + size, endian, ..Self::NONE };
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+      let ((lo_a, hi_a), (lo_b, hi_b)) = (a.get(i), b.get(j));
+      let (lo, hi) = (if lo_a > lo_b { lo_a } else { lo_b }, if hi_a < hi_b { hi_a } else { hi_b });
+      if lo <= hi {
+        if known.len == KNOWN {
+          return Self::NONE;
+        }
+        known.ranges[known.len] = (lo, hi);
+        known.len += 1;
+      }
+      if hi_a < hi_b {
+        i += 1;
+      } else {
+        j += 1;
+      }
+    }
+    known
+  }
+
+  /// Whatever the byte at `pos` holds a known value.
+  const fn covers(&self, pos: usize) -> bool {
+    self.len > 0 && self.start <= pos && pos < self.end
+  }
+
+  /// The values known of exactly `start..end`, read in `endian` byte order, if any.
+  const fn of(&self, start: usize, end: usize, endian: Endian) -> Option<&[(u128, u128)]> {
+    let same =
+      self.start == start && self.end == end && (end - start == 1 || self.endian.equals(endian));
+    if self.len > 0 && same { Some(self.ranges.split_at(self.len).0) } else { None }
+  }
 }
 
 /// Which rules of a target may be checked at run time: the rules that read the bytes of their
@@ -131,7 +190,7 @@ impl Cursor {
     checked: Checked,
   ) -> Self {
     let frame = Frame { layout: root, base, leaf: 0, field: 0 };
-    Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked }
+    Self { stack: [frame; MAX_DEPTH], depth: 1, target, checked, known: Known::NONE }
   }
 
   /// Whatever the padding at the top of the stack is read by a rule that may be checked: one of
@@ -419,9 +478,34 @@ pub const fn relate_at(
 ) -> Relation {
   assert!(base_a == 0 || matches!(checked, Checked::No), "internal error: shifted source");
   let mut relation = Relation::NEW;
+  // A type without values is no value of any other, whatever its bytes (it may have none).
+  if !b.is_inhabited() && a.is_inhabited() {
+    relation.disjoint = Some(start);
+    return relation;
+  }
   let mut a = Cursor::new(a, base_a, false, Checked::No);
   let mut b = Cursor::new(b, base_b, true, checked);
   relate_range(&mut a, &mut b, start, end, &mut relation);
+  relation
+}
+
+/// [`relate`], knowing what the source holds at some bytes (see [`Known`]).
+const fn relate_known(
+  a: &'static Layout,
+  b: &'static Layout,
+  end: usize,
+  checked: Checked,
+  known: &Known,
+) -> Relation {
+  let mut relation = Relation::NEW;
+  if !b.is_inhabited() && a.is_inhabited() {
+    relation.disjoint = Some(0);
+    return relation;
+  }
+  let mut a = Cursor::new(a, 0, false, Checked::No);
+  let mut b = Cursor::new(b, 0, true, checked);
+  b.known = *known;
+  relate_range(&mut a, &mut b, 0, end, &mut relation);
   relation
 }
 
@@ -488,7 +572,7 @@ const fn relate_range(
     match run_b.kind {
       // Padding that a rule reads accepts everything but padding.
       RunKind::Pad if b.padding_is_read(a.stack[0].layout) => {
-        if run_a.kind.may_be_uninit() {
+        if run_a.kind.may_be_uninit() && !b.known.covers(pos) {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -497,7 +581,7 @@ const fn relate_range(
       RunKind::Pad => pos = stop,
       // Unconstrained bytes accept everything but padding.
       RunKind::Any => {
-        if run_a.kind.may_be_uninit() {
+        if run_a.kind.may_be_uninit() && !b.known.covers(pos) {
           out.uninit(pos);
         }
         pos = min(run_a.end, stop);
@@ -509,8 +593,15 @@ const fn relate_range(
         pos = stop;
       }
       RunKind::Atom(spec) => {
-        let (pieces, len) = gather(a, run_b.start, run_b.end);
-        match atom_relation(&pieces, len, &spec) {
+        // The tag, whose values may be known.
+        let relation = if let Some(known) = b.known.of(run_b.start, run_b.end, spec.endian) {
+          let Valid::In(ranges) = spec.valid else { panic!("not an atom") };
+          Some(relate_ranges(known, ranges))
+        } else {
+          let (pieces, len) = gather(a, run_b.start, run_b.end);
+          atom_relation(&pieces, len, &spec)
+        };
+        match relation {
           None => out.uninit(pos),
           Some(Rel::Subset) => {}
           Some(rel) => {
@@ -547,8 +638,8 @@ const fn relate_range(
   false
 }
 
-/// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: the variants of `a`
-/// with the ones of `b` that have the same tag.
+/// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: each variant of `a`
+/// with the ones of `b` that its tags are tags of, knowing that the tag is one of both.
 ///
 /// Returns `false`, having done nothing, if their tags are not at the same place.
 const fn relate_enums(
@@ -575,27 +666,38 @@ const fn relate_enums(
   }
   // Whatever some variants of `a` are, and some are not, valid for `b`.
   let (mut some, mut all, mut i) = (false, true, 0);
+  let (tag, size) = (enum_b.tag.offset, tag_b.size);
   while i < enum_a.variants.len() {
-    let (from, mut j) = (&enum_a.variants[i], 0);
-    while j < enum_b.variants.len() && enum_b.variants[j].tag != from.tag {
-      j += 1;
-    }
+    let from = &enum_a.variants[i];
     i += 1;
-    if j == enum_b.variants.len() {
-      // Not a tag of `b`.
-      all = false;
+    // A variant that no value is.
+    if !from.is_present() {
       continue;
     }
-    let to = &enum_b.variants[j];
-    let mut relation = relate(from.layout, to.layout, b.size, Checked::All);
-    mark_rules(from.layout, to.layout, 0, 0, &mut relation);
-    if let Some(offset) = relation.uninit {
-      out.uninit(pos + offset);
+    // Proven if all of its tags are of one variant of `b`, which it proves.
+    let (tags, mut proven, mut j) = (from.tags(), false, 0);
+    while j < enum_b.variants.len() {
+      let to = &enum_b.variants[j];
+      j += 1;
+      if !tags.meets(&to.tags()) {
+        continue;
+      }
+      // What the tag holds in `to`: the tags of both.
+      let known = Known::both(tag, size, tag_b.endian, &tags, &to.tags());
+      let mut relation = relate_known(from.layout, to.layout, b.size, Checked::All, &known);
+      mark_rules(from.layout, to.layout, 0, 0, &mut relation);
+      if let Some(offset) = relation.uninit {
+        out.uninit(pos + offset);
+      }
+      if let Some(offset) = relation.pointer {
+        out.pointer(pos + offset);
+      }
+      some |= relation.disjoint.is_none();
+      proven |= relation.infallible() && tags.within(&to.tags());
     }
-    if let Some(offset) = relation.pointer {
-      out.pointer(pos + offset);
-    }
-    (some, all) = (some || relation.disjoint.is_none(), all && relation.infallible());
+    // Else some of its tags are not of `b`, or of several variants, or the fields of one are
+    // not proven.
+    all &= proven;
   }
   if !all {
     out.mark(leaf, pos);

@@ -502,6 +502,9 @@ pub unsafe trait Variants {
   type Next: Variants;
   /// The tag of the variant, `None` at the end of the list.
   const TAG: Option<u128>;
+  /// The values of the tag of the variant if they are not `TAG` alone, sorted: those of an enum
+  /// whose layout `rustc` chose (see `Layout::variant_ranges`), where `TAG` is its index.
+  const RANGES: Option<&'static [(u128, u128)]> = None;
 }
 
 // SAFETY: the end of every list.
@@ -677,6 +680,17 @@ unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::padding::<Self>();
+}
+
+// SAFETY: no value: the layout of a type without values.
+unsafe impl Pun for core::convert::Infallible {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Walks = ();
+  type Pointee = ();
+  const PROBE: *const Self = core::ptr::null();
+  const LAYOUT: Layout = Layout::uninhabited::<Self>();
 }
 
 /// The `I`th field of the tuple `T`.

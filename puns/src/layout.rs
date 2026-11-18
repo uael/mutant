@@ -270,7 +270,7 @@ impl Spec {
 }
 
 #[inline(always)]
-const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
+pub(crate) const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
   let mut i = 0;
   // A few ranges: a comparison each, without a branch, so that the validation of a slice can be
   // vectorised (see `validate::validate_elems`).
@@ -493,6 +493,11 @@ impl Pointer {
 }
 
 /// Layout of an enum with fields, see [`Layout::enumeration`].
+///
+/// The tag is a scalar at a fixed place: of the representation that Rust specifies, or of the one
+/// that `rustc` chose, as `discover.rs` found it. In the second case it may be a niche: a scalar
+/// of the fields of one variant (the one that [`Variant::holds_tag`]), whose other values are the
+/// other variants.
 #[derive(Debug)]
 pub struct Enum {
   /// A scalar whose valid values are the tags of the variants.
@@ -543,6 +548,22 @@ impl Enum {
     Self { tag: Field::new(0, tag), variants, specified }
   }
 
+  /// The enum that `rustc` laid out, as `discover.rs` found it: a tag at `offset`, and the
+  /// `variants` in the order of their declarations, of an enum of size and alignment `specified`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discovered(
+    tag: &'static Layout,
+    offset: usize,
+    variants: &'static [Variant],
+    specified: (usize, usize),
+  ) -> Self {
+    Self { tag: Field::new(offset, tag), variants, specified }
+  }
+
+  /// An enum without a variant that a value can be: no value.
+  const NEVER: Self = Self { tag: Field::new(0, &NO_TAG), variants: &[], specified: (0, 1) };
+
   /// Offset of the fields of the variants of a `repr(C)` enum, whose tag is outside of the
   /// `shadows` (see [`Enum::new`]).
   #[must_use]
@@ -561,10 +582,102 @@ impl Enum {
 /// A variant of an enum with fields, see [`Layout::enumeration`].
 #[derive(Copy, Clone, Debug)]
 pub struct Variant {
-  /// Value of the tag.
+  /// Value of the tag; with `ranges`, what tells the variant from the others in the lists of
+  /// types (its index, see `deep.rs`).
   pub(crate) tag: u128,
-  /// The enum when it is this variant: a struct of its fields, in which the tag is padding.
+  /// The values of the tag of this variant, sorted, if it is not `tag` alone: several for the
+  /// variant of a niche, none for a variant that no value can be (it holds an uninhabited type).
+  pub(crate) ranges: Option<&'static [(u128, u128)]>,
+  /// The tag is in the fields of this variant: a niche.
+  pub(crate) holds_tag: bool,
+  /// The enum when it is this variant: a struct of its fields, in which the tag is padding (but
+  /// for the variant that holds it).
   pub(crate) layout: &'static Layout,
+}
+
+/// The values of the tag of a variant, one range at a time.
+#[derive(Copy, Clone)]
+pub(crate) struct Tags {
+  one: (u128, u128),
+  ranges: Option<&'static [(u128, u128)]>,
+}
+
+impl Tags {
+  pub(crate) const fn len(&self) -> usize {
+    match self.ranges {
+      Some(ranges) => ranges.len(),
+      None => 1,
+    }
+  }
+
+  pub(crate) const fn get(&self, index: usize) -> (u128, u128) {
+    match self.ranges {
+      Some(ranges) => ranges[index],
+      None => self.one,
+    }
+  }
+
+  pub(crate) const fn has(&self, value: u128) -> bool {
+    let mut i = 0;
+    while i < self.len() {
+      let (lo, hi) = self.get(i);
+      if lo <= value && value <= hi {
+        return true;
+      }
+      i += 1;
+    }
+    false
+  }
+
+  /// Whatever a value of `self` is one of `other`.
+  pub(crate) const fn meets(&self, other: &Tags) -> bool {
+    let (mut mine, mut theirs) = (0, 0);
+    while mine < self.len() && theirs < other.len() {
+      let ((lo, hi), (other_lo, other_hi)) = (self.get(mine), other.get(theirs));
+      if lo <= other_hi && other_lo <= hi {
+        return true;
+      }
+      if hi < other_hi {
+        mine += 1;
+      } else {
+        theirs += 1;
+      }
+    }
+    false
+  }
+
+  /// Whatever every value of `self` is one of `other`.
+  pub(crate) const fn within(&self, other: &Tags) -> bool {
+    let mut i = 0;
+    while i < self.len() {
+      let ((lo, hi), mut j, mut inside) = (self.get(i), 0, false);
+      while j < other.len() {
+        let (a, b) = other.get(j);
+        inside |= a <= lo && hi <= b;
+        j += 1;
+      }
+      if !inside {
+        return false;
+      }
+      i += 1;
+    }
+    true
+  }
+
+  const fn equals(&self, other: &Tags) -> bool {
+    if self.len() != other.len() {
+      return false;
+    }
+    let mut index = 0;
+    while index < self.len() {
+      let (mine, theirs) = (self.get(index), other.get(index));
+      if mine.0 != theirs.0 || mine.1 != theirs.1 {
+        return false;
+      }
+      index += 1;
+    }
+    true
+  }
 }
 
 impl Variant {
@@ -572,7 +685,31 @@ impl Variant {
   /// - `layout` is the [`Layout::variant`] of its fields.
   #[must_use]
   pub const fn new(tag: u128, layout: &'static Layout) -> Self {
-    Self { tag, layout }
+    Self { tag, ranges: None, holds_tag: false, layout }
+  }
+
+  /// The `index`th variant of an enum that `discover.rs` found: its tag is one of `ranges`
+  /// (sorted, disjoint, none if no value can be this variant), and if it `holds_tag`, the tag is
+  /// in its fields (a niche).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discovered(
+    index: usize,
+    ranges: &'static [(u128, u128)],
+    holds_tag: bool,
+    layout: &'static Layout,
+  ) -> Self {
+    Self { tag: index as u128, ranges: Some(ranges), holds_tag, layout }
+  }
+
+  /// The values of the tag of this variant.
+  pub(crate) const fn tags(&self) -> Tags {
+    Tags { one: (self.tag, self.tag), ranges: self.ranges }
+  }
+
+  /// Whatever a value can be this variant: a value of the tag is, and its fields can be.
+  pub(crate) const fn is_present(&self) -> bool {
+    !matches!(self.ranges, Some(ranges) if ranges.is_empty()) && self.layout.is_inhabited()
   }
 
   /// Fields, by offset from the start of the enum.
@@ -690,6 +827,9 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
     None => panic!("struct is too large"),
   }
 }
+
+/// The tag of an enum that no value can be.
+const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 
 /// What [`Layout::PIN`] is made of.
 fn pin<T>(_: T) {}
@@ -1193,10 +1333,18 @@ impl Layout {
       "the enum is not laid out as its representation specifies"
     );
     assert!(spec.is_integer() && tag.offset + spec.size <= size, "tag out of bounds");
-    let mut i = 0;
+    let (mut i, mut holders) = (0, 0);
     while i < layout.variants.len() {
       let variant = &layout.variants[i];
-      assert!(spec.contains(variant.tag), "not a value of the tag");
+      let tags = variant.tags();
+      let mut j = 0;
+      while j < tags.len() {
+        let (lo, hi) = tags.get(j);
+        assert!(lo <= hi && spec.contains(lo) && spec.contains(hi), "not a value of the tag");
+        assert!(j == 0 || tags.get(j - 1).1 < lo, "the tags of a variant are not sorted");
+        j += 1;
+      }
+      holders += variant.holds_tag as usize;
       let (fields, mut j, mut end) = (variant.fields(), 0, 0);
       assert!(variant.layout.size == size, "not a variant of this enum");
       while j < fields.len() {
@@ -1205,8 +1353,9 @@ impl Layout {
         if field.layout.size > 0 {
           let field_end = field.offset + field.layout.size;
           assert!(field.offset >= end && field_end <= size, "fields overlap or are out of bounds");
+          // Only the variant of a niche holds the tag.
           assert!(
-            field_end <= tag.offset || field.offset >= tag.offset + spec.size,
+            variant.holds_tag || field_end <= tag.offset || field.offset >= tag.offset + spec.size,
             "a field overlaps the tag"
           );
           end = field_end;
@@ -1215,11 +1364,12 @@ impl Layout {
       }
       let mut j = 0;
       while j < i {
-        assert!(layout.variants[j].tag != variant.tag, "two variants have the same tag");
+        assert!(!layout.variants[j].tags().meets(&tags), "two variants have the same tag");
         j += 1;
       }
       i += 1;
     }
+    assert!(holders <= 1, "the tag is in the fields of two variants");
     Self {
       kind: Kind::Enum(layout),
       size,
@@ -1299,6 +1449,60 @@ impl Layout {
     layout.variants[variant].tag
   }
 
+  /// The values of the tag of the `variant`th variant of an enum, if they are not
+  /// [`Layout::variant_tag`] alone.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn variant_ranges(&self, variant: usize) -> Option<&'static [(u128, u128)]> {
+    let Kind::Enum(layout) = self.kind else { panic!("not an enum") };
+    layout.variants[variant].ranges
+  }
+
+  /// Layout of a type that has no value, such as `Infallible` or an enum without variants.
+  #[must_use]
+  pub const fn uninhabited<T>() -> Self {
+    Self {
+      kind: Kind::Enum(&Enum::NEVER),
+      size: size_of::<T>(),
+      align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
+    }
+  }
+
+  /// Whatever a value of the layout can exist: one of a type without values is not. (A slice
+  /// can be empty, an array of no element too.)
+  #[must_use]
+  pub const fn is_inhabited(&self) -> bool {
+    match self.kind {
+      Kind::Scalar(_) | Kind::Pattern(_) | Kind::Pointer(_) | Kind::Slice(_) => true,
+      Kind::Array(elem, len) => len == 0 || elem.is_inhabited(),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          if !fields[i].layout.unsized_ && !fields[i].layout.is_inhabited() {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      Kind::Enum(layout) => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].is_present() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
+    }
+  }
+
   /// The `index`th field, as declared, of the `variant`th variant of an enum.
   #[doc(hidden)]
   #[must_use]
@@ -1366,6 +1570,11 @@ impl Layout {
         let (mut i, mut every, mut some) = (0, true, false);
         let mut stop = if offset < start { start } else { self.size };
         while i < layout.variants.len() {
+          // A variant that no value can be has nothing to tell.
+          if !layout.variants[i].is_present() {
+            i += 1;
+            continue;
+          }
           let (init, end) = layout.variants[i].layout.segment(offset, always, checked);
           (every, some) = (every && init, some || init);
           if end < stop {
@@ -1684,7 +1893,7 @@ impl Layout {
       Kind::Enum(layout) => {
         let mut i = 0;
         while i < layout.variants.len() {
-          if layout.variants[i].tag == 0 {
+          if layout.variants[i].tags().has(0) && layout.variants[i].is_present() {
             let (fields, mut j) = (layout.variants[i].fields(), 0);
             while j < fields.len() {
               if !fields[j].layout.zeroable() {
@@ -1762,7 +1971,8 @@ impl Layout {
         let mut i = 0;
         while i < a.variants.len() {
           let (x, y) = (&a.variants[i], &b.variants[i]);
-          if x.tag != y.tag || !x.layout.equals(y.layout) {
+          if !x.tags().equals(&y.tags()) || x.holds_tag != y.holds_tag || !x.layout.equals(y.layout)
+          {
             return false;
           }
           i += 1;

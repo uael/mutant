@@ -569,3 +569,25 @@ model_struct!(
     z: Zero,
   }
 );
+
+// --- Types without values -------------------------------------------------------------------------
+
+/// A variant that holds a type without values: no value is that variant.
+#[derive(Pun, Clone, Copy)]
+#[repr(u8)]
+pub enum Never {
+  A(u8),
+  B(core::convert::Infallible),
+}
+
+impl Oracle for Never {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    // `A(u8)`: the tag, then the byte; the tag of `B` is no value.
+    let tag = int(b, off, 1, true, reads)?;
+    if tag != 0 {
+      return Ok(false);
+    }
+    int(b, off + 1, 1, true, reads)?;
+    Ok(true)
+  }
+}

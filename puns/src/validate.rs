@@ -7,7 +7,7 @@
 use crate::{
   Count, Fields, Path, Pun, Root, Variants, Walks,
   analysis::Marks,
-  layout::{Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
+  layout::{self, Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
   ptr,
 };
 
@@ -77,9 +77,14 @@ const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> 
 /// has one, has its fields initialized.
 const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, tag: u128) -> bool {
   let Some(expected) = (const { V::TAG }) else { return false };
+  let this = match const { V::RANGES } {
+    None => tag == expected,
+    // The variant of a niche, or one that no value is (no range).
+    Some(ranges) => layout::contains(ranges, tag),
+  };
   // SAFETY: guaranteed by the caller.
   unsafe {
-    if tag == expected {
+    if this {
       validate_fields::<All, Root, T, V::Fields>(ptr)
     } else {
       validate_variants::<T, V::Next>(ptr, tag)

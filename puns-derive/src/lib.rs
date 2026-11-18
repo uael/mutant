@@ -1695,7 +1695,19 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
   if data.variants.is_empty() {
-    return Err(Error::new(Span::call_site(), "an enum without variant has no value"));
+    // No value: nothing is ever made of one, and nothing is valid for it.
+    return Ok(quote! {
+      // SAFETY: an enum without variants has no value, which is what the layout says.
+      unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
+        type Elem = ();
+        type Fields = ();
+        type Variants = ();
+        type Walks = ();
+        type Pointee = ();
+        const PROBE: *const Self = ::core::ptr::null();
+        const LAYOUT: #root::layout::Layout = #root::layout::Layout::uninhabited::<Self>();
+      }
+    });
   }
   // An enum of references: a view of what is one thing or another.
   let references = data
