@@ -225,7 +225,7 @@ fn fallback(input: &DeriveInput) -> TokenStream {
       type Elem = ();
       type Fields = ();
       type Variants = ();
-      type Walks = ();
+      type Rules = ();
       type Pointee = ();
       const PROBE: *const Self = ::core::panic!("`#[derive(Pun)]` failed");
       const LAYOUT: #root::layout::Layout = ::core::panic!("`#[derive(Pun)]` failed");
@@ -458,13 +458,13 @@ struct FieldInfo<'a> {
 }
 
 /// The limits of the evaluator, which `layout::check_rules` checks again: the depth of its stack,
-/// and the number of variables of an expression. An `assert` whose first walk is applied by the
-/// code of the walks of its struct, rather than by the evaluator, is of at most `WALK_OPS`
-/// operations, and each expression of that walk of at most `WALK_INNER_OPS`.
+/// and the number of variables of an expression. The validation applies each operation in an
+/// instance of a function of its own, down a tree of the operations: an expression has at most
+/// `MAX_OPS` of them, and nests at most `MAX_WALKS` walks.
 const STACK: usize = 16;
 const VARIABLES: usize = 8;
-const WALK_OPS: usize = 72;
-const WALK_INNER_OPS: usize = 56;
+const MAX_OPS: usize = 256;
+const MAX_WALKS: usize = 4;
 
 /// `tokens`, located at `span`: so that an error in what they compute is reported there. What
 /// their names resolve to does not change.
@@ -484,11 +484,10 @@ fn located(tokens: TokenStream, span: Span) -> TokenStream {
     .collect()
 }
 
-/// What an operation takes off the stack of the evaluator, and what it puts on it.
-fn effect(op: &TokenStream) -> (usize, usize) {
-  // Its name is the first after `Op::`.
+/// The name of an operation: the first after `Op::`.
+fn op_name(op: &TokenStream) -> Option<String> {
   let tokens = op.clone().into_iter().collect::<Vec<_>>();
-  let name = tokens.windows(4).find_map(|window| match window {
+  tokens.windows(4).find_map(|window| match window {
     [
       proc_macro2::TokenTree::Ident(op),
       proc_macro2::TokenTree::Punct(_),
@@ -496,8 +495,12 @@ fn effect(op: &TokenStream) -> (usize, usize) {
       proc_macro2::TokenTree::Ident(name),
     ] if op == "Op" => Some(name.to_string()),
     _ => None,
-  });
-  match name.as_deref() {
+  })
+}
+
+/// What an operation takes off the stack of the evaluator, and what it puts on it.
+fn effect(op: &TokenStream) -> (usize, usize) {
+  match op_name(op).as_deref() {
     Some("Lit" | "load" | "Size" | "Get") => (0, 1),
     Some("At" | "Varint" | "Not" | "Walk" | "Shortcut" | "Then") => (1, 1),
     // After a branch, which it does not take off: see `layout::check_ops`.
@@ -509,8 +512,20 @@ fn effect(op: &TokenStream) -> (usize, usize) {
   }
 }
 
-/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator.
+/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator, and are
+/// not too many.
 fn limits(ops: &[TokenStream], spanned: &impl ToTokens) -> Result<()> {
+  if ops.len() > MAX_OPS {
+    return Err(Error::new_spanned(
+      spanned,
+      format!(
+        "this expression has {} operations, and one has at most {MAX_OPS}: the validation applies \
+         each in a function of its own. Split it into several `assert`s, or name what it \
+         computes several times with `let`",
+        ops.len()
+      ),
+    ));
+  }
   let (mut depth, mut deepest) = (0usize, 0);
   for op in ops {
     let (pops, pushes) = effect(op);
@@ -567,9 +582,9 @@ struct Scope {
   names: Vec<(Ident, u8, Ty)>,
   /// How many closures of `walk`s the expression is in.
   walking: usize,
-  /// For each `walk` that is not in another one: the number of operations of the longest of its
-  /// two expressions.
-  walks: Vec<usize>,
+  /// For each `walk` of the expression that is being compiled, in order (not those in another
+  /// `walk`): its two expressions, as types.
+  walks: Vec<(TokenStream, TokenStream)>,
   /// In a `size` or a `len`, which cannot be computed from `size_of_val(self)`.
   sizing: bool,
 }
@@ -863,8 +878,18 @@ fn compile(
     }
     // `walk(START, |at| COND, |at| NEXT)`: `START`, replaced by `NEXT` for as long as `COND`.
     Expr::Call(call) if call.args.len() == 3 && is_call(call, "walk") => {
+      if scope.walking >= MAX_WALKS {
+        return Err(Error::new_spanned(
+          call,
+          format!(
+            "walks are nested {} deep here, and at most {MAX_WALKS}: the validation applies their \
+             expressions in functions of their own",
+            scope.walking + 1
+          ),
+        ));
+      }
       int(&call.args[0], ops, scope)?;
-      let (mut var, mut programs) = (0, vec![]);
+      let (mut var, mut programs, mut types) = (0, vec![], vec![]);
       for (closure, ty) in [(&call.args[1], Ty::Bool), (&call.args[2], Ty::Int)] {
         let parameter = match closure {
           Expr::Closure(closure) if closure.inputs.len() == 1 => match &closure.inputs[0] {
@@ -878,18 +903,20 @@ fn compile(
         };
         let (visible, mut program) = (scope.names.len(), vec![]);
         var = scope.declare(name, Ty::Int)?;
+        // The walks of this expression are its own.
+        let outer = std::mem::take(&mut scope.walks);
         scope.walking += 1;
         let compiled = compile(body, fields, root, &mut program, scope);
         scope.walking -= 1;
+        let inner = std::mem::replace(&mut scope.walks, outer);
         scope.names.truncate(visible);
         expect(compiled?, ty, body)?;
         limits(&program, body)?;
+        types.push(steps(&program, inner, root));
         programs.push(program);
       }
       let (cond, next) = (&programs[0], &programs[1]);
-      if scope.walking == 0 {
-        scope.walks.push(cond.len().max(next.len()));
-      }
+      scope.walks.push((types[0].clone(), types[1].clone()));
       ops.push(quote!(#op::Walk {
         var: #var,
         cond: const { &[#(#cond),*] },
@@ -1254,11 +1281,8 @@ impl VisitMut for Fielder<'_> {
 /// An expression, as operations: `&[Op, ...]`.
 struct Expression {
   ops: TokenStream,
-  /// Number of operations.
-  len: usize,
-  /// If its first walk can be applied by the code of the walks of its struct (it is short
-  /// enough): the number of operations of the longest of the two expressions of that walk.
-  walk: Option<usize>,
+  /// The same, as a type (`puns::Steps`).
+  steps: TokenStream,
 }
 
 /// Compile an expression whose value is a `ty`; with `sizing`, a size or a length, which
@@ -1274,24 +1298,45 @@ fn expression(
   let found = compile(expr, fields, root, &mut ops, &mut scope)?;
   expect(found, ty, expr)?;
   limits(&ops, expr)?;
-  let walk =
-    scope.walks.first().copied().filter(|inner| *inner <= WALK_INNER_OPS && ops.len() <= WALK_OPS);
-  Ok(Expression { len: ops.len(), ops: quote!(&[#(#ops),*]), walk })
+  let steps = steps(&ops, std::mem::take(&mut scope.walks), root);
+  Ok(Expression { ops: quote!(&[#(#ops),*]), steps })
 }
 
-/// An expression that is not the one of an `assert`, an integer: the evaluator applies its walks.
-fn plain(
-  expr: &Expr,
-  sizing: bool,
-  fields: &[FieldInfo],
+/// The operations `ops` as a type: a tree (`puns::steps::Two`) whose leaves are the operations,
+/// each `One<INDEX>` or, for a walk, `Walk<INDEX, COND, NEXT>`, where `COND` and `NEXT` are its
+/// expressions as types: `walks`, in the order of the walks of `ops`. The validation applies each
+/// operation in an instance of its own, down this tree: it is balanced, so that the recursion is
+/// as deep as its logarithm.
+fn steps(
+  ops: &[TokenStream],
+  walks: Vec<(TokenStream, TokenStream)>,
   root: &TokenStream,
-) -> Result<TokenStream> {
-  Ok(expression(expr, Ty::Int, sizing, fields, root)?.ops)
-}
-
-/// `count`, as a type.
-fn count_type(count: usize, root: &TokenStream) -> TokenStream {
-  (0..count).fold(quote!(#root::Zero), |less, _| quote!(#root::More<#less>))
+) -> TokenStream {
+  fn tree(leaves: &[TokenStream], root: &TokenStream) -> TokenStream {
+    match leaves {
+      [] => quote!(()),
+      [leaf] => leaf.clone(),
+      _ => {
+        let (a, b) = leaves.split_at(leaves.len() / 2);
+        let (a, b) = (tree(a, root), tree(b, root));
+        quote!(#root::steps::Two<#a, #b>)
+      }
+    }
+  }
+  let mut walks = walks.into_iter();
+  let leaves = ops
+    .iter()
+    .enumerate()
+    .map(|(index, op)| {
+      if op_name(op).as_deref() == Some("Walk") {
+        let (cond, next) = walks.next().expect("a walk and its expressions");
+        quote!(#root::steps::Walk<#index, #cond, #next>)
+      } else {
+        quote!(#root::steps::One<#index>)
+      }
+    })
+    .collect::<Vec<_>>();
+  tree(&leaves, root)
 }
 
 /// The ranges of `#[pun(valid(..))]`, as `&'static [(u128, u128)]`.
@@ -1492,22 +1537,17 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   // Rules.
   let rule = quote!(#root::layout::Rule);
   let mut rules = vec![];
+  // The rules that have an expression: their index, and their operations as a type.
+  let mut listed = vec![];
   if let Some(size) = &options.size {
-    let ops = plain(size, true, &fields, &root)?;
+    let Expression { ops, steps } = expression(size, Ty::Int, true, &fields, &root)?;
+    listed.push((rules.len(), steps));
     rules.push(quote!(#rule::Size(#ops)));
   }
-  // The rules that walk: their index, their number of operations and the one of their walk.
-  let mut walks = vec![];
   for assert in &options.asserts {
-    let Expression { ops, len, walk } = expression(assert, Ty::Bool, false, &fields, &root)?;
-    let index = rules.len();
-    rules.push(walk.map_or_else(
-      || quote!(#rule::Assert(#ops)),
-      |inner| {
-        walks.push((index, len, inner));
-        quote!(#rule::Walk(#ops))
-      },
-    ));
+    let Expression { ops, steps } = expression(assert, Ty::Bool, false, &fields, &root)?;
+    listed.push((rules.len(), steps));
+    rules.push(quote!(#rule::Assert(#ops)));
   }
   let mut accessors = vec![];
   for (i, field) in fields.iter().enumerate() {
@@ -1516,7 +1556,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       if !last {
         return Err(Error::new(len.span(), "`len` is an option of the last field"));
       }
-      let ops = plain(len, true, &fields, &root)?;
+      let Expression { ops, steps } = expression(len, Ty::Int, true, &fields, &root)?;
+      listed.push((rules.len(), steps));
       rules.push(quote!(#rule::Len(#ops)));
     }
     if let Some(regions) = &field.options.regions {
@@ -1528,7 +1569,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         let name = &region.name;
         rules.push(match &region.size {
           Some(size) => {
-            let ops = plain(size, false, &fields, &root)?;
+            let Expression { ops, steps } = expression(size, Ty::Int, false, &fields, &root)?;
+            listed.push((rules.len(), steps));
             quote!(#rule::Region(::core::option::Option::Some(#ops)))
           }
           None if index + 1 == regions.len() => quote!(#rule::Region(::core::option::Option::None)),
@@ -1596,6 +1638,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   // The list of the fields, at the type level.
   let markers = (0..count).map(|i| format_ident!("__PunField{}", i)).collect::<Vec<_>>();
   let first = markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
+  let last = markers.last().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
   let vis = &input.vis;
   let lists = fields.iter().enumerate().map(|(i, field)| {
     let (marker, ty) = (&markers[i], field.ty);
@@ -1609,6 +1652,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
         type Type = #ty;
         type Next = #next;
+        type Last = #last;
         type Path<__P: #root::Path> = #root::At<__P, Self>;
         const FIELD: ::core::option::Option<#root::layout::Field> =
           ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.field(#i));
@@ -1616,28 +1660,11 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     }
   });
 
-  // The list of the rules that walk, at the type level.
-  let walk_markers = (0..walks.len()).map(|i| format_ident!("__PunWalk{}", i)).collect::<Vec<_>>();
-  let first_walk =
-    walk_markers.first().map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
-  let walk_lists = walks.iter().enumerate().map(|(i, (index, len, inner))| {
-    let (marker, ops, inner) =
-      (&walk_markers[i], count_type(*len, &root), count_type(*inner, &root));
-    let next =
-      walk_markers.get(i + 1).map_or_else(|| quote!(()), |marker| quote!(#marker #ty_generics));
-    quote! {
-      #[allow(non_camel_case_types)]
-      #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
-
-      // SAFETY: the rule of the layout of the struct, and the sizes of its expressions.
-      unsafe impl #impl_generics #root::Walks for #marker #ty_generics #where_clause {
-        const RULE: ::core::primitive::usize = #index;
-        type Ops = #ops;
-        type Inner = #inner;
-        type Next = #next;
-      }
-    }
-  });
+  // The list of the rules that have an expression, at the type level, with their operations.
+  let rule_list = listed
+    .iter()
+    .rev()
+    .fold(quote!(()), |next, (index, steps)| quote!(#root::RuleAt<#index, #steps, #next>));
 
   let accessors = (!accessors.is_empty()).then(|| {
     quote! {
@@ -1660,8 +1687,6 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
       #(#lists)*
 
-      #(#walk_lists)*
-
       #offsets_trait
 
       // SAFETY: the layout comes from the compiler, field by field.
@@ -1669,7 +1694,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         type Elem = ();
         type Fields = #first;
         type Variants = ();
-        type Walks = #first_walk;
+        type Rules = #rule_list;
         type Pointee = ();
         const PROBE: *const Self = #probe;
         // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
@@ -1706,7 +1731,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         type Elem = ();
         type Fields = ();
         type Variants = ();
-        type Walks = ();
+        type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::uninhabited::<Self>();
@@ -1924,6 +1949,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
           type Type = #ty;
           type Next = #next;
+          type Last = ();
           type Path<__P: #root::Path> = #root::At<__P, Self>;
           const FIELD: ::core::option::Option<#root::layout::Field> =
             ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.variant_field(#i, #j));
@@ -2005,7 +2031,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         type Elem = ();
         type Fields = ();
         type Variants = #first #ty_generics;
-        type Walks = ();
+        type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::enumeration::<Self>(
@@ -2165,6 +2191,7 @@ fn derive_discovered(
         unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
           type Type = #ty;
           type Next = #next;
+          type Last = ();
           type Path<__P: #root::Path> = #root::At<__P, Self>;
           const FIELD: ::core::option::Option<#root::layout::Field> =
             if #discover::DESC.inhabited(#i) {
@@ -2248,7 +2275,7 @@ fn derive_discovered(
         type Elem = ();
         type Fields = ();
         type Variants = #first #ty_generics;
-        type Walks = ();
+        type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout =
@@ -2318,6 +2345,7 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
       unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
         type Type = #ty;
         type Next = ();
+        type Last = ();
         type Path<__P: #root::Path> = #root::At<__P, Self>;
         const FIELD: ::core::option::Option<#root::layout::Field> =
           ::core::option::Option::Some(*<#this as #root::Pun>::LAYOUT.variant_field(#i, 0));
@@ -2355,7 +2383,7 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
         type Elem = ();
         type Fields = ();
         type Variants = #first;
-        type Walks = ();
+        type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::union::<Self>(

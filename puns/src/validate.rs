@@ -5,10 +5,11 @@
 //! not compiled, and one that is comes down to a load and a comparison.
 
 use crate::{
-  Count, Fields, Path, Pun, Root, Variants, Walks,
+  Fields, Path, Pun, Root, Rules, Steps, Variants,
   analysis::Marks,
-  layout::{self, Enum, Kind, Machine, Op, Rule, Shape, eval, load, walk_limit},
+  layout::{self, Enum, Kind, Machine, Op, Rule, Shape, load, op_at, walk_limit},
   ptr,
+  steps::{InRule, ONE, Ops, TWO, WALK},
 };
 
 /// The things of a target that have to be checked.
@@ -38,9 +39,9 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
       Shape::Scalar(spec) => spec.matches(ptr.cast()),
       Shape::Array(len) => validate_elems::<C, P, T::Elem>(ptr.cast(), len),
       Shape::Slice => validate_elems::<C, P, T::Elem>(ptr.cast(), ptr::metadata(ptr)),
-      Shape::Struct(rules) => {
+      Shape::Struct => {
         validate_fields::<C, P, T, T::Fields>(ptr)
-          && (const { !rules_marked::<C, P, T>() } || check_rules(ptr, rules))
+          && (const { !rules_marked::<C, P, T>() } || check_rules(ptr))
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
       Shape::Enum(layout) if layout.union => validate_union::<T, T::Variants>(ptr),
@@ -180,131 +181,264 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Pun>() -> bool {
   !T::LAYOUT.rules().is_empty() && C::MARKS.any(P::LEAF + T::LAYOUT.leaves - 1, 1)
 }
 
-/// Whatever the struct at `ptr` satisfies its `rules`, which are the ones of the layout of `T`.
+/// Whatever the struct at `ptr` satisfies the rules of the layout of `T`.
 ///
 /// # Safety
 /// Same as [`validate`].
 #[inline(always)]
-pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T, rules: &[Rule]) -> bool {
-  let base = ptr.cast::<u8>();
+pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T) -> bool {
+  const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
   let (len, tail, size) = tail_of(ptr);
-  // What the regions before take of the tail.
-  let mut regions = 0;
-  // Not a loop, for the first rules: see `layout::eval`.
-  macro_rules! unrolled {
-    ($($index:literal)+) => {$(
-      if $index < rules.len() {
-        // SAFETY: the sized fields of the struct are readable.
-        match unsafe { check_rule(&rules[$index], base, size, tail, len, regions) } {
-          Some(size) => regions += size,
-          None => return false,
-        }
-      }
-    )+};
-  }
-  unrolled!(0 1 2 3 4 5 6 7);
-  let mut i = 8;
-  while i < rules.len() {
-    // SAFETY: the sized fields of the struct are readable.
-    match unsafe { check_rule(&rules[i], base, size, tail, len, regions) } {
-      Some(size) => regions += size,
-      None => return false,
-    }
-    i += 1;
-  }
-  // The rules that walk are the ones of the list.
-  const { assert!(T::LAYOUT.walk_rules() == count_walks::<T, T::Walks>()) };
   // SAFETY: the bytes of the struct are readable.
-  unsafe { check_walks::<T, T::Walks>(base, size) }
+  unsafe { check_listed::<T, T::Rules>(ptr.cast(), size, tail, len, 0) }
 }
 
-// -------------------------------------------------------------------------------------------------
-// Expressions that walk
-
-/// Number of rules of the list `W`, each of which must be a rule of `T` that walks.
-const fn count_walks<T: ?Sized + Pun, W: Walks>() -> usize {
-  if W::RULE == usize::MAX {
-    return 0;
-  }
-  assert!(
-    T::LAYOUT.walks(W::RULE, <W::Ops as Count>::VALUE, <W::Inner as Count>::VALUE),
-    "not a rule that walks"
-  );
-  1 + count_walks::<T, W::Next>()
-}
-
-/// Whatever the struct at `base` satisfies the rules of `T` that walk: `W`, and the ones after
-/// it.
-///
-/// Where [`eval`] is given an expression, which is a constant once it is inlined, the operations
-/// are here constants of the instances of the functions that apply them: there is an instance
-/// for each operation (`N` is its index, plus one), in which it is the only one that is
-/// compiled. The two expressions of a walk are then what their arithmetic is, in a loop.
-///
-/// The recursions go down types, and stop where they are told to: a struct without such rules
-/// costs nothing to compile.
+/// Whatever the struct at `base` satisfies the rule `L` of `T` and the ones after it, the regions
+/// before taking `regions` bytes of its tail of `tail` bytes, `len` elements.
 ///
 /// # Safety
 /// `base` must be valid for reads of the `size` bytes of a `T`.
-const unsafe fn check_walks<T: ?Sized + Pun, W: Walks>(base: *const u8, size: usize) -> bool {
-  if const { W::RULE == usize::MAX } {
+#[cfg_attr(not(debug_assertions), inline(always))]
+const unsafe fn check_listed<T: ?Sized + Pun, L: Rules>(
+  base: *const u8,
+  size: usize,
+  tail: usize,
+  len: usize,
+  regions: usize,
+) -> bool {
+  if const { L::RULE == usize::MAX } {
     return true;
   }
+  // SAFETY: guaranteed by the caller.
+  let Some(value) = (unsafe { eval::<InRule<T, L>, L::Expr>(base, size) }) else { return false };
+  let regions = match const { T::LAYOUT.rule(L::RULE) } {
+    Some(Rule::Size(_)) if value == size as u128 => regions,
+    Some(Rule::Len(_)) if value == len as u128 => regions,
+    Some(Rule::Assert(_)) if value != 0 => regions,
+    Some(Rule::Region(_)) if value <= (tail - regions) as u128 => regions + value as usize,
+    _ => return false,
+  };
+  // SAFETY: guaranteed by the caller.
+  unsafe { check_listed::<T, L::Next>(base, size, tail, len, regions) }
+}
+
+/// Whatever `L` lists the rules of `T` that have an expression from the `from`th one, each once,
+/// in order, with every operation of its expression (as [`covers`] tells).
+const fn listed<T: ?Sized + Pun, L: Rules>(from: usize) -> bool {
+  let rules = T::LAYOUT.rules();
+  let mut i = from;
+  while i < rules.len() && rules[i].ops().is_none() {
+    i += 1;
+  }
+  if L::RULE == usize::MAX {
+    return i >= rules.len();
+  }
+  L::RULE == i && covers::<InRule<T, L>, L::Expr>() && listed::<T, L::Next>(i + 1)
+}
+
+/// Whatever `S` is every operation of the expression `X`, each once, in order, with the walks
+/// where they are. (That each of its operations is a walk where `S` says that it is one, and only
+/// there, and the same of the expressions of each walk, is asserted where it is applied.)
+const fn covers<X: Ops, S: Steps>() -> bool {
+  !X::OPS.is_empty() && S::FIRST == 0 && S::END == X::OPS.len()
+}
+
+/// The `size` or `len` rule of the struct `T`, or of the struct that its last field is (and so
+/// on): its value over the struct at `base`, of which `n` bytes can be read, `None` if it fails.
+/// This is how `from_head` finds how long a value is; [`layout::Layout::length_rule`] tells which
+/// rule it is, and where, which this finds by the types.
+///
+/// # Safety
+/// `base` must be valid for reads of the sized fields of the struct that has the rule, and of `n`
+/// bytes, initialized. `T` must have such a rule, by `length_rule`.
+#[inline(always)]
+pub const unsafe fn length<T: ?Sized + Pun>(base: *const u8, n: usize) -> Option<u128> {
+  // The rule is the struct's own, or of its last field: the one that `length_rule` finds.
+  let (own, offset) = const {
+    let rule = T::LAYOUT.length_rule();
+    let own = match T::LAYOUT.length_rule() {
+      Some(rule) => rule.base == 0 && sizing::<T, T::Rules>() != usize::MAX,
+      None => false,
+    };
+    let fields = T::LAYOUT.struct_fields();
+    let offset = if fields.is_empty() { 0 } else { fields[fields.len() - 1].offset };
+    if let (Some(rule), false) = (rule, own) {
+      // The last field, by the types, is the last field of the layout, which has that rule.
+      let last = <<T::Fields as Fields>::Last as Fields>::FIELD;
+      let inner = <<<T::Fields as Fields>::Last as Fields>::Type as Pun>::LAYOUT.length_rule();
+      assert!(
+        matches!(last, Some(field) if field.offset() == offset)
+          && matches!(inner, Some(inner) if inner.base + offset == rule.base
+            && inner.elements == rule.elements
+            && layout::same_ops(inner.ops, rule.ops)),
+        "not the last field of the struct"
+      );
+    }
+    (own, offset)
+  };
+  if own {
+    // SAFETY: guaranteed by the caller.
+    return unsafe { length_listed::<T, T::Rules>(base, n) };
+  }
+  // SAFETY: the struct that has the rule is in the last field, at `offset`.
+  unsafe { length::<<<T::Fields as Fields>::Last as Fields>::Type>(base.add(offset), n - offset) }
+}
+
+/// The index of the first `size` or `len` rule of `T` in `L`, `usize::MAX` if none.
+const fn sizing<T: ?Sized + Pun, L: Rules>() -> usize {
+  match T::LAYOUT.rule(L::RULE) {
+    _ if L::RULE == usize::MAX => usize::MAX,
+    Some(Rule::Size(_) | Rule::Len(_)) => L::RULE,
+    _ => sizing::<T, L::Next>(),
+  }
+}
+
+/// The value of the first `size` or `len` rule of `T` in `L`.
+///
+/// # Safety
+/// As [`length`].
+#[inline(always)]
+const unsafe fn length_listed<T: ?Sized + Pun, L: Rules>(
+  base: *const u8,
+  n: usize,
+) -> Option<u128> {
+  if const { L::RULE == usize::MAX } {
+    return None;
+  }
+  if const { matches!(T::LAYOUT.rule(L::RULE), Some(Rule::Size(_) | Rule::Len(_))) } {
+    const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
+    // SAFETY: guaranteed by the caller.
+    return unsafe { eval::<InRule<T, L>, L::Expr>(base, n) };
+  }
+  // SAFETY: guaranteed by the caller.
+  unsafe { length_listed::<T, L::Next>(base, n) }
+}
+
+/// The bytes of the `index`th region of the tail of the struct `T` at `base`, whose size is
+/// `size`, whose tail starts at `head` and is `tail` bytes long: from the rule `L` on, the regions
+/// before taking `start` bytes, `count` of them.
+///
+/// # Safety
+/// `base` must be valid for reads of the `size` bytes of a `T`.
+#[inline(always)]
+pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
+  base: *const u8,
+  size: usize,
+  (head, tail): (usize, usize),
+  index: usize,
+  (start, count): (usize, usize),
+) -> &'a [u8] {
+  const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
+  let rest = tail - start;
+  // The last region, which takes what remains, has no expression: it is not in the list.
+  if const { L::RULE == usize::MAX } {
+    assert!(count == index && T::LAYOUT.has_last_region(), "no such region");
+    // SAFETY: `start <= tail`, the size of what follows the `head` first bytes.
+    return unsafe { core::slice::from_raw_parts(base.add(head + start), rest) };
+  }
+  if const { !matches!(T::LAYOUT.rule(L::RULE), Some(Rule::Region(_))) } {
+    // SAFETY: guaranteed by the caller.
+    return unsafe { region_at::<T, L::Next>(base, size, (head, tail), index, (start, count)) };
+  }
+  // A region that does not fit is cut short: the fields that size it are not trusted.
+  // SAFETY: guaranteed by the caller.
+  let region = match unsafe { eval::<InRule<T, L>, L::Expr>(base, size) } {
+    Some(region) if region <= rest as u128 => region as usize,
+    _ => rest,
+  };
+  if count == index {
+    // SAFETY: `start + region <= tail`, the size of what follows the `head` first bytes.
+    return unsafe { core::slice::from_raw_parts(base.add(head + start), region) };
+  }
+  // SAFETY: guaranteed by the caller.
+  unsafe { region_at::<T, L::Next>(base, size, (head, tail), index, (start + region, count + 1)) }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Expressions
+
+/// The value of the expression `X`, whose operations are `S`, over the struct at `base`, whose
+/// size is `size` (or, for a `size` or `len` rule, of which `size` bytes can be read): `None` if
+/// it fails.
+///
+/// The operations are constants of the instances of the functions that apply them, one instance
+/// for each ([`steps`], [`walk`]), in which it is the only one that is compiled: what is compiled
+/// is the arithmetic of the expression, and the loops of its walks, never an interpreter. The
+/// recursions go down types, a tree of the operations: as deep as its logarithm.
+///
+/// # Safety
+/// `base` must be valid for reads of the sized fields of the struct whose rule `X` is an
+/// expression of, and of `size` bytes, initialized.
+#[inline(always)]
+const unsafe fn eval<X: Ops, S: Steps>(base: *const u8, size: usize) -> Option<u128> {
   let mut machine = Machine::NEW;
   // SAFETY: guaranteed by the caller.
-  unsafe {
-    steps::<T, W, W::Ops>(&mut machine, base, size)
-      && machine.result() != 0
-      && check_walks::<T, W::Next>(base, size)
-  }
+  if unsafe { steps::<X, S>(&mut machine, base, size) } { Some(machine.result()) } else { None }
 }
 
-/// Apply the `N` first operations of the expression of the rule `W` of `T`: `false` if one of
-/// them fails, which is then the failure of the expression.
+/// Apply the operations `S` of the expression `X`: `false` if one of them fails, which is then the
+/// failure of the expression.
 ///
 /// # Safety
-/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
+/// As [`eval`].
 #[cfg_attr(not(debug_assertions), inline(always))]
-const unsafe fn steps<T: ?Sized + Pun, W: Walks, N: Count>(
+const unsafe fn steps<X: Ops, S: Steps>(
   machine: &mut Machine,
   base: *const u8,
   size: usize,
 ) -> bool {
-  if const { N::VALUE == 0 } {
-    return true;
-  }
+  // An operation that `S` says is not a walk is not one: this is what makes every walk applied
+  // by `walk`, which `Machine::apply` does not do.
+  const {
+    assert!(
+      S::KIND != ONE || matches!(op_at(X::OPS, S::AT), Some(op) if !matches!(op, Op::Walk { .. })),
+      "not the operations of the expression"
+    );
+  };
   // SAFETY: guaranteed by the caller.
   unsafe {
-    if !steps::<T, W, N::Less>(machine, base, size) {
-      return false;
+    match const { S::KIND } {
+      ONE => match const { op_at(X::OPS, S::AT) } {
+        Some(op) => machine.apply(op, S::AT, base, size),
+        None => false,
+      },
+      TWO => {
+        if !steps::<X, S::A>(machine, base, size) {
+          return false;
+        }
+        steps::<X, S::B>(machine, base, size)
+      }
+      WALK => walk::<X, S>(machine, base, size),
+      _ => true,
     }
-    if const { T::LAYOUT.walk_at(W::RULE) == N::VALUE.wrapping_sub(1) } {
-      return walk::<T, W>(machine, base, size);
-    }
-    let Some(op) = (const { T::LAYOUT.rule_op(W::RULE, N::VALUE.wrapping_sub(1)) }) else {
-      return true;
-    };
-    machine.apply(op, N::VALUE.wrapping_sub(1), base, size)
   }
 }
 
-/// Apply the [`Op::Walk`] of the expression of the rule `W` of `T`: `false` if it fails.
+/// Apply the [`Op::Walk`] `W` of the expression `X`: `false` if it fails.
 ///
 /// # Safety
-/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
+/// As [`eval`].
 #[cfg_attr(not(debug_assertions), inline(always))]
-const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
+const unsafe fn walk<X: Ops, W: Steps>(
   machine: &mut Machine,
   base: *const u8,
   size: usize,
 ) -> bool {
-  let Some(Op::Walk { var, .. }) =
-    (const { T::LAYOUT.rule_op(W::RULE, T::LAYOUT.walk_at(W::RULE)) })
-  else {
-    return true;
+  // A walk where `W` says, whose expressions are every operation of both of its own.
+  const {
+    assert!(
+      W::KIND != WALK
+        || matches!(op_at(X::OPS, W::AT), Some(Op::Walk { .. }))
+          && covers::<W::InCond<X>, W::Cond>()
+          && covers::<W::InThen<X>, W::Then>(),
+      "not the operations of the expression"
+    );
+  };
+  let Some(Op::Walk { var, .. }) = (const { op_at(X::OPS, W::AT) }) else {
+    return false;
   };
   // Not computed: in a part of the expression that is not computed.
-  if !machine.computes(const { T::LAYOUT.walk_at(W::RULE) }) {
+  if !machine.computes(W::AT) {
     return true;
   }
   let mut state = machine.top();
@@ -312,7 +446,7 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.
-    if !unsafe { walk_steps::<T, W, false, W::Inner>(&mut cond, base, size) } {
+    if !unsafe { self::steps::<W::InCond<X>, W::Cond>(&mut cond, base, size) } {
       break None;
     }
     if cond.result() == 0 {
@@ -323,38 +457,12 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
     }
     steps += 1;
     // SAFETY: guaranteed by the caller.
-    if !unsafe { walk_steps::<T, W, true, W::Inner>(&mut next, base, size) } {
+    if !unsafe { self::steps::<W::InThen<X>, W::Then>(&mut next, base, size) } {
       break None;
     }
     state = next.result();
   };
   machine.replace(result)
-}
-
-/// Apply the `N` first operations of an expression of the walk of the rule `W` of `T`: its
-/// condition, or with `NEXT` what follows.
-///
-/// # Safety
-/// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
-#[cfg_attr(not(debug_assertions), inline(always))]
-const unsafe fn walk_steps<T: ?Sized + Pun, W: Walks, const NEXT: bool, N: Count>(
-  machine: &mut Machine,
-  base: *const u8,
-  size: usize,
-) -> bool {
-  if const { N::VALUE == 0 } {
-    return true;
-  }
-  // SAFETY: guaranteed by the caller.
-  unsafe {
-    if !walk_steps::<T, W, NEXT, N::Less>(machine, base, size) {
-      return false;
-    }
-    let Some(op) = (const { T::LAYOUT.walk_op(W::RULE, NEXT, N::VALUE.wrapping_sub(1)) }) else {
-      return true;
-    };
-    machine.apply(op, N::VALUE.wrapping_sub(1), base, size)
-  }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -370,39 +478,5 @@ pub const fn tail_of<T: ?Sized + Pun>(ptr: *const T) -> (usize, usize, usize) {
     (len, len * layout.stride(), layout.head() + len * layout.stride())
   } else {
     (shape.len, shape.bytes, layout.size())
-  }
-}
-
-/// `None` if the rule does not hold, else the size of the region if the rule is one (`0` if
-/// not).
-///
-/// # Safety
-/// `base` must be valid for reads of the `size` bytes of a struct that has the rule.
-#[inline(always)]
-const unsafe fn check_rule(
-  rule: &Rule,
-  base: *const u8,
-  size: usize,
-  tail: usize,
-  len: usize,
-  regions: usize,
-) -> Option<usize> {
-  // SAFETY: guaranteed by the caller.
-  let value = unsafe {
-    match *rule {
-      Rule::Size(ops) | Rule::Len(ops) | Rule::Assert(ops) | Rule::Region(Some(ops)) => {
-        eval(ops, base, size)
-      }
-      // See `check_walks`.
-      Rule::Region(None) | Rule::Walk(_) => return Some(0),
-    }
-  };
-  let Some(value) = value else { return None };
-  match *rule {
-    Rule::Size(_) if value == size as u128 => Some(0),
-    Rule::Len(_) if value == len as u128 => Some(0),
-    Rule::Assert(_) if value != 0 => Some(0),
-    Rule::Region(_) if value <= (tail - regions) as u128 => Some(value as usize),
-    _ => None,
   }
 }

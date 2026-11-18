@@ -167,7 +167,7 @@ unsafe impl<T: Pun> Pun for Option<T> {
   type Elem = ();
   type Fields = ();
   type Variants = OptionNone<T>;
-  type Walks = ();
+  type Rules = ();
   // What a pointer that may be null aims at, when `T` is a pointer.
   type Pointee = T::Pointee;
   const PROBE: *const Self = core::ptr::null();
@@ -182,7 +182,7 @@ unsafe impl<T: Pun, E: Pun> Pun for Result<T, E> {
   type Elem = ();
   type Fields = ();
   type Variants = ResultOk<T, E>;
-  type Walks = ();
+  type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM });
@@ -244,6 +244,7 @@ unsafe impl<T: Pun> Variants for OptionSome<T> {
 unsafe impl<T: Pun> Fields for OptionSomeField<T> {
   type Type = T;
   type Next = ();
+  type Last = ();
   type Path<P: Path> = At<P, Self>;
   const FIELD: Option<Field> = field::<Option<T>>(1);
 }
@@ -268,6 +269,7 @@ unsafe impl<T: Pun, E: Pun> Variants for ResultErr<T, E> {
 unsafe impl<T: Pun, E: Pun> Fields for ResultOkField<T, E> {
   type Type = T;
   type Next = ();
+  type Last = ();
   type Path<P: Path> = At<P, Self>;
   const FIELD: Option<Field> = field::<Result<T, E>>(0);
 }
@@ -276,6 +278,7 @@ unsafe impl<T: Pun, E: Pun> Fields for ResultOkField<T, E> {
 unsafe impl<T: Pun, E: Pun> Fields for ResultErrField<T, E> {
   type Type = E;
   type Next = ();
+  type Last = ();
   type Path<P: Path> = At<P, Self>;
   const FIELD: Option<Field> = field::<Result<T, E>>(1);
 }
