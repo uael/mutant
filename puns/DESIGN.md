@@ -328,7 +328,7 @@ Two more options are not rules, but save the code that would otherwise be writte
   `enum AnyFrame<'a> { Ipv4(&'a Frame<Ipv4>), Arp(&'a Frame<Arp>), Other(&'a Frame) }`, the derive
   generates `from_bytes` and `from_head`, which return the first variant that the bytes are (and
   no `from_tail`: the variants may be unsized): telling one thing from another is a declaration
-  too.
+  too. How each variant is decided once is "Views", below.
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
 are proven only by the same rules, at the same place of the source, in a struct of the same extent
@@ -387,6 +387,80 @@ makes jumps of it: no test is left where nothing is skipped. This replaced a bit
 of the stack that told whether it had failed, which made each operation carry failures along
 (a step of the walk of IPv6 took a third more time for it, and the side of a `||` that was not
 needed was computed all the same).
+
+**Views.** `from_bytes` and `from_head` of a view enum answer what trying each variant in turn
+would answer: the order of the variants is the order of preference. But each variant is checked
+once at most, and only for what is not known of it already (`view.rs`):
+
+- A variant whose first constrained scalar the bytes do not have (`rejects`: an EtherType, a
+  version) is passed over on that scalar alone, before anything else of it is computed. These
+  comparisons of the same bytes, one for each variant, the optimizer makes one decision of: a VLAN
+  frame meets the EtherTypes of IPv4 and of ARP as in a `match`.
+- A variant has a *base*: the first later variant whose type takes every value of the type of the
+  variant, over the same bytes. The analysis decides it at compile time, as it decides that
+  `pun_ref` is proven (`Frame<Ipv4>` takes every `Frame<Ipv4<Udp>>`, `Frame` takes both). The base
+  is decided first: bytes that are not one are not the variant either; of bytes that are, the
+  variant is checked for what its base does not prove of it, the marks of `try_pun_ref` from the
+  base (the protocol of a packet, and not its checksums again).
+- What is decided is kept (`view::Known`, a state for each variant): a base that several variants
+  share (`Frame<Ipv4>` of UDP, TCP and ICMP), or that is tried in its turn after it was a base, is
+  decided once. Each variant is a function of the derive, which decides the base of the variant
+  (calls the function of the base, chosen by a `match` on a constant) before the variant; once
+  inlined, the states are constants on each path, and no state is kept at run time.
+- For `from_head`, a base must also take the bytes that the variant takes (`same_extent`): both
+  tell their extent (a size, a `size` or a `len` rule, which a valid value meets), or neither does
+  and both take as many elements as fit alike (the same alignment and element, a head of the same
+  remainder). The variant then takes the extent of its base, without trailing padding, which each
+  adds of its own.
+
+That the answer is the same follows from what the analysis proves and checks. Bytes that are not a
+value of the base are not a value of the variant, since every value of the variant is one of the
+base. Bytes that are a value of the base meet everything that it requires, and from such a value
+`try_pun_ref` checks exactly what the variant requires more: what it leaves unchecked is implied
+by the requirements of the source (what the model check checks of every pair). A base is a later
+variant: it is decided before its turn only as a step of an earlier variant, and returned only in
+its turn. The error is `Error::Validity`, as it was: a view does not tell why no variant fits.
+
+Soundness does not rest on the code that the derive writes: the types of the variants are a tree
+at the type level (`view::List`, balanced, so that what proves a type of it is as deep as the
+logarithm of the number of variants), of which the layouts and the types are both taken, by a
+place in it that is a type (`view::First<view::Here>`), sealed; a state is only written by
+`view::decide` for the type of its place; a variant is decided from its base only where the state
+of the base says that the bytes are one, of the extent kept with it. The derive chooses the order in which variants are decided:
+a variant whose base was not decided first is not found, which is never unsound, and which the
+model check would see.
+
+The bases are found by the analysis of pairs of variants, at compile time: for each variant, the
+later ones, until one takes it, but those that a scalar at the same place tells apart (another
+EtherType, another protocol: `view::apart`, a walk of the layouts), then the analysis of what is
+left of the variant from the base found. The base of `from_head` is the one of `from_bytes` if it
+takes the same bytes, which it does where both tell their extent. A variant is validated by one
+instance of the validation for both functions: what the two bases do not prove (the same marks
+where the base is the same), or everything bytes do not prove where it has none. The function of
+each variant names the functions of all the variants after it (one is kept, by the `match` on a
+constant), so what is compiled grows as the square of the number of variants: the Ethernet example
+(19 variants) builds in 5.2 s in debug, where it took 4.4 s, and a view of 131 variants in 7.9 s,
+where it took 3.5 s.
+
+Measured with `benches/checks.rs` (instructions per check, `callgrind`), against the same check by
+hand:
+
+| `AnyFrame` of the bench (6 variants)   | before | now | now, a call | by hand (a call) |
+|----------------------------------------|-------:|----:|------------:|-----------------:|
+| UDP over IPv4 (the first variant)      |    287 | 283 |         273 |              244 |
+| TCP over IPv4                          |    307 | 302 |         290 |              286 |
+| UDP over IPv4, a wrong checksum        |    508 | 266 |         255 |              246 |
+| ARP                                    |     49 |  25 |          41 |               46 |
+| VLAN                                   |     53 |  25 |          41 |               45 |
+| another EtherType (the last variant)   |     48 |  21 |          36 |               40 |
+
+A wrong checksum was computed twice, for `Frame<Ipv4<Udp>>` and again for `Frame<Ipv4>`; it is
+now computed once, for `Frame<Ipv4>`, the base of the first three variants, and the UDP variant is
+then its protocol alone. The EtherType is now one decision (a `cmp` of its 16 bits for each
+value, then the variant), where the size and the EtherType of each variant were tested in turn.
+The optimizer now inlines the view where the bench calls it (its checksums stay calls), where it
+called it before, as it calls the check by hand: "now, a call" is `from_bytes` behind a function
+that is not inlined, as the check by hand is.
 
 ### 5. What the type system enforces, and what it does not
 
@@ -602,8 +676,8 @@ Every public function, and why it is safe with a pointer in its target or in its
   the target is refused (2).
 - `from_bytes_mut`, `from_head_mut`, `from_tail_mut`: the same plans, then `MUTABLE`: refused (2),
   (3).
-- `from_bytes` and `from_head` of a view enum (the derive): calls of `puns::from_bytes` and
-  `puns::from_head` for the type of each variant: refused (2).
+- `from_bytes` and `from_head` of a view enum (the derive): `view::decide` for the type of each
+  variant, which requires of it what `from_bytes` does (`Plan::TRY_REF`): refused (2).
 - getters (`#[pun(get(..))]`), `int`: they read an integer field of a `&self`; a pointer is not one
   (`Layout::as_integer`), which fails to compile.
 - accessors of regions, `region`: they need `pun_ref::<S, [u8]>`, and return bytes of the tail:
@@ -975,6 +1049,21 @@ meets those of the target (which is what a rule of the source over the part, or 
 enum, would break). A wrong shift, in the analysis or in the pointer, and a `mutable_part`
 without its second condition, are caught.
 
+View enums are checked against what they mean (`puns_model::views`): the first variant that the
+bytes are, found by trying each variant in turn with `from_bytes` and `from_head` of its type,
+which the pairs above check against the oracles. Every ordered pair of the types of 1 and of 2
+bytes is a view of two variants (`Two<A, B>`, a generic view enum: `A` is decided from `B` where
+`B` takes every `A`), compared on every pattern of bytes up to one more than their size, at an
+aligned and a misaligned address: the variant, its address, its size and what remains. A variant
+that its type does not take from the bytes is unsound, another variant or none is incorrect. A
+sample runs on a push (`tests/views.rs`, with views of three variants, a chain of bases and a base
+shared by two, and of unsized types, whose extents `from_head` takes from a rule or as many
+elements as fit), and under Miri a view for each unsafe path of `view.rs`; every pair with
+`full`. The report counts the variants that have a base, since a view without one checks nothing
+new. A variant checked for nothing from its base, a base chosen without the test that it takes
+the variant, a base for `from_head` that takes other bytes, extents compared with their trailing
+padding, and a variant rebuilt from its state with another length were tried, and are reported.
+
 Every check that CI runs on a push takes at most a minute. So `cargo test` runs a sample of the
 model check, and Miri a selection of pairs chosen for the unsafe paths they reach, not for the
 verdicts: no undefined behaviour is what Miri is there to see (`puns-model/tests/miri_sample.rs`
@@ -1039,16 +1128,15 @@ as something else, a check that would be behind a pointer.
   does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check
   counts what the source implies and the library checks all the same as nothing: it is not
   wrong.
-- **A view enum that tells its variants apart**: `from_bytes` of a view enum tries its variants
-  in order, each a check of its own. A VLAN frame repeats the check of the size and the EtherType
-  of four variants before its own (`benches/checks.rs`: 53 instructions against 45 by hand); bytes
-  that fail a rule that two variants share compute it for each (an IPv4 packet of UDP whose
-  checksum is wrong: the checksum of `Frame<Ipv4<Udp>>`, then the same of `Frame<Ipv4>`, about
-  twice the time by hand). Both are avoidable: the variants could be told apart first by what is
-  constant in each (the EtherType of a tag), and, rules being proven by the same rules, a rule of
-  one variant that fails ends a later variant that has the same rule over the same extent at the
-  same place, which the validation would have to report (which rule failed) and the derive to
-  know at compile time (which variants share it).
+- **A rule that two variants of a view share, where neither takes the other**: a variant is
+  decided from a later one that takes all its values ("Views"), not from one that only shares a
+  rule with it. Of two such variants, which the bytes could both be but for the rule (each
+  requires a field of its own that the bytes have, or a rule of its own after the shared one),
+  bytes that fail the rule compute it for each. Ending the later variants that have a rule that
+  failed, over the same extent at the same place (`Layout::same_rules`), would have the validation
+  report which rule failed, which every check would carry, where it is now a `bool` that the
+  optimizer folds. A view that declares, after them, a variant that takes both (`Frame<Ipv4>` of
+  two kinds of IPv4 packet) gets this, and shares what succeeds as well.
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
 - **Precise checks of an enum made from something else**: when only some of its variants are
@@ -1115,6 +1203,8 @@ as something else, a check that would be behind a pointer.
 - A packed struct whose unsized field has trailing padding of its own is rejected.
 - An enum with fields of more than about 120 variants needs `#![recursion_limit]` to be raised in
   the crate that validates it (validation recurses over the list of the variants).
+- The build of a view enum grows as the square of the number of its variants ("Views"): 131
+  variants build in 7.9 s in debug.
 - `PhantomData<T>` is `Scalar` for any `T`, and deriving `Pun` exposes private fields: see
   "What the type system enforces" for which types must not derive `Pun`.
 - The evaluator of rules has a stack of 16 values and 8 variables, an expression at most 256
