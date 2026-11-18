@@ -344,4 +344,31 @@ pub fn try_view_owned(maybe: &Maybe) -> Option<&Owned> {
   puns::try_view_ref(maybe).ok()
 }
 
+/// A packet of a protocol, whose payload is a typed region of its bytes, as `Ipv4` in the README.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(size = 4 + length)]
+#[pun(assert(sum16(0, size_of_val(self)) == 0xffff))]
+pub struct Packet<P: ?Sized + Tag<u8> = [u8]> {
+  pub protocol: P::Tag,
+  pub length: u8,
+  pub checksum: u16be,
+  #[pun(regions(payload: P))]
+  pub data: [u8],
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(tag(u8 = puns::num::u8c<17>))]
+pub struct Datagram {
+  pub ports: [u8; 4],
+  pub rest: [u8],
+}
+
+// The rules of a packet of a protocol are those of any packet: proven by the same rules.
+#[unsafe(no_mangle)]
+pub fn any_packet(packet: &Packet<Datagram>) -> &Packet {
+  pun_ref(packet)
+}
+
 fn main() {}

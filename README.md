@@ -262,6 +262,10 @@ assert_eq!((udp.destination_port.get(), &udp.payload), (53, &b"hello"[..]));
 // What is known is not checked again. A frame that carries UDP is a frame: no instruction.
 let any: &Frame = puns::pun_ref(frame);
 assert_eq!(any.payload.len(), 33);
+// And an IPv4 frame of any protocol: the rules of `Ipv4<Udp>` (its size, its checksum) are those
+// of `Ipv4`, over the same bytes, so they prove them. No instruction either.
+let ip: &Frame<Ipv4> = puns::pun_ref(frame);
+assert_eq!(ip.payload.header_length(), 20);
 
 // One bit of the header is flipped: its checksum does not hold, this is not IPv4.
 let mut corrupted = bytes;
@@ -614,6 +618,7 @@ table is in [`puns/DESIGN.md`][design]):
 | `&Position -> &[u8; 2]`, `[bool; 4] -> u32`        | `mov rax, rdi; ret`                  |
 | `&[Shape] -> &[Drawing]` (enums with fields)       | `mov rdx, rsi; mov rax, rdi; ret`    |
 | `&Frame<Ipv4> -> &[u8]`                            | `lea rdx, [rsi + 34]` (the length)   |
+| `&Frame<Ipv4<Udp>> -> &Frame<Ipv4>` (same rules)   | `mov rdx, rsi; mov rax, rdi; ret`    |
 | `&[u8; 2] -> Option<&Position>`                    | one `cmp byte ptr [rdi + 1], 2`      |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool` |
 | `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call    |

@@ -150,9 +150,9 @@ the start of the source, and each starts at its own base: the target of `tail` s
 `shift = size(S) - size(D)`, the source of the reverse relation of `tail_mut` there as well.
 Nothing else changes with the shift, since every step only compares what is at the same offset of
 both: a run of the target with what lies under it (scalars cut by the shift are decomposed into
-byte boxes as misaligned ones are), an enum only with an enum whose base is that offset, a rule
-only with the same rule whose struct is at that offset in the source (`mark_rules` from the
-shift). Periods stay correct: a period is the least common multiple of the strides of two
+byte boxes as misaligned ones are), an enum only with an enum whose base is that offset, the
+rules of a struct only with the same rules of a struct of the same extent at that offset in the
+source (`mark_rules` from the shift, section 4). Periods stay correct: a period is the least common multiple of the strides of two
 repetitions, and is only taken when the target is at the start of one of its elements; what lies
 under a run of the target a period later is the same whatever the phase of the two repetitions,
 which a shift only changes. The relation reports offsets of the source; messages subtract the
@@ -170,7 +170,12 @@ be written over the bytes `shift..shift + size` of the source, and the source mu
    with rules (`size`, `len`, `assert`, regions, walks) that covers any of them is refused, since
    its rules read its fields, and so is an enum (or a string) of the source of which they are
    only a part: its tag on one side, fields on the other. A target that takes as many elements
-   as fit may end anywhere in the source, and is refused over a source with enums.
+   as fit may end anywhere in the source, and is refused over a source with enums. A struct with
+   rules that lies within the bytes is not refused if the target has the same rules over the
+   same extent there (`proves_rules`, the test of section 4 the other way): what is written
+   through the target meets the rules of the source if it meets those of the target. The same of
+   the elements of an array that lie within the bytes (all at once where the target has elements
+   of the same size there, else each, up to 64).
 
 This is conservative: a rule that does not read the bytes of the part, or an enum all of whose
 variants would accept what is written, is refused all the same. The model check counts these as
@@ -191,6 +196,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 |----------------------------------------------------|--------------------------------------------|
 | `&Position -> &[u8; 2]`, `[bool; 4] -> u32`        | `mov rax, rdi; ret`                        |
 | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)         |
+| `&Packet<Datagram> -> &Packet` (the same rules)    | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`            |
 | `&[u8] -> Option<&Header>`                         | size, 4 bytes compare, `bt`, `cmp`         |
 | `from_head::<Frame<Ipv4>>(&[u8])`                  | 37 instructions, no loop, no call          |
@@ -307,7 +313,21 @@ Two more options are not rules, but save the code that would otherwise be writte
   too.
 
 Rules are checked when a value comes from something else, tell `from_head` how long a value is, and
-are proven only by the same rule, in the same struct, at the same place of the source.
+are proven only by the same rules, at the same place of the source, in a struct of the same extent
+(`Layout::same_rules`, `analysis::proves_rules`). A rule is a function of the bytes of its
+struct, of its size (`size_of_val(self)`, a `size` rule), of the number of elements of its tail
+(a `len` rule) and of the bytes of that tail (regions): a struct of the source with the same
+rules in the same order (`Rule::equals`), the same sized part and the same tail (where it starts,
+the size of an element, and for a sized struct its bytes and the elements of the array it ends
+with) computes the same thing over the same bytes, whatever its fields, which are related to the
+target as any other. So `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>` (the payload of
+`Ipv4` is a typed region of its bytes, not a field of another type), and a part of a dynamic
+struct, which has another size, does not prove those of a struct of its own size. The elements
+of an array or a slice share their leaves: their rules are proven at once, where the source has
+elements of the same size at the same place (what the first one is to the source, each is), else
+checked for each. A rule that reads the bytes of its struct reads its padding (section 5): the
+same tests decide whether it is checked, and so whether the padding is read
+(`Cursor::padding_is_read`).
 
 **No interpreter.** Every operation of every rule is applied by an instance of a function of its
 own (`validate::steps`), in which it is a constant: what is compiled is the arithmetic of the
@@ -780,8 +800,22 @@ failing to compile): about a hundred types of 1 to 8 bytes, every ordered pair o
 every value of the source over an alphabet (all bytes up to 2 bytes); slices and slice-tailed
 structs from every pattern of up to 6 bytes. It tells what a type requires (`valid(..)`, rules)
 from what it guarantees, and finds unsound verdicts (a value let through that the type system
-does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time) and
-imprecise ones (counted).
+does not allow, a byte of padding read), incorrect ones (a valid value rejected at run time, a
+requirement of the target left unchecked that the source does not imply) and imprecise ones
+(counted).
+
+What the requirements of a source imply is found by the oracle, one requirement at a time: the
+oracle of each type says what it requires, with where and what each requirement is
+(`puns_model::require`), and a requirement of the target is implied if every value of the source
+that meets the requirements of the source meets it (`implied`). A requirement may be left
+unchecked only if it is implied; nothing of the library's test (the same rules, the same extent)
+is in the oracle. Before, an unchecked requirement was not reported for a value that met the
+requirements of its source, whatever they were: a rule of the target wrongly taken as proven by
+another one could not be seen. The types include the same rules over other fields, another
+rule, another extent, in a struct, an enum with and without `repr`, an array, a union and a
+struct with a byte that may be uninitialized; the model check reports both a rule proven by
+another (`same_rules` that compares nothing) and a `&mut` part over a rule that the target does
+not have (`cut` without its test), which were tried.
 
 The types include enums without `repr` (a niche in a `bool`, a `NonZero`, a `char`, a niche shared
 by two variants next to a field of a third, a direct tag of one byte and one that `rustc` widened,
@@ -841,9 +875,15 @@ as something else, a check that would be behind a pointer.
   way to the targets): `puns` would give it the check of one value at a time, with the marks
   (see `validate`), which is not public yet.
 - **Precise mutable parts**: `head_mut` and `tail_mut` refuse any source with a rule over the
-  part, while the operations of a rule tell which fields and bytes it reads (a rule over other
-  fields only could be allowed), and any enum only partly covered, while an enum all of whose
-  variants accept what is written could be allowed.
+  part that the target does not have over the same extent, while the operations of a rule tell
+  which fields and bytes it reads (a rule over other fields only could be allowed), and any enum
+  only partly covered, while an enum all of whose variants accept what is written could be
+  allowed.
+- **Rules implied by other rules**: a rule is proven by the same rules, not by others that imply
+  it (`v % 6 == 0` implies `v % 3 == 0`), nor by the same rule of a struct of another extent that
+  does not read the extent (`a != b` in a struct of 2 bytes and in one of 3). The model check
+  counts what the source implies and the library checks all the same as nothing: it is not
+  wrong.
 - No checked parts of a typed value (`try_head`...): a part is proven or refused; bytes have
   `from_head` and `from_tail`.
 - **Precise checks of an enum made from something else**: when only some of its variants are
