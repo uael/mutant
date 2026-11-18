@@ -144,11 +144,14 @@ jobs:
   miri:
     name: Miri (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # Every `cargo` of the job is the nightly one: without this, the first one that is not
-    # asked for it (the one of the cache action) installs the toolchain of `rust-toolchain`,
-    # ten seconds for a compiler that the job does not use.
     env:
+      # Every `cargo` of the job is the nightly one: without this, the first one that is not
+      # asked for it (the one of the cache action) installs the toolchain of `rust-toolchain`,
+      # ten seconds for a compiler that the job does not use.
       RUSTUP_TOOLCHAIN: nightly-2026-11-17
+      # Where Miri keeps the standard library that it builds for its target: twenty seconds of
+      # build, so a directory that is cached (below).
+      MIRI_SYSROOT: /home/runner/miri-sysroot
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +170,8 @@ jobs:
           # 32 bits: a smaller `usize`, a `u64` aligned to 4.
           - name: 32 bits
             id: i686
-            args: -p puns --target i686-unknown-linux-gnu
+            args: -p puns
+            target: i686-unknown-linux-gnu
             select: true
             flags: -Zmiri-strict-provenance
           # The model check under Miri: a selection of pairs that runs every unsafe path it
@@ -193,18 +197,16 @@ jobs:
           # and where an offset of 8 bytes does not fit an `isize`.
           - name: nearest, 32 bits
             id: nearest-i686
-            args: >-
-              -p puns --features nearest --test nearest --test ir
-              --target i686-unknown-linux-gnu
+            args: -p puns --features nearest --test nearest --test ir
+            target: i686-unknown-linux-gnu
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation
           # The same on a big-endian target, where a region with offsets and numbers of a given
           # byte order must be the same bytes: the image of the IR example is compared with the
           # one that is committed.
           - name: nearest, big-endian
             id: nearest-s390x
-            args: >-
-              -p puns --features nearest --test nearest --test ir
-              --target s390x-unknown-linux-gnu
+            args: -p puns --features nearest --test nearest --test ir
+            target: s390x-unknown-linux-gnu
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation
     steps:
       - uses: actions/checkout@v4
@@ -212,13 +214,17 @@ jobs:
         with:
           toolchain: nightly-2026-11-17
           components: miri, rust-src
-      # With the standard library that Miri builds for the target (twenty seconds otherwise).
-      # Its path is written out: the action does not expand `~`.
       - uses: Swatinem/rust-cache@v2
         with:
           # Not the name: a key of a cache has no comma.
-          key: sysroot-${{ matrix.id }}
-          cache-directories: /home/runner/.cache/miri
+          key: ${{ matrix.id }}
+      # The standard library of Miri, for the toolchain and the target: built by the step after
+      # this one when the cache does not have it.
+      - uses: actions/cache@v4
+        with:
+          path: /home/runner/miri-sysroot
+          key: miri-sysroot-nightly-2026-11-17-${{ matrix.target || 'host' }}
+      - run: cargo miri setup ${{ matrix.target && format('--target {0}', matrix.target) }}
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
       # `--tests`, each would still be a binary that Miri starts to run nothing, a second each.
@@ -228,7 +234,9 @@ jobs:
         run: |
           tests=$(grep -L -e 'cfg(not(miri))' -e 'cfg(feature = "nearest")' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||' | tr '\n' ' ')
           echo "TESTS=--lib $tests" >> "$GITHUB_ENV"
-      - run: cargo +nightly-2026-11-17 miri test ${{ matrix.args }} $TESTS
+      - run: >-
+          cargo miri test ${{ matrix.args }}
+          ${{ matrix.target && format('--target {0}', matrix.target) }} $TESTS
         env:
           MIRIFLAGS: ${{ matrix.flags }}
 
