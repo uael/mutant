@@ -95,7 +95,11 @@ therefore out. This is what both previous attempts ran into.
   (`Layout::uninhabited`), whose layout no value is (`Layout::is_inhabited`), and which proves
   anything as a source (no value of it exists). `MaybeUninit<T>` is padding of the size of `T`;
 - **array** and **slice**: an element layout and a count (or none);
-- **pattern**: a tail of bytes that a DFA accepts. `str` is the UTF-8 automaton (8 states).
+- **pattern**: a tail of bytes that a DFA accepts. `str` is the UTF-8 automaton (8 states). An
+  automaton is known by its states and edges: its `id`, a field that safe code writes, only tells
+  two apart (two patterns are the same layout only if their automata are the same, state by state),
+  and a value is checked by `str::from_utf8` only where the automaton is the one of UTF-8, which
+  is decided at compile time.
 
 This tree *is* an automaton, in a compact hierarchical form: a position in it is a state.
 

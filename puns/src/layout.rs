@@ -3067,7 +3067,9 @@ impl Layout {
         }
         true
       }
-      (Kind::Pattern(a), Kind::Pattern(b)) => a.id == b.id,
+      // The same automaton, state by state: an `id` only tells two apart (it is a field that
+      // safe code writes, and proves nothing).
+      (Kind::Pattern(a), Kind::Pattern(b)) => a.id == b.id && a.same(b),
       // As far as the pointers themselves go: what they aim at is related through the types.
       (Kind::Pointer(a), Kind::Pointer(b)) => a.same(&b),
       (Kind::Enum(a), Kind::Enum(b)) => {
@@ -3150,11 +3152,11 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct Dfa {
-  /// Two automata with the same `id` must be the same: where a pattern type (see
-  /// [`Layout::pattern`]) is compared with another, their automata are compared by their `id`s,
-  /// and one of the `id` of [`Dfa::UTF8`] is checked as UTF-8. Those of this crate are 1 to 6.
-  /// The automata of rules (`matches(..)`) are compared by their states, and their `id`s are not
-  /// read.
+  /// A hint: two automata of different `id`s are taken to be different, which saves comparing
+  /// their states. Nothing else is taken of it: two automata are the same only if their states
+  /// and edges are (where pattern types are compared, see [`Layout::pattern`], and where a rule
+  /// is), and bytes are checked as UTF-8 (by `str::from_utf8`) only by [`Dfa::UTF8`] itself, the
+  /// same states and edges. Those of this crate are 1 to 6.
   pub id: u32,
   /// The states: the first is the initial one. An edge leads to the index of a state in it.
   pub states: &'static [DfaState],
@@ -3365,18 +3367,31 @@ impl Dfa {
     }
   }
 
-  /// Whatever the automaton accepts the `len` bytes at `ptr`.
+  /// Whatever the automaton is [`Dfa::UTF8`]: its states and edges, whatever its `id` says. To
+  /// be asked in a `const`, where it costs nothing at run time.
+  pub(crate) const fn is_utf8(&self) -> bool {
+    self.id == Self::UTF8.id && self.same(Self::UTF8)
+  }
+
+  /// Whatever the automaton accepts the `len` bytes at `ptr`, by its states and edges.
   ///
   /// # Safety
   /// `ptr` must be valid for reads of `len` initialized bytes.
   #[inline]
   pub(crate) const unsafe fn matches(&self, ptr: *const u8, len: usize) -> bool {
     // SAFETY: guaranteed by the caller.
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    if self.id == Self::UTF8.id {
-      return core::str::from_utf8(bytes).is_ok();
-    }
-    self.accepts_bytes(bytes)
+    self.accepts_bytes(unsafe { core::slice::from_raw_parts(ptr, len) })
+  }
+
+  /// Whatever the `len` bytes at `ptr` are UTF-8, by `str::from_utf8`: what [`Dfa::UTF8`]
+  /// accepts, faster than its states.
+  ///
+  /// # Safety
+  /// `ptr` must be valid for reads of `len` initialized bytes.
+  #[inline]
+  pub(crate) const unsafe fn matches_utf8(ptr: *const u8, len: usize) -> bool {
+    // SAFETY: guaranteed by the caller.
+    core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }).is_ok()
   }
 }
 

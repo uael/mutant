@@ -7,7 +7,7 @@
 use crate::{
   Fields, Path, Pun, Root, Rules, Steps, Variants,
   analysis::Marks,
-  layout::{self, Enum, Kind, Machine, Op, Rule, Shape, load, op_at, walk_limit},
+  layout::{self, Dfa, Enum, Kind, Machine, Op, Rule, Shape, load, op_at, walk_limit},
   ptr,
   steps::{InRule, ONE, Ops, TWO, WALK},
 };
@@ -42,6 +42,11 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
       Shape::Struct => {
         validate_fields::<C, P, T, T::Fields>(ptr)
           && (const { !rules_marked::<C, P, T>() } || check_rules(ptr))
+      }
+      // `str::from_utf8` where the automaton is the one of UTF-8, by its states (an `id` proves
+      // nothing): decided at compile time.
+      Shape::Pattern(_) if const { matches!(T::LAYOUT.kind, Kind::Pattern(dfa) if dfa.is_utf8()) } => {
+        Dfa::matches_utf8(ptr.cast(), ptr::metadata(ptr))
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
       Shape::Enum(layout) if layout.union => validate_union::<T, T::Variants>(ptr),
