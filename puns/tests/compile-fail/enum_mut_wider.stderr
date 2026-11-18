@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: some values of the target are not valid for the source (or are padding where the source is not), and could be written through the `&mut`.
 
-   --> src/lib.rs
-    |
-    |       Message::new(MUTABLE).panic();
-    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Shape, Drawing>::BY_MUT` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |       Message::new(Self::NOT_MUTABLE).panic();
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Shape, Drawing>::BY_MUT` failed inside this call
+     |
 note: inside `puns::Message::panic`
  --> $RUST/core/src/panic.rs
   |

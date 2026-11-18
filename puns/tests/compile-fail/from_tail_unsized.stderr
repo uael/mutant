@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: the target is unsized: where it starts cannot be found from the end of the bytes.
               Use `from_head` or `from_bytes`.
 
-   --> src/lib.rs
-    |
-    |   const FROM_TAIL: () = Self::require(Self::check_from_tail());
-    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], [u16]>::FROM_TAIL` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const FROM_TAIL: () = Self::require(Self::check_from_tail());
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], [u16]>::FROM_TAIL` failed inside this call
+     |
 note: inside `puns::Plan::<[u8], [u16]>::require`
  --> src/lib.rs
   |

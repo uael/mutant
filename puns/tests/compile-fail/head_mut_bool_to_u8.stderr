@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: some values of the target are not valid for the source (or are padding where the source is not), and could be written through the `&mut`.
 
-   --> src/lib.rs
-    |
-    |   const HEAD_MUT: () = Self::require(Self::check_head_mut());
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[bool; 2], u8>::HEAD_MUT` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const HEAD_MUT: () = Self::require(Self::check_head_mut());
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[bool; 2], u8>::HEAD_MUT` failed inside this call
+     |
 note: inside `puns::Plan::<[bool; 2], u8>::require`
  --> src/lib.rs
   |

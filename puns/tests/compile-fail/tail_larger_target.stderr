@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: the source can be smaller than the target (if it has a slice, it may be empty).
 
-   --> src/lib.rs
-    |
-    |   const TAIL: () = Self::require(Self::check_tail(Need::PART));
-    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 2], [u8; 3]>::TAIL` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL: () = Self::require(Self::check_tail(Need::PART));
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 2], [u8; 3]>::TAIL` failed inside this call
+     |
 note: inside `puns::Plan::<[u8; 2], [u8; 3]>::require`
  --> src/lib.rs
   |

@@ -3,11 +3,11 @@ error[E0080]: evaluation panicked:
               Use a `try_*` function to check them at run time.
               This is at byte 0 of the target.
 
-   --> src/lib.rs
-    |
-    |   const BY_REF: () = Self::require(Self::check(Need::REF));
-    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], str>::BY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const BY_REF: () = Self::require(Self::check(Need::REF));
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], str>::BY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<[u8; 4], str>::require`
  --> src/lib.rs
   |

@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: no value of the source is valid for the target.
               This is at byte 0 of the target.
 
-   --> src/lib.rs
-    |
-    |   const TRY: () = Self::require(Self::check(Need::TRY));
-    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<puns::num::u8c<2>, bool>::TRY` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TRY: () = Self::require(Self::check(Need::TRY));
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<puns::num::u8c<2>, bool>::TRY` failed inside this call
+     |
 note: inside `puns::Plan::<u8c<2>, bool>::require`
  --> src/lib.rs
   |

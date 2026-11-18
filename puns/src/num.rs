@@ -276,6 +276,28 @@ numbers! {
   f64be: f64[8] Big;
 }
 
+/// Signed integers are ordered by their value, whatever their bytes: what the offsets of
+/// `nearest` (feature `nearest`) must be, among other uses.
+macro_rules! ordered {
+  ($($name:ident)+) => {$(
+    impl PartialOrd for $name {
+      #[inline]
+      fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+      }
+    }
+
+    impl Ord for $name {
+      #[inline]
+      fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.get().cmp(&other.get())
+      }
+    }
+  )+};
+}
+
+ordered!(i16le i16be i32le i32be i64le i64be i128le i128be);
+
 /// A `u8` that is `V`, and nothing else.
 #[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

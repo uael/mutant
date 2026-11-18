@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked:
               cannot pun: the target is unsized: its extent cannot be found from the end of the source.
 
-   --> src/lib.rs
-    |
-    |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], [u8]>::TAIL_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], [u8]>::TAIL_REF` failed inside this call
+     |
 note: inside `puns::Plan::<[u8; 4], [u8]>::require`
  --> src/lib.rs
   |

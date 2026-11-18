@@ -347,6 +347,126 @@ pub(crate) enum Kind {
   Pattern(&'static Dfa),
   /// A tag, and the fields of the variant that the tag tells.
   Enum(&'static Enum),
+  /// A self-relative pointer, see [`Pointer`].
+  Pointer(Pointer),
+}
+
+/// What a self-relative pointer aims at, somewhere else in the buffer that holds it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Aim {
+  /// One value: the offset is the distance to it.
+  One,
+  /// A list: the offset is the distance to a length, an integer like the offset. The elements
+  /// follow the length, aligned to the greater of their alignment and the width of the offset,
+  /// and a capacity, such an integer too, precedes the length.
+  List,
+  /// Text: the offset is the distance to a length, an integer like the offset, aligned to its
+  /// width; as many bytes of UTF-8 follow.
+  Str,
+}
+
+/// A self-relative pointer: the distance from its own address to its target.
+///
+/// The distance is a signed integer of `width` bytes in a given byte order (the *offset*). The
+/// target is elsewhere in the same buffer: a region, which holds a value and everything it points
+/// to.
+///
+/// What is at the target is not part of the layout (the layout of a recursive type would have no
+/// end): it is the [`Pun::Pointee`](crate::Pun::Pointee) of the type, which the analysis reaches
+/// through types (see `deep.rs`). The layout keeps what relates two pointers themselves: the
+/// width and the byte order of the offset, what it aims at, the size and the alignment of that.
+///
+/// What a pointer guarantees is not a property of its bytes. So no bytes ever prove one (only a
+/// pointer does, whose target can be read as the target of the other), nothing checks one but a
+/// walk of the whole buffer, and no `&mut` to one is ever handed out.
+#[derive(Copy, Clone, Debug)]
+pub struct Pointer {
+  pub(crate) aim: Aim,
+  /// An offset of `0` is no pointer (`None`).
+  pub(crate) nullable: bool,
+  /// Size of the offset: 2, 4 or 8 bytes.
+  pub(crate) width: usize,
+  /// Byte order of the offset, and of the lengths and capacities behind it.
+  pub(crate) endian: Endian,
+  /// The largest buffer whose distances and lengths the offset holds, in bytes.
+  pub(crate) limit: u64,
+  /// Size and alignment of the target (`One`) or of an element (`List`); `(1, 1)` for `Str`.
+  pub(crate) size: usize,
+  pub(crate) align: usize,
+}
+
+impl Pointer {
+  /// A pointer whose offset is an integer of `width` bytes in the byte order `endian`, which
+  /// holds distances and lengths up to `limit`, and aims at a `T`, at a list of `T`, or at
+  /// text (see [`Aim`]; `T` is then not looked at). With `nullable`, an offset of `0` is no
+  /// pointer.
+  ///
+  /// # Panics
+  /// If `width` is not 2, 4 or 8, if `limit` is more than an integer of that width holds, or if
+  /// `T` has no size.
+  #[must_use]
+  pub const fn new<T>(aim: Aim, nullable: bool, width: usize, endian: Endian, limit: u64) -> Self {
+    assert!(matches!(width, 2 | 4 | 8), "the offset of a pointer is 2, 4 or 8 bytes");
+    assert!(limit < (1 << (8 * width - 1)), "an offset does not hold its limit");
+    // An offset of 0 is no pointer, and a target without size could be where its pointer is.
+    assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
+    let (size, align) = match aim {
+      Aim::Str => (1, 1),
+      Aim::One | Aim::List => (size_of::<T>(), align_of::<T>()),
+    };
+    Self { aim, nullable, width, endian, limit, size, align }
+  }
+
+  /// Whatever the target of the pointer `self` can be read through the pointer `to`, as far as
+  /// the pointers themselves go (what the targets hold is related through the types, see
+  /// `deep.rs`): `None` if never, `Some(false)` if only when `self` is not null, which is then to
+  /// be checked at run time.
+  ///
+  /// Both offsets must be the same integers (width and byte order: one is read as the other).
+  /// A value is read as a prefix of it, at an address that is at least as aligned; a list as a
+  /// list of elements of the same size, which are aligned to the greater of the alignment of
+  /// the elements they were written as and the width of the offset; text as text.
+  pub(crate) const fn reads_as(&self, to: &Pointer) -> Option<bool> {
+    let fits = self.width == to.width
+      && self.endian.equals(to.endian)
+      && match (self.aim, to.aim) {
+        (Aim::One, Aim::One) => to.size <= self.size && to.align <= self.align,
+        (Aim::List, Aim::List) => {
+          let block = if self.align > self.width { self.align } else { self.width };
+          to.size == self.size && to.align <= block
+        }
+        (Aim::Str, Aim::Str) => true,
+        _ => false,
+      };
+    if fits { Some(to.nullable || !self.nullable) } else { None }
+  }
+
+  /// Whatever two pointers are the same, as far as the pointers themselves go.
+  const fn same(&self, other: &Pointer) -> bool {
+    matches!(
+      (self.aim, other.aim),
+      (Aim::One, Aim::One) | (Aim::List, Aim::List) | (Aim::Str, Aim::Str)
+    ) && self.nullable == other.nullable
+      && self.width == other.width
+      && self.endian.equals(other.endian)
+      && self.limit == other.limit
+      && self.size == other.size
+      && self.align == other.align
+  }
+
+  /// The integer of the offset (or of a length, or of a capacity) whose bytes are at `ptr`.
+  ///
+  /// # Safety
+  /// `ptr` must be valid for reads of `width` initialized bytes.
+  #[cfg(feature = "nearest")]
+  #[inline(always)]
+  pub(crate) const unsafe fn offset(&self, ptr: *const u8) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    let bits = unsafe { load(ptr, self.width, self.endian) } as u64;
+    // Sign-extended from `width` bytes.
+    let unused = 64 - 8 * self.width as u32;
+    (bits << unused).cast_signed() >> unused
+  }
 }
 
 /// Layout of an enum with fields, see [`Layout::enumeration`].
@@ -522,6 +642,7 @@ pub(crate) enum Shape {
   Struct(&'static [Rule]),
   Pattern(&'static Dfa),
   Enum(&'static Enum),
+  Pointer(Pointer),
 }
 
 /// Round `value` up to a multiple of `align` (a power of two).
@@ -709,6 +830,149 @@ impl Layout {
       leaves: 0,
       uniform: Uniform::Pad,
       has_rules: false,
+    }
+  }
+
+  /// Layout of the self-relative pointer `P`, which is the offset of `pointer` and nothing else.
+  ///
+  /// # Panics
+  /// If `P` does not have the size of the offset.
+  #[must_use]
+  pub const fn pointer<P>(pointer: Pointer) -> Self {
+    assert!(size_of::<P>() == pointer.width, "a self-relative pointer is its offset");
+    Self {
+      kind: Kind::Pointer(pointer),
+      size: pointer.width,
+      align: align_of::<P>(),
+      tail: 0,
+      unsized_: false,
+      // A leaf: what validation may have to check of it is that it is not null.
+      leaves: 1,
+      uniform: Uniform::No,
+      has_rules: false,
+    }
+  }
+
+  /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting
+  /// what the pointers aim at.
+  #[must_use]
+  pub const fn has_pointers(&self) -> bool {
+    // A pointer is a leaf.
+    if self.leaves == 0 {
+      return false;
+    }
+    match self.kind {
+      Kind::Pointer(_) => true,
+      Kind::Scalar(_) | Kind::Pattern(_) => false,
+      Kind::Array(elem, _) | Kind::Slice(elem) => elem.has_pointers(),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          if fields[i].layout.has_pointers() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
+      Kind::Enum(layout) => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          if layout.variants[i].layout.has_pointers() {
+            return true;
+          }
+          i += 1;
+        }
+        false
+      }
+    }
+  }
+
+  /// The largest buffer with a value of the layout at its start: the least of the limits of the
+  /// pointers it holds (not counting what they aim at), `u64::MAX` without any.
+  #[cfg(feature = "nearest")]
+  pub(crate) const fn reach(&self) -> u64 {
+    if self.leaves == 0 {
+      return u64::MAX;
+    }
+    let mut reach = u64::MAX;
+    match self.kind {
+      Kind::Pointer(pointer) => reach = pointer.limit,
+      Kind::Scalar(_) | Kind::Pattern(_) => {}
+      Kind::Array(elem, _) | Kind::Slice(elem) => reach = elem.reach(),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          let field = fields[i].layout.reach();
+          if field < reach {
+            reach = field;
+          }
+          i += 1;
+        }
+      }
+      Kind::Enum(layout) => {
+        let mut i = 0;
+        while i < layout.variants.len() {
+          let variant = layout.variants[i].layout.reach();
+          if variant < reach {
+            reach = variant;
+          }
+          i += 1;
+        }
+      }
+    }
+    reach
+  }
+
+  /// Whatever every byte of every value is initialized, and no value holds a pointer: values
+  /// that can be copied as bytes. Enums with fields are not looked into.
+  #[cfg(feature = "nearest")]
+  pub(crate) const fn is_plain(&self) -> bool {
+    if self.unsized_ {
+      return false;
+    }
+    match self.kind {
+      Kind::Scalar(spec) => !matches!(spec.valid, Valid::Uninit),
+      Kind::Array(elem, len) => len == 0 || elem.is_plain(),
+      Kind::Struct(fields, _) => {
+        let (mut i, mut end) = (0, 0);
+        while i < fields.len() {
+          let field = &fields[i];
+          if field.layout.size > 0 {
+            if field.offset != end || !field.layout.is_plain() {
+              return false;
+            }
+            end = field.offset + field.layout.size;
+          }
+          i += 1;
+        }
+        end == self.size
+      }
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
+    }
+  }
+
+  /// Whatever the type system lets every bit pattern be a value, padding aside, and no value
+  /// holds a pointer: there is nothing to check but what a struct requires (`valid(..)`, rules).
+  #[cfg(feature = "nearest")]
+  pub(crate) const fn is_free(&self) -> bool {
+    if self.unsized_ {
+      return false;
+    }
+    match self.kind {
+      Kind::Scalar(spec) => !matches!(spec.known, Valid::In(_)),
+      Kind::Array(elem, len) => len == 0 || elem.is_free(),
+      Kind::Struct(fields, _) => {
+        let mut i = 0;
+        while i < fields.len() {
+          if !fields[i].layout.is_free() {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
     }
   }
 
@@ -1046,6 +1310,8 @@ impl Layout {
     }
     match self.kind {
       Kind::Scalar(spec) => (!matches!(spec.valid, Valid::Uninit), self.size),
+      // The bytes of a pointer are initialized.
+      Kind::Pointer(_) => (true, self.size),
       Kind::Pattern(_) | Kind::Slice(_) => panic!("not sized"),
       Kind::Array(..) => (!always, self.size),
       Kind::Struct(fields, _) => {
@@ -1189,6 +1455,7 @@ impl Layout {
       Kind::Struct(_, rules) => Shape::Struct(rules),
       Kind::Pattern(dfa) => Shape::Pattern(dfa),
       Kind::Enum(layout) => Shape::Enum(layout),
+      Kind::Pointer(pointer) => Shape::Pointer(pointer),
     }
   }
 
@@ -1266,7 +1533,7 @@ impl Layout {
         }
         true
       }
-      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) => false,
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
     }
   }
 
@@ -1384,6 +1651,8 @@ impl Layout {
         true
       }
       Kind::Pattern(dfa) => dfa.states[0].accept,
+      // No pointer.
+      Kind::Pointer(pointer) => pointer.nullable,
       // The variant whose tag is 0, if any.
       Kind::Enum(layout) => {
         let mut i = 0;
@@ -1449,6 +1718,8 @@ impl Layout {
         true
       }
       (Kind::Pattern(a), Kind::Pattern(b)) => a.id == b.id,
+      // As far as the pointers themselves go: what they aim at is related through the types.
+      (Kind::Pointer(a), Kind::Pointer(b)) => a.same(&b),
       (Kind::Enum(a), Kind::Enum(b)) => {
         if a.tag.offset != b.tag.offset
           || !a.tag.layout.equals(b.tag.layout)

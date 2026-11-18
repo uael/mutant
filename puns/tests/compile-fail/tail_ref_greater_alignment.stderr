@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: the target has a greater alignment than the source.
               Use `tail` to copy it, or `from_tail` to take it from bytes, whose address is checked at run time.
 
-   --> src/lib.rs
-    |
-    |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
-    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], u16>::TAIL_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TAIL_REF: () = Self::require(Self::check_tail(Need::PART_REF));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], u16>::TAIL_REF` failed inside this call
+     |
 note: inside `puns::Plan::<[u8; 4], u16>::require`
  --> src/lib.rs
   |

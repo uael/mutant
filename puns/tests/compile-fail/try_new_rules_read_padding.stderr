@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
               This is at byte 1 of the target.
 
-   --> src/lib.rs
-    |
-    |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
-    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Varint>::TRY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Varint>::TRY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<Plain, Varint>::require`
  --> src/lib.rs
   |
@@ -44,11 +44,11 @@ error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
               This is at byte 1 of the target.
 
-   --> src/lib.rs
-    |
-    |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
-    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Checksums>::TRY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Checksums>::TRY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<Plain, Checksums>::require`
  --> src/lib.rs
   |
@@ -74,11 +74,11 @@ error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
               This is at byte 1 of the target.
 
-   --> src/lib.rs
-    |
-    |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
-    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Pattern>::TRY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Plain, Pattern>::TRY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<Plain, Pattern>::require`
  --> src/lib.rs
   |

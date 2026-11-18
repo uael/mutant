@@ -34,6 +34,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
 
+  # The feature `nearest` (regions of the crate `nearest`): what is only built with it. A job of
+  # its own, so that the ones above are what they are without it.
+  nearest:
+    name: Nearest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nearest
+      # The tests of the feature (offsets, loaders against the ones of `nearest`, views), the IR
+      # example with its image, the compile-fail tests of pointers, and the sample of the model
+      # check of pointers.
+      - run: >
+          cargo test -p puns -p puns-model --features nearest
+          --test nearest --test ir --test nearest_compile_fail --test pointers
+
+  nearest_lint:
+    name: Nearest (clippy, doc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nearest-lint
+      - run: >
+          cargo clippy -p puns -p puns-model --features nearest --tests --examples --benches
+          -- -D warnings
+      # The documentation of the module, with its examples.
+      - run: cargo doc --no-deps -p puns --features nearest
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo test -p puns --features nearest --doc -- nearest view_ref
+
   no_std:
     name: No std
     runs-on: ubuntu-latest
@@ -46,6 +87,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # A target without `std`: nothing may need it.
       - run: cargo build -p puns --target thumbv7em-none-eabihf
+      # And with the feature `nearest`, which needs an allocator but no `std`.
+      - run: cargo build -p puns --features nearest --target thumbv7em-none-eabihf
 
   fmt:
     name: Format
@@ -100,22 +143,43 @@ jobs:
           - name: model
             args: -p puns-model
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          # The feature `nearest`: its tests and the IR example (which writes a file and reads
+          # it back, hence no isolation). Tree borrows: a self-relative pointer is resolved from
+          # its own address, which stacked borrows do not allow (see `nearest`).
+          - name: nearest
+            args: -p puns --features nearest --test nearest --test ir
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation
+          # The sample of the model check of pointers: views that are made and read through.
+          - name: nearest, model
+            args: -p puns-model --features nearest --test pointers
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          # The same on a big-endian target, where a region with offsets and numbers of a given
+          # byte order must be the same bytes: the image of the IR example is compared with the
+          # one that is committed.
+          - name: nearest, big-endian
+            args: >-
+              -p puns --features nearest --test nearest --test ir
+              --target s390x-unknown-linux-gnu
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance -Zmiri-disable-isolation
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-11-17
           components: miri, rust-src
+      # With the standard library that Miri builds for the target (half a minute otherwise).
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+          cache-directories: ~/.cache/miri
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
       # `--tests`, each would still be a binary that Miri starts to run nothing, a second each.
+      # The ones of the feature `nearest` say so too, and have their own runs above.
       - name: Select the tests that Miri runs
         if: matrix.select
         run: |
-          tests=$(grep -L 'cfg(not(miri))' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||' | tr '\n' ' ')
+          tests=$(grep -L -e 'cfg(not(miri))' -e 'cfg(feature = "nearest")' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||' | tr '\n' ' ')
           echo "TESTS=--lib $tests" >> "$GITHUB_ENV"
       - run: cargo +nightly-2026-11-17 miri test ${{ matrix.args }} $TESTS
         env:

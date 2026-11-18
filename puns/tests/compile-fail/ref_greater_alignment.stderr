@@ -2,11 +2,11 @@ error[E0080]: evaluation panicked:
               cannot pun: the target has a greater alignment than the source.
               Use `try_pun_ref` or `try_pun_mut` to check the address at run time.
 
-   --> src/lib.rs
-    |
-    |   const BY_REF: () = Self::require(Self::check(Need::REF));
-    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], u32>::BY_REF` failed inside this call
-    |
+    --> src/lib.rs
+     |
+     |   const BY_REF: () = Self::require(Self::check(Need::REF));
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 4], u32>::BY_REF` failed inside this call
+     |
 note: inside `puns::Plan::<[u8; 4], u32>::require`
  --> src/lib.rs
   |
