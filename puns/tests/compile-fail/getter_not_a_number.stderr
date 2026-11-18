@@ -1,0 +1,36 @@
+error[E0080]: evaluation panicked: a getter reads the unsigned integer fields of its struct as `u128`s, and this field is not one (a signed or floating-point number, a `bool`, a `char` or an enum is not)
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `puns::int::<i8>::{constant#0}` failed here
+  |
+ ::: src/lib.rs
+  |
+  |         None => panic!(
+  |  _______________-
+  | |         "a getter reads the unsigned integer fields of its struct as `u128`s, and this field is \
+  | |          not one (a signed or floating-point number, a `bool`, a `char` or an enum is not)"
+  | |       ),
+  | |_______- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |     let spec = const {
+  |  ______________^
+  | |     match T::LAYOUT.as_integer() {
+  | |       Some(spec) => spec,
+  | |       None => panic!(
+... |
+  | |   };
+  | |___^
+
+note: the above error was encountered while instantiating `fn puns::int::<i8>`
+ --> tests/compile-fail/getter_not_a_number.rs:6:23
+  |
+4 | #[derive(puns::Pun)]
+  |          --------- in this derive macro expansion
+5 | #[repr(C)]
+6 | #[pun(get(value: i8 = x as i8))]
+  |                       ^
+  |
+  = note: this note originates in the derive macro `puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

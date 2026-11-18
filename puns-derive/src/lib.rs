@@ -43,8 +43,9 @@ use syn::{
 ///   one. A type parameter that only a region names is one that no field uses, which Rust refuses
 ///   (E0392) before the derive is run: a field `PhantomData<P>`, which has no byte, uses it.
 ///
-/// An `EXPR` is an expression over the integer fields of the struct (by name, or `self.0` for
-/// tuple structs), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
+/// An `EXPR` is an expression over the unsigned integer fields of the struct (`u8`, `u16be`,
+/// `NonZero<u32>`, ..., by name, or `self.0` for tuple structs; a signed or floating-point
+/// number, a `bool` or an enum is refused, since its bits are not its value), `size_of_val(self)`, integer constants and the operators `+ - * / % & | ^ << >> == != < <= > >=
 /// && || !`. It is compiled to a constant: it can be evaluated in `const fn`s, and costs what the
 /// arithmetic costs.
 ///
@@ -1045,15 +1046,17 @@ struct Fielder<'a> {
 }
 
 impl Fielder<'_> {
-  /// The value of `member` as a `u128`, if it is a field.
-  fn value(&self, member: &Member) -> Option<Expr> {
+  /// The value of `member` as a `u128`, if it is a field, read where `span` is.
+  fn value(&self, member: &Member, span: Span) -> Option<Expr> {
     self.fields.iter().any(|field| &field.member == member).then(|| {
       let root = self.root;
-      if self.packed {
-        parse_quote!((#root::int(&{ self.#member })))
+      let value = if self.packed {
+        quote!((#root::int(&{ self.#member })))
       } else {
-        parse_quote!((#root::int(&self.#member)))
-      }
+        quote!((#root::int(&self.#member)))
+      };
+      // An error, if the field is not an unsigned integer, is there.
+      Expr::Verbatim(located(value, span))
     })
   }
 }
@@ -1086,9 +1089,9 @@ impl VisitMut for Fielder<'_> {
         .path
         .get_ident()
         .filter(|ident| !self.shadowed.contains(ident))
-        .and_then(|ident| self.value(&Member::Named(ident.clone()))),
+        .and_then(|ident| self.value(&Member::Named(ident.clone()), ident.span())),
       Expr::Field(access) if matches!(&*access.base, Expr::Path(path) if path.path.is_ident("self")) => {
-        self.value(&access.member)
+        self.value(&access.member, access.span())
       }
       Expr::Closure(closure) => {
         let visible = self.shadowed.len();

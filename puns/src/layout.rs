@@ -63,6 +63,9 @@ pub struct Spec {
   /// This is `valid`, but for fields that are restricted by `#[pun(valid(..))]`: nothing
   /// prevents safe code from writing any value of the type of the field to it.
   pub(crate) known: Valid,
+  /// Whatever its bits are the value of an unsigned integer, which rules read. Not those of a
+  /// signed or floating-point number, a `bool`, a `char` or an enum.
+  pub(crate) number: bool,
 }
 
 /// Greatest value of an unsigned integer of `size` bytes.
@@ -76,7 +79,8 @@ impl Spec {
   #[inline]
   #[must_use]
   pub const fn any<T>() -> Self {
-    Self { size: size_of::<T>(), endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any }
+    let size = size_of::<T>();
+    Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
   }
 
   /// A scalar the size of `T` that accepts everything, uninitialized bytes included.
@@ -84,7 +88,7 @@ impl Spec {
   #[must_use]
   pub const fn uninit<T>() -> Self {
     let (size, endian) = (size_of::<T>(), Endian::NATIVE);
-    Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit }
+    Self { size, endian, valid: Valid::Uninit, known: Valid::Uninit, number: true }
   }
 
   /// A scalar the size of `T` whose value, read as an unsigned integer in `endian` byte order,
@@ -94,7 +98,8 @@ impl Spec {
   /// compile time. See [`sorted_ranges`] to build them from a list of values.
   #[must_use]
   pub const fn ranges<T>(endian: Endian, ranges: &'static [(u128, u128)]) -> Self {
-    Self { size: size_of::<T>(), endian, valid: Valid::Any, known: Valid::Any }.with_ranges(ranges)
+    let size = size_of::<T>();
+    Self { size, endian, valid: Valid::Any, known: Valid::Any, number: true }.with_ranges(ranges)
   }
 
   /// Same as `self`, with other valid `ranges`, see [`Spec::ranges`].
@@ -104,7 +109,7 @@ impl Spec {
   /// adjacent or out of the bounds of the scalar.
   #[must_use]
   pub const fn with_ranges(self, ranges: &'static [(u128, u128)]) -> Self {
-    let (size, endian) = (self.size, self.endian);
+    let size = self.size;
     assert!(size >= 1 && size <= 16, "a constrained scalar must be 1 to 16 bytes wide");
     assert!(!ranges.is_empty(), "a scalar must have at least one valid value");
     let max = max_value(size);
@@ -120,7 +125,15 @@ impl Spec {
     }
     let full = ranges.len() == 1 && ranges[0].0 == 0 && ranges[0].1 == max;
     let valid = if full { Valid::Any } else { Valid::In(ranges) };
-    Self { size, endian, valid, known: valid }
+    Self { valid, known: valid, ..self }
+  }
+
+  /// Same as `self`, for a scalar whose bits are not the value of an unsigned integer: a signed
+  /// or floating-point number, a `bool`, a `char`, an enum. The expressions of `#[pun(..)]`,
+  /// which compute on unsigned integers, do not read it.
+  #[must_use]
+  pub const fn not_a_number(self) -> Self {
+    Self { number: false, ..self }
   }
 
   /// Whatever `T` has no size, for `#[derive(Pun)]`.
@@ -134,7 +147,7 @@ impl Spec {
   #[doc(hidden)]
   #[must_use]
   pub const fn native_ranges<T>(ranges: &'static [(u128, u128)]) -> Self {
-    Self::ranges::<T>(Endian::NATIVE, ranges)
+    Self::ranges::<T>(Endian::NATIVE, ranges).not_a_number()
   }
 
   /// [`sorted_ranges`], for `#[derive(Pun)]`.
@@ -1216,13 +1229,14 @@ impl Layout {
     }
   }
 
-  /// The specification of the integer that the type is, if it is one: an initialized scalar of 1
-  /// to 16 bytes, or a struct whose only field (but for the ones without size) is one.
+  /// The specification of the unsigned integer that the type is, if it is one: an initialized
+  /// scalar of 1 to 16 bytes whose bits are its value, or a struct whose only field (but for the
+  /// ones without size) is one.
   #[doc(hidden)]
   #[must_use]
   pub const fn as_integer(&self) -> Option<Spec> {
     match self.kind {
-      Kind::Scalar(spec) if spec.is_integer() && spec.size >= 1 => Some(spec),
+      Kind::Scalar(spec) if spec.is_integer() && spec.number && spec.size >= 1 => Some(spec),
       Kind::Struct(fields, _) if !self.unsized_ => {
         let (mut inner, mut i): (Option<&Layout>, usize) = (None, 0);
         while i < fields.len() {
@@ -1743,8 +1757,9 @@ impl Op {
   pub const fn load<T: crate::Pun>(offset: usize) -> Self {
     let Some(spec) = T::LAYOUT.as_integer() else {
       panic!(
-        "a rule reads the integer fields of its struct, and this field is not an integer: read \
-         its bytes with `le(offset, size)` or `be(offset, size)`"
+        "a rule reads the unsigned integer fields of its struct, and this field is not one (a \
+         signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes \
+         with `le(offset, size)` or `be(offset, size)`"
       )
     };
     Op::Load { offset, size: spec.size as u8, big: !spec.endian.is_little() }

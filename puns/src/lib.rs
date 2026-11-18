@@ -599,7 +599,18 @@ macro_rules! impl_any {
   )+};
 }
 
-impl_any!(() u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64);
+impl_any!(() u8 u16 u32 u64 u128 usize);
+
+macro_rules! impl_bits {
+  ($($ty:ty)+) => {$(
+    // SAFETY: every bit pattern is valid.
+    unsafe impl Scalar for $ty {
+      const SPEC: Spec = Spec::any::<$ty>().not_a_number();
+    }
+  )+};
+}
+
+impl_bits!(i8 i16 i32 i64 i128 isize f32 f64);
 
 // SAFETY: no byte.
 unsafe impl<T: ?Sized> Scalar for PhantomData<T> {
@@ -608,12 +619,13 @@ unsafe impl<T: ?Sized> Scalar for PhantomData<T> {
 
 // SAFETY: 0 or 1.
 unsafe impl Scalar for bool {
-  const SPEC: Spec = Spec::ranges::<bool>(Endian::NATIVE, &[(0, 1)]);
+  const SPEC: Spec = Spec::ranges::<bool>(Endian::NATIVE, &[(0, 1)]).not_a_number();
 }
 
 // SAFETY: a Unicode scalar value.
 unsafe impl Scalar for char {
-  const SPEC: Spec = Spec::ranges::<char>(Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10_FFFF)]);
+  const SPEC: Spec =
+    Spec::ranges::<char>(Endian::NATIVE, &[(0, 0xD7FF), (0xE000, 0x10_FFFF)]).not_a_number();
 }
 
 macro_rules! impl_non_zero {
@@ -1311,7 +1323,10 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
   let spec = const {
     match T::LAYOUT.as_integer() {
       Some(spec) => spec,
-      None => panic!("not an integer field"),
+      None => panic!(
+        "a getter reads the unsigned integer fields of its struct as `u128`s, and this field is \
+         not one (a signed or floating-point number, a `bool`, a `char` or an enum is not)"
+      ),
     }
   };
   // SAFETY: a `T` is that integer, which is not allowed to be uninitialized.

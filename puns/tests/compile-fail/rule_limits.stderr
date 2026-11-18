@@ -26,7 +26,7 @@ error: too many variables: an expression has at most 4 at once (its `let`s, and 
 28 | #[pun(assert({ let b = 1; let c = 2; let d = 3; let e = 4; let f = 5; a + b + c + d + e + f > 0 }))]
    |                                                                ^
 
-error[E0080]: evaluation panicked: a rule reads the integer fields of its struct, and this field is not an integer: read its bytes with `le(offset, size)` or `be(offset, size)`
+error[E0080]: evaluation panicked: a rule reads the unsigned integer fields of its struct, and this field is not one (a signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes with `le(offset, size)` or `be(offset, size)`
   --> tests/compile-fail/rule_limits.rs:35:14
    |
 33 | #[derive(puns::Pun)]
@@ -43,8 +43,9 @@ note: inside `Op::load::<[u8; 2]>`
   ::: src/layout.rs
    |
    | /       panic!(
-   | |         "a rule reads the integer fields of its struct, and this field is not an integer: read \
-   | |          its bytes with `le(offset, size)` or `be(offset, size)`"
+   | |         "a rule reads the unsigned integer fields of its struct, and this field is not one (a \
+   | |          signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes \
+   | |          with `le(offset, size)` or `be(offset, size)`"
    | |       )
    | |_______- in this macro invocation
 
