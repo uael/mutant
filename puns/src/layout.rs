@@ -970,6 +970,15 @@ impl Layout {
     if index < ops.len() { Some(ops[index]) } else { None }
   }
 
+  /// Whatever an expression of the [`Op::Walk`] of the `rule`th rule (the condition, or with
+  /// `next` what follows) is [`strict`].
+  pub(crate) const fn walk_strict(&self, rule: usize, next: bool) -> bool {
+    match self.rule_op(rule, self.walk_at(rule)) {
+      Some(Op::Walk { cond, next: then, .. }) => strict(if next { then } else { cond }),
+      _ => false,
+    }
+  }
+
   /// Whatever the `rule`th rule is a [`Rule::Walk`] whose expression has `ops` operations, and
   /// whose walk has expressions of at most `inner` operations.
   pub(crate) const fn walks(&self, rule: usize, ops: usize, inner: usize) -> bool {
@@ -2165,6 +2174,21 @@ impl Varint {
   }
 }
 
+/// Whatever an expression fails as soon as one of its operations does: it has no `&&`, `||` or
+/// `if`, which are what does not compute a value (or does not use it) when another decides
+/// without. Its evaluation can then stop at the first failure, which is its result: what comes
+/// after is compiled knowing that nothing failed before.
+pub(crate) const fn strict(ops: &[Op]) -> bool {
+  let mut i = 0;
+  while i < ops.len() {
+    if matches!(ops[i], Op::Both | Op::Either | Op::Select) {
+      return false;
+    }
+    i += 1;
+  }
+  true
+}
+
 /// Whatever two expressions are the same.
 const fn same_ops(a: &[Op], b: &[Op]) -> bool {
   let mut i = 0;
@@ -2437,6 +2461,13 @@ impl Machine {
   #[inline(always)]
   const fn has_failed(&self, slot: usize) -> bool {
     self.failed & (1 << slot) != 0
+  }
+
+  /// Whatever an operation failed since the machine was made or entered. In a [`strict`] expression,
+  /// which stops at the first failure, it is the failure of the expression.
+  #[inline(always)]
+  pub(crate) const fn failed_any(&self) -> bool {
+    self.failed != 0
   }
 
   #[inline(always)]

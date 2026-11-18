@@ -168,7 +168,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 363 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 322 instructions, two loops, no call       |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -273,7 +273,11 @@ arithmetic of both expressions, never an interpreter; and the list of the rules 
 itself a type (`Pun::Walks`), so that a struct without any costs nothing more to compile. The
 recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
 first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
-Both apply the same operations, with the same limit of steps.
+Both apply the same operations, with the same limit of steps. An expression of that walk
+without `&&`, `||` or `if` fails as soon as one of its operations does, since nothing in it can
+discard a failure (`layout::strict`): it is applied so, and stops there, so that what follows is
+compiled knowing that nothing failed, rather than carrying a failure along each value (a step of
+the walk of IPv6 behind extension headers took a third more time that way).
 
 ### 5. What the type system enforces, and what it does not
 
