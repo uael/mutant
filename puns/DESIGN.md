@@ -175,7 +175,7 @@ Measured on x86-64, `opt-level = 3` (the functions are in `examples/codegen.rs`)
 | `&[Shape] -> &[Drawing]` (enums with fields)      | `mov rdx, rsi; mov rax, rdi; ret`          |
 | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`: 12   |
 | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call          |
-| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 363 instructions, two loops, no call       |
+| `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 249 instructions, no call                  |
 | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                        |
 | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                 |
 | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`: 7      |
@@ -198,10 +198,13 @@ integer is not a condition), reads literals itself (no float, no negative number
 suffix), converts constants through a trait that only unsigned integer types implement, and makes
 `as uN` keep the low bits. Where Rust would panic (an overflow, a division by zero, a shift by
 128 or more), the rule fails; what Rust does not compute (the right side of a `&&` that the left
-side decides, the branch of an `if` that is not taken) cannot make it fail, and what it does (a
-`let`, used or not) can: a block ends with `Op::Let`, which fails it if one of its `let`s did,
-for the ones that its value may be computed without and that may fail, which const evaluation
-tells from the widths of what they read (`Op::fallible`), so that it usually costs nothing. The
+side decides, the branch of an `if` that is not taken) is not computed, and what it computes (a
+`let`, used or not) is: the derive puts an `Op::Shortcut` after the left side of a `&&` or a
+`||`, and an `Op::Then` and an `Op::Else` before the branches of an `if`, which skip what follows
+when it is not computed (`check_ops` checks that what they skip is exactly a right side or a
+branch, so that the stack is as deep after it either way). Nothing that is computed can then be
+left out of the value of an expression: its first failure is its failure, the evaluator stops
+there, and what follows is compiled knowing that nothing failed. The
 derive also counts what the evaluator has room for (the depth of its
 stack, the operations of a walk, the variables) and reports an excess at the expression, with the
 numbers; the evaluator checks it again.
@@ -240,8 +243,8 @@ size of the value.
 What cannot be computed (an overflow, a division by zero, a shift by 128 or more, a read out of
 the value) makes a rule fail where Rust would panic, unless it is the right side of a `&&` or
 `||` that the left side decides without, as Rust does not compute it: `protocol != 17 ||
-be(..) == 0` holds for a packet that is not UDP, however short. `<<` drops the bits that it
-shifts out, as Rust does.
+be(..) == 0` holds for a packet that is not UDP, however short, and costs nothing more for it.
+`<<` drops the bits that it shifts out, as Rust does.
 
 Two more options are not rules, but save the code that would otherwise be written by hand:
 
@@ -281,6 +284,14 @@ itself a type (`Pun::Walks`), so that a struct without any costs nothing more to
 recursions are as long as the expressions: this is for an `assert` of at most 72 operations whose
 first walk has expressions of at most 56, and the derive leaves anything longer to the evaluator.
 Both apply the same operations, with the same limit of steps.
+
+What is not computed is told by an index (`Machine::skip`): the operations before it are not
+applied. A `Shortcut` that decides sets it past the right side, a failure to the end. Where the
+operations are constants, so is the index on each path through the code, and the optimizer
+makes jumps of it: no test is left where nothing is skipped. This replaced a bit for each value
+of the stack that told whether it had failed, which made each operation carry failures along
+(a step of the walk of IPv6 took a third more time for it, and the side of a `||` that was not
+needed was computed all the same).
 
 ### 5. What the type system enforces, and what it does not
 

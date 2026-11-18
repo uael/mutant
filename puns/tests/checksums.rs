@@ -15,7 +15,7 @@ struct Rtu {
   rest: [u8],
 }
 
-const MODBUS: Crc = Crc::new(16, 0x8005, 0xffff, true, 0);
+static MODBUS: Crc = Crc::new(16, 0x8005, 0xffff, true, 0);
 
 #[test]
 fn a_crc_by_its_parameters() {

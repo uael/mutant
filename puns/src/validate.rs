@@ -93,6 +93,25 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
 /// `ptr` must be valid for reads of `len` consecutive `T`s, each as [`validate`] requires.
 const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: usize) -> bool {
   let mut i = 0;
+  // Elements whose checks are a few comparisons are checked a block of about 64 bytes at a time,
+  // without stopping within a block: then the optimizer can vectorise it, which it cannot do of
+  // a loop that may stop at each element. The result is the same, and what is read is in the
+  // slice.
+  let block = const { T::LAYOUT.block() };
+  if block > 1 {
+    while len - i >= block {
+      let (mut valid, mut j) = (true, 0);
+      while j < block {
+        // SAFETY: `ptr` points to `len` elements, and `i + j < len`.
+        valid &= unsafe { validate::<C, P, T>(ptr.add(i + j)) };
+        j += 1;
+      }
+      if !valid {
+        return false;
+      }
+      i += block;
+    }
+  }
   while i < len {
     // SAFETY: `ptr` points to `len` elements.
     if !unsafe { validate::<C, P, T>(ptr.add(i)) } {
@@ -214,12 +233,14 @@ const unsafe fn check_walks<T: ?Sized + Pun, W: Walks>(base: *const u8, size: us
   let mut machine = Machine::NEW;
   // SAFETY: guaranteed by the caller.
   unsafe {
-    steps::<T, W, W::Ops>(&mut machine, base, size);
-    matches!(machine.result(), Some(value) if value != 0) && check_walks::<T, W::Next>(base, size)
+    steps::<T, W, W::Ops>(&mut machine, base, size)
+      && machine.result() != 0
+      && check_walks::<T, W::Next>(base, size)
   }
 }
 
-/// Apply the `N` first operations of the expression of the rule `W` of `T`.
+/// Apply the `N` first operations of the expression of the rule `W` of `T`: `false` if one of
+/// them fails, which is then the failure of the expression.
 ///
 /// # Safety
 /// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
@@ -228,22 +249,26 @@ const unsafe fn steps<T: ?Sized + Pun, W: Walks, N: Count>(
   machine: &mut Machine,
   base: *const u8,
   size: usize,
-) {
+) -> bool {
   if const { N::VALUE == 0 } {
-    return;
+    return true;
   }
   // SAFETY: guaranteed by the caller.
   unsafe {
-    steps::<T, W, N::Less>(machine, base, size);
+    if !steps::<T, W, N::Less>(machine, base, size) {
+      return false;
+    }
     if const { T::LAYOUT.walk_at(W::RULE) == N::VALUE.wrapping_sub(1) } {
       return walk::<T, W>(machine, base, size);
     }
-    let Some(op) = (const { T::LAYOUT.rule_op(W::RULE, N::VALUE.wrapping_sub(1)) }) else { return };
-    machine.apply(op, base, size);
+    let Some(op) = (const { T::LAYOUT.rule_op(W::RULE, N::VALUE.wrapping_sub(1)) }) else {
+      return true;
+    };
+    machine.apply(op, N::VALUE.wrapping_sub(1), base, size)
   }
 }
 
-/// Apply the [`Op::Walk`] of the expression of the rule `W` of `T`.
+/// Apply the [`Op::Walk`] of the expression of the rule `W` of `T`: `false` if it fails.
 ///
 /// # Safety
 /// As [`check_walks`]: `base` must be valid for reads of the `size` bytes of a `T`.
@@ -252,35 +277,38 @@ const unsafe fn walk<T: ?Sized + Pun, W: Walks>(
   machine: &mut Machine,
   base: *const u8,
   size: usize,
-) {
+) -> bool {
   let Some(Op::Walk { var, .. }) =
     (const { T::LAYOUT.rule_op(W::RULE, T::LAYOUT.walk_at(W::RULE)) })
   else {
-    return;
+    return true;
   };
-  let Some(mut state) = machine.top() else { return };
+  // Not computed: in a part of the expression that is not computed.
+  if !machine.computes(const { T::LAYOUT.walk_at(W::RULE) }) {
+    return true;
+  }
+  let mut state = machine.top();
   let (mut steps, limit) = (0, walk_limit(size));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
     // SAFETY: guaranteed by the caller.
-    unsafe { walk_steps::<T, W, false, W::Inner>(&mut cond, base, size) };
-    match cond.result() {
-      Some(0) => break Some(state),
-      Some(_) => {}
-      None => break None,
+    if !unsafe { walk_steps::<T, W, false, W::Inner>(&mut cond, base, size) } {
+      break None;
+    }
+    if cond.result() == 0 {
+      break Some(state);
     }
     if steps == limit {
       break None;
     }
     steps += 1;
     // SAFETY: guaranteed by the caller.
-    unsafe { walk_steps::<T, W, true, W::Inner>(&mut next, base, size) };
-    match next.result() {
-      Some(next) => state = next,
-      None => break None,
+    if !unsafe { walk_steps::<T, W, true, W::Inner>(&mut next, base, size) } {
+      break None;
     }
+    state = next.result();
   };
-  machine.replace(result);
+  machine.replace(result)
 }
 
 /// Apply the `N` first operations of an expression of the walk of the rule `W` of `T`: its
@@ -293,17 +321,19 @@ const unsafe fn walk_steps<T: ?Sized + Pun, W: Walks, const NEXT: bool, N: Count
   machine: &mut Machine,
   base: *const u8,
   size: usize,
-) {
+) -> bool {
   if const { N::VALUE == 0 } {
-    return;
+    return true;
   }
   // SAFETY: guaranteed by the caller.
   unsafe {
-    walk_steps::<T, W, NEXT, N::Less>(machine, base, size);
+    if !walk_steps::<T, W, NEXT, N::Less>(machine, base, size) {
+      return false;
+    }
     let Some(op) = (const { T::LAYOUT.walk_op(W::RULE, NEXT, N::VALUE.wrapping_sub(1)) }) else {
-      return;
+      return true;
     };
-    machine.apply(op, base, size);
+    machine.apply(op, N::VALUE.wrapping_sub(1), base, size)
   }
 }
 

@@ -132,4 +132,9 @@ rules! {
   e30: |a, b, c, d| { let s = a + b + c; let t = s - a; t - b } == c;
   e31: |a, b, c, d| a * b * c * d / (a + 1) < d || a == 255;
   e32: |a, b, c, d| (a | 1) != 0 && (d >> 63 == 1 || d < 0x8000_0000_0000_0000);
+  e33: |a, b, c, d| a > 200 || { let q = b / (a - a); q == 0 };
+  e34: |a, b, c, d| (a < 5 && (if b > 7 { c / (b - b) } else { d }) > 0) || a == 7;
+  e35: |a, b, c, d| a == 1 || (b == 2 && (c == 3 || d / (a - 1) > 0));
+  e36: |a, b, c, d| (if if a > 3 { b > 2 } else { c / (a - a) > 0 } { 1 } else { d / (a & 0) }) == 1;
+  e37: |a, b, c, d| !(a < 9 || { let x = b - c; x > d }) && (if a & 1 == 0 { b } else { c - b }) < d;
 }

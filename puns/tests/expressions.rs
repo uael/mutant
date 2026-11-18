@@ -165,6 +165,55 @@ fn a_walk_takes_a_step_per_bit() {
   assert!(puns::from_bytes::<Netmask>(&[0xff, 0xff, 0, 0xff]).is_err());
 }
 
+/// What fails in an expression of a walk fails the walk, wherever it is computed: here above
+/// what the step would otherwise be (`at + 1`), which alone would end the walk at `4`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(walk(0, |at| at < 4, |at| at + 1 + be(at + 1, 1) * 0) == 4))]
+struct FailingStep {
+  first: u8,
+  rest: [u8],
+}
+
+/// The same, in the condition.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(walk(0, |at| at + be(at, 1) * 0 < 4, |at| at + 1) == 4))]
+struct FailingCondition {
+  first: u8,
+  rest: [u8],
+}
+
+/// A walk that is not computed does not fail: here walks that read past the value, on the right
+/// of a `||` (as the first walk of a rule, and as a second one) and in the branch of an `if`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(kind != 1 || walk(0, |at| be(at, 1) != 0, |at| at + 1) > 0))]
+#[pun(assert(
+  walk(0, |at| at < 1, |at| at + 1) == 1 && (kind != 2 || walk(0, |at| be(at, 1) != 0, |at| at + 1) > 0)
+))]
+#[pun(assert(if kind == 3 { walk(0, |at| at < 1000, |at| at + be(at, 1)) > 0 } else { true }))]
+struct NotWalked {
+  kind: u8,
+  rest: [u8],
+}
+
+#[test]
+fn a_walk_fails_where_its_expressions_do() {
+  assert!(puns::from_bytes::<NotWalked>(&[0]).is_ok());
+  assert!(puns::from_bytes::<NotWalked>(&[4, 4]).is_ok());
+  assert!(puns::from_bytes::<NotWalked>(&[1, 0]).is_ok());
+  assert!(puns::from_bytes::<NotWalked>(&[2, 0]).is_ok());
+  // Computed, they read past the value.
+  assert!(puns::from_bytes::<NotWalked>(&[1, 1]).is_err());
+  assert!(puns::from_bytes::<NotWalked>(&[2, 1]).is_err());
+  assert!(puns::from_bytes::<NotWalked>(&[3, 0]).is_err());
+  assert!(puns::from_bytes::<FailingStep>(&[0; 5]).is_ok());
+  assert!(puns::from_bytes::<FailingStep>(&[0; 4]).is_err());
+  assert!(puns::from_bytes::<FailingCondition>(&[0; 5]).is_ok());
+  assert!(puns::from_bytes::<FailingCondition>(&[0; 4]).is_err());
+}
+
 /// Getters are Rust, where an integer field, wherever it is named, is its value as a `u128`.
 #[derive(Pun)]
 #[repr(C)]

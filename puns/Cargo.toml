@@ -31,6 +31,11 @@ features = ["nearest"]
 [dev-dependencies]
 trybuild = "1"
 
+# What is checked at run time, next to the same checks by hand: `cargo bench -p puns`. Not a test.
+[[bench]]
+name = "checks"
+harness = false
+
 # What needs the feature `nearest` is not built without it.
 [[example]]
 name = "codegen_nearest"
