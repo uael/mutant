@@ -405,6 +405,16 @@ without its second condition, are caught.
   byte order of its own (`u32be`, `i16le`, `f64be`...), so this is a choice between two types,
   which an enum of references makes.
 - `default()`: building a value from the defaults of its fields (literals, sizes).
+- A rule names the integer fields of its struct, not a field of a field (`header.length`) or an
+  element of an array (`magic[0]`), which it reads with `be` or `le` at their offsets. Loading
+  them would be sound if the offset were checked against the layout of the field (a scalar
+  there, of that size), as it is for the fields of the struct.
+- Rules compute on unsigned integers: a signed or floating-point field is refused, and read as
+  bits with `le` or `be`. A getter reads fields, not bytes: a value that only the bytes hold
+  (a variable-length integer) is decoded by use code.
+- A size that is not in the value: "to the end of what holds it" (an MP4 box of size 0).
+- Sums of types in sequences, and recursion: `OPTIONAL` and `CHOICE` of ASN.1, the containers of
+  CBOR and MessagePack. A chain of types (`Then<A, B>`) is one sequence of types.
 - An arbitrary function in a rule (getters take any). The validator is `const fn` code, generic
   over the type it validates, and on stable 1.100 such code cannot call a function that the type
   chooses: a call through a function pointer is refused ("function pointer calls are not allowed
@@ -428,4 +438,6 @@ without its second condition, are caught.
   the crate that validates it (validation recurses over the list of the variants).
 - `PhantomData<T>` is `Scalar` for any `T`, and deriving `Pun` exposes private fields: see
   "What the type system enforces" for which types must not derive `Pun`.
+- The evaluator of rules has a stack of 16 values and 8 variables (the derive says when an
+  expression needs more, and how much), and a walk takes at most `8 * size + 128` steps.
 - Unions are not planned.
