@@ -2,7 +2,7 @@
 name = "puns-derive"
 version = "0.1.4"
 edition.workspace = true
-rust-version = "1.100"
+rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 description = "The #[derive(Pun)] macro for the puns crate"
 repository = "https://github.com/uael/puns"

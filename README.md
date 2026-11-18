@@ -772,8 +772,10 @@ They run as tests (`cargo test --test ethernet`), or one by one (`cargo run --ex
 puns = "0.1"
 ```
 
-Rust 1.100 or later. `puns` is `no_std` and depends on nothing but its derive. Build with
-`cargo build` to see refusals: `cargo check` does not evaluate what decides them.
+Rust 1.99 or later: the first stable release where `size_of_val_raw` and `align_of_val_raw` are
+`const`, which is how `puns` knows the layout of a type that ends with a slice. `puns` is `no_std`
+and depends on nothing but its derive. Build with `cargo build` to see refusals: `cargo check`
+does not evaluate what decides them.
 
 `0.1`: the API may still change before `1.0`. "Not done yet", in
 [`puns/DESIGN.md`][design], lists what is missing.

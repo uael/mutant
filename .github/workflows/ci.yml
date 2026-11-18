@@ -96,6 +96,24 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The `rust-version` of the crates (1.99, the first stable release with `size_of_val_raw` and
+  # `align_of_val_raw` in `const`): the library and its examples, which a build evaluates, refusals
+  # included. `RUSTUP_TOOLCHAIN` takes precedence over `rust-toolchain`.
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo build -p puns --examples
+
   no_std:
     name: No std
     runs-on: ubuntu-latest
