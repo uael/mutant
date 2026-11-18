@@ -1,5 +1,5 @@
 [workspace]
-members = ["transmutant", "transmutant-derive", "xtask"]
+members = ["puns", "puns-derive", "puns-model", "puns-model/fakecore", "xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -8,6 +8,14 @@ edition = "2024"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# The full model check (`cargo test --profile model -p puns-model -- --ignored`): optimized,
+# without what makes the release profile take long to build its thousands of monomorphizations.
+[profile.model]
+inherits = "release"
+lto = false
+codegen-units = 256
+opt-level = 1
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -23,6 +31,6 @@ too_many_lines = "allow"
 cast_possible_truncation = "allow"
 # As nearest: the type is spelled out where `Self` would hide which of two layouts is meant.
 use_self = "allow"
-# The transmutations must cost nothing: `#[inline(always)]` is what makes the checks that the
+# Puns must cost nothing: `#[inline(always)]` is what makes the checks that the
 # analysis proved disappear, and is measured by `examples/codegen.rs`.
 inline_always = "allow"

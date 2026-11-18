@@ -1,0 +1,17 @@
+error: `len` is an option of the last field of a struct, not of a struct
+ --> tests/compile-fail/misplaced_options.rs:5:7
+  |
+5 | #[pun(len = count)]
+  |       ^^^
+
+error: `size` is an option of a struct, not of a field
+  --> tests/compile-fail/misplaced_options.rs:14:9
+   |
+14 |   #[pun(size = 4)]
+   |         ^^^^
+
+error: `assert` is an option of a struct, not of an enum
+  --> tests/compile-fail/misplaced_options.rs:21:7
+   |
+21 | #[pun(assert(true))]
+   |       ^^^^^^

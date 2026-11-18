@@ -1,5 +1,0 @@
-error: the layout of an enum with fields is not specified: `Data` can be derived for it with `#[repr(u8)]` (or another integer), `#[repr(C)]`, or both
- --> tests/compile-fail/enum_without_repr.rs:3:6
-  |
-3 | enum Unspecified {
-  |      ^^^^^^^^^^^

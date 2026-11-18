@@ -1,0 +1,7 @@
+error[E0573]: expected type, found module `fake::layout::Op`
+  --> tests/compile-fail/crate_path_module.rs:20:10
+   |
+20 | #[derive(puns::Pun)]
+   |          ^^^^^^^^^ not a type
+   |
+   = note: this error originates in the derive macro `puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

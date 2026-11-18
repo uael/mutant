@@ -1,0 +1,42 @@
+error: this expression needs a stack of 17 values, and the one of the evaluator has 16: name what it computes with `let`, or compute it in another order (`a + b + c` needs 2, `a + (b + c)` needs 3)
+ --> tests/compile-fail/rule_limits.rs:5:14
+  |
+5 | #[pun(assert(a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a)))))))))))))))) > 0))]
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: too many variables: an expression has at most 8 at once (its `let`s, and the parameters of its `walk`s)
+  --> tests/compile-fail/rule_limits.rs:13:95
+   |
+13 |   let b = 1; let c = 2; let d = 3; let e = 4; let f = 5; let g = 6; let h = 7; let i = 8; let j = 9;
+   |                                                                                               ^
+
+error[E0080]: evaluation panicked: a rule reads the unsigned integer fields of its struct, and this field is not one (a signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes with `le(offset, size)` or `be(offset, size)`
+  --> tests/compile-fail/rule_limits.rs:22:14
+   |
+20 | #[derive(puns::Pun)]
+   |          --------- in this derive macro expansion
+21 | #[repr(C)]
+22 | #[pun(size = magic)]
+   |              ^^^^^ evaluation of `_::<impl puns::Pun for NotAnInteger>::LAYOUT::{constant#1}` failed inside this call
+   |
+note: inside `Op::load::<[u8; 2]>`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/layout.rs
+   |
+   | /       panic!(
+   | |         "a rule reads the unsigned integer fields of its struct, and this field is not one (a \
+   | |          signed or floating-point number, a `bool`, a `char` or an enum is not): read its bytes \
+   | |          with `le(offset, size)` or `be(offset, size)`"
+   | |       )
+   | |_______- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/compile-fail/rule_limits.rs:20:10
+   |
+20 | #[derive(puns::Pun)]
+   |          ^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

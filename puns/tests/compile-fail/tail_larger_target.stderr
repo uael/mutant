@@ -1,0 +1,40 @@
+error[E0080]: evaluation panicked:
+              cannot pun: the source can be smaller than the target (if it has a slice, it may be empty).
+
+    --> src/lib.rs
+     |
+     |   const TAIL: () = Self::require(Self::check_tail(Need::PART));
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 2], [u8; 3]>::TAIL` failed inside this call
+     |
+note: inside `puns::Plan::<[u8; 2], [u8; 3]>::require`
+ --> src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TAIL };
+  |           ^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<S, D>::TAIL };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn tail::<[u8; 2], [u8; 3]>`
+ --> tests/compile-fail/tail_larger_target.rs:3:20
+  |
+3 |   let _: [u8; 3] = puns::tail::<[u8; 2], [u8; 3]>([1, 2]);
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

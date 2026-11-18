@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use xshell::{Shell, cmd};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "Transmutant project automation")]
+#[command(name = "xtask", about = "Puns project automation")]
 #[command(styles = clap_cargo::style::CLAP_STYLING)]
 #[clap(disable_version_flag = true, bin_name = "cargo xtask")]
 struct Cli {
@@ -60,5 +60,8 @@ fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
   cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
+  // What is only built with the feature `nearest`, of `puns` and of its model check.
+  let nearest = ["-p", "puns", "-p", "puns-model", "--features", "nearest"];
+  cmd!(sh, "cargo clippy {nearest...} --tests --examples --benches {args...}").run_echo()?;
   fmt(sh, !fix)
 }

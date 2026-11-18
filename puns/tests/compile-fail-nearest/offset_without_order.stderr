@@ -1,0 +1,33 @@
+error[E0277]: the trait bound `Option<Near<Node, Mine>>: Pun` is not satisfied
+  --> tests/compile-fail-nearest/offset_without_order.rs:37:9
+   |
+37 |   next: Option<Near<Node, Mine>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Pun` is not implemented for `Option<Near<Node, Mine>>`
+   |
+help: the trait `Pun` is conditionally implemented for `Option<Near<T, O>>`
+  --> src/nearest.rs
+   |
+   | unsafe impl<T: Flat + Pun, O: Order> Pun for Option<Near<T, O>> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-----^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                               |
+   |                               unsatisfied requirement introduced here: `Mine: Order`
+note: required by a bound in `puns::Fields::Type`
+  --> src/lib.rs
+   |
+   | pub unsafe trait Fields {
+   |   type Type: ?Sized + Pun;
+   |                       ^^^ required by this bound in `Fields::Type`
+
+error[E0277]: the trait bound `Option<Near<Node, Mine>>: Pun` is not satisfied
+  --> tests/compile-fail-nearest/offset_without_order.rs:37:9
+   |
+37 |   next: Option<Near<Node, Mine>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Pun` is not implemented for `Option<Near<Node, Mine>>`
+   |
+help: the trait `Pun` is conditionally implemented for `Option<Near<T, O>>`
+  --> src/nearest.rs
+   |
+   | unsafe impl<T: Flat + Pun, O: Order> Pun for Option<Near<T, O>> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-----^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                               |
+   |                               unsatisfied requirement introduced here: `Mine: Order`

@@ -1,0 +1,35 @@
+error: a CRC has 5 parameters: `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`
+ --> tests/compile-fail/crc_parameters.rs:5:17
+  |
+5 | #[pun(assert(crc::<16, 0x8005>(0, 2) == 0))]
+  |                 ^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked: a parameter has more bits than the CRC
+  --> tests/compile-fail/crc_parameters.rs:12:14
+   |
+10 | #[derive(puns::Pun)]
+   |          --------- in this derive macro expansion
+11 | #[repr(C)]
+12 | #[pun(assert(crc::<8, 0x107, 0, false, 0>(0, 2) == 0))]
+   |              ^^^ evaluation of `_::<impl puns::Pun for PolynomialTooWide>::LAYOUT::{constant#1}::{constant#0}` failed inside this call
+   |
+note: inside `puns::layout::Crc::new`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/layout.rs
+   |
+   | /     assert!(
+   | |       poly <= mask && init <= mask && xorout <= mask,
+   | |       "a parameter has more bits than the CRC"
+   | |     );
+   | |_____- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/compile-fail/crc_parameters.rs:10:10
+   |
+10 | #[derive(puns::Pun)]
+   |          ^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,5 @@
+error: a size or a length cannot be computed from `size_of_val(self)`, which it defines
+ --> tests/compile-fail/size_of_itself.rs:4:14
+  |
+4 | #[pun(size = size_of_val(self) - 1)]
+  |              ^^^^^^^^^^^^^^^^^

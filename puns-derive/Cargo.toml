@@ -1,0 +1,23 @@
+[package]
+name = "puns-derive"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.100"
+license = "Apache-2.0 OR MIT"
+description = "The #[derive(Pun)] macro for the puns crate"
+repository = "https://github.com/uael/puns"
+documentation = "https://docs.rs/puns-derive"
+readme = "../README.md"
+keywords = ["transmute", "zero-copy", "derive", "macro"]
+categories = ["encoding"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit-mut"] }
+quote = "1"
+proc-macro2 = "1"
+
+[lints]
+workspace = true

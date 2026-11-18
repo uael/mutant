@@ -8,22 +8,36 @@ release_always = false
 
 # The two crates are released under one version: the higher of their next versions.
 [[package]]
-name = "transmutant"
-version_group = "transmutant"
+name = "puns"
+version_group = "puns"
 changelog_path = "CHANGELOG.md"
-changelog_include = ["transmutant-derive"]
+changelog_include = ["puns-derive"]
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
 [[package]]
-name = "transmutant-derive"
-version_group = "transmutant"
+name = "puns-derive"
+version_group = "puns"
 changelog_update = false
 git_tag_enable = false
 git_release_enable = false
 
 [[package]]
 name = "xtask"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "puns-model"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "fakecore"
 publish = false
 changelog_update = false
 git_tag_enable = false

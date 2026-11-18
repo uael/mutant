@@ -1,0 +1,41 @@
+error[E0080]: evaluation panicked:
+              cannot pun: the target is unsized: where it starts cannot be found from the end of the bytes.
+              Use `from_head` or `from_bytes`.
+
+    --> src/lib.rs
+     |
+     |   const FROM_TAIL: () = Self::require(Self::check_from_tail());
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], [u16]>::FROM_TAIL` failed inside this call
+     |
+note: inside `puns::Plan::<[u8], [u16]>::require`
+ --> src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<[u8], D>::FROM_TAIL };
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> src/lib.rs
+  |
+  |   const { Plan::<[u8], D>::FROM_TAIL };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn from_tail::<[u16]>`
+ --> tests/compile-fail/from_tail_unsized.rs:3:11
+  |
+3 |   let _ = puns::from_tail::<[u16]>(&[0; 4]);
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

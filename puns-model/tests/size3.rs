@@ -1,0 +1,14 @@
+//! Every ordered pair of the types of 3 bytes of the model.
+
+use puns::num::*;
+use puns_model::types::*;
+
+#[test]
+#[cfg_attr(miri, ignore = "too slow under Miri, which runs `miri_sample`")]
+fn size3() {
+  puns_model::all_pairs!(usize::MAX;
+    [u8; 3], [bool; 3], (u8, u8, bool), u24le, u24be, u24lec<0x10>, u24bec<0x10>, PackedU16Bool,
+    PackedBoolNz, Triple, Wide, WideBe, Lit, [E01; 3], (u8, [u8in<0x80, 0xff>; 2]),
+  );
+  puns_model::finish("3 bytes");
+}

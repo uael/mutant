@@ -27,21 +27,35 @@
 !clippy.toml
 !.cargo/
 !.cargo/config.toml
-!transmutant/
-!transmutant/Cargo.toml
-!transmutant/DESIGN.md
-!transmutant/benches/
-!transmutant/examples/
-!transmutant/src/
-!transmutant/tests/
-!transmutant/tests/compile-fail/
-!transmutant/tests/compile-fail/*.stderr
-!transmutant/tests/compile-pass/
-!transmutant/**/*.rs
-!transmutant-derive/
-!transmutant-derive/Cargo.toml
-!transmutant-derive/src/
-!transmutant-derive/**/*.rs
+!puns/
+!puns/Cargo.toml
+!puns/DESIGN.md
+!puns/benches/
+!puns/examples/
+!puns/examples/*.image
+!puns/src/
+!puns/tests/
+!puns/tests/compile-fail/
+!puns/tests/compile-fail/*.stderr
+!puns/tests/compile-pass/
+!puns/tests/compile-fail-nearest/
+!puns/tests/compile-fail-nearest/*.stderr
+!puns/tests/compile-pass-nearest/
+!puns/**/*.rs
+!puns-derive/
+!puns-derive/Cargo.toml
+!puns-derive/src/
+!puns-derive/**/*.rs
+
+# Rust (model check, not published)
+!puns-model/
+!puns-model/Cargo.toml
+!puns-model/src/
+!puns-model/tests/
+!puns-model/fakecore/
+!puns-model/fakecore/Cargo.toml
+!puns-model/fakecore/src/
+!puns-model/**/*.rs
 
 # Rust (xtask)
 !xtask/
@@ -51,7 +65,7 @@
 
 # Claude
 !CLAUDE.md
-!transmutant/CLAUDE.md
+!puns/CLAUDE.md
 !.claude/
 !.claude/settings.json
 !.claude/commands/
