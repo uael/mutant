@@ -2,6 +2,7 @@
 //!
 //! - `u16le`, `u32be`...: integers stored in a given byte order. They are byte arrays, hence have
 //!   no alignment requirement.
+//! - `i16le`, `i32be`...: signed integers, the same way.
 //! - `u8c<V>`, `u16lec<V>`, `u32bec<V>`...: integers whose only valid value is `V`: magic numbers,
 //!   type tags and the like.
 
@@ -191,6 +192,102 @@ ints! {
   u128le u128lec: u128[16] Little;
   u128be u128bec: u128[16] Big;
 }
+
+macro_rules! numbers {
+  ($($name:ident: $raw:ident[$size:literal] $endian:ident;)+) => {$(
+    #[doc = concat!("A `", stringify!($raw), "` of ", stringify!($size), " bytes, most significant ")]
+    #[doc = endian!($endian, "last (little-endian).", "first (big-endian).")]
+    #[expect(non_camel_case_types, reason = "named like the primitive numbers they stand for")]
+    #[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
+    #[repr(transparent)]
+    pub struct $name([u8; $size]);
+
+    impl $name {
+      #[inline]
+      pub const fn new(value: $raw) -> Self {
+        Self(endian!($endian, value.to_le_bytes(), value.to_be_bytes()))
+      }
+
+      #[inline]
+      pub const fn get(self) -> $raw {
+        endian!($endian, $raw::from_le_bytes(self.0), $raw::from_be_bytes(self.0))
+      }
+
+      /// The bytes, as they are in memory.
+      #[inline]
+      pub const fn to_bytes(self) -> [u8; $size] {
+        self.0
+      }
+
+      #[inline]
+      pub const fn from_bytes(bytes: [u8; $size]) -> Self {
+        Self(bytes)
+      }
+    }
+
+    // SAFETY: a byte array.
+    unsafe impl Scalar for $name {
+      const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian);
+    }
+
+    impl From<$name> for $raw {
+      #[inline]
+      fn from(value: $name) -> Self {
+        value.get()
+      }
+    }
+
+    impl From<$raw> for $name {
+      #[inline]
+      fn from(value: $raw) -> Self {
+        Self::new(value)
+      }
+    }
+
+    impl fmt::Debug for $name {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.get(), f)
+      }
+    }
+
+    impl fmt::Display for $name {
+      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.get(), f)
+      }
+    }
+  )+};
+}
+
+numbers! {
+  i16le: i16[2] Little;
+  i16be: i16[2] Big;
+  i32le: i32[4] Little;
+  i32be: i32[4] Big;
+  i64le: i64[8] Little;
+  i64be: i64[8] Big;
+}
+
+/// Signed integers are ordered by their value, whatever their bytes: what the offsets of
+/// `nearest` (feature `nearest`) must be, among other uses.
+macro_rules! ordered {
+  ($($name:ident)+) => {$(
+    impl PartialOrd for $name {
+      #[inline]
+      fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+      }
+    }
+
+    impl Ord for $name {
+      #[inline]
+      fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.get().cmp(&other.get())
+      }
+    }
+  )+};
+}
+
+ordered!(i16le i16be i32le i32be i64le i64be);
 
 /// A `u8` that is `V`, and nothing else.
 #[expect(non_camel_case_types, reason = "named like the primitive integers they stand for")]
