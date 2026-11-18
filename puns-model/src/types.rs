@@ -650,6 +650,28 @@ impl Oracle for Pair {
   }
 }
 
+/// A niche in the tag of another enum without `repr`: `Other` is 2, the first value that is no tag
+/// of `Pair`.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NestPair {
+  Inner(Pair),
+  Other,
+}
+
+impl Oracle for NestPair {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid {
+    let (inner, other) = (NestPair::Inner(Pair::A(0)), NestPair::Other);
+    let _ = other;
+    let NestPair::Inner(pair) = &inner else { unreachable!() };
+    let at = off + offset_in(&inner, pair);
+    match int(b, at, 1, true, reads)? {
+      0 | 1 => Pair::check(b, at, reads, target),
+      2 => Ok(true),
+      _ => Ok(false),
+    }
+  }
+}
+
 /// A niche in the `bool` of `Both`, for `Byte` (2) and `Nothing` (3); the byte of `Byte` is
 /// beside it.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]

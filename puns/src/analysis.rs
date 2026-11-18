@@ -570,7 +570,7 @@ const fn relate_range(
       if base_b == pos
         && pos + enum_b.size <= end
         && !enum_b.has_pointers()
-        && relate_enum_from(a, enum_b, pos, leaf, out)
+        && relate_enum_from(a, enum_b, pos, leaf, &b.known, out)
       {
         pos += enum_b.size;
         continue;
@@ -741,6 +741,7 @@ const fn relate_enum_from(
   b: &'static Layout,
   pos: usize,
   leaf: usize,
+  known: &Known,
   out: &mut Relation,
 ) -> bool {
   let Kind::Enum(layout) = b.kind else { panic!() };
@@ -750,7 +751,7 @@ const fn relate_enum_from(
   }
   let start = pos + layout.tag.offset;
   // What the source holds at the tag.
-  let Some(values) = tag_values(a, start, &tag) else {
+  let Some(values) = tag_values(a, start, &tag, known) else {
     // Padding where the tag is: nothing is ever this enum.
     out.uninit(start);
     return true;
@@ -837,9 +838,14 @@ const fn relate_union_from(
 }
 
 /// The values that the source `a` may hold at `start`, where a target has the scalar `tag`, as an
-/// integer of its byte order: what a scalar of the source of the same size and order is known to
-/// be, else any; `None` if some of these bytes may be uninitialized.
-const fn tag_values(a: &Cursor, start: usize, tag: &Spec) -> Option<Tags> {
+/// integer of its byte order: what is `known` there (the tag of an enum that holds this one in a
+/// niche), else what a scalar of the source of the same size and order is known to be, else any;
+/// `None` if some of these bytes may be uninitialized.
+const fn tag_values(a: &Cursor, start: usize, tag: &Spec, known: &Known) -> Option<Tags> {
+  if let Some(ranges) = known.of(start, start + tag.size, tag.endian) {
+    // Their hull, which holds them.
+    return Some(Tags::range(ranges[0].0, ranges[ranges.len() - 1].1));
+  }
   let mut from = *a;
   let (pieces, len) = gather(&mut from, start, start + tag.size);
   let mut i = 0;
