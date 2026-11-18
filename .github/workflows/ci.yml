@@ -108,6 +108,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # A target without `std`: nothing may need it.
       - run: cargo build -p puns --target thumbv7em-none-eabihf
+      # A 16-bit target (a `usize` of 16 bits, `isize::MAX` of 32 KiB, see "What `usize` is assumed
+      # to be" in `DESIGN.md`), whose `core` is built from source on the pinned nightly.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-17
+          components: rust-src
+      - run: cargo +nightly-2026-11-17 build -p puns -Zbuild-std=core --target msp430-none-elf
 
   fmt:
     name: Format

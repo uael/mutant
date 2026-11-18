@@ -164,6 +164,7 @@ pub type Size1 = (
   bool,
   NonZero<u8>,
   Option<NonZero<u8>>,
+  NonZero<i8>,
   u8c<0>,
   u8c<7>,
   u8c<255>,

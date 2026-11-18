@@ -65,3 +65,21 @@ fn pairs() {
   }
   report();
 }
+
+/// `puns::validate_in`, with a visitor that follows the pointers through the buffer, accepts
+/// exactly what the oracle accepts, on the corpus and on every copy with one byte changed: a
+/// sample of the types (every type in `pointers_full.rs`). Under Miri, a pointer that may be null
+/// and one mask: the unsafe code that `validate_in` reaches is the same for every type.
+#[test]
+fn validate_in_is_the_oracle() {
+  use puns_model::pointers::check_validate;
+  let masks: &[u8] = if cfg!(miri) { &[0xff] } else { &[0x01, 0x80, 0xff] };
+  let mut compared = check_validate::<MaybeByte>(masks);
+  if !cfg!(miri) {
+    compared += check_validate::<Wood>(masks);
+    compared += check_validate::<Flags>(masks) + check_validate::<FlagList>(masks);
+    compared += check_validate::<ToText>(masks) + check_validate::<ToByteBe>(masks);
+  }
+  println!("{compared} images compared");
+  assert!(compared > if cfg!(miri) { 100 } else { 10_000 });
+}

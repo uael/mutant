@@ -276,7 +276,9 @@
 //! A crate declares its self-relative pointers (offsets from their own address to a target in the
 //! same buffer, as the regions of [`nearest`](https://docs.rs/nearest) have) with
 //! [`SelfRelative`], and [`view_ref`] reads a value that holds them as another type, with
-//! everything they aim at proven at compile time.
+//! everything they aim at proven at compile time. The crate that has the pointers checks a
+//! buffer of them with [`validate_in`]: each value from its layout, its pointers handed to the
+//! crate's [`Visit`], which follows them as its scheme says.
 //!
 //! Refusals are errors of the monomorphization of the functions: `cargo build` reports them,
 //! `cargo check` does not.
@@ -298,6 +300,7 @@ mod std_enums;
 #[cfg(test)]
 mod tests;
 mod validate;
+mod visit;
 
 /// The examples of `README.md`, run with the doc tests. `puns/README.md` is a link to the one of
 /// the repository, which a package holds as a file: the path is the same in both.
@@ -318,6 +321,7 @@ pub use relative::SelfRelative;
 #[doc(hidden)]
 pub use relative::sized_probe as __sized_probe;
 use validate::{Checks, validate};
+pub use visit::{Invalid, Pointee, Visit, validate_elems_in, validate_in};
 
 // -------------------------------------------------------------------------------------------------
 // Traits
@@ -340,6 +344,12 @@ pub unsafe trait Scalar {
 /// of `Self` (every value is valid for it as a source, every valid target is a value), with the
 /// lists of its fields, variants and elements; and that `OPTION`, if it is `Some`, describes the
 /// values of `Option<Self>` the same way, `Option<Self>` having the lists of `Option`.
+#[diagnostic::on_unimplemented(
+  message = "`{Self}` is not a `Pun` type: `puns` does not know its layout and its valid values",
+  label = "not a `Pun` type",
+  note = "a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with \
+          `SelfRelative` and `self_relative!`"
+)]
 pub unsafe trait Pun {
   /// Type of the elements of an array or of a slice, `()` otherwise.
   #[doc(hidden)]
@@ -744,6 +754,22 @@ macro_rules! impl_non_zero {
 }
 
 impl_non_zero!(u8 u16 u32 u64 u128 usize);
+
+macro_rules! impl_signed_non_zero {
+  ($($ty:ident)+) => {$(
+    // SAFETY: any bits but all zeros, the only bit pattern of 0 in two's complement. Its bits
+    // are not its value as an unsigned integer: rules do not read it, as for `iN`.
+    unsafe impl Scalar for core::num::NonZero<$ty> {
+      const SPEC: Spec = Spec::ranges::<$ty>(
+        Endian::NATIVE,
+        &[(1, u128::MAX >> (128 - 8 * size_of::<$ty>()))],
+      )
+      .not_a_number();
+    }
+  )+};
+}
+
+impl_signed_non_zero!(i8 i16 i32 i64 i128 isize);
 
 // -------------------------------------------------------------------------------------------------
 // `Error`
