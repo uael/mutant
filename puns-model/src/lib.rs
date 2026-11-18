@@ -201,6 +201,7 @@ scalar_oracle! {
   NonZero<u8> => |v| v != 0, true;
   NonZero<u16> => |v| v != 0, true;
   NonZero<u32> => |v| v != 0, true;
+  NonZero<i8> => |v| v != 0, true;
   Option<NonZero<u8>> => |_v| true, true;
   Option<NonZero<u16>> => |_v| true, true;
   Option<NonZero<u32>> => |_v| true, true;
