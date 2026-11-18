@@ -349,7 +349,8 @@ fn the_verdict_is_the_one_of_try_pun_ref() {
     let mut buffer = Aligned([0; 32]);
     buffer.0[..size].copy_from_slice(value);
     buffer.0[size..2 * size].copy_from_slice(value);
-    let masks: &[u8] = if cfg!(miri) { &[0x01, 0xff] } else { &[1, 2, 4, 8, 16, 32, 64, 128, 0xff] };
+    let masks: &[u8] =
+      if cfg!(miri) { &[0x01, 0xff] } else { &[1, 2, 4, 8, 16, 32, 64, 128, 0xff] };
     for at in 0..2 * size {
       for &mask in masks {
         buffer.0[at] ^= mask;
