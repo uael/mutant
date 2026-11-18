@@ -162,3 +162,47 @@ fn mut_in_const() {
   };
   assert_eq!(BYTES, [0, 0, 0, 0]);
 }
+
+/// Values of a few: two ranges.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+enum Few {
+  A = 1,
+  B = 2,
+  C = 3,
+  D = 7,
+}
+
+/// A rule over its fields.
+#[derive(Pun, Debug, PartialEq)]
+#[repr(C)]
+#[pun(assert(low <= high && low + high != 9))]
+struct Ordered {
+  low: u8,
+  high: u8,
+}
+
+/// Slices of elements that are checked a block at a time: an invalid one anywhere is found, in
+/// the blocks and after them.
+#[test]
+fn an_invalid_element_anywhere() {
+  let lengths = if cfg!(miri) { 36 } else { 150 };
+  for len in 0..lengths {
+    let valid = vec![1u8; 2 * len];
+    assert!(from_bytes::<[bool]>(&valid[..len]).is_ok());
+    assert!(from_bytes::<[Few]>(&valid[..len]).is_ok());
+    assert!(from_bytes::<[Ordered]>(&valid).is_ok());
+    for at in 0..len {
+      let mut bytes = valid.clone();
+      bytes[at] = 2;
+      assert!(from_bytes::<[bool]>(&bytes[..len]).is_err(), "{len} {at}");
+      bytes[at] = 4;
+      assert!(from_bytes::<[Few]>(&bytes[..len]).is_err(), "{len} {at}");
+      let mut bytes = valid.clone();
+      bytes[2 * at] = 2;
+      assert!(from_bytes::<[Ordered]>(&bytes).is_err(), "{len} {at}");
+      (bytes[2 * at], bytes[2 * at + 1]) = (4, 5);
+      assert!(from_bytes::<[Ordered]>(&bytes).is_err(), "{len} {at}");
+    }
+  }
+}

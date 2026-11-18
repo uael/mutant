@@ -249,6 +249,16 @@ impl Spec {
 #[inline(always)]
 const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
   let mut i = 0;
+  // A few ranges: a comparison each, without a branch, so that the validation of a slice can be
+  // vectorised (see `validate::validate_elems`).
+  if ranges.len() <= 8 {
+    let mut found = false;
+    while i < ranges.len() {
+      found |= value.wrapping_sub(ranges[i].0) <= ranges[i].1 - ranges[i].0;
+      i += 1;
+    }
+    return found;
+  }
   while i < ranges.len() {
     if ranges[i].0 <= value && value <= ranges[i].1 {
       return true;
@@ -1195,6 +1205,45 @@ impl Layout {
       i += 1;
     }
     false
+  }
+
+  /// How many elements of this layout the validation of a slice checks at a time, without
+  /// stopping between them (see `validate::validate_elems`): about 64 bytes of them, if checking
+  /// one is a few comparisons, else 1.
+  pub(crate) const fn block(&self) -> usize {
+    if self.size == 0 || self.size > 16 || self.unsized_ || !self.is_cheap() {
+      return 1;
+    }
+    64 / self.size
+  }
+
+  /// Whatever checking a value of this layout is a few comparisons: scalars, and arrays and
+  /// structs of them, whose rules only compute on their fields (no loop, no division).
+  const fn is_cheap(&self) -> bool {
+    match self.kind {
+      Kind::Scalar(_) => true,
+      Kind::Array(elem, len) => len <= 16 && elem.is_cheap(),
+      Kind::Struct(fields, rules) => {
+        let mut i = 0;
+        while i < fields.len() {
+          if !fields[i].layout.is_cheap() {
+            return false;
+          }
+          i += 1;
+        }
+        let mut i = 0;
+        while i < rules.len() {
+          if let Some(ops) = rules[i].ops()
+            && !cheap_ops(ops)
+          {
+            return false;
+          }
+          i += 1;
+        }
+        true
+      }
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) => false,
+    }
   }
 
   /// Rules of a struct.
@@ -2178,6 +2227,32 @@ impl Varint {
     }
     None
   }
+}
+
+/// Whatever an expression only computes on fields with a few instructions: it does not read the
+/// value at an offset that it computes, pass over its bytes, walk, or divide.
+const fn cheap_ops(ops: &[Op]) -> bool {
+  let mut i = 0;
+  while i < ops.len() {
+    if matches!(
+      ops[i],
+      Op::At { .. }
+        | Op::Varint { .. }
+        | Op::Crc32
+        | Op::Sum16
+        | Op::Crc(_)
+        | Op::CrcZeros(_)
+        | Op::Checksum(_)
+        | Op::Matches(_)
+        | Op::Walk { .. }
+        | Op::Div
+        | Op::Rem
+    ) {
+      return false;
+    }
+    i += 1;
+  }
+  true
 }
 
 /// Whatever two expressions are the same.

@@ -88,6 +88,25 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
 /// `ptr` must be valid for reads of `len` consecutive `T`s, each as [`validate`] requires.
 const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: usize) -> bool {
   let mut i = 0;
+  // Elements whose checks are a few comparisons are checked a block of about 64 bytes at a time,
+  // without stopping within a block: then the optimizer can vectorise it, which it cannot do of
+  // a loop that may stop at each element. The result is the same, and what is read is in the
+  // slice.
+  let block = const { T::LAYOUT.block() };
+  if block > 1 {
+    while len - i >= block {
+      let (mut valid, mut j) = (true, 0);
+      while j < block {
+        // SAFETY: `ptr` points to `len` elements, and `i + j < len`.
+        valid &= unsafe { validate::<C, P, T>(ptr.add(i + j)) };
+        j += 1;
+      }
+      if !valid {
+        return false;
+      }
+      i += block;
+    }
+  }
   while i < len {
     // SAFETY: `ptr` points to `len` elements.
     if !unsafe { validate::<C, P, T>(ptr.add(i)) } {
