@@ -371,6 +371,16 @@ impl Marks {
     }
   }
 
+  /// The scalars that are in either set.
+  pub(crate) const fn union(&self, other: &Self) -> Self {
+    let (mut bits, mut i) = (self.bits, 0);
+    while i < bits.len() {
+      bits[i] |= other.bits[i];
+      i += 1;
+    }
+    Self { bits, overflow: self.overflow || other.overflow }
+  }
+
   /// Whatever one of the `count` scalars from `first` is in the set.
   pub(crate) const fn any(&self, first: usize, count: usize) -> bool {
     let (mut i, end) = (first, first + count);

@@ -144,9 +144,14 @@ use syn::{
 ///
 /// Enums whose variants each hold a reference, such as
 /// `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`, are not data but *views* of
-/// data that is one thing or another. For them, two functions are generated, which try the
-/// variants in order: `from_head(bytes)` takes the first variant that `bytes` start with, and returns
-/// it with what remains; `from_bytes(bytes)` returns the first variant that `bytes` are, whole.
+/// data that is one thing or another. For them, two functions are generated, which answer as
+/// trying the variants in order would: `from_head(bytes)` takes the first variant that `bytes`
+/// start with, and returns it with what remains; `from_bytes(bytes)` returns the first variant
+/// that `bytes` are, whole. Each variant is checked once at most, and only for what is not known
+/// of it already: a variant whose first constrained scalar (an EtherType) the bytes do not have
+/// is passed over on that scalar alone, and one whose values are all values of a later variant
+/// (`Frame<Ipv4<Udp>>` of `Frame<Ipv4>`) is decided after that one, from it: it fails with it,
+/// or is checked for what that one does not prove of it (the protocol, not the checksums again).
 #[proc_macro_derive(Pun, attributes(pun))]
 pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let tokens = TokenStream::from(input.clone());
@@ -194,6 +199,32 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
       tokens
     })
     .into()
+}
+
+/// The types of the variants of a view, as a balanced tree (`puns::view::List`): the first half,
+/// then the second.
+fn view_tree(types: &[&Type], root: &TokenStream) -> TokenStream {
+  if let [ty] = types {
+    return quote!(#root::view::Leaf<#ty>);
+  }
+  let (first, second) = types.split_at(types.len() / 2);
+  let (first, second) = (view_tree(first, root), view_tree(second, root));
+  quote!(#root::view::Pair<#first, #second>)
+}
+
+/// The place of the variant `index` of `count` in the tree of [`view_tree`], as a type.
+fn view_place(index: usize, count: usize, root: &TokenStream) -> TokenStream {
+  if count == 1 {
+    return quote!(#root::view::Here);
+  }
+  let half = count / 2;
+  if index < half {
+    let inner = view_place(index, half, root);
+    quote!(#root::view::First<#inner>)
+  } else {
+    let inner = view_place(index - half, count - half, root);
+    quote!(#root::view::Second<#inner>)
+  }
 }
 
 /// What stands for the implementations of the derive when it fails, so that its error is the only
@@ -1762,39 +1793,78 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
       ));
     }
     let (vis, bytes) = (&input.vis, quote!(&#lifetime [::core::primitive::u8]));
-    let result = quote!(::core::result::Result);
-    let from_heads = references.iter().map(|(variant, reference)| {
-      let ty = &reference.elem;
-      // What a variant requires of its first constrained scalar rejects it first: the variants
-      // are then told apart by those bytes, rather than each converted in turn.
-      quote! {
-        if !#root::rejects::<#ty>(bytes) {
-          if let #result::Ok((value, rest)) = #root::from_head::<#ty>(bytes) {
-            return #result::Ok((Self::#variant(value), rest));
+    let (result, option) = (quote!(::core::result::Result), quote!(::core::option::Option));
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let ident = &input.ident;
+    let count = references.len();
+    let types: Vec<&Type> = references.iter().map(|(_, reference)| &*reference.elem).collect();
+    // The types of the variants, as a balanced tree; the place of each in it, as a type.
+    let list = view_tree(&types, &root);
+    let index = |i: usize| view_place(i, count, &root);
+    let decide = |i: usize| format_ident!("__pun_view_{}", i);
+    let known = quote!(#root::view::Known<#lifetime, Self, #count, HEAD>);
+    // Each variant is decided by a function of its own, which decides its base first: a later
+    // variant, chosen at compile time (`puns::view`), whose function it calls.
+    let deciders = types.iter().enumerate().map(|(i, ty)| {
+      let (name, at) = (decide(i), index(i));
+      let bases = (i + 1..count).map(|j| {
+        let base = decide(j);
+        quote!(#j => { let _ = Self::#base::<HEAD>(known); })
+      });
+      // The last variant has no later one to be decided from.
+      let base = (i + 1 < count).then(|| {
+        quote! {
+          if #root::view::open::<Self, #at, #count, HEAD>(known) {
+            match const { #root::view::base_of::<Self, #at, HEAD>() } {
+              #(#bases)*
+              _ => {}
+            }
           }
+        }
+      });
+      quote! {
+        #[doc(hidden)]
+        #[inline(always)]
+        const fn #name<const HEAD: bool>(known: &mut #known) -> #option<&#lifetime #ty> {
+          #base
+          #root::view::decide::<Self, #at, #count, HEAD>(known)
         }
       }
     });
-    let wholes = references.iter().map(|(variant, reference)| {
-      let ty = &reference.elem;
+    let from_heads = references.iter().enumerate().map(|(i, (variant, _))| {
+      let name = decide(i);
       quote! {
-        if !#root::rejects::<#ty>(bytes) {
-          if let #result::Ok(value) = #root::from_bytes::<#ty>(bytes) {
-            return #result::Ok(Self::#variant(value));
-          }
+        if let #option::Some(value) = Self::#name::<true>(&mut known) {
+          return #result::Ok((Self::#variant(value), known.rest(#i)));
+        }
+      }
+    });
+    let wholes = references.iter().enumerate().map(|(i, (variant, _))| {
+      let name = decide(i);
+      quote! {
+        if let #option::Some(value) = Self::#name::<false>(&mut known) {
+          return #result::Ok(Self::#variant(value));
         }
       }
     });
     return Ok(quote! {
+      impl #impl_generics #root::view::Views for #ident #ty_generics #where_clause {
+        type List = #list;
+      }
+
       impl #impl_generics #ident #ty_generics #where_clause {
+        #(#deciders)*
+
         /// Take the first of the variants that `bytes` start with: returns it and what remains.
         #vis const fn from_head(bytes: #bytes) -> #result<(Self, #bytes), #root::Error> {
+          let mut known = #root::view::Known::<Self, #count, true>::new(bytes);
           #(#from_heads)*
           #result::Err(#root::Error::Validity)
         }
 
         /// The first of the variants that `bytes` are, whole.
         #vis const fn from_bytes(bytes: #bytes) -> #result<Self, #root::Error> {
+          let mut known = #root::view::Known::<Self, #count, false>::new(bytes);
           #(#wholes)*
           #result::Err(#root::Error::Validity)
         }
