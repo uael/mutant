@@ -135,6 +135,19 @@ fn length(image: &Image, to: usize, big: bool) -> Result<usize, String> {
 /// # Errors
 /// What is wrong, if something is.
 pub fn valid(desc: &Desc, image: &Image, at: usize) -> Result<(), String> {
+  let mut fuel = usize::MAX;
+  valid_with(desc, image, at, &mut fuel)
+}
+
+/// What the oracle says when it follows a pointer and has no fuel left: bytes whose pointers go
+/// round in a circle, which a corruption can make, and of which it says nothing.
+pub const NO_FUEL: &str = "no fuel";
+
+/// [`valid`], following at most `fuel` pointers (each pointer followed takes one).
+///
+/// # Errors
+/// What is wrong, if something is; [`NO_FUEL`] if it ran out of fuel first.
+pub fn valid_with(desc: &Desc, image: &Image, at: usize, fuel: &mut usize) -> Result<(), String> {
   if !at.is_multiple_of(desc.align()) {
     return Err(format!("{at} is not aligned to {}", desc.align()));
   }
@@ -147,28 +160,29 @@ pub fn valid(desc: &Desc, image: &Image, at: usize) -> Result<(), String> {
       }
     }
     Desc::Struct { fields, .. } => {
-      fields.iter().try_for_each(|(offset, field)| valid(field, image, at + offset))
+      fields.iter().try_for_each(|(offset, field)| valid_with(field, image, at + offset, fuel))
     }
     Desc::Enum { variants, .. } => {
       let tag = image.read(at, 1)?[0];
       let (_, fields) = (variants.iter().find(|(of, _)| *of == tag))
         .ok_or_else(|| format!("{tag} at {at} is not a tag"))?;
-      fields.iter().try_for_each(|(offset, field)| valid(field, image, at + offset))
+      fields.iter().try_for_each(|(offset, field)| valid_with(field, image, at + offset, fuel))
     }
     Desc::Pointer { big, nullable, aim: what, target } => {
       let Some(to) = aim(image, at, *big)? else {
         return if *nullable { Ok(()) } else { Err(format!("a null pointer at {at}")) };
       };
+      *fuel = fuel.checked_sub(1).ok_or(NO_FUEL)?;
       let target = target();
       match what {
-        Aim::One => valid(&target, image, to),
+        Aim::One => valid_with(&target, image, to, fuel),
         Aim::Seq => {
           let first = target.align().max(4);
           if !to.is_multiple_of(first) {
             return Err(format!("a sequence at {to} that is not aligned to {first}"));
           }
           let len = length(image, to, *big)?;
-          (0..len).try_for_each(|i| valid(&target, image, to + i * target.size()))
+          (0..len).try_for_each(|i| valid_with(&target, image, to + i * target.size(), fuel))
         }
         Aim::Text => {
           let len = length(image, to, *big)?;
@@ -343,6 +357,176 @@ macro_rules! pointer_pairs {
   (@@ $check:ident; $source:ty; ($($target:ty),+)) => {
     $($crate::pointers::$check::<$source, $target>();)+
   };
+}
+
+// -------------------------------------------------------------------------------------------------
+// `puns::validate_in`, against the oracle
+
+/// Why [`Follow`] stops.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stop {
+  /// Bytes that are not a value, at a position.
+  Invalid(usize),
+  /// A pointer of the bytes that does not lead to a value: where it is.
+  Pointer(usize),
+  /// More pointers followed than the fuel allows.
+  NoFuel,
+}
+
+impl From<puns::Invalid> for Stop {
+  fn from(invalid: puns::Invalid) -> Self {
+    Self::Invalid(invalid.at)
+  }
+}
+
+/// A visitor that follows the pointers of the tests (`relative`) through `bytes`.
+///
+/// It validates what they aim at with `puns` in turn: what a crate that has pointers does with
+/// `validate_in`, written from the layouts of the pointers only (`as_pointer`, `Pointee`).
+pub struct Follow<'b> {
+  pub bytes: &'b [u8],
+  pub fuel: usize,
+}
+
+impl Follow<'_> {
+  /// The integer of `width` bytes at `at`, signed, in a byte order.
+  fn int(&self, at: usize, width: usize, endian: puns::layout::Endian) -> Result<i64, Stop> {
+    let bytes = self.bytes.get(at..).and_then(|rest| rest.get(..width)).ok_or(Stop::Pointer(at))?;
+    let mut wide = [0u8; 8];
+    for (i, byte) in bytes.iter().enumerate() {
+      wide[if matches!(endian, puns::layout::Endian::Little) { i } else { width - 1 - i }] = *byte;
+    }
+    let shift = 64 - 8 * u32::try_from(width).unwrap_or(8);
+    Ok(i64::from_le_bytes(wide) << shift >> shift)
+  }
+
+  /// The length of `width` bytes before `to`, not negative.
+  fn length(&self, to: usize, width: usize, endian: puns::layout::Endian) -> Result<usize, Stop> {
+    let at = to.checked_sub(width).ok_or(Stop::Pointer(to))?;
+    usize::try_from(self.int(at, width, endian)?).map_err(|_| Stop::Pointer(at))
+  }
+}
+
+impl puns::Visit for Follow<'_> {
+  type Error = Stop;
+
+  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Stop> {
+    let pointer = const { P::LAYOUT.as_pointer() }.expect("a pointer is handed over");
+    assert_eq!(pointer.scheme(), crate::relative::SCHEME, "a pointer of the tests");
+    let (width, endian) = (pointer.width(), pointer.endian());
+    let offset = self.int(at, width, endian)?;
+    assert!(offset != 0, "zeros are no pointer, and are not handed over");
+    self.fuel = self.fuel.checked_sub(1).ok_or(Stop::NoFuel)?;
+    let to = i64::try_from(at).ok().and_then(|at| at.checked_add(offset));
+    let to = to.and_then(|to| usize::try_from(to).ok()).filter(|to| *to <= self.bytes.len());
+    let to = to.ok_or(Stop::Pointer(at))?;
+    match pointer.aim() {
+      puns::layout::Aim::One => {
+        if !to.is_multiple_of(pointer.align()) {
+          return Err(Stop::Pointer(at));
+        }
+        puns::validate_in::<puns::Pointee<P>, Self>(self.bytes, to, self)
+      }
+      puns::layout::Aim::Sequence { align } => {
+        if !to.is_multiple_of(align) {
+          return Err(Stop::Pointer(at));
+        }
+        let len = self.length(to, width, endian)?;
+        puns::validate_elems_in::<puns::Pointee<P>, Self>(self.bytes, to, len, self)
+      }
+      puns::layout::Aim::Text => {
+        let len = self.length(to, width, endian)?;
+        let text =
+          self.bytes.get(to..).and_then(|rest| rest.get(..len)).ok_or(Stop::Pointer(at))?;
+        std::str::from_utf8(text).map(|_| ()).map_err(|_| Stop::Pointer(at))
+      }
+    }
+  }
+}
+
+/// How many pointers the oracle and [`Follow`] follow in a corrupted image: more than any value
+/// of a corpus holds; past it, the pointers of the image go round in a circle.
+const VALIDATE_FUEL: usize = 64;
+
+/// The bytes of `image`, those that no value was written to (padding, gaps) as `fill`, and 16
+/// more of it: a reference to a value covers all of its bytes, which `validate_in` wants in
+/// bounds, where the oracle reads only those of the variant that it is (a value of a corrupted
+/// image may start near the end).
+fn initialized(image: &Image, fill: u8) -> Vec<u8> {
+  (0..image.bytes.len() + 16)
+    .map(|at| {
+      if image.init.get(at) == Some(&true) { image.read(at, 1).expect("written")[0] } else { fill }
+    })
+    .collect()
+}
+
+/// The image of `bytes`, every one of them initialized.
+fn whole(bytes: &[u8]) -> Image {
+  Image {
+    bytes: bytes.iter().map(|byte| MaybeUninit::new(*byte)).collect(),
+    init: vec![true; bytes.len()],
+  }
+}
+
+/// Whatever `puns::validate_in` with [`Follow`], and the oracle, agree on `bytes` (`image`, the
+/// same bytes) as a `T` at `at`: `false` if one of them ran out of fuel (no answer).
+///
+/// # Panics
+/// If they do not agree.
+fn agree<T: Model>(bytes: &[u8], image: &Image, at: usize, what: &str) -> bool {
+  let oracle = valid_with(&T::desc(), image, at, &mut { VALIDATE_FUEL });
+  let mut follow = Follow { bytes, fuel: VALIDATE_FUEL };
+  let ours = puns::validate_in::<T, Follow<'_>>(bytes, at, &mut follow);
+  match (&oracle, &ours) {
+    (Err(why), _) if why == NO_FUEL => false,
+    (_, Err(Stop::NoFuel)) => false,
+    (Ok(()), Ok(())) | (Err(_), Err(_)) => true,
+    _ => panic!("{}: {what}: the oracle says {oracle:?}, `validate_in` {ours:?}", name::<T>()),
+  }
+}
+
+/// `puns::validate_in`, with a visitor that follows the pointers, accepts what the oracle accepts.
+///
+/// On every value of the corpus of `T`, and on every copy of one with one byte changed by one of
+/// `masks` (`xor`), padding and gaps included, and with the bytes cut short. Returns how many
+/// images were compared.
+///
+/// # Panics
+/// If they do not agree on one of them.
+#[must_use]
+pub fn check_validate<T: Model>(masks: &[u8]) -> usize {
+  let mut compared = 0;
+  for region in T::corpus() {
+    let image = image(&region);
+    for fill in [0, 0xa5] {
+      let bytes = initialized(&image, fill);
+      assert!(
+        agree::<T>(&bytes, &whole(&bytes), region.root(), "the corpus"),
+        "fuel for the corpus"
+      );
+      compared += 1;
+      for at in 0..bytes.len() {
+        for &mask in masks {
+          let mut bad = bytes.clone();
+          bad[at] ^= mask;
+          let what = format!("{mask:#x} at {at}");
+          compared += usize::from(agree::<T>(&bad, &whole(&bad), region.root(), &what));
+        }
+      }
+      // Cut right after the root, which is all there: the same. Cut before its end: `validate_in`
+      // wants every byte of a value (a reference to it covers them), where the oracle reads only
+      // those of the variant that it is; and so does it of what pointers aim at, before the root.
+      let end = region.root() + size_of::<T>();
+      compared +=
+        usize::from(agree::<T>(&bytes[..end], &whole(&bytes[..end]), region.root(), "cut"));
+      for len in [region.root(), end - 1] {
+        let mut follow = Follow { bytes: &bytes[..len], fuel: VALIDATE_FUEL };
+        let result = puns::validate_in::<T, Follow<'_>>(&bytes[..len], region.root(), &mut follow);
+        assert_eq!(result, Err(Stop::Invalid(region.root())), "{}: cut at {len}", name::<T>());
+      }
+    }
+  }
+  compared
 }
 
 /// The types of the model.

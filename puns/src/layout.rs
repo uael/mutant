@@ -515,6 +515,43 @@ impl Pointer {
     self.nullable
   }
 
+  /// The scheme: the name that the declaring crate gave the way to the target.
+  #[must_use]
+  pub const fn scheme(&self) -> &'static str {
+    self.scheme
+  }
+
+  /// What the pointer aims at: one value, a sequence (and the alignment that the declarer
+  /// guarantees of its first element), or text.
+  #[must_use]
+  pub const fn aim(&self) -> Aim {
+    self.aim
+  }
+
+  /// The size of the offset in bytes, which is the size of the pointer.
+  #[must_use]
+  pub const fn width(&self) -> usize {
+    self.width
+  }
+
+  /// The byte order of the offset.
+  #[must_use]
+  pub const fn endian(&self) -> Endian {
+    self.endian
+  }
+
+  /// The size of the target type (of an element of a sequence; 0 for text).
+  #[must_use]
+  pub const fn size(&self) -> usize {
+    self.size
+  }
+
+  /// The alignment of the target type (of an element of a sequence; 1 for text).
+  #[must_use]
+  pub const fn align(&self) -> usize {
+    self.align
+  }
+
   /// Whatever the target of the pointer `self` can be read through the pointer `to`, as far as
   /// the pointers themselves go (what the targets hold is related through the types, see
   /// `deep.rs`): `None` if never, `Some(false)` if only when `self` is not null, which is then to
@@ -1215,6 +1252,49 @@ impl Layout {
       i += 1;
     }
     Self::pointer::<Option<P>, T>(pointer.or_null())
+  }
+
+  /// The pointer that a value of the layout is, if it is a self-relative pointer (see
+  /// [`Pointer`]); `None` for anything else, a struct that holds one included.
+  #[must_use]
+  pub const fn as_pointer(&self) -> Option<Pointer> {
+    match self.kind {
+      Kind::Pointer(pointer) => Some(pointer),
+      _ => None,
+    }
+  }
+
+  /// Whatever validation has nothing to check of a value of the layout: every bit pattern of its
+  /// bytes (initialized) is a value, it holds no pointer, no enum and no rule. A value of it is
+  /// made of any initialized bytes; [`validate_in`](crate::validate_in) reads nothing of it.
+  #[must_use]
+  pub const fn is_free(&self) -> bool {
+    self.leaves == 0
+  }
+
+  /// Whatever a value of the layout is all its bytes: it holds no padding (no byte that may be
+  /// uninitialized), and no pointer. Such a value can be copied as bytes, and its bytes are
+  /// initialized. An enum with fields is never one (which bytes are padding depends on its tag),
+  /// nor a slice or a pattern (unsized).
+  #[must_use]
+  pub const fn is_plain(&self) -> bool {
+    match self.kind {
+      Kind::Scalar(spec) => !spec.may_be_uninit(),
+      Kind::Array(elem, _) => elem.is_plain(),
+      Kind::Struct(fields, _) => {
+        let (mut i, mut covered) = (0, 0);
+        while i < fields.len() {
+          // Sorted by offset: a field after the bytes covered so far leaves a hole.
+          if fields[i].offset != covered || !fields[i].layout.is_plain() {
+            return false;
+          }
+          covered += fields[i].layout.size;
+          i += 1;
+        }
+        !self.unsized_ && covered == self.size
+      }
+      Kind::Slice(_) | Kind::Pattern(_) | Kind::Enum(_) | Kind::Pointer(_) => false,
+    }
   }
 
   /// Whatever values of the layout hold a self-relative pointer (see [`Pointer`]), not counting

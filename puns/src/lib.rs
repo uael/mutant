@@ -298,6 +298,7 @@ mod std_enums;
 #[cfg(test)]
 mod tests;
 mod validate;
+mod visit;
 
 /// The example of `README.md`, run with the doc tests.
 #[cfg(doctest)]
@@ -317,6 +318,7 @@ pub use relative::SelfRelative;
 #[doc(hidden)]
 pub use relative::sized_probe as __sized_probe;
 use validate::{Checks, validate};
+pub use visit::{Invalid, Pointee, Visit, validate_elems_in, validate_in};
 
 // -------------------------------------------------------------------------------------------------
 // Traits
