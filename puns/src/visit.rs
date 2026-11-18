@@ -208,6 +208,11 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
     unsafe { value::<T, V>(bytes.as_ptr(), at + i * size, visit)? };
     i += 1;
   }
+  // The validation of the elements said that one is not valid, and none was found so: the
+  // verdict is the validation's.
+  if const { !T::LAYOUT.has_pointers() } {
+    return Err(Invalid::at(at).into());
+  }
   Ok(())
 }
 
@@ -242,15 +247,38 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
        can the pointer"
     );
   };
+  // The walk goes by the lists of types of `T`, which the derive writes: they must be its layout.
+  const { assert!(listed::<T>(), "{}", LISTS) };
   // SAFETY: per the caller.
   let here = unsafe { base.add(at) };
   if const { !T::LAYOUT.has_pointers() } {
-    // The code of `try_pun_ref`; where it fails, the walk below tells where.
+    // The code of `try_pun_ref` is the verdict; where it fails, the walk tells where, and the
+    // value itself if the walk finds nothing.
     // SAFETY: per the caller; a sized `T` (`Sized` at the root, so are its parts).
     if unsafe { validate::<All, Root, T>(ptr::from_raw_parts::<T>(here, 0)) } {
       return Ok(());
     }
+    // SAFETY: per the caller.
+    return match unsafe { walk::<T, V>(base, at, here, visit) } {
+      Ok(()) => Err(Invalid::at(at).into()),
+      error => error,
+    };
   }
+  // SAFETY: per the caller.
+  unsafe { walk::<T, V>(base, at, here, visit) }
+}
+
+/// The walk of the `T` at `at` (at `here`): where it is not valid, its pointers handed over.
+///
+/// # Safety
+/// As [`value`]; `here` is `base + at`.
+#[inline(always)]
+unsafe fn walk<T: ?Sized + Pun, V: Visit>(
+  base: *const u8,
+  at: usize,
+  here: *const u8,
+  visit: &mut V,
+) -> Result<(), V::Error> {
   // SAFETY: per the caller; the layout of `T` tells what is at `here`.
   unsafe {
     match const { T::LAYOUT.shape() } {
@@ -291,6 +319,79 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
       // A sized value holds neither (the root is `Sized`, and so are its parts).
       Shape::Slice | Shape::Pattern(_) => Err(Invalid::at(at).into()),
     }
+  }
+}
+
+/// What the walk is refused for: lists of types that are not the layout.
+const LISTS: &str = "an implementation of `Pun` lists fields, variants or elements that are not \
+                     those of its layout: `validate_in` goes by the lists, and would not check \
+                     what they leave out";
+
+/// Whatever the lists of types of `T` (`Fields`, `Variants`, `Elem`, `Pointee`), by which the
+/// walk goes, are what its layout holds: every field, by its declaration index, at its offset, of
+/// its layout (restricted or not), of a type whose layout it is; every variant, its tag, its tags
+/// and its fields; the element; the size and the alignment of what a pointer aims at.
+const fn listed<T: ?Sized + Pun>() -> bool {
+  match T::LAYOUT.kind {
+    Kind::Struct(fields, _) => fields_listed::<T::Fields>(fields, 0),
+    Kind::Enum(layout) => variants_listed::<T::Variants>(layout.variants, 0),
+    Kind::Array(elem, _) | Kind::Slice(elem) => <T::Elem as Pun>::LAYOUT.equals(elem),
+    Kind::Pointer(pointer) => {
+      let target = <T::Pointee as Pun>::LAYOUT;
+      target.size() == pointer.size && target.align() == pointer.align
+    }
+    Kind::Scalar(_) | Kind::Pattern(_) => true,
+  }
+}
+
+/// The list `F` is the `fields`, from the one declared at `index` on, in that order.
+const fn fields_listed<F: Fields>(fields: &[layout::Field], index: usize) -> bool {
+  let Some(field) = F::FIELD else { return index == fields.len() };
+  let mut i = 0;
+  let mut found = false;
+  while i < fields.len() {
+    let other = &fields[i];
+    found |= other.index == index
+      && other.offset == field.offset
+      && other.restricted == field.restricted
+      && other.layout.equals(field.layout);
+    i += 1;
+  }
+  found
+    && field.index == index
+    && (field.restricted || <F::Type as Pun>::LAYOUT.equals(field.layout))
+    && fields_listed::<F::Next>(fields, index + 1)
+}
+
+/// The list `W` is the `variants`, from the one at `index` on: the same tags, the same tags of a
+/// niche, the same fields.
+const fn variants_listed<W: Variants>(variants: &[layout::Variant], index: usize) -> bool {
+  let Some(tag) = W::TAG else { return index == variants.len() };
+  index < variants.len()
+    && variants[index].tag == tag
+    && same_ranges(W::RANGES, variants[index].ranges)
+    && fields_listed::<W::Fields>(variants[index].fields(), 0)
+    && variants_listed::<W::Next>(variants, index + 1)
+}
+
+/// Whatever two lists of ranges of tags are the same.
+const fn same_ranges(a: Option<&[(u128, u128)]>, b: Option<&[(u128, u128)]>) -> bool {
+  match (a, b) {
+    (None, None) => true,
+    (Some(a), Some(b)) => {
+      if a.len() != b.len() {
+        return false;
+      }
+      let mut i = 0;
+      while i < a.len() {
+        if a[i].0 != b[i].0 || a[i].1 != b[i].1 {
+          return false;
+        }
+        i += 1;
+      }
+      true
+    }
+    _ => false,
   }
 }
 
