@@ -1,7 +1,10 @@
 //! Enums whose layout `rustc` chose (no `repr`), found by experiments in const evaluation, and
 //! types without values.
 
-use core::convert::Infallible;
+// Validation recurses over the variants of an enum: `Many` has 300.
+#![recursion_limit = "1024"]
+
+use core::{convert::Infallible, num::NonZero};
 
 use puns::{Error, Pun};
 
@@ -38,4 +41,486 @@ fn uninhabited() {
   assert_eq!(puns::pun::<Never, Unit>(Never::A(3)), Unit::A(3));
   // A source without values proves anything, as nothing is ever made of one.
   let _ = puns::pun::<(u8, Void), (u8, Void)>;
+}
+
+// --- Enums without `repr` -------------------------------------------------------------------------
+
+/// A direct tag, of one byte: the first field of `A` follows it.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Direct {
+  A(u8),
+  B(u16),
+}
+
+/// A direct tag that `rustc` widened to two bytes: no field starts before 2.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Widened {
+  A(u16),
+  B(u32),
+}
+
+/// A niche: the values of the `bool` that are not one.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum MaybeFlag {
+  Nothing,
+  Flag(bool),
+}
+
+/// A niche in a `char`, for two variants.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Letter {
+  Char(char),
+  End,
+  Error,
+}
+
+/// A niche in the field of one variant, and another variant with a field beside it.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Mixed {
+  Both(u8, bool),
+  Byte(u8),
+  Nothing,
+}
+
+/// One variant: a struct.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Single {
+  Only { byte: u8, flag: bool },
+}
+
+/// Generic, as `Option` is.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Maybe<T> {
+  No,
+  Yes(T),
+}
+
+/// A niche in the tag of another enum, which `rustc` widened.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Outer {
+  Inner(Widened),
+  Other,
+}
+
+/// A variant without values, which has a field with a size: `rustc` gives it a tag all the same.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum OneOfTwo {
+  A(u8),
+  B(u32, Infallible),
+}
+
+/// The bytes of the integer `value` of `N` bytes, in native byte order.
+fn bytes<const N: usize>(value: u128) -> [u8; N] {
+  let mut out = [0; N];
+  for (i, byte) in out.iter_mut().enumerate() {
+    let digit = if cfg!(target_endian = "little") { i } else { N - 1 - i };
+    *byte = (value >> (8 * digit)) as u8;
+  }
+  out
+}
+
+#[test]
+fn direct() {
+  // The tag, then the field of the variant; the rest is padding, which bytes may hold.
+  assert_eq!(puns::try_pun::<[u8; 4], Direct>([0, 7, 0xaa, 0xbb]), Ok(Direct::A(7)));
+  let [lo, hi] = bytes::<2>(0x0102);
+  assert_eq!(puns::try_pun::<[u8; 4], Direct>([1, 0xaa, lo, hi]), Ok(Direct::B(0x0102)));
+  assert_eq!(puns::try_pun::<[u8; 4], Direct>([2, 0, 0, 0]), Err(Error::Validity));
+  // Proven between enums of the same layout.
+  assert_eq!(puns::pun::<Direct, Direct>(Direct::B(3)), Direct::B(3));
+  // The widened tag is two bytes, both read.
+  let tag = bytes::<2>(1);
+  let [a, b, c, d] = bytes::<4>(9);
+  let value = [tag[0], tag[1], 0, 0, a, b, c, d];
+  assert_eq!(puns::try_pun::<[u8; 8], Widened>(value), Ok(Widened::B(9)));
+  let tag = bytes::<2>(0x0101);
+  let value = [tag[0], tag[1], 0, 0, a, b, c, d];
+  assert!(puns::try_pun::<[u8; 8], Widened>(value).is_err());
+  assert_eq!(puns::pun::<Widened, Widened>(Widened::A(5)), Widened::A(5));
+}
+
+#[test]
+fn niche() {
+  // The values of the `bool`, then the one of `Nothing`.
+  assert_eq!(puns::pun::<MaybeFlag, u8>(MaybeFlag::Flag(true)), 1);
+  assert_eq!(puns::try_pun::<u8, MaybeFlag>(0), Ok(MaybeFlag::Flag(false)));
+  let nothing = puns::pun::<MaybeFlag, u8>(MaybeFlag::Nothing);
+  assert!(nothing > 1);
+  assert_eq!(puns::try_pun::<u8, MaybeFlag>(nothing), Ok(MaybeFlag::Nothing));
+  for byte in 2..=255u8 {
+    if byte != nothing {
+      assert_eq!(puns::try_pun::<u8, MaybeFlag>(byte), Err(Error::Validity));
+    }
+  }
+  // A `char` and two more values.
+  let end: u32 = puns::pun(Letter::End);
+  assert_eq!(puns::try_pun::<u32, Letter>(end), Ok(Letter::End));
+  assert_eq!(puns::try_pun::<u32, Letter>(0x41), Ok(Letter::Char('A')));
+  assert_eq!(puns::try_pun::<u32, Letter>(0xd800), Err(Error::Validity));
+  assert_eq!(puns::pun::<Letter, u32>(Letter::Char('A')), 0x41);
+  // Proven: each variant of the source is the variant of the target of the same tags.
+  assert_eq!(puns::pun::<Mixed, Mixed>(Mixed::Byte(4)), Mixed::Byte(4));
+}
+
+#[test]
+fn single_and_generic() {
+  // Its fields where `rustc` put them, which is not where they are declared.
+  let only = Single::Only { byte: 3, flag: true };
+  let pair: [u8; 2] = puns::pun(only);
+  assert!(pair == [3, 1] || pair == [1, 3]);
+  assert_eq!(puns::try_pun::<[u8; 2], Single>(pair), Ok(only));
+  assert!(puns::try_pun::<[u8; 2], Single>([2, 2]).is_err());
+  // A niche in `NonZero`, a direct tag beside a `u8`.
+  assert_eq!(puns::pun::<Maybe<NonZero<u32>>, u32>(Maybe::No), 0);
+  let five = NonZero::new(5).unwrap();
+  assert_eq!(puns::try_pun::<u32, Maybe<NonZero<u32>>>(5), Ok(Maybe::Yes(five)));
+  assert_eq!(puns::try_pun::<[u8; 2], Maybe<u8>>([1, 9]), Ok(Maybe::Yes(9)));
+  // A niche in the widened tag of another enum.
+  assert_eq!(puns::pun::<Outer, Outer>(Outer::Other), Outer::Other);
+  // One variant that has values, and a tag for the other.
+  assert_eq!(puns::try_pun::<[u8; 8], OneOfTwo>([0, 3, 0, 0, 0, 0, 0, 0]), Ok(OneOfTwo::A(3)));
+  assert!(puns::try_pun::<[u8; 8], OneOfTwo>([1, 3, 0, 0, 0, 0, 0, 0]).is_err());
+}
+
+/// More than 256 variants: a tag of two bytes.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Many {
+  First(u16),
+  V0,
+  V1,
+  V2,
+  V3,
+  V4,
+  V5,
+  V6,
+  V7,
+  V8,
+  V9,
+  V10,
+  V11,
+  V12,
+  V13,
+  V14,
+  V15,
+  V16,
+  V17,
+  V18,
+  V19,
+  V20,
+  V21,
+  V22,
+  V23,
+  V24,
+  V25,
+  V26,
+  V27,
+  V28,
+  V29,
+  V30,
+  V31,
+  V32,
+  V33,
+  V34,
+  V35,
+  V36,
+  V37,
+  V38,
+  V39,
+  V40,
+  V41,
+  V42,
+  V43,
+  V44,
+  V45,
+  V46,
+  V47,
+  V48,
+  V49,
+  V50,
+  V51,
+  V52,
+  V53,
+  V54,
+  V55,
+  V56,
+  V57,
+  V58,
+  V59,
+  V60,
+  V61,
+  V62,
+  V63,
+  V64,
+  V65,
+  V66,
+  V67,
+  V68,
+  V69,
+  V70,
+  V71,
+  V72,
+  V73,
+  V74,
+  V75,
+  V76,
+  V77,
+  V78,
+  V79,
+  V80,
+  V81,
+  V82,
+  V83,
+  V84,
+  V85,
+  V86,
+  V87,
+  V88,
+  V89,
+  V90,
+  V91,
+  V92,
+  V93,
+  V94,
+  V95,
+  V96,
+  V97,
+  V98,
+  V99,
+  V100,
+  V101,
+  V102,
+  V103,
+  V104,
+  V105,
+  V106,
+  V107,
+  V108,
+  V109,
+  V110,
+  V111,
+  V112,
+  V113,
+  V114,
+  V115,
+  V116,
+  V117,
+  V118,
+  V119,
+  V120,
+  V121,
+  V122,
+  V123,
+  V124,
+  V125,
+  V126,
+  V127,
+  V128,
+  V129,
+  V130,
+  V131,
+  V132,
+  V133,
+  V134,
+  V135,
+  V136,
+  V137,
+  V138,
+  V139,
+  V140,
+  V141,
+  V142,
+  V143,
+  V144,
+  V145,
+  V146,
+  V147,
+  V148,
+  V149,
+  V150,
+  V151,
+  V152,
+  V153,
+  V154,
+  V155,
+  V156,
+  V157,
+  V158,
+  V159,
+  V160,
+  V161,
+  V162,
+  V163,
+  V164,
+  V165,
+  V166,
+  V167,
+  V168,
+  V169,
+  V170,
+  V171,
+  V172,
+  V173,
+  V174,
+  V175,
+  V176,
+  V177,
+  V178,
+  V179,
+  V180,
+  V181,
+  V182,
+  V183,
+  V184,
+  V185,
+  V186,
+  V187,
+  V188,
+  V189,
+  V190,
+  V191,
+  V192,
+  V193,
+  V194,
+  V195,
+  V196,
+  V197,
+  V198,
+  V199,
+  V200,
+  V201,
+  V202,
+  V203,
+  V204,
+  V205,
+  V206,
+  V207,
+  V208,
+  V209,
+  V210,
+  V211,
+  V212,
+  V213,
+  V214,
+  V215,
+  V216,
+  V217,
+  V218,
+  V219,
+  V220,
+  V221,
+  V222,
+  V223,
+  V224,
+  V225,
+  V226,
+  V227,
+  V228,
+  V229,
+  V230,
+  V231,
+  V232,
+  V233,
+  V234,
+  V235,
+  V236,
+  V237,
+  V238,
+  V239,
+  V240,
+  V241,
+  V242,
+  V243,
+  V244,
+  V245,
+  V246,
+  V247,
+  V248,
+  V249,
+  V250,
+  V251,
+  V252,
+  V253,
+  V254,
+  V255,
+  V256,
+  V257,
+  V258,
+  V259,
+  V260,
+  V261,
+  V262,
+  V263,
+  V264,
+  V265,
+  V266,
+  V267,
+  V268,
+  V269,
+  V270,
+  V271,
+  V272,
+  V273,
+  V274,
+  V275,
+  V276,
+  V277,
+  V278,
+  V279,
+  V280,
+  V281,
+  V282,
+  V283,
+  V284,
+  V285,
+  V286,
+  V287,
+  V288,
+  V289,
+  V290,
+  V291,
+  V292,
+  V293,
+  V294,
+  V295,
+  V296,
+  V297,
+  V298,
+}
+
+/// As `Result` is.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Either<T, E> {
+  Left(T),
+  Right(E),
+}
+
+/// A field that only some values of its type are valid for: not a niche, but checked.
+#[derive(Pun, Clone, Copy, Debug, PartialEq)]
+enum Restricted {
+  Small(#[pun(valid(0..=9))] u8),
+  Other(u8),
+}
+
+#[test]
+fn many_variants() {
+  let tag = bytes::<2>(298);
+  assert_eq!(puns::try_pun::<[u8; 4], Many>([tag[0], tag[1], 0, 0]), Ok(Many::V297));
+  let tag = bytes::<2>(300);
+  assert!(puns::try_pun::<[u8; 4], Many>([tag[0], tag[1], 0, 0]).is_err());
+  assert_eq!(puns::pun::<Many, Many>(Many::V3), Many::V3);
+}
+
+#[test]
+fn generic_and_restricted() {
+  // `Left` alone has values: a struct of a `u32`.
+  assert_eq!(puns::pun::<Either<u32, Infallible>, u32>(Either::Left(7)), 7);
+  assert_eq!(puns::try_pun::<u32, Either<u32, Infallible>>(7), Ok(Either::Left(7)));
+  // A niche in a niche.
+  assert_eq!(puns::try_pun::<u8, Maybe<MaybeFlag>>(0), Ok(Maybe::Yes(MaybeFlag::Flag(false))));
+  let no: u8 = puns::pun(Maybe::<MaybeFlag>::No);
+  assert_eq!(puns::try_pun::<u8, Maybe<MaybeFlag>>(no), Ok(Maybe::No));
+  // `valid(..)` is checked, and is not a niche: the tag is before the byte.
+  assert_eq!(puns::try_pun::<[u8; 2], Restricted>([0, 9]), Ok(Restricted::Small(9)));
+  assert!(puns::try_pun::<[u8; 2], Restricted>([0, 10]).is_err());
+  assert_eq!(puns::try_pun::<[u8; 2], Restricted>([1, 10]), Ok(Restricted::Other(10)));
 }

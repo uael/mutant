@@ -9,6 +9,8 @@
 
 use core::mem;
 
+#[doc(hidden)]
+pub use crate::discover::Desc;
 use crate::ptr;
 
 // -------------------------------------------------------------------------------------------------
@@ -80,6 +82,13 @@ impl Spec {
   #[must_use]
   pub const fn any<T>() -> Self {
     let size = size_of::<T>();
+    Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
+  }
+
+  /// A scalar of `size` bytes (at most 16) of native byte order that accepts every initialized
+  /// bit pattern: the tag of an enum that `discover.rs` found.
+  pub(crate) const fn of_size(size: usize) -> Self {
+    assert!(size <= 16, "a scalar is at most 16 bytes wide");
     Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
   }
 
@@ -855,6 +864,47 @@ impl Layout {
     mem::MaybeUninit::uninit()
   }
 
+  /// The layout of the enum `E` without `repr`, found by experiments on a sample of each of its
+  /// `V` variants (anything for a variant that has no value) and its `fields`, observed on the
+  /// sample: see `discover.rs`. For `#[derive(Pun)]`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn discover<E, const V: usize>(
+    samples: &[mem::MaybeUninit<E>; V],
+    fields: &[&[Field]; V],
+  ) -> Desc<V> {
+    crate::discover::discover(samples, fields)
+  }
+
+  /// A valid `T`, made of nothing but its layout (every scalar the least of its values), for the
+  /// samples of the variants of an enum without `repr`.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn sample<T: crate::Pun>() -> mem::MaybeUninit<T> {
+    crate::discover::sample::<T>()
+  }
+
+  /// `value`, as a sample (see [`Layout::discover`]).
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn wrap<T>(value: T) -> mem::MaybeUninit<T> {
+    mem::MaybeUninit::new(value)
+  }
+
+  /// Whatever a value with fields of these layouts can be made.
+  #[doc(hidden)]
+  #[must_use]
+  pub const fn inhabited_all(fields: &[&'static Layout]) -> bool {
+    let mut i = 0;
+    while i < fields.len() {
+      if !fields[i].is_inhabited() {
+        return false;
+      }
+      i += 1;
+    }
+    true
+  }
+
   /// The layout of a `repr(C)` struct whose fields have the given sizes and alignments, after
   /// what `start` (an end offset and an alignment) says is before them: the offsets of the
   /// fields, and the size and alignment of the struct. For the variants of enums with fields,
@@ -909,6 +959,25 @@ impl Layout {
       kind: Kind::Scalar(spec),
       size: spec.size,
       align: align_of::<T>(),
+      tail: 0,
+      unsized_: false,
+      leaves: spec.is_constrained() as usize,
+      uniform: match spec.valid {
+        Valid::Uninit => Uniform::Pad,
+        Valid::Any => Uniform::Any,
+        Valid::In(_) => Uniform::No,
+      },
+      has_rules: false,
+    }
+  }
+
+  /// Layout of the tag of an enum that `discover.rs` found: a scalar of no type of its own, so of
+  /// no alignment.
+  pub(crate) const fn tag(spec: Spec) -> Self {
+    Self {
+      kind: Kind::Scalar(spec),
+      size: spec.size,
+      align: 1,
       tail: 0,
       unsized_: false,
       leaves: spec.is_constrained() as usize,

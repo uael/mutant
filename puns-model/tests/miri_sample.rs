@@ -38,7 +38,8 @@ fn sample() {
   // with the full alphabets.
   puns_model::pairs!(check_pair, 3;
     (bool, u8), ([bool; 2], u16), (u8, bool), (u16, (u8, bool)), (u16, NotOneOne), (u8, SoftBit),
-    ([u8; 2], u16), (u32, Shape), ([u8; 4], PadMid),
+    ([u8; 2], u16), (u32, Shape), ([u8; 4], PadMid), (u8, MaybeFlag), ([u8; 2], Mixed),
+    (u32, Letter), ([u8; 4], Wid),
   );
   // Natively, every pair of a few types of each size as well: about a hundred pairs, which is
   // what builds in seconds (each pair is an instance of the analysis). Not compiled under Miri.
@@ -48,6 +49,10 @@ fn sample() {
     puns_model::all_pairs!(6; u16, [bool; 2], (u8, bool), Aligned, Opt, NotOneOne, ByteZero, Never);
     puns_model::all_pairs!(4; [u8; 3], Wide, Triple);
     puns_model::all_pairs!(4; u32, char, PadMid, Shape, Drawing);
+    // Enums without `repr`: a niche, a direct tag, each with what is next to it.
+    puns_model::all_pairs!(6; u8, bool, MaybeFlag, NzOpt);
+    puns_model::all_pairs!(4; [u8; 2], (u8, bool), Pair, Mixed, Flags2);
+    puns_model::all_pairs!(4; u32, char, Letter, Wid);
   }
   puns_model::finish("sample");
 }

@@ -591,3 +591,172 @@ impl Oracle for Never {
     Ok(true)
   }
 }
+
+// --- Enums without `repr` -------------------------------------------------------------------------
+//
+// Their oracles are written from how `rustc` lays enums out (a direct tag in the bytes before the
+// fields of every variant, or a niche: the values that follow the valid ones of a scalar of a
+// field), checked against the bytes of values of each (`tests/rust_layouts.rs` of the model), with
+// the offsets of the fields taken from values, never from the library.
+
+/// The offset of `field` in `value`.
+fn offset_in<T, F>(value: &T, field: &F) -> usize {
+  core::ptr::from_ref(field).addr() - core::ptr::from_ref(value).addr()
+}
+
+/// A niche in a `bool`: `Nothing` is 2.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaybeFlag {
+  Nothing,
+  Flag(bool),
+}
+
+impl Oracle for MaybeFlag {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    Ok(int(b, off, 1, true, reads)? <= 2)
+  }
+}
+
+/// A niche in a `NonZero`: `No` is 0, every byte is a value.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NzOpt {
+  No,
+  Yes(NonZero<u8>),
+}
+
+impl Oracle for NzOpt {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    int(b, off, 1, true, reads)?;
+    Ok(true)
+  }
+}
+
+/// A direct tag of one byte, then a byte in each variant.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pair {
+  A(u8),
+  B(u8),
+}
+
+impl Oracle for Pair {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let (a, b_) = (Pair::A(0), Pair::B(0));
+    let (Pair::A(x), Pair::B(y)) = (&a, &b_) else { unreachable!() };
+    match int(b, off, 1, true, reads)? {
+      0 => int(b, off + offset_in(&a, x), 1, true, reads).map(|_| true),
+      1 => int(b, off + offset_in(&b_, y), 1, true, reads).map(|_| true),
+      _ => Ok(false),
+    }
+  }
+}
+
+/// A niche in the `bool` of `Both`, for `Byte` (2) and `Nothing` (3); the byte of `Byte` is
+/// beside it.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mixed {
+  Both(u8, bool),
+  Byte(u8),
+  Nothing,
+}
+
+impl Oracle for Mixed {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let (both, byte) = (Mixed::Both(0, false), Mixed::Byte(0));
+    let (Mixed::Both(x, flag), Mixed::Byte(y)) = (&both, &byte) else { unreachable!() };
+    match int(b, off + offset_in(&both, flag), 1, true, reads)? {
+      0 | 1 => int(b, off + offset_in(&both, x), 1, true, reads).map(|_| true),
+      2 => int(b, off + offset_in(&byte, y), 1, true, reads).map(|_| true),
+      3 => Ok(true),
+      _ => Ok(false),
+    }
+  }
+}
+
+/// One variant: a struct, whose fields `rustc` may reorder.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Single {
+  Only(u8, bool),
+}
+
+impl Oracle for Single {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let only = Single::Only(0, false);
+    let Single::Only(x, flag) = &only;
+    let (x, flag) = (offset_in(&only, x), offset_in(&only, flag));
+    all(&[
+      int(b, off + x, 1, true, reads).map(|_| true),
+      int(b, off + flag, 1, true, reads).map(|v| v <= 1),
+    ])
+  }
+}
+
+/// Two `bool`s, of which the first holds the niche of `B` (2).
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flags2 {
+  A(bool, bool),
+  B,
+}
+
+impl Oracle for Flags2 {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let a = Flags2::A(false, false);
+    let Flags2::A(first, second) = &a else { unreachable!() };
+    match int(b, off + offset_in(&a, first), 1, true, reads)? {
+      0 | 1 => int(b, off + offset_in(&a, second), 1, true, reads).map(|v| v <= 1),
+      2 => Ok(true),
+      _ => Ok(false),
+    }
+  }
+}
+
+/// A niche in a `char`: `End` and `Error` are the two values after the last one.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Letter {
+  Char(char),
+  End,
+  Error,
+}
+
+impl Oracle for Letter {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let v = int(b, off, 4, crate::NATIVE_LITTLE, reads)?;
+    Ok(v <= 0xd7ff || (0xe000..=0x11_0001).contains(&v))
+  }
+}
+
+/// A direct tag that `rustc` widened to two bytes, the alignment of the fields that follow it.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wid {
+  A(u16),
+  B(u16),
+}
+
+impl Oracle for Wid {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let a = Wid::A(0);
+    let Wid::A(x) = &a else { unreachable!() };
+    match int(b, off, 2, crate::NATIVE_LITTLE, reads)? {
+      0 | 1 => int(b, off + offset_in(&a, x), 2, true, reads).map(|_| true),
+      _ => Ok(false),
+    }
+  }
+}
+
+/// One variant that has values, and one that has none but a field with a size: `rustc` gives
+/// them a tag.
+#[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OneOfTwo {
+  A(u8),
+  B(u32, core::convert::Infallible),
+}
+
+impl Oracle for OneOfTwo {
+  fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
+    let a = OneOfTwo::A(0);
+    let OneOfTwo::A(x) = &a else { unreachable!() };
+    match int(b, off, 1, true, reads)? {
+      0 => int(b, off + offset_in(&a, x), 1, true, reads).map(|_| true),
+      _ => Ok(false),
+    }
+  }
+}

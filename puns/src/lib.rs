@@ -59,7 +59,10 @@
 //!   values. See [`num`] for integers of a given byte order (`u16be`) or value (`u16bec<V>`).
 //! - Structs (of any `repr`), tuples, arrays, slices, and structs that end with a slice: their
 //!   padding, and what each of their bytes can be.
-//! - Enums with fields (`repr(C)`, `repr(u8)`...): their tag, and what each variant is made of.
+//! - Enums with fields, of any `repr` (none too: the layout that `rustc` chose is found): their
+//!   tag, and what each variant is made of.
+//! - `MaybeUninit<T>`: bytes of which nothing is known, which take anything; `Infallible` and enums
+//!   without variants: no value.
 //! - `str`: bytes that are UTF-8.
 //! - What `#[derive(Pun)]` is told: values that a field can take, sizes and lengths that are in
 //!   a field, assertions over fields. See [`macro@Pun`], and the examples.
@@ -232,12 +235,24 @@
 //! let _: &mut Drawing = puns::pun_mut(&mut shape);
 //! ```
 //!
-//! The layout of an enum with fields that has no `repr` is not specified, and cannot be told on
-//! stable Rust: `#[derive(Pun)]` asks for one.
+//! The layout of an enum with fields that has no `repr` is not specified: `rustc` chooses it. It
+//! is then *found*, by experiments in const evaluation on a value of each variant: where the
+//! fields are, where the tag is (before the fields, or a niche in a field of one variant, as for
+//! `Option<bool>`), and what it is for each variant. An experiment that goes wrong fails to
+//! compile, it never finds a wrong layout. Such an enum is then as precise as one of a `repr`:
 //!
-//! ```compile_fail
-//! #[derive(puns::Pun)]
-//! enum Unspecified { A(u8), B(u16) }
+//! ```
+//! use core::num::NonZero;
+//!
+//! #[derive(puns::Pun, Clone, Copy, Debug, PartialEq)]
+//! enum Ticket {
+//!   Free,
+//!   Paid(NonZero<u32>),
+//! }
+//!
+//! // A niche: `Free` is the 0 that no `NonZero` is, so every `Ticket` is a `u32`.
+//! assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
+//! assert_eq!(puns::try_pun::<u32, Ticket>(7), Ok(Ticket::Paid(NonZero::new(7).unwrap())));
 //! ```
 //!
 //! # Regions of `nearest`
@@ -359,6 +374,7 @@ extern crate alloc;
 
 mod analysis;
 mod deep;
+mod discover;
 #[cfg(feature = "verdict")]
 #[doc(hidden)]
 pub mod hook;

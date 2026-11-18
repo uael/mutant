@@ -1,0 +1,19 @@
+error[E0080]: enum value has invalid tag: 0x03
+  --> tests/compile-fail/discover_invalid_tag.rs:17:50
+   |
+17 | const VARIANT: mem::Discriminant<Option<bool>> = variant_of_two();
+   |                                                  ^^^^^^^^^^^^^^^^ evaluation of `VARIANT` failed inside this call
+   |
+note: inside `variant_of_two`
+  --> tests/compile-fail/discover_invalid_tag.rs:13:5
+   |
+13 |     mem::discriminant(&*value.as_ptr())
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `discriminant::<Option<bool>>`
+  --> $RUST/core/src/mem/mod.rs
+
+note: erroneous constant encountered
+  --> tests/compile-fail/discover_invalid_tag.rs:20:11
+   |
+20 |   let _ = VARIANT;
+   |           ^^^^^^^
