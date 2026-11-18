@@ -167,9 +167,11 @@ jobs:
         with:
           toolchain: nightly-2026-11-17
           components: miri, rust-src
+      # With the standard library that Miri builds for the target (half a minute otherwise).
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+          cache-directories: ~/.cache/miri
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
       # `--tests`, each would still be a binary that Miri starts to run nothing, a second each.
