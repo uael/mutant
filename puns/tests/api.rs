@@ -374,3 +374,20 @@ mod walks {
     assert!(try_pun_ref::<_, Either>(&[2u8, 0, 0][..]).is_err());
   }
 }
+
+/// A signed `NonZero` is its integer without the bits of 0: every other bit pattern, the
+/// negative ones included, and `Option` of it is the integer.
+#[test]
+fn signed_non_zero() {
+  let minus = NonZero::new(-1i32).unwrap();
+  assert_eq!(pun::<NonZero<i32>, [u8; 4]>(minus), [0xff; 4]);
+  assert_eq!(try_pun::<i32, NonZero<i32>>(-5), Ok(NonZero::new(-5).unwrap()));
+  assert_eq!(try_pun::<i32, NonZero<i32>>(0), Err(Error::Validity));
+  assert_eq!(try_pun::<[u8; 1], NonZero<i8>>([0x80]), Ok(NonZero::new(i8::MIN).unwrap()));
+  assert_eq!(try_pun::<i128, NonZero<i128>>(i128::MIN).map(NonZero::get), Ok(i128::MIN));
+  assert_eq!(try_pun::<isize, NonZero<isize>>(0), Err(Error::Validity));
+  assert_eq!(pun::<i16, Option<NonZero<i16>>>(-2), NonZero::new(-2));
+  assert_eq!(pun::<Option<NonZero<i64>>, i64>(None), 0);
+  // Every `NonZero<i32>` is a `NonZero<u32>`, and back: the same bit patterns.
+  assert_eq!(pun::<NonZero<i32>, NonZero<u32>>(minus).get(), u32::MAX);
+}

@@ -744,6 +744,22 @@ macro_rules! impl_non_zero {
 
 impl_non_zero!(u8 u16 u32 u64 u128 usize);
 
+macro_rules! impl_signed_non_zero {
+  ($($ty:ident)+) => {$(
+    // SAFETY: any bits but all zeros, the only bit pattern of 0 in two's complement. Its bits
+    // are not its value as an unsigned integer: rules do not read it, as for `iN`.
+    unsafe impl Scalar for core::num::NonZero<$ty> {
+      const SPEC: Spec = Spec::ranges::<$ty>(
+        Endian::NATIVE,
+        &[(1, u128::MAX >> (128 - 8 * size_of::<$ty>()))],
+      )
+      .not_a_number();
+    }
+  )+};
+}
+
+impl_signed_non_zero!(i8 i16 i32 i64 i128 isize);
+
 // -------------------------------------------------------------------------------------------------
 // `Error`
 
