@@ -36,6 +36,12 @@
 !puns/tests/
 !puns/tests/compile-fail/
 !puns/tests/compile-fail/*.stderr
+!puns/tests/compile-fail-kept/
+!puns/tests/compile-fail-kept/*.stderr
+!puns/tests/compile-fail-unstable/
+!puns/tests/compile-fail-unstable/*.stderr
+!puns/tests/compile-pass-kept/
+!puns/tests/seeds.txt
 !puns/tests/compile-pass/
 !puns/tests/support/
 !puns/**/*.rs
@@ -53,17 +59,6 @@
 !puns-model/fakecore/Cargo.toml
 !puns-model/fakecore/src/
 !puns-model/**/*.rs
-
-# Rust (what `puns` does without its `unstable` feature, not published)
-!puns-stable/
-!puns-stable/Cargo.toml
-!puns-stable/src/
-!puns-stable/tests/
-!puns-stable/tests/refused/
-!puns-stable/tests/refused/*.stderr
-!puns-stable/tests/kept/
-!puns-stable/tests/seeds.txt
-!puns-stable/**/*.rs
 
 # Rust (xtask)
 !xtask/

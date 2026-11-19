@@ -12,11 +12,13 @@ keywords = ["transmute", "zero-copy", "parsing", "bytes", "no-std"]
 categories = ["encoding", "parsing", "no-std", "rust-patterns"]
 
 [features]
-# Layouts that Rust does not document as the same from one version of `rustc` to the next: structs
-# and tuples of the `Rust` representation, enums without `repr`, `Option` and `Result` beyond what
-# `core` guarantees of them (`puns::layout::UNSTABLE`).
+# The layout that `rustc` chose, as it is, where Rust lets it choose otherwise: the order of the
+# fields of a struct or a tuple without `repr`, the tag of an enum without `repr`, niches. Without
+# it, nothing that `puns` does depends on that choice (`puns::layout::UNSTABLE`). The tests run
+# both ways: `cargo test -p puns --features verdict` holds what is kept (`tests/seeds.rs`, the
+# cases of `compile-fail-kept`), `--features unstable` the targets that need the feature.
 unstable = []
-# Test-only, for `puns-model`: `puns::hook`, what the analysis says of a
+# Test-only, for `puns-model` and `tests/seeds.rs`: `puns::hook`, what the analysis says of a
 # pun without failing to compile. Not part of the API; nothing else changes with it.
 verdict = []
 
@@ -24,9 +26,6 @@ verdict = []
 puns-derive = { version = "=0.1.5", path = "../puns-derive" }
 
 [dev-dependencies]
-# The tests of the crate test every layout, those of the `unstable` feature included. What the
-# crate does without it is tested by `puns-stable`.
-puns = { path = ".", features = ["unstable"] }
 trybuild = "1"
 
 # What is checked at run time, next to the same checks by hand: `cargo bench -p puns --features
@@ -45,6 +44,12 @@ required-features = ["unstable"]
 [[test]]
 name = "validate_in"
 required-features = ["unstable"]
+
+# What `puns` does without the `unstable` feature, which `-Zrandomize-layout` must not change: the
+# verdicts of `puns::hook`.
+[[test]]
+name = "seeds"
+required-features = ["verdict"]
 
 # Its counts of instructions (`DESIGN.md`) are of enums without `repr` too.
 [[example]]

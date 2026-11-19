@@ -448,6 +448,8 @@ With the `unstable` feature (see below), the same of enums without `repr`, `Opti
 whose layout is found rather than declared:
 
 ```rust
+# #[cfg(feature = "unstable")]
+# fn main() {
 use core::num::NonZero;
 
 use puns::Pun;
@@ -468,6 +470,9 @@ let none: u8 = puns::pun(None::<bool>);
 assert_eq!(puns::try_pun::<u8, Option<bool>>(none), Ok(None));
 assert_eq!(puns::try_pun::<u8, Option<bool>>(1), Ok(Some(true)));
 assert!(puns::try_pun::<u8, Option<bool>>(none + 1).is_err());
+# }
+# #[cfg(not(feature = "unstable"))]
+# fn main() {}
 ```
 
 Two things follow from "a type is its bytes", by design. Types that differ only by a
@@ -665,10 +670,10 @@ table is in [`puns/DESIGN.md`][design]):
 ### Time
 
 [`puns/benches/checks.rs`][checks] times each check next to the same check written by hand, with
-the same algorithm for the checksums (`cargo bench -p puns --bench checks`). Nanoseconds per
-check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5 runs (3 for the
-rows of IPv4 in 64 bytes, IPv6 in 0 and 3 headers and the view enum, measured again when rules
-were narrowed), a run the best of 7 samples:
+the same algorithm for the checksums (`cargo bench -p puns --features unstable --bench checks`).
+Nanoseconds per check, release with LTO, on a Xeon at 2.1 GHz; each number is the median of 5
+runs (3 for the rows of IPv4 in 64 bytes, IPv6 in 0 and 3 headers and the view enum, measured
+again when rules were narrowed), a run the best of 7 samples:
 
 | Check                                               | `puns` | by hand | ratio |
 |-----------------------------------------------------|-------:|--------:|------:|

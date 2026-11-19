@@ -6,10 +6,15 @@
 //! several seeds, and without (`PUNS_BLESS=1` writes it). It is the record of `x86_64`: the
 //! alignment of `u16` and the width of `usize` are the ones of the target.
 //!
+//! Without the `unstable` feature only (`cargo test -p puns --features verdict --test seeds`):
+//! with it, `puns` takes the layout that `rustc` chose, which is what the seeds change. It needs
+//! the `verdict` feature (`hook`), as the model check does.
+//!
 //! Not for Miri: it runs no unsafe code of its own, and what it reaches of the library is what
-//! the tests of `puns` reach.
+//! the other tests of `puns` reach.
 
 #![cfg(not(miri))]
+#![cfg(not(feature = "unstable"))]
 
 use core::{any::type_name, fmt::Write as _, marker::PhantomData, num::NonZero};
 
@@ -204,11 +209,6 @@ macro_rules! record {
 
 #[test]
 fn the_same_whatever_the_layout() {
-  if puns::layout::UNSTABLE {
-    // Built with the rest of the workspace: `puns-model` turned the feature on.
-    eprintln!("`puns` has the `unstable` feature: nothing to check (`cargo test -p puns-stable`)");
-    return;
-  }
   let record = record!(
     u8,
     bool,

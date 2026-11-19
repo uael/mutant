@@ -1,5 +1,5 @@
 [workspace]
-members = ["puns", "puns-derive", "puns-model", "puns-model/fakecore", "puns-stable", "xtask"]
+members = ["puns", "puns-derive", "puns-model", "puns-model/fakecore", "xtask"]
 resolver = "3"
 
 [workspace.package]

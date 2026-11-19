@@ -12,16 +12,17 @@ cargo test --test api                # Run only one integration test file (also:
 cargo test --test api TESTNAME       # Run a single test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`
-cargo rustc --release --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
-cargo bench -p puns --bench checks   # Time of the run-time checks, next to the same checks by hand (not in CI)
-cargo bench -p puns --bench checks -- ipv6  # Only the cases whose name has `ipv6`
+cargo rustc --release --features unstable --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
+cargo bench -p puns --features unstable --bench checks   # Time of the run-time checks, next to the same checks by hand (not in CI)
+cargo bench -p puns --features unstable --bench checks -- ipv6  # Only the cases whose name has `ipv6`
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target s390x-unknown-linux-gnu  # Miri, stacked borrows, on a big-endian target
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
 cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
-cargo test -p puns-stable            # Without the `unstable` feature: the refusals, and the record of verdicts (alone: see below)
-PUNS_BLESS=1 cargo test -p puns-stable --test seeds  # Write that record again (`puns-stable/tests/seeds.txt`)
-RUSTFLAGS="-Zrandomize-layout -Zlayout-seed=1" cargo +nightly-2026-11-17 test -p puns-stable --test seeds  # The same record, with another layout
+cargo test -p puns --features verdict  # Without the `unstable` feature: what Rust keeps (the record of verdicts, the cases of `compile-fail-kept`)
+cargo test -p puns --features unstable  # With it: the targets that need it too (`required-features`), the cases of `compile-fail-unstable`
+PUNS_BLESS=1 cargo test -p puns --features verdict --test seeds  # Write the record of verdicts again (`puns/tests/seeds.txt`)
+RUSTFLAGS="-Zrandomize-layout -Zlayout-seed=1" cargo +nightly-2026-11-17 test -p puns --features verdict --test seeds  # The same record, with another layout
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
@@ -93,11 +94,14 @@ lay out otherwise (the order of the fields of a struct or a tuple without `repr`
 enum without `repr`, niches): `-Zrandomize-layout` must change no verdict, no check, no message.
 With it, `puns` takes the layout that `rustc` chose. `puns/DESIGN.md`, "What Rust keeps of a
 layout", is the design and the list of what Rust documents, with where. The tests of `puns` run
-with the feature (`puns` is a dev-dependency of itself, with it); `puns-stable` tests what happens
-without it, and must be built alone (`-p puns-stable`): with the rest of the workspace, `puns-model`
-turns the feature on, and its tests check nothing (they say so). A change of the analysis that
-changes a verdict of `puns-stable/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read:
-the record must be the same under every seed (CI runs three).
+both ways: without the feature, `tests/seeds.rs` (which needs `verdict`) and the cases of
+`compile-fail-kept`; with it, the targets of `required-features = ["unstable"]` and the tests
+under `#[cfg(feature = "unstable")]`, which are about the layout that `rustc` chose. A test that
+does not compile without the feature is one of these, or relies on what Rust does not keep. With
+the rest of the workspace (`cargo test --all`), `puns` has the feature (`puns-model` turns it
+on): what is kept is tested by `-p puns` alone. A change of the analysis that changes a verdict of
+`puns/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read: the record must be the
+same under every seed (CI runs three).
 
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
 `const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it
@@ -113,8 +117,6 @@ the library, and keep it, the crate docs and `README.md` in step with the code.
   shared by `#[path]` with the model check and the compile-fail cases), followed through their
   buffer, so that Miri runs them with stacked borrows too
 - **`puns-derive/`** — `#[derive(Pun)]`, re-exported as `puns::Pun`
-- **`puns-stable/`** — what `puns` does without the `unstable` feature (not published): the
-  record of verdicts that `-Zrandomize-layout` must not change, and the refusals
 - **`puns-model/`** — model check of the analysis against oracles that do not use it (not
   published; uses the test-only `verdict` feature of `puns`), with `fakecore/`, a `core`
   that lies, for what the derive must not trust
@@ -126,7 +128,7 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 
 - Config: `release-plz.toml`
 - Workflow: `.github/workflows/release-plz.yml`
-- Only `puns` and `puns-derive` are published; `xtask`, `puns-model`, `fakecore` and `puns-stable` are excluded
+- Only `puns` and `puns-derive` are published; `xtask`, `puns-model` and `fakecore` are excluded
 - `puns` owns the changelog and git tags (`v{{ version }}`); `puns-derive` has no changelog or tags of its own
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
 - `release_always = false`: nothing is published by an ordinary push, only by merging a release PR (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the first release PR
