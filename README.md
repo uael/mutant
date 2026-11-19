@@ -398,6 +398,8 @@ assert_eq!(puns::pun::<[u8; 2], (u8, u8)>([7, 7]), (7, 7));
 assert!(puns::try_pun::<[u8; 2], (bool, bool)>([1, 2]).is_err());
 // Initialized bytes, wherever the `bool` is.
 let _: &[u8] = puns::as_bytes(&(true, 1u8));
+// The `bool` may be either byte: two `bool`s prove it wherever it is.
+let _: (bool, u8) = puns::pun([true, false]);
 // A value that `core` documents: `None` is zeros.
 assert_eq!(puns::pun::<u32, Option<core::num::NonZero<u32>>>(0), None);
 ```

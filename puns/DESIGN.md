@@ -1123,14 +1123,18 @@ It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven w
 | `[u8; 4]` as `(u8, u16)` | proven | it only requires initialized bytes, wherever its padding is |
 | a `repr(C)` struct that holds a `(bool, u8)` as itself, or its first bytes as the `(bool, u8)` | proven | the same type at the same place |
 | an enum without `repr` as itself | proven | a type has one layout in a program |
+| `[bool; 2]` as `(bool, u8)` | proven | the `bool` may be either byte, and both are one |
 | `[u8; 2]` as `(bool, u8)` | refused | the byte that must be 0 or 1 is one or the other |
-| the first byte of `(u8, u16)` | refused | it is padding, or not |
+| the first two bytes of `(u8, u16)` | refused | the second is padding, or not |
+| bytes as a `struct P { a: u8, b: u8 }` of which `a < b` | refused | which byte is `a` |
 | anything of `(u8, u16, u8)` but itself | refused | 4 or 6 bytes |
 | bytes as an enum without `repr`, or as `Option<bool>` | refused | nothing documents where its tag is, nor its values |
 | `validate_in::<(bool, u8)>` | refused | which byte it checks |
 
 Which field a byte is, is not part of it: `pun::<[u8; 2], (u8, u8)>([1, 2])` is `(1, 2)` or
-`(2, 1)`, a valid value either way, which is what a pun promises (and `transmute` does).
+`(2, 1)`, a valid value either way, which is what a pun promises (and `transmute` does). What is
+the same is what `puns` does with given bytes; which bytes a value of a struct without `repr` has
+is the compiler's choice, with or without `puns`.
 
 **How.** `Pun::LAYOUT` is the layout that `rustc` chose, with or without the feature: everything
 that reads values (validation, copies, the generated accessors) reads them where they are. Each
@@ -1143,9 +1147,9 @@ node of it says what Rust keeps of it (`layout::Stable`), computed from the layo
   order of its fields is the same bytes, which is so if one field has a size (it is at 0); or if
   the fields that have one are all multiples of the alignment of every field (no padding between
   them in any order) and are all bytes of any value (`(u8, [u8; 3])`), or all the same layout of
-  a type that is fixed through and through (`(bool, bool)`); and if no rule reads its bytes by
-  offset. An enum without `repr`, `Option` and `Result` but where `core` documents them: never
-  (`Layout::unspecified`).
+  a type that is fixed through and through (`(bool, bool)`), and the struct has no rule: a rule
+  names fields, so `a < b` holds of other bytes in another order. An enum without `repr`,
+  `Option` and `Result` but where `core` documents them: never (`Layout::unspecified`).
 - `size`: its size is the same in every layout. Of a struct of the `Rust` representation that is
   not fixed, every order of its fields is tried, each placed at the first offset that its
   alignment allows, as `rustc` places them (`Layout::orders`, up to 6 fields that matter; the
@@ -1155,16 +1159,38 @@ node of it says what Rust keeps of it (`layout::Stable`), computed from the layo
 - `deep`: nothing in it, at any depth, is not fixed.
 
 Without the feature, the analysis (`analysis::STRICT`) does not look into a node that is not
-fixed: the cursor makes it one run, `RunKind::Opaque`. As a source, it is what every layout of it
-is: initialized bytes if `init`, else bytes that may be padding. As a target, it is proven by the
-same type at the same place (below), or, if it requires nothing but initialized bytes (no
-constrained scalar, no pointer, no rule), by initialized bytes; else the pun does not compile
-(`Relation::unspecified`): no check makes up for it, it would read at a place that the compiler
-may move. So nothing in such a node is ever checked at run time, and the marks of the analysis,
-which tell validation what to check, are at places that every layout keeps. A pun of a type whose
-size is not kept compiles only if both sides are the same type (`analysis::sizes_kept`), and a
-function of `Visit` only if nothing in what is not kept has something to check or a pointer
-(`Layout::checks_kept`). `zeroed` does not take the zeros of an enum that is not fixed.
+fixed (`Layout::is_opaque`): the cursor makes it one run, `RunKind::Opaque`.
+
+- **As a source**, it is what every layout of it is: initialized bytes if `init`, else bytes that
+  may be padding (all of it or none: that the first byte of a `(u8, u16)` is never padding is
+  not used).
+- **As a target**, it is proven by the same type at the same place (below), or, a struct or a
+  tuple whose size is kept, field by field: **a field may be anywhere, so it is to be proven
+  everywhere it may be** (`analysis::relate_fields`). A struct is valid if each of its fields
+  is, at its place, so the source proves it in every order of its fields if, and only if, it
+  proves each field at each offset that the field has in some order: this is exact, and no order
+  is tried. The offsets taken are the multiples of the alignment of the field where it fits, or,
+  where no order needs padding, the multiples of the greatest common divisor of the sizes (every
+  sum of sizes is one); a few are in no order (the second byte of a `(bool, [u8; 3])`), where
+  more is then required, never less. Two `bool`s are so a `(bool, u8)`, four initialized bytes a
+  `(u8, u16)`, two `NonZero<u16>` a `(NonZero<u16>, u16)`. A struct that has a rule (which names
+  fields) or a pointer (which is paired by its place) only proves itself, as does an enum.
+- **Nothing in it is checked at run time**: a check would read where the compiler may not have
+  put the field. What is not proven does not compile (`Relation::unspecified`), which whatever
+  reads a relation reads: what a pointer aims at (`deep::behind`), what a variant of a view takes
+  from another (`view::base`), and an enum or a union that would be checked as a whole, fields
+  included (the relations of its variants hand it over). So the marks of the analysis, which
+  tell validation what to check, are at places that every layout keeps.
+
+Nor is anything found in a source that is not fixed, where `rustc` put it: a rule is proven by
+the same rule of the same struct at the same place (section 4), which is looked for through the
+fields of the source (`proves_rules`, `covered`, `same_elements`): not through a node that is
+not fixed, and two layouts are the same there only if what Rust does not keep of them is of the
+same type (`analysis::equal`). A `&mut` to a part covers such a node whole, by the same type, or
+not at all (`cut`). A pun of a type whose size is not kept compiles only if both sides are the
+same type (`analysis::sizes_kept`), and a function of `Visit` only if nothing in what is not kept
+has something to check or a pointer (`Layout::checks_kept`). `zeroed` does not take the zeros of
+an enum that is not fixed.
 
 **The same type** is told by an identity (`layout::Id`), and by the layouts being the same: a
 type has one layout in a program, but two types, however alike, may each be arranged otherwise
@@ -1248,15 +1274,18 @@ of a variant that holds a `NonZero` and one without field (the `Ticket` of the R
 feature, though `rustc` lays it out as the `Option` of it.
 
 **How it is checked**: `puns-stable`, a crate of the workspace that depends on `puns` without the
-feature. `tests/seeds.rs` records the verdict of every function on every pair of 23 types (the
-ones of the table above, and the kept and the guaranteed ones next to them), the message of each
-refusal, and which byte patterns each type accepts from bytes, and compares the record with
-`tests/seeds.txt`; CI runs it without `-Zrandomize-layout` and with it, of several seeds, and the
-record must be the same each time. With the feature, the same record differs from one seed to the
-next (11 of the lines of a smaller one, between seeds 1 and 3): the check is not empty.
-`tests/refused.rs` holds each refusal and its message, and what compiles. The tests of `puns`
-itself run with the feature (a dev-dependency of the crate on itself), as before: what they test
-is what the feature keeps of the layout that `rustc` chose.
+feature. `tests/seeds.rs` records the verdict of every function on every pair of 34 types (the
+ones of the table above, and next to them what holds them: an enum and a union of a specified
+representation, a struct with a rule, arrays, pointers), whole, in part (by `&mut`, from the end)
+and behind pointers, the message of each refusal, and which byte patterns each type accepts from
+bytes, and compares the record with `tests/seeds.txt`; CI runs it without `-Zrandomize-layout`
+and with it, of several seeds, and the record must be the same each time. With the feature, the
+same record differs from one seed to the next (11 of the lines of a smaller one, between seeds 1
+and 3): the check is not empty. It is what found that a rule, an enum checked as a whole and
+what a pointer aims at had each been left to the layout that `rustc` chose: a type of each is in
+the record. `tests/refused.rs` holds each refusal and its message, and what compiles. The tests
+of `puns` itself run with the feature (a dev-dependency of the crate on itself), as before: what
+they test is what the feature keeps of the layout that `rustc` chose.
 
 
 ## Model check

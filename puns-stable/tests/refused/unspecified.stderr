@@ -79,10 +79,41 @@ note: erroneous constant encountered
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn try_pun::<[u8; 2], (bool, u8)>`
-  --> tests/refused/unspecified.rs:23:11
+  --> tests/refused/unspecified.rs:31:11
    |
-23 |   let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
+31 |   let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], Ordered>::TRY_REF` failed inside this call
+     |
+note: inside `puns::Plan::<[u8], Ordered>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: the above error was encountered while instantiating `fn try_pun_ref::<[u8], Ordered>`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   try_pun_ref::<[u8], D>(bytes)
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked:
               cannot pun: a byte that the target requires to be initialized is padding in the source.
@@ -91,9 +122,9 @@ error[E0080]: evaluation panicked:
     --> $WORKSPACE/puns/src/lib.rs
      |
      |   const HEAD: () = Self::require(Self::check(Need::PART));
-     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), u8>::HEAD` failed inside this call
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), [u8; 2]>::HEAD` failed inside this call
      |
-note: inside `puns::Plan::<(u8, u16), u8>::require`
+note: inside `puns::Plan::<(u8, u16), [u8; 2]>::require`
  --> $WORKSPACE/puns/src/lib.rs
   |
   |       message.panic();
@@ -120,11 +151,11 @@ note: erroneous constant encountered
   |   const { Plan::<S, D>::HEAD };
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-note: the above error was encountered while instantiating `fn head::<(u8, u16), u8>`
-  --> tests/refused/unspecified.rs:25:11
+note: the above error was encountered while instantiating `fn head::<(u8, u16), [u8; 2]>`
+  --> tests/refused/unspecified.rs:35:11
    |
-25 |   let _ = puns::head::<(u8, u16), u8>((1, 2));
-   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+35 |   let _ = puns::head::<(u8, u16), [u8; 2]>((1, 2));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked:
               cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
@@ -207,9 +238,9 @@ note: erroneous constant encountered
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn pun::<Ticket, u32>`
-  --> tests/refused/unspecified.rs:29:11
+  --> tests/refused/unspecified.rs:39:11
    |
-29 |   let _ = puns::pun::<Ticket, u32>(Ticket::Free);
+39 |   let _ = puns::pun::<Ticket, u32>(Ticket::Free);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked:
@@ -238,9 +269,9 @@ note: inside `puns::Message::panic`
   |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: the above error was encountered while instantiating `fn try_pun::<u8, Option<bool>>`
-  --> tests/refused/unspecified.rs:30:11
+  --> tests/refused/unspecified.rs:40:11
    |
-30 |   let _ = puns::try_pun::<u8, Option<bool>>(2);
+40 |   let _ = puns::try_pun::<u8, Option<bool>>(2);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked:
@@ -275,9 +306,9 @@ note: erroneous constant encountered
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn pun_mut::<(bool, u8), [u8; 2]>`
-  --> tests/refused/unspecified.rs:32:11
+  --> tests/refused/unspecified.rs:42:11
    |
-32 |   let _ = puns::pun_mut::<(bool, u8), [u8; 2]>(&mut (true, 1));
+42 |   let _ = puns::pun_mut::<(bool, u8), [u8; 2]>(&mut (true, 1));
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked: the type has a part whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`), and something to check or a pointer in it, which would be at another place with another compiler.
@@ -298,7 +329,7 @@ note: erroneous constant encountered
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn validate_in::<Mixed, NoPointers>`
-  --> tests/refused/unspecified.rs:34:11
+  --> tests/refused/unspecified.rs:44:11
    |
-34 |   let _ = puns::validate_in::<Mixed, _>(&[1, 1], 0, &mut NoPointers);
+44 |   let _ = puns::validate_in::<Mixed, _>(&[1, 1], 0, &mut NoPointers);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -10,6 +10,14 @@ struct Mixed {
   b: bool,
 }
 
+/// The `Rust` representation, with a rule: which byte is `a`.
+#[derive(Pun, Clone, Copy)]
+#[pun(assert(a < b))]
+struct Ordered {
+  a: u8,
+  b: u8,
+}
+
 /// No `repr`: nothing tells where its tag is, nor its values.
 #[derive(Pun, Clone, Copy)]
 enum Ticket {
@@ -21,8 +29,10 @@ fn main() {
   // Which byte must be 0 or 1.
   let _ = puns::from_bytes::<Mixed>(&[1, 1]);
   let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
-  // Where the padding is.
-  let _ = puns::head::<(u8, u16), u8>((1, 2));
+  // Which bytes a rule holds of.
+  let _ = puns::from_bytes::<Ordered>(&[1, 2]);
+  // Where the padding is: the second byte, or the last.
+  let _ = puns::head::<(u8, u16), [u8; 2]>((1, 2));
   // The size: 4 or 6 bytes.
   let _ = puns::as_bytes(&(1u8, 2u16, 3u8));
   // The values of a tag.

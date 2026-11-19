@@ -272,13 +272,8 @@ impl Cursor {
         self.depth -= 1;
         continue;
       }
-      // Not looked into. But for bytes that are all of any value, or all padding, in every layout
-      // of it whose size is the one of this layout: what they are does not depend on where its
-      // fields are.
-      if STRICT
-        && !layout.stable.fixed
-        && !(layout.stable.size && matches!(layout.uniform, Uniform::Any | Uniform::Pad))
-      {
+      // Not looked into.
+      if layout.is_opaque() {
         return Run { kind: RunKind::Opaque(layout), start: frame.base, end, leaf: frame.leaf };
       }
       match layout.uniform {
@@ -456,7 +451,8 @@ pub struct Relation {
   pub(crate) pointer: Option<usize>,
   /// Offset of a part of the target that is not proven in every layout that Rust allows, without
   /// the `unstable` feature (see [`RunKind::Opaque`]). No check makes up for it: it would read
-  /// at a place that the compiler may move.
+  /// at a place that the compiler may move. Whatever reads the fields of a relation one by one
+  /// reads this one: with it, nothing is proven.
   pub(crate) unspecified: Option<usize>,
 }
 
@@ -569,6 +565,48 @@ const fn same_type(a: &Layout, b: &Layout) -> bool {
   a.id.equals(&b.id) && a.equals(b)
 }
 
+/// Whatever `a` and `b` are the same layout, in every layout that Rust allows: the same as
+/// `rustc` chose them, and what Rust does not keep of them of the same type (two types of the
+/// same fields may be arranged the same way by one compiler, and not by the next).
+const fn equal(a: &Layout, b: &Layout) -> bool {
+  a.equals(b) && (!STRICT || alike(a, b))
+}
+
+/// Of two layouts that are the same as `rustc` chose them: whatever what Rust does not keep of
+/// them is of the same type.
+const fn alike(a: &Layout, b: &Layout) -> bool {
+  if a.stable.deep && b.stable.deep {
+    return true;
+  }
+  if !a.stable.fixed || !b.stable.fixed {
+    return a.id.equals(&b.id);
+  }
+  match (a.kind, b.kind) {
+    (Kind::Array(a, _), Kind::Array(b, _)) | (Kind::Slice(a), Kind::Slice(b)) => alike(a, b),
+    (Kind::Struct(a, _), Kind::Struct(b, _)) => {
+      let mut i = 0;
+      while i < a.len() && i < b.len() {
+        if !alike(a[i].layout, b[i].layout) {
+          return false;
+        }
+        i += 1;
+      }
+      true
+    }
+    (Kind::Enum(a), Kind::Enum(b)) => {
+      let mut i = 0;
+      while i < a.variants.len() && i < b.variants.len() {
+        if !alike(a.variants[i].layout, b.variants[i].layout) {
+          return false;
+        }
+        i += 1;
+      }
+      true
+    }
+    _ => true,
+  }
+}
+
 /// [`relate`], knowing what the source holds at some bytes (see [`Known`]).
 const fn relate_known(
   a: &'static Layout,
@@ -619,34 +657,12 @@ const fn relate_range(
         if b.stack[0].layout.has_pointers() {
           out.pointer(pos);
         }
+        // Nor what Rust does not keep, which would be checked where `rustc` put it.
+        if !b.stack[0].layout.checks_kept() {
+          out.unspecified(pos);
+        }
       }
       return true;
-    }
-    // What Rust does not keep: only the same type at the same place proves it, or what only
-    // requires initialized bytes, initialized bytes.
-    if let RunKind::Opaque(target) = run_b.kind {
-      let stop = min(run_b.end, end);
-      let same = matches!(run_a.kind, RunKind::Opaque(source) if same_type(source, target))
-        && run_a.start == pos
-        && run_b.start == pos
-        && run_b.end <= end;
-      if same {
-        pos = stop;
-        continue;
-      }
-      if target.leaves > 0 || target.has_pointers() || target.has_rules || run_b.start != pos {
-        out.unspecified(pos);
-        pos = stop;
-        continue;
-      }
-      while pos < stop {
-        let run = a.run_at(pos);
-        if run.kind.may_be_uninit() && !b.known.covers(pos) {
-          out.uninit(pos);
-        }
-        pos = min(run.end, stop);
-      }
-      continue;
     }
     match find_skip(a, b, pos, end, &run_a, &run_b) {
       Skip::No => {}
@@ -659,6 +675,20 @@ const fn relate_range(
         relate_range(a, b, pos, pos + period, out);
         return true;
       }
+    }
+    // What Rust does not keep (after the repetitions: an array of it is one period).
+    if let RunKind::Opaque(target) = run_b.kind {
+      let stop = min(run_b.end, end);
+      let whole = run_b.start == pos && run_b.end <= end;
+      let same = matches!(run_a.kind, RunKind::Opaque(source) if same_type(source, target))
+        && run_a.start == pos
+        && whole;
+      let proven = same || (whole && relate_fields(a, b, target, pos));
+      if !proven {
+        out.unspecified(pos);
+      }
+      pos = stop;
+      continue;
     }
     // What an enum requires of its fields depends on its tag: it is proven as a whole, by an
     // enum, or not at all.
@@ -690,6 +720,10 @@ const fn relate_range(
       out.mark(leaf, pos);
       if enum_b.has_pointers() {
         out.pointer(pos);
+      }
+      // Nor one that would check what Rust does not keep, where `rustc` put it.
+      if !enum_b.checks_kept() {
+        out.unspecified(pos);
       }
     }
     let stop = min(run_b.end, end);
@@ -762,6 +796,77 @@ const fn relate_range(
   false
 }
 
+/// The most places at which the fields of a struct that Rust does not keep are related with a
+/// source ([`relate_fields`]): past them, the struct only proves itself.
+const PLACES: usize = 1024;
+
+/// Relate what the source `a` holds from `pos` with `target` there, a struct or a tuple of the
+/// `Rust` representation whose size Rust keeps, but not the order of its fields (see
+/// [`RunKind::Opaque`]): **a field may be anywhere, so it is to be proven everywhere it may be**.
+///
+/// A struct is valid if each of its fields is, at its place, so the source proves the struct in
+/// every order of its fields if, and only if, it proves each field at each offset that the field
+/// has in some order: this is exact, and no order is tried. The offsets that are taken are all
+/// those that the field may have: the multiples of its alignment where it fits; or, where no
+/// order needs padding (every size is a multiple of every alignment), the multiples of the
+/// greatest common divisor of the sizes, of which every sum of sizes is one. Some of them are in
+/// no order (the second byte of a `(bool, [u8; 3])`): more is required then, never less.
+///
+/// Nothing is left to check at run time: a check would read where the compiler may not have put
+/// the field. A field that the source does not prove somewhere fails the relation, as does a
+/// rule (it names fields) and a pointer (which is paired by its place).
+///
+/// Returns whatever the source proves `target`, in every order of its fields.
+const fn relate_fields(a: &Cursor, b: &Cursor, target: &'static Layout, pos: usize) -> bool {
+  let Kind::Struct(fields, _) = target.kind else { return false };
+  if !target.stable.size || target.has_rules || target.has_pointers() {
+    return false;
+  }
+  // The greatest alignment of a field in the struct (`packed(N)` lowers it to the one of the
+  // struct), and the greatest common divisor of the sizes.
+  let (mut align, mut step, mut tiled, mut i) = (1, 0, true, 0);
+  while i < fields.len() {
+    let field = fields[i].layout;
+    let field_align = min(field.align, target.align);
+    if field_align > align {
+      align = field_align;
+    }
+    if field.size > 0 {
+      step = if step == 0 { field.size } else { gcd(step, field.size) };
+    }
+    i += 1;
+  }
+  let mut i = 0;
+  while i < fields.len() {
+    tiled &= fields[i].layout.size.is_multiple_of(align);
+    i += 1;
+  }
+  let (mut places, mut proven, mut i) = (0, true, 0);
+  while i < fields.len() {
+    let field = fields[i].layout;
+    i += 1;
+    if field.size == 0 {
+      continue;
+    }
+    let by = if tiled { step } else { min(field.align, target.align) };
+    let mut offset = 0;
+    while offset + field.size <= target.size {
+      places += 1;
+      if places > PLACES {
+        return false;
+      }
+      let start = pos + offset;
+      let (mut from, mut to) = (*a, Cursor::new(field, start, true, b.checked));
+      to.known = b.known;
+      let mut relation = Relation::NEW;
+      relate_range(&mut from, &mut to, start, start + field.size, &mut relation);
+      proven &= relation.infallible();
+      offset += by;
+    }
+  }
+  proven
+}
+
 /// Relate the enum `a` with the enum `b`, both at `pos`, variant by variant: each variant of `a`
 /// with the ones of `b` that its tags are tags of, knowing that the tag is one of both.
 ///
@@ -773,7 +878,7 @@ const fn relate_enums(
   leaf: usize,
   out: &mut Relation,
 ) -> bool {
-  if a.equals(b) {
+  if equal(a, b) {
     return true;
   }
   let (Kind::Enum(enum_a), Kind::Enum(enum_b)) = (a.kind, b.kind) else { panic!() };
@@ -819,6 +924,10 @@ const fn relate_enums(
       }
       if let Some(offset) = relation.pointer {
         out.pointer(pos + offset);
+      }
+      // As a pointer: the check of the enum would read it where `rustc` put it.
+      if let Some(offset) = relation.unspecified {
+        out.unspecified(pos + offset);
       }
       some |= relation.disjoint.is_none();
       proven |= relation.infallible() && tags.within(&to.tags());
@@ -885,6 +994,9 @@ const fn relate_enum_from(
     if let Some(offset) = relation.pointer {
       out.pointer(offset);
     }
+    if let Some(offset) = relation.unspecified {
+      out.unspecified(offset);
+    }
     some |= relation.disjoint.is_none();
     all &= relation.infallible();
   }
@@ -915,6 +1027,7 @@ const fn relate_union_from(
     return false;
   }
   let (mut proven, mut some, mut uninit, mut i) = (false, false, None, 0);
+  let mut unspecified = None;
   while i < layout.variants.len() {
     let field = &layout.variants[i];
     i += 1;
@@ -925,6 +1038,9 @@ const fn relate_union_from(
     let (mut from, mut to) = (*a, Cursor::new(field.layout, pos, true, Checked::All));
     relate_range(&mut from, &mut to, pos, pos + b.size, &mut relation);
     mark_rules(a.stack[0].layout, field.layout, pos, 0, &mut relation);
+    if unspecified.is_none() {
+      unspecified = relation.unspecified;
+    }
     if relation.uninit.is_none() {
       proven |= relation.infallible();
       some |= relation.disjoint.is_none();
@@ -935,6 +1051,10 @@ const fn relate_union_from(
   }
   if proven {
     return true;
+  }
+  // Checked field by field, each where `rustc` put what it holds.
+  if let Some(offset) = unspecified {
+    out.unspecified(offset);
   }
   if let Some(offset) = uninit {
     out.uninit(offset);
@@ -1629,8 +1749,15 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
 /// they hold of the source. Its fields are not looked at: those of the target are related to the
 /// source as any other.
 const fn proves_rules(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
-  if offset == 0 && source.same_rules(target) {
+  // The same rules of the same bytes: of the same fields at the same offsets, which Rust keeps
+  // of both, or which are the ones of the same type.
+  let kept = !STRICT || (source.stable.fixed && target.stable.fixed) || same_type(source, target);
+  if offset == 0 && kept && source.same_rules(target) {
     return true;
+  }
+  // Where the fields of the source are is not kept: nothing is found in it.
+  if STRICT && !source.stable.fixed {
+    return false;
   }
   match source.kind {
     // A struct at the same offset may be its first field.
@@ -1661,6 +1788,10 @@ const fn proves_rules(source: &'static Layout, offset: usize, target: &'static L
 /// slice `target`, or more, from the start of an element of an array or a slice: each element of
 /// the target is then at the same place of an element of the source as the first one is.
 const fn same_elements(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
+  // Where the parts of the source are is not kept: nothing is found in it.
+  if STRICT && !source.stable.fixed {
+    return false;
+  }
   let same = match (source.kind, target.kind) {
     (Kind::Array(a, n), Kind::Array(b, m)) => {
       a.size == b.size && a.size > 0 && offset.is_multiple_of(a.size) && offset / a.size + m <= n
@@ -1697,18 +1828,22 @@ const fn same_elements(source: &'static Layout, offset: usize, target: &'static 
 /// Whatever `source` has, at `offset`, the very thing that `target` is.
 const fn covered(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
   if offset == 0 {
-    if source.equals(target) {
+    if equal(source, target) {
       return true;
     }
     // As many of the same elements, or more.
     let same = match (source.kind, target.kind) {
-      (Kind::Array(a, n), Kind::Array(b, m)) => n >= m && a.equals(b),
-      (Kind::Slice(a), Kind::Slice(b) | Kind::Array(b, _)) => a.equals(b),
+      (Kind::Array(a, n), Kind::Array(b, m)) => n >= m && equal(a, b),
+      (Kind::Slice(a), Kind::Slice(b) | Kind::Array(b, _)) => equal(a, b),
       _ => false,
     };
     if same {
       return true;
     }
+  }
+  // Where the fields of the source are is not kept: nothing is found in it.
+  if STRICT && !source.stable.fixed {
+    return false;
   }
   match source.kind {
     Kind::Struct(fields, _) => {
@@ -1899,6 +2034,12 @@ pub const POINTER_MUT: &str = "the source or the target holds a self-relative po
 
 pub const MUTABLE: &str = "some values of the target are not valid for the source (or are padding \
                            where the source is not), and could be written through the `&mut`";
+pub const PART_UNSPECIFIED: &str = "the `&mut` covers a part of the source whose layout Rust does \
+                                    not keep from one compilation to the next (a struct or a tuple \
+                                    of the `Rust` representation, an enum without `repr`), which \
+                                    only a `&mut` to the same type may write.\nAdd `#[repr(C)]` \
+                                    (or `#[repr(u8)]` to an enum), or enable the `unstable` \
+                                    feature of `puns`";
 pub const PART_RULE: &str = "a rule of the source (a size, a length, an assertion, a region) \
                              holds over bytes that the `&mut` covers, and could stop holding when \
                              they are written";
@@ -1966,6 +2107,11 @@ const fn cut(
   }
   // Within the bytes, and sized: the target is there too.
   let within = !layout.is_dynamic() && base >= lo && end <= hi;
+  // What Rust does not keep is written whole, by the same type: nothing else tells what of it
+  // the bytes cover.
+  if layout.is_opaque() {
+    return if within && covered(b, base - lo, layout) { None } else { Some(PART_UNSPECIFIED) };
+  }
   match layout.kind {
     // No `&mut` covers a pointer, see `mutable_part`.
     Kind::Scalar(_) | Kind::Pointer(_) => None,

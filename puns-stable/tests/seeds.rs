@@ -11,9 +11,24 @@
 
 #![cfg(not(miri))]
 
-use core::{any::type_name, fmt::Write as _, num::NonZero};
+use core::{any::type_name, fmt::Write as _, marker::PhantomData, num::NonZero};
 
-use puns::{Pun, hook};
+use puns::{
+  Pun, SelfRelative, hook,
+  layout::{Endian, Pointer},
+};
+
+/// A pointer to a `T`, or none: the distance from its own address, an `i32`, or zero.
+#[repr(transparent)]
+struct Opt<T>(i32, PhantomData<T>);
+
+// SAFETY: the type is its `i32`; no value of it is made here.
+unsafe impl<T: Pun> SelfRelative for Opt<T> {
+  type Target = T;
+  const POINTER: Pointer = Pointer::one::<T>("seeds", 4, Endian::NATIVE).or_null();
+}
+
+puns::self_relative!(impl[T: Pun] Opt<T>);
 
 /// A struct of the `Rust` representation of which Rust keeps the size and that its bytes are
 /// initialized, not where its `bool` is.
@@ -30,12 +45,54 @@ struct Twins {
   b: bool,
 }
 
-/// A struct of the `Rust` representation of which Rust keeps every byte: bytes of any value,
-/// without padding in any order.
+/// A struct of the `Rust` representation with a rule: bytes of any value, but the rule tells
+/// which is which.
 #[derive(Pun, Clone, Copy)]
-struct Bytes {
+#[pun(assert(a < b))]
+struct Ordered {
   a: u8,
-  b: [u8; 3],
+  b: u8,
+}
+
+/// A `repr(C)` struct with a rule: its fields are where `repr(C)` puts them.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+#[pun(assert(a < b))]
+struct Ruled {
+  a: u8,
+  b: u8,
+}
+
+/// A struct of the `Rust` representation that holds one with a rule, at 0 or at 1.
+#[derive(Pun, Clone, Copy)]
+struct Carries {
+  ruled: Ruled,
+  flag: bool,
+}
+
+/// The same fields, where `repr(C)` puts them: the rule of `Ruled` is at 0.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+struct InOrder {
+  ruled: Ruled,
+  flag: bool,
+}
+
+/// An enum of a representation that Rust specifies, which holds a struct that it does not keep.
+#[derive(Pun, Clone, Copy)]
+#[repr(u8)]
+#[expect(dead_code, reason = "a type of which only the layout matters")]
+enum Wraps {
+  A(Mixed),
+  B(u8),
+}
+
+/// A union that holds a struct that Rust does not keep.
+#[derive(Pun, Clone, Copy)]
+#[repr(C)]
+union Either {
+  mixed: Mixed,
+  bytes: [u8; 2],
 }
 
 /// A `repr(C)` struct that holds a struct whose bytes Rust does not keep.
@@ -45,10 +102,6 @@ struct Holds {
   mixed: Mixed,
   word: u16,
 }
-
-/// A newtype of the `Rust` representation: its field is at 0.
-#[derive(Pun, Clone, Copy)]
-struct Newtype(u16);
 
 /// An enum with fields and without `repr`: nothing is kept of its tag.
 #[derive(Pun, Clone, Copy)]
@@ -83,8 +136,25 @@ struct Aligned([u8; 16]);
 /// compile.
 fn line<S: Pun, D: Pun>() -> String {
   let v = hook::verdict::<S, D>();
-  let flags =
-    [v.pun, v.head, v.try_pun, v.pun_ref, v.head_ref, v.try_pun_ref, v.pun_mut, v.try_pun_mut];
+  let p = hook::parts::<S, D>();
+  let flags = [
+    v.pun,
+    v.head,
+    v.try_pun,
+    v.pun_ref,
+    v.head_ref,
+    v.try_pun_ref,
+    v.pun_mut,
+    v.try_pun_mut,
+    // The parts, by `&mut` and from the end.
+    p.head_mut,
+    p.tail,
+    p.tail_ref,
+    p.tail_mut,
+    // With what the pointers aim at.
+    hook::views::<S, D>(1),
+    hook::tries_view::<S, D>(1),
+  ];
   let flags: String = flags.iter().map(|&ok| if ok { '+' } else { '-' }).collect();
   let why = v.why().trim().replace('\n', " ");
   format!("{} -> {}: {flags} {why}\n", type_name::<S>(), type_name::<D>())
@@ -141,22 +211,33 @@ fn the_same_whatever_the_layout() {
   }
   let record = record!(
     u8,
-    u16,
     bool,
     [u8; 2],
     [u8; 4],
     [bool; 2],
+    [bool; 4],
     NonZero<u16>,
+    [NonZero<u16>; 2],
+    (NonZero<u16>, u16),
+    (bool, [u8; 3]),
     (u8, u8),
     (bool, bool),
     (bool, u8),
     (u8, u16),
     (u8, u16, u8),
     Mixed,
+    Ordered,
     Twins,
-    Bytes,
     Holds,
-    Newtype,
+    Ruled,
+    Carries,
+    InOrder,
+    Wraps,
+    Either,
+    [Mixed; 2],
+    Opt<[u8; 2]>,
+    Opt<[bool; 2]>,
+    Opt<(bool, u8)>,
     Tagged,
     Plain,
     Kept,

@@ -37,6 +37,11 @@ fn main() {
   assert_eq!(puns::pun::<[u8; 2], (u8, u8)>([1, 1]), (1, 1));
   assert_eq!(puns::try_pun::<[u8; 2], Twins>([1, 0]).map(|t| t.a ^ t.b), Ok(true));
   assert!(puns::try_pun::<[u8; 2], Twins>([1, 2]).is_err());
+  // A field may be anywhere, so it is proven everywhere it may be: two `bool`s are a `bool` and
+  // a byte, in either order; two `NonZero`s, a `NonZero` and a word.
+  let mixed: Mixed = puns::pun([true, false]);
+  assert!(mixed.a <= 1);
+  let _: (NonZero<u16>, u16) = puns::pun([NonZero::<u16>::MIN; 2]);
   // Initialized bytes, wherever they are.
   let bytes: [u8; 2] = puns::pun(Mixed { a: 7, b: true });
   assert!(bytes.contains(&7) && bytes.contains(&1));

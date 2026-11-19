@@ -2577,10 +2577,11 @@ impl Layout {
   /// alignment allows, in an order that it chooses: the one that `-Zrandomize-layout` draws at
   /// random. What is the same in every order is kept:
   ///
-  /// - the whole layout, if every order makes the same bytes: one field has a size (it is at 0);
-  ///   or the fields that have one are all multiples of the alignment of every field (no padding
-  ///   between them, whatever their order), and are all bytes of any value, or all the same
-  ///   layout (`(u8, u16, u8)`, `(bool, bool)`), and no rule reads bytes by offset;
+  /// - the whole layout, if every order makes the same bytes: one field has a size (it is at 0,
+  ///   and no rule reads bytes by offset); or the fields that have one are all multiples of the
+  ///   alignment of every field (no padding between them, whatever their order), and are all
+  ///   bytes of any value, or all the same layout (`(u8, [u8; 3])`, `(bool, bool)`), and the
+  ///   struct has no rule (a rule names fields: `a < b` holds of other bytes in another order);
   /// - else its size, if every order makes the one that `rustc` chose, and whatever its bytes
   ///   are all initialized in every order: the struct is then *opaque* (see [`Stable`]). Orders
   ///   are tried for up to 6 fields that matter (a size, or an alignment greater than 1); past
@@ -2591,7 +2592,7 @@ impl Layout {
   #[doc(hidden)]
   #[must_use]
   pub const fn rust(self, pack: usize) -> Self {
-    let Kind::Struct(fields, _) = self.kind else { panic!("not a struct") };
+    let Kind::Struct(fields, rules) = self.kind else { panic!("not a struct") };
     assert!(!self.unsized_, "a struct of the `Rust` representation is sized");
     let parts = Stable::of_parts(fields);
     if !parts.size {
@@ -2643,7 +2644,8 @@ impl Layout {
           }
           fields[i].offset == 0 && round_up(fields[i].layout.size, self.align).is_some()
         }
-        _ => tiled && (all_any || all_same) && tiled_size == self.size,
+        // A rule names fields: which bytes it holds of depends on their order.
+        _ => rules.is_empty() && tiled && (all_any || all_same) && tiled_size == self.size,
       };
     if same_bytes && (sized != 1 || sum.next_multiple_of(self.align) == self.size) {
       return Self {
@@ -2711,6 +2713,16 @@ impl Layout {
       Some(size) => (size == self.size, padded || size != end),
       None => (false, true),
     }
+  }
+
+  /// Whatever the analysis does not look into the layout, without the `unstable` feature: it is
+  /// not the same in every layout that Rust allows. But for bytes that are all of any value, or
+  /// all padding, in every layout of it (its size is kept, and it has no rule, which would name
+  /// fields): what they are does not depend on where its fields are.
+  pub(crate) const fn is_opaque(&self) -> bool {
+    let same_bytes =
+      self.stable.size && !self.has_rules && matches!(self.uniform, Uniform::Any | Uniform::Pad);
+    !UNSTABLE && !self.stable.fixed && !same_bytes
   }
 
   /// Whatever every byte of a value is initialized, in every layout that Rust allows: as
