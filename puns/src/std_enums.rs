@@ -9,7 +9,7 @@ use core::{marker::PhantomData, mem::MaybeUninit};
 
 use crate::{
   At, Fields, Path, Pun, Variants,
-  layout::{Desc, Enum, Field, Layout, Variant},
+  layout::{self, Desc, Enum, Field, Layout, Variant},
 };
 
 /// The offset of `field`, a field of the value `whole`.
@@ -173,7 +173,17 @@ unsafe impl<T: Pun> Pun for Option<T> {
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = match T::OPTION {
     Some(layout) => layout,
-    None => Layout::enumeration::<Self>(const { &<Self as Found>::ENUM }),
+    None => {
+      if !T::NULL_OPTIMIZED {
+        layout::unspecified(
+          "`Option<T>` has a layout that may change from one version of `rustc` to the next, but \
+           where `T` is a `NonZero` integer or a `repr(transparent)` struct around one (see \
+           \"Representation\" in `core::option`): enable the `unstable` feature of `puns`",
+        );
+      }
+      // What is found is then what `core` guarantees: a niche at zero, which is `None`.
+      Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
+    }
   };
 }
 
@@ -185,7 +195,24 @@ unsafe impl<T: Pun, E: Pun> Pun for Result<T, E> {
   type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
-  const LAYOUT: Layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM });
+  const LAYOUT: Layout = {
+    if !(T::NULL_OPTIMIZED && is_1_zst::<E>() || E::NULL_OPTIMIZED && is_1_zst::<T>()) {
+      layout::unspecified(
+        "`Result<T, E>` has a layout that may change from one version of `rustc` to the next, but \
+         where one of `T` and `E` is a `NonZero` integer (or a `repr(transparent)` struct around \
+         one) and the other has size 0 and alignment 1 (see \"Representation\" in \
+         `core::result`): enable the `unstable` feature of `puns`",
+      );
+    }
+    // What is found is then what `core` guarantees: the variant of the `NonZero` is its value,
+    // and the other one, which is only one value, the only bytes that are not one: zeros.
+    Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
+  };
+}
+
+/// Whether `T` has size 0 and alignment 1, a "1-ZST".
+const fn is_1_zst<T>() -> bool {
+  size_of::<T>() == 0 && align_of::<T>() == 1
 }
 
 /// The variants of `Option` and `Result`, and the field of each, in the lists of types.

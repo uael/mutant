@@ -1462,6 +1462,34 @@ const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 /// What [`Layout::PIN`] is made of.
 fn pin<T>(_: T) {}
 
+/// Whether the layouts that Rust does not document as the same from one version of the compiler
+/// to the next are accepted: the `unstable` feature of the crate.
+///
+/// Without it, a type is `Pun` only if its layout is one that the Reference or the documentation
+/// of `core` specifies: a struct of `repr(C)` or `repr(transparent)`, an enum of `repr(C)` or of an
+/// integer, a union of `repr(C)`, the primitive types, arrays, slices, `str`, `()`, `MaybeUninit`,
+/// `ManuallyDrop`, `PhantomData`, `Infallible`, and `Option` and `Result` where `core` guarantees
+/// their representation. With it, the layout that `rustc` chose for anything else is read from
+/// the compiler (a struct, a tuple) or found by experiments (an enum, see `discover.rs`): right for
+/// the build that reads it, and possibly other in a build by another version of `rustc`, so bytes
+/// that one build writes may not be read the same by the next.
+pub const UNSTABLE: bool = cfg!(feature = "unstable");
+
+/// Refuses, unless the `unstable` feature is on, `what`: a type whose layout Rust does not
+/// document as the same from one version of the compiler to the next (see [`UNSTABLE`]).
+///
+/// # Panics
+/// If the `unstable` feature is off.
+#[doc(hidden)]
+#[track_caller]
+pub const fn unspecified(what: &'static str) {
+  assert!(
+    UNSTABLE,
+    "{}",
+    what
+  );
+}
+
 impl Layout {
   /// The types that the code that `#[derive(Pun)]` generates names by their path in the crate
   /// it is told of (`#[pun(crate = ..)]`), as they must be: the functions that it calls are

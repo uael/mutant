@@ -295,6 +295,16 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 // -------------------------------------------------------------------------------------------------
 // Attributes
 
+/// The statement that refuses `ident`, a struct or an enum whose layout may change from one
+/// version of `rustc` to the next, unless the `unstable` feature of `puns` is on.
+fn unspecified(ident: &Ident, what: &str, add: &str, root: &TokenStream) -> TokenStream {
+  let message = format!(
+    "`{ident}` is {what}, whose layout may change from one version of `rustc` to the next: \
+     {add}, or enable the `unstable` feature of `puns`"
+  );
+  quote!(#root::layout::unspecified(#message);)
+}
+
 #[derive(Default)]
 struct Repr {
   c: bool,
@@ -1704,6 +1714,16 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       }
     }
   });
+  // Only `repr(C)` and `repr(transparent)` specify the layout of a struct.
+  let gate = (!(repr.c || repr.transparent))
+    .then(|| unspecified(ident, "a struct of the `Rust` representation", "add `#[repr(C)]`", &root));
+  // A `repr(transparent)` struct around a type that `core` lays out in `Option` without a tag has
+  // that guarantee too ("Representation" of `core::option`). Its other fields have size 0 and
+  // alignment 1, which no such type has.
+  let null_optimized = repr.transparent.then(|| {
+    let types = fields.iter().map(|field| field.ty);
+    quote!(const NULL_OPTIMIZED: bool = false #(|| <#types as #root::Pun>::NULL_OPTIMIZED)*;)
+  });
 
   Ok(quote! {
     const _: () = {
@@ -1731,12 +1751,14 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
         // is a slice.
         const LAYOUT: #root::layout::Layout = unsafe {
+          #gate
           #root::layout::Layout::structure::<Self>(
             Self::PROBE,
             const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
             const { &[#(#rules),*] },
           )
         };
+        #null_optimized
       }
 
       #accessors
@@ -1755,7 +1777,10 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
   if data.variants.is_empty() {
-    // No value: nothing is ever made of one, and nothing is valid for it.
+    // No value: nothing is ever made of one, and nothing is valid for it. Its size is 0, but its
+    // alignment is not specified (it can have no `repr`).
+    let gate =
+      unspecified(ident, "an enum without variants", "use `core::convert::Infallible`", &root);
     return Ok(quote! {
       // SAFETY: an enum without variants has no value, which is what the layout says.
       unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
@@ -1765,7 +1790,10 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
-        const LAYOUT: #root::layout::Layout = #root::layout::Layout::uninhabited::<Self>();
+        const LAYOUT: #root::layout::Layout = {
+          #gate
+          #root::layout::Layout::uninhabited::<Self>()
+        };
       }
     });
   }
@@ -1881,15 +1909,27 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
     variants.push(quote!(unsafe { #root::layout::Spec::bits_of(&Self::#variant) }));
   }
   let count = variants.len();
+  let repr = parse_repr(&input.attrs)?;
+  let gate = (!(repr.c || repr.transparent || repr.int.is_some())).then(|| {
+    unspecified(
+      ident,
+      "an enum without `repr`",
+      "add `#[repr(u8)]` (or another integer, or `C`)",
+      &root,
+    )
+  });
   Ok(quote! {
     // SAFETY: the valid values are the ones of the variants, read from the compiler.
     unsafe impl #impl_generics #root::Scalar for #ident #ty_generics #where_clause {
-      const SPEC: #root::layout::Spec = if #root::layout::Spec::is_zero_sized::<Self>() {
+      const SPEC: #root::layout::Spec = {
+        #gate
+        if #root::layout::Spec::is_zero_sized::<Self>() {
         #root::layout::Spec::any::<Self>()
       } else {
         let merged: &'static ([(u128, u128); #count], usize) =
           const { &#root::layout::Spec::sorted_ranges([#(#variants),*]) };
         #root::layout::Spec::native_ranges::<Self>(merged.0.split_at(merged.1).0)
+      }
       };
     }
   })
@@ -2135,6 +2175,12 @@ fn derive_discovered(
   let (ident, vis) = (&input.ident, &input.vis);
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
+  let gate = unspecified(
+    ident,
+    "an enum with fields and without `repr`",
+    "add `#[repr(u8)]` (or another integer, or `C`)",
+    root,
+  );
   let mut generics = input.generics.clone();
   let bounds = parse_options(&input.attrs, "an enum", &["crate", "bound"])?.bounds;
   for field in data.variants.iter().flat_map(|variant| &variant.fields) {
@@ -2348,8 +2394,10 @@ fn derive_discovered(
         type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
-        const LAYOUT: #root::layout::Layout =
-          #layout::enumeration::<Self>(const { &<Self as __PunDiscover>::ENUM });
+        const LAYOUT: #root::layout::Layout = {
+          #gate
+          #layout::enumeration::<Self>(const { &<Self as __PunDiscover>::ENUM })
+        };
       }
     };
   })

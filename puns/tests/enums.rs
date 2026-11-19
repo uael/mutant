@@ -76,7 +76,7 @@ enum Drawing {
   Circle { radius: u16 },
   Rect(u8, u8),
   Empty,
-  Line { to: (u8, u8) } = 9,
+  Line { to: [u8; 2] } = 9,
 }
 
 fn bytes<T: Copy, const N: usize>(value: T) -> [u8; N] {
@@ -229,7 +229,7 @@ fn variant_by_variant() {
   let back = puns::try_pun_ref::<[Drawing], [Shape]>(drawings);
   assert_eq!(back, Ok(&shapes[..]));
   assert_eq!(puns::try_pun::<Drawing, Shape>(Drawing::Rect(0, 2)), Err(Error::Validity));
-  let line = Drawing::Line { to: (1, 1) };
+  let line = Drawing::Line { to: [1, 1] };
   assert_eq!(puns::try_pun::<Drawing, Shape>(line), Err(Error::Validity));
   let drawings = [Drawing::Empty, line];
   assert_eq!(puns::try_pun_ref::<_, [Shape; 2]>(&drawings), Err(Error::Validity));

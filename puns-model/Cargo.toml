@@ -7,7 +7,8 @@ publish = false
 description = "Model check of the analysis of puns against an independent oracle"
 
 [dependencies]
-puns = { path = "../puns", features = ["verdict"] }
+# The model check covers every layout, those of the `unstable` feature included.
+puns = { path = "../puns", features = ["verdict", "unstable"] }
 
 [dev-dependencies]
 fakecore = { path = "fakecore" }

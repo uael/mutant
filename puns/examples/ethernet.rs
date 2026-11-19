@@ -177,8 +177,10 @@ pub struct Arp {
   pub hardware_length: u8c<6>,
   pub protocol_length: u8c<4>,
   pub operation: Operation,
-  pub sender: (Mac, [u8; 4]),
-  pub target: (Mac, [u8; 4]),
+  pub sender_mac: Mac,
+  pub sender_ip: [u8; 4],
+  pub target_mac: Mac,
+  pub target_ip: [u8; 4],
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -753,8 +755,10 @@ pub fn main() {
       hardware_length: u8c::default(),
       protocol_length: u8c::default(),
       operation: Operation::Request,
-      sender: (A, [10, 0, 0, 1]),
-      target: (Mac(u48be::new(0)), [10, 0, 0, 2]),
+      sender_mac: A,
+      sender_ip: [10, 0, 0, 1],
+      target_mac: Mac(u48be::new(0)),
+      target_ip: [10, 0, 0, 2],
     },
   };
   // Nothing to check to see it as bytes, or as a frame of any payload: this is all proven.

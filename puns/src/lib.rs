@@ -199,6 +199,9 @@ pub use visit::{
 pub unsafe trait Scalar {
   /// The size, the byte order and the valid values of `Self`.
   const SPEC: Spec;
+  /// See [`Pun::NULL_OPTIMIZED`].
+  #[doc(hidden)]
+  const NULL_OPTIMIZED: bool = false;
 }
 
 /// Types made of plain data, whose layout and valid values are known at compile time.
@@ -275,6 +278,14 @@ pub unsafe trait Pun {
   /// the layout of `Option<Self>`, as `LAYOUT` is of `Self` (see the `# Safety` of the trait).
   #[doc(hidden)]
   const OPTION: Option<Layout> = None;
+  /// Whether `core` guarantees that `Option<Self>` is `Self`, with `None` the bytes of zeros:
+  /// `Self` is a `NonZero` integer, or a `repr(transparent)` struct around one ("Representation"
+  /// in the documentation of `core::option`). The layout of `Option<Self>` is then the same from
+  /// one version of the compiler to the next, and so is the one of `Result<Self, E>` and
+  /// `Result<E, Self>` where `E` has size 0 and alignment 1 ("Representation" of
+  /// `core::result`). Of any other `Self`, they need the `unstable` feature.
+  #[doc(hidden)]
+  const NULL_OPTIMIZED: bool = false;
 }
 
 /// A type that goes with a tag, in what carries it: a payload and the value of the field that
@@ -613,6 +624,7 @@ unsafe impl<T: Scalar> Pun for T {
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = Layout::scalar::<T>(T::SPEC);
+  const NULL_OPTIMIZED: bool = T::NULL_OPTIMIZED;
 }
 
 // SAFETY: an array is its elements.
@@ -659,6 +671,8 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   type Pointee = T::Pointee;
   const PROBE: *const Self = T::PROBE as *const Self;
   const LAYOUT: Layout = T::LAYOUT;
+  // `ManuallyDrop<T>` "is subject to the same layout optimizations as `T`".
+  const NULL_OPTIMIZED: bool = T::NULL_OPTIMIZED;
 }
 
 // SAFETY: a `MaybeUninit<T>` holds any bytes, uninitialized ones included, and nothing is known
@@ -669,6 +683,26 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
 // `&mut MaybeUninit<T>` is only made of a source of which every byte may be uninitialized (the
 // reverse relation of `pun_mut`), and a `&mut T` of a `MaybeUninit<T>` never (a byte that `T`
 // needs initialized would be read from padding).
+//
+// Its size and alignment are the ones of `T`, which are only known to be the same from one version
+// of the compiler to the next if the layout of `T` is: without the `unstable` feature, `T` is a
+// `Pun` type, whose layout is evaluated (and refused if it is not specified).
+#[cfg(not(feature = "unstable"))]
+unsafe impl<T: Pun> Pun for core::mem::MaybeUninit<T> {
+  type Elem = ();
+  type Fields = ();
+  type Variants = ();
+  type Rules = ();
+  type Pointee = ();
+  const PROBE: *const Self = core::ptr::null();
+  const LAYOUT: Layout = {
+    assert!(T::LAYOUT.size() == size_of::<T>());
+    Layout::padding::<Self>()
+  };
+}
+
+// SAFETY: as above, for any `T`.
+#[cfg(feature = "unstable")]
 unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
   type Elem = ();
   type Fields = ();
@@ -719,6 +753,10 @@ macro_rules! tuple {
       const PROBE: *const Self = core::ptr::null();
       // SAFETY: a tuple of `Sized` things is `Sized`.
       const LAYOUT: Layout = unsafe {
+        layout::unspecified(
+          "a tuple has the `Rust` representation, whose layout may change from one version of \
+           `rustc` to the next: use a `repr(C)` struct, or enable the `unstable` feature of `puns`",
+        );
         Layout::structure::<Self>(
           Self::PROBE,
           const {
@@ -791,6 +829,7 @@ macro_rules! impl_non_zero {
     // SAFETY: anything but 0.
     unsafe impl Scalar for core::num::NonZero<$ty> {
       const SPEC: Spec = Spec::ranges::<$ty>(Endian::NATIVE, &[(1, $ty::MAX as u128)]);
+      const NULL_OPTIMIZED: bool = true;
     }
   )+};
 }
@@ -807,6 +846,7 @@ macro_rules! impl_signed_non_zero {
         &[(1, u128::MAX >> (128 - 8 * size_of::<$ty>()))],
       )
       .not_a_number();
+      const NULL_OPTIMIZED: bool = true;
     }
   )+};
 }
