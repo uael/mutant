@@ -1095,6 +1095,148 @@ asserted). What the code assumes of `usize`, and what holds each:
 | The size given to the evaluator of rules is at most `isize::MAX`, and so are an offset that a rule read at and `size_of_val(self)` (`narrow::SIZE_MAX`, the ranges of "Narrowing") | Rust: it is the size of a value, or the length of a slice of bytes |
 | A register is 64 bits where `usize` is, else 32 (`narrow::REGISTER`) | a choice of speed, not of results: every width computes the same, and `narrow_tests.rs` checks both |
 
+### 12. What Rust guarantees of a layout, and the `unstable` feature
+
+*Status: this is the design. The branch still has a first gate, by type (`layout::unspecified`),
+which it replaces.*
+
+Rust leaves a part of the layout of some types to the compiler, which may choose otherwise in its
+next version: the order of the fields of a struct or of a tuple of the `Rust` representation, the
+place and the values of the tag of an enum without `repr`. `puns` reads what the compiler chose
+(section 1), so a pun is always sound for the build that makes it. But a pun that holds for one
+choice only is not a property of the program: another compiler may refuse it, or check other
+bytes. Without the `unstable` feature, such a pun does not compile.
+
+**The rule.** A pun is *guaranteed* if it has the same verdict (proven, checked, refused), and if
+checked accepts the same values, for every layout of its two types that the documentation of Rust
+allows. Without `unstable`, a pun compiles only if it is guaranteed. This is a property of the
+pair, not of a type:
+
+| Pun | | Why |
+|---|---|---|
+| `(u8, u8)` as `[u8; 2]`, and back | guaranteed | two bytes of any value, whichever is first |
+| `(bool, u8)` as `[u8; 2]` | guaranteed | both bytes are initialized, whichever is first |
+| `[u8; 2]` as `(bool, bool)`, checked | guaranteed | both bytes must be 0 or 1, either way |
+| `[bool; 2]` as `(bool, u8)` | guaranteed | what any of the two places may require holds of both |
+| `[u8; 4]` as `(u8, u16)` | guaranteed | any initialized bytes are one, wherever its padding is |
+| `[u8; 2]` as `(bool, u8)`, checked | `unstable` | the byte that must be 0 or 1 is one or the other |
+| `(u8, u16)` as `[u8; 4]` | refused | a byte is padding, wherever it is |
+| the first byte of `(u8, u16)` | `unstable` | it is padding, or not |
+| bytes as an enum without `repr` | `unstable` | nothing documents its tag |
+| an enum without `repr` as itself | guaranteed | a type has one layout in a program |
+
+Two things are not predicted, but read from the compiler, as `transmute` reads them:
+
+- **The size and the alignment of a type.** A pun is between two sizes. Rust documents no bound
+  on the size of a struct of the `Rust` representation: should a later compiler make `(u8, u8)`
+  three bytes, `pun::<[u8; 2], (u8, u8)>` stops compiling, as `transmute` does, and does not start
+  to mean something else. (`repr(C)` offsets are computed from the sizes and the alignments of the
+  fields, so they are known as soon as these are.)
+- **Which field a byte is.** `pun::<[u8; 2], (u8, u8)>([1, 2])` is `(1, 2)` or `(2, 1)`: a valid
+  value either way, which is what a pun promises, and what `transmute` does.
+
+**The layout of a type is what is guaranteed of it.** Without `unstable`, `Pun::LAYOUT` holds what
+every layout that Rust allows for the type has in common, in the two directions that the analysis
+already tells apart for a scalar (what a source is *known* to be, what a target *requires*: section
+5). Where the compiler has a choice, a source is known to be less (what it may be under some
+choice), and a target requires more (what it requires under every choice). The analysis and the
+validation are the same code, on that layout: what they prove holds whatever the compiler chose,
+and nothing is computed twice. With `unstable`, `LAYOUT` is the layout that the compiler chose, as
+before, and the layouts of enums without `repr` are found (section 10): `discover.rs`, which rests
+on how `rustc` behaves (R1 to R4), only runs with the feature.
+
+A type of which something is left to the compiler is a node of its own in the tree
+(`Kind::Unspecified`), which has:
+
+- **what a source is known to be**: its bytes, initialized (the fields fill it, and each is
+  initialized) or not; where the fields are scalars of one size, each place holds a value of one
+  of them;
+- **what a target requires**, if it can be said: any initialized bytes (each field accepts them);
+  where the fields are scalars of one size, a value that all of them accept, at each place. If it
+  cannot (a field that restricts its values among others that do not, an enum, a rule, a
+  pointer), nothing proves it but the type itself;
+- **its identity**: at the same place in the source and in the target, a type proves itself, since
+  a type has one layout in a program (`offset_of!`). Another type does not, even of the same
+  fields: Rust says so of `Wrapper<u8, u8>` and `Wrapper<u8, i8>`. The identity is a value (the
+  crate, the path, the name and the place of the declaration, and for a tuple, an `Option` or a
+  `Result` the identities of its parameters), compared by the analysis: stable Rust compares no
+  types in `const` (`TypeId` is not compared there, `type_name` is not `const`). A generic type
+  that derives `Pun` has none in the first version (its parameters are not all `Pun`): it does
+  not prove itself without `unstable`.
+
+**Nothing in such a node is checked at run time.** A check there would read a place that the
+compiler may move, or require more than the type does. A pun that needs one does not compile, as
+one that needs to prove a pointer does not (`Relation::unspecified`, next to `Relation::pointer`),
+and the message names the type and the feature. So the feature only adds: a pun that compiles
+without it compiles with it (the chosen layout is one of those that the guaranteed one covers) and
+gives the same result (what was checked is at a place that no choice moves).
+
+**What each type is, without `unstable`:**
+
+| Type | Its layout |
+|---|---|
+| integers, floats, `bool`, `char`, `()`, `NonZero`, arrays, slices, `str`, `PhantomData`, `ManuallyDrop`, `MaybeUninit`, `Infallible` | specified: as today (the size of a `MaybeUninit<T>` is read, whatever `T` is) |
+| struct of `repr(C)` or `repr(transparent)`, union of `repr(C)`, enum of `repr(C)` or of an integer | specified: as today |
+| struct or tuple of the `Rust` representation | its fields are somewhere in it, aligned, without overlap. The layout that the compiler chose when every other choice is the same bytes: no field has a size; one has, of the size of the struct (it is at 0: a newtype is its field); the fields fill the struct and are all initialized bytes of any value (`(u8, u16, u8)`); the fields fill it and have the same layout (`(bool, bool)`). Else a node as above. With rules (which name fields): nothing proves it but itself |
+| enum without `repr` | no variant: no value. One variant, no field with a size: no byte. Else a node of which nothing is known (its bytes may be padding) and that only itself proves; its layout is not looked for |
+| `Option<T>` | where `core` documents it (`T` a `NonZero` or a `repr(transparent)` struct around one): `T`, or zeros. Else as an enum without `repr` |
+| `Result<T, E>` | where `core` documents it (one of `T` and `E` as above, the other of size 0 and alignment 1): the same. Else as an enum without `repr` |
+| `Option` of a self-relative pointer | the pointer, or zeros: the declarer of the pointer promises that it is a `repr(transparent)` struct around a `NonZero` (`SelfRelative`) |
+
+**What this rests on**, each documented by Rust (R: the Reference, `doc.rust-lang.org/reference`;
+C: `doc.rust-lang.org/core`):
+
+| Guarantee | Where |
+|---|---|
+| Layout may change with each compilation; only what is listed is guaranteed | R `type-layout.html#r-layout.guarantees` |
+| A size is a multiple of the alignment, and the stride of an array | R `type-layout.html#r-layout.properties.size` |
+| Sizes of `bool`, integers, floats, `char`; `usize` and `isize` | R `type-layout.html#r-layout.primitive.size`, `#r-layout.primitive.size-align` |
+| The alignment of a primitive is the one of the platform (read, not assumed) | R `type-layout.html#r-layout.primitive.platform-specific-alignment` |
+| Any initialized bytes are an integer or a float | R `types/numeric.html#r-type.numeric.validity` |
+| `bool` is one byte, 0 or 1 | R `types/boolean.html#r-type.bool.layout`, `#r-type.bool.repr` |
+| `char` is a `u32` that is a Unicode scalar value | R `types/char.html#r-type.char.value`, `#r-type.char.layout` |
+| `[T; N]`: `N` elements one after the other; `[T]` as the array; `str` as `[u8]` | R `type-layout.html#r-layout.array`, `#r-layout.slice`, `#r-layout.str` |
+| `()`: size 0, alignment 1. `!` (`Infallible`): the same, and no value | R `type-layout.html#r-layout.tuple.unit`, `types/never.html#r-type.never.layout` |
+| A value is valid if its fields, or its elements, are; padding may be uninitialized | R `behavior-considered-undefined.html#r-undefined.validity.struct`, `#r-undefined.validity.undef` |
+| An enum has a valid discriminant, and the fields of its variant are valid | R `behavior-considered-undefined.html#r-undefined.validity.enum` |
+| `repr(C)` struct: the fields in order, each at the next offset that its alignment allows | R `type-layout.html#r-layout.repr.c.struct` |
+| `repr(C)` union: every field at 0 | R `type-layout.html#r-layout.repr.c.union.size-align` |
+| The validity of a union is not decided: a target is one of its fields, a source proves nothing | R `behavior-considered-undefined.html#r-undefined.validity.union` |
+| Enum without fields, `repr(C)` or of an integer: that integer, holding the discriminant | R `type-layout.html#r-layout.repr.c.enum`, `#r-layout.repr.primitive.enum`, `items/enumerations.html#r-items.enum.discriminant.access-memory` |
+| Enum with fields, `repr(C)`, of an integer, or both (RFC 2195) | R `type-layout.html#r-layout.repr.c.adt`, `#r-layout.repr.primitive.adt`, `#r-layout.repr.primitive-c` |
+| `repr(transparent)`: the layout of its field | R `type-layout.html#r-layout.repr.transparent.layout-abi` |
+| `packed(N)` and `align(N)` | R `type-layout.html#r-layout.repr.alignment` |
+| `Rust` representation: each field at a multiple of its alignment; the type at least as aligned as its fields | R `type-layout.html#r-layout.repr.rust.layout` |
+| `Rust` representation: the fields of a struct do not overlap, in an order that is not specified | R `type-layout.html#r-layout.repr.rust.struct` |
+| `Rust` representation: a struct whose fields have no size has none; an enum without variants, or of one variant whose fields have no size, has none | R `type-layout.html#r-layout.repr.rust.struct-zst`, `#r-layout.repr.rust.enum-empty-zst`, `#r-layout.repr.rust.enum-struct-like-zst` |
+| `Rust` representation: nothing else | R `type-layout.html#r-layout.repr.rust.unspecified` |
+| A tuple has the `Rust` representation | R `type-layout.html#r-layout.tuple.def` |
+| The representation of a type does not change the layout of its fields | R `type-layout.html#r-layout.repr.inter-field` |
+| A type has one layout in a program; a similar type may have another | C `mem/macro.offset_of.html#layout-is-subject-to-change`, R `types/struct.html#r-type.struct.layout` |
+| The discriminant of an enum without `repr`: neither where nor how it is stored is defined | R `items/enumerations.html#r-items.enum.discriminant.type`, C `mem/fn.discriminant.html` |
+| A union without `repr`: its fields need not be at 0 (refused) | R `types/union.html#r-type.union.layout` |
+| `NonZero<T>`: `T` but zero | C `num/struct.NonZero.html#layout` |
+| `Option<T>` is `T`, and `None` zeros, for a `NonZero` and a `repr(transparent)` struct around one | C `option/index.html#representation` |
+| `Result<T, E>` is the same when the other of `T` and `E` has size 0 and alignment 1 | C `result/index.html#representation` |
+| `ManuallyDrop<T>`: the layout and the values of `T` | C `mem/struct.ManuallyDrop.html` |
+| `MaybeUninit<T>`: the size and the alignment of `T`, any bytes | R `special-types-and-traits.html#r-lang-types.maybe-uninit.layout`, `#r-lang-types.maybe-uninit.validity` |
+| `PhantomData<T>`: size 0, alignment 1 | C `marker/struct.PhantomData.html#layout` |
+
+What Rust documents and `puns` does not use yet: `UnsafeCell`, `Cell`, `Wrapping`, `Saturating`
+and the atomics have the layout of what they hold (no implementation of `Pun`); an enum of two
+variants, one of a type that `Option` is documented for and one without sized field, is
+"ABI-compatible" with that type (`primitive.fn.html#abi-compatibility`), which says its size but
+not which bytes its other variant is.
+
+Niches are not guaranteed beyond the lines of `Option` and `Result` above: that `Option<bool>` is
+one byte, with `None` at 2, is how `rustc` does it today (`MaybeUninit` and `UnsafeCell` say that
+such optimizations vary). It needs `unstable`.
+
+**How it is checked.** The guaranteed layout of a struct or of a tuple is compared, in the tests,
+with every arrangement of its fields that the rules above allow (an oracle that places them, for
+small types): a pun that is accepted on the guaranteed layout must have the same verdict and
+accept the same values on each.
+
 ## Model check
 
 `puns-model/` compares every verdict of the analysis with oracles that do not use it,
