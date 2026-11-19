@@ -24,7 +24,14 @@
 //! The cost of an analysis is therefore proportional to the number of fields of the types, not to
 //! their size.
 
-use crate::layout::{Dfa, Endian, Kind, Layout, Pointer, Spec, Tags, Uniform, Valid, max_value};
+use crate::layout::{
+  Dfa, Endian, Kind, Layout, Pointer, Spec, Tags, UNSTABLE, Uniform, Valid, max_value,
+};
+
+/// Without the `unstable` feature, what Rust does not keep in every layout that it allows is
+/// opaque (section 12 of the design): a pun has the same verdict, and accepts the same values,
+/// whatever the compiler chose for it (or `-Zrandomize-layout`).
+const STRICT: bool = !UNSTABLE;
 
 // -------------------------------------------------------------------------------------------------
 // `Cursor`
@@ -45,6 +52,11 @@ pub enum RunKind {
   /// A self-relative pointer. As a source, its bytes are initialized and nothing more is made of
   /// them; as a target, only a pointer proves it.
   Pointer(Pointer),
+  /// A layout that is not the same in every layout that Rust allows, without the `unstable`
+  /// feature. As a source, what every layout has: initialized bytes, or maybe not; as a target,
+  /// only the same type at the same place proves it, or if it requires nothing but initialized
+  /// bytes, initialized bytes.
+  Opaque(&'static Layout),
 }
 
 impl RunKind {
@@ -53,7 +65,17 @@ impl RunKind {
     match self {
       RunKind::Pad => true,
       RunKind::Atom(spec) => spec.may_be_uninit(),
+      RunKind::Opaque(layout) => !layout.always_init(),
       RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => false,
+    }
+  }
+
+  /// What a source is known to hold there: an opaque layout is what every layout of it has.
+  const fn seen(self) -> Self {
+    match self {
+      RunKind::Opaque(layout) if layout.always_init() => RunKind::Any,
+      RunKind::Opaque(_) => RunKind::Pad,
+      kind => kind,
     }
   }
 }
@@ -228,6 +250,7 @@ impl Cursor {
   const fn enumeration(&self) -> Option<(&'static Layout, usize, usize)> {
     let frame = &self.stack[self.depth - 1];
     match frame.layout.kind {
+      Kind::Enum(_) if STRICT && !frame.layout.stable.fixed => None,
       Kind::Enum(_) => Some((frame.layout, frame.base, frame.leaf)),
       _ => None,
     }
@@ -248,6 +271,15 @@ impl Cursor {
         assert!(self.depth > 1, "internal error: analysis out of the bounds of a type");
         self.depth -= 1;
         continue;
+      }
+      // Not looked into. But for bytes that are all of any value, or all padding, in every layout
+      // of it whose size is the one of this layout: what they are does not depend on where its
+      // fields are.
+      if STRICT
+        && !layout.stable.fixed
+        && !(layout.stable.size && matches!(layout.uniform, Uniform::Any | Uniform::Pad))
+      {
+        return Run { kind: RunKind::Opaque(layout), start: frame.base, end, leaf: frame.leaf };
       }
       match layout.uniform {
         Uniform::Pad => return Run { kind: RunKind::Pad, start: frame.base, end, leaf: 0 },
@@ -422,11 +454,27 @@ pub struct Relation {
   /// read as its own. No check at run time makes up for it: what a pointer guarantees is not a
   /// property of its bytes.
   pub(crate) pointer: Option<usize>,
+  /// Offset of a part of the target that is not proven in every layout that Rust allows, without
+  /// the `unstable` feature (see [`RunKind::Opaque`]). No check makes up for it: it would read
+  /// at a place that the compiler may move.
+  pub(crate) unspecified: Option<usize>,
 }
 
 impl Relation {
-  const NEW: Self =
-    Self { uninit: None, disjoint: None, partial: None, marks: Marks::NONE, pointer: None };
+  const NEW: Self = Self {
+    uninit: None,
+    disjoint: None,
+    partial: None,
+    marks: Marks::NONE,
+    pointer: None,
+    unspecified: None,
+  };
+
+  const fn unspecified(&mut self, pos: usize) {
+    if self.unspecified.is_none() {
+      self.unspecified = Some(pos);
+    }
+  }
 
   const fn pointer(&mut self, pos: usize) {
     if self.pointer.is_none() {
@@ -454,6 +502,7 @@ impl Relation {
       && self.disjoint.is_none()
       && self.partial.is_none()
       && self.pointer.is_none()
+      && self.unspecified.is_none()
   }
 }
 
@@ -494,6 +543,10 @@ pub const fn relate_at(
 ) -> Relation {
   assert!(base_a == 0 || matches!(checked, Checked::No), "internal error: shifted source");
   let mut relation = Relation::NEW;
+  if !sizes_kept(a, b) {
+    relation.unspecified(start);
+    return relation;
+  }
   // A type without values is no value of any other, whatever its bytes (it may have none).
   if !b.is_inhabited() && a.is_inhabited() {
     relation.disjoint = Some(start);
@@ -505,6 +558,17 @@ pub const fn relate_at(
   relation
 }
 
+/// Whatever how the sizes of `a` and `b` compare is the same in every layout that Rust allows,
+/// without the `unstable` feature: both sizes are kept, or `a` and `b` are the same type.
+const fn sizes_kept(a: &'static Layout, b: &'static Layout) -> bool {
+  !STRICT || (a.stable.size && b.stable.size) || same_type(a, b)
+}
+
+/// Whatever `a` and `b` are the layouts of the same type: it has one layout in a program.
+const fn same_type(a: &Layout, b: &Layout) -> bool {
+  a.id.equals(&b.id) && a.equals(b)
+}
+
 /// [`relate`], knowing what the source holds at some bytes (see [`Known`]).
 const fn relate_known(
   a: &'static Layout,
@@ -514,6 +578,10 @@ const fn relate_known(
   known: &Known,
 ) -> Relation {
   let mut relation = Relation::NEW;
+  if !sizes_kept(a, b) {
+    relation.unspecified(0);
+    return relation;
+  }
   if !b.is_inhabited() && a.is_inhabited() {
     relation.disjoint = Some(0);
     return relation;
@@ -553,6 +621,32 @@ const fn relate_range(
         }
       }
       return true;
+    }
+    // What Rust does not keep: only the same type at the same place proves it, or what only
+    // requires initialized bytes, initialized bytes.
+    if let RunKind::Opaque(target) = run_b.kind {
+      let stop = min(run_b.end, end);
+      let same = matches!(run_a.kind, RunKind::Opaque(source) if same_type(source, target))
+        && run_a.start == pos
+        && run_b.start == pos
+        && run_b.end <= end;
+      if same {
+        pos = stop;
+        continue;
+      }
+      if target.leaves > 0 || target.has_pointers() || target.has_rules || run_b.start != pos {
+        out.unspecified(pos);
+        pos = stop;
+        continue;
+      }
+      while pos < stop {
+        let run = a.run_at(pos);
+        if run.kind.may_be_uninit() && !b.known.covers(pos) {
+          out.uninit(pos);
+        }
+        pos = min(run.end, stop);
+      }
+      continue;
     }
     match find_skip(a, b, pos, end, &run_a, &run_b) {
       Skip::No => {}
@@ -662,7 +756,7 @@ const fn relate_range(
         }
         pos = stop;
       }
-      RunKind::Pattern(_) => unreachable!(),
+      RunKind::Pattern(_) | RunKind::Opaque(_) => unreachable!(),
     }
   }
   false
@@ -1019,6 +1113,7 @@ const fn gather(a: &mut Cursor, start: usize, end: usize) -> ([Piece; 16], usize
     if let RunKind::Pointer(_) = run.kind {
       run.kind = RunKind::Any;
     }
+    run.kind = run.kind.seen();
     let to = min(run.end, end);
     let skip = if matches!(run.kind, RunKind::Atom(_)) { pos - run.start } else { 0 };
     pieces[len] = Piece { kind: run.kind, from: pos - start, to: to - start, skip };
@@ -1040,7 +1135,7 @@ const fn atom_relation(pieces: &[Piece; 16], len: usize, spec: &Spec) -> Option<
   let (mut i, mut all_any) = (0, true);
   while i < len {
     match known[i].kind {
-      RunKind::Pad => return None,
+      RunKind::Pad | RunKind::Opaque(_) => return None,
       // Whatever a pattern accepts is initialized, and that is all that is made of it here.
       RunKind::Any | RunKind::Pattern(_) | RunKind::Pointer(_) => {}
       // Required to be some values, but a source may hold anything there, padding included.
@@ -1363,8 +1458,8 @@ const fn pattern_target(
       }
     }
     let stop = min(run.end, end);
-    match run.kind {
-      RunKind::Pad => return out.uninit(pos),
+    match run.kind.seen() {
+      RunKind::Pad | RunKind::Opaque(_) => return out.uninit(pos),
       RunKind::Any | RunKind::Pointer(_) => {
         // Any byte, `stop - pos` times, or until it changes nothing.
         let mut steps = 0;
@@ -1781,6 +1876,15 @@ pub const fn analyze_tail(a: &'static Layout, b: &'static Layout) -> Analysis {
 ///
 /// Never with a self-relative pointer on either side: through a `&mut`, safe code could write
 /// over it, swap it with another or move it elsewhere, where it would aim at something else.
+/// Whatever [`mutable`] is false because of what Rust does not keep in every layout (without the
+/// `unstable` feature): what may be written through the `&mut` to `b` is not known to be a
+/// valid `a` in all of them.
+pub const fn mutable_unspecified(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
+  STRICT
+    && !matches!(fit.exact, Exact::Never(_))
+    && relate(b, a, fit.end, Checked::No).unspecified.is_some()
+}
+
 pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
   !a.has_pointers()
     && !b.has_pointers()

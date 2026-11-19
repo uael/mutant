@@ -54,6 +54,17 @@
 !puns-model/fakecore/src/
 !puns-model/**/*.rs
 
+# Rust (what `puns` does without its `unstable` feature, not published)
+!puns-stable/
+!puns-stable/Cargo.toml
+!puns-stable/src/
+!puns-stable/tests/
+!puns-stable/tests/refused/
+!puns-stable/tests/refused/*.stderr
+!puns-stable/tests/kept/
+!puns-stable/tests/seeds.txt
+!puns-stable/**/*.rs
+
 # Rust (xtask)
 !xtask/
 !xtask/Cargo.toml

@@ -19,6 +19,9 @@ MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target s390x-unknown-linux-gnu  # Miri, stacked borrows, on a big-endian target
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
 cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
+cargo test -p puns-stable            # Without the `unstable` feature: the refusals, and the record of verdicts (alone: see below)
+PUNS_BLESS=1 cargo test -p puns-stable --test seeds  # Write that record again (`puns-stable/tests/seeds.txt`)
+RUSTFLAGS="-Zrandomize-layout -Zlayout-seed=1" cargo +nightly-2026-11-17 test -p puns-stable --test seeds  # The same record, with another layout
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
@@ -85,6 +88,17 @@ per check, which a loaded machine does not change.
 
 ## Architecture
 
+**The `unstable` feature.** Without it, nothing that `puns` does depends on what Rust lets `rustc`
+lay out otherwise (the order of the fields of a struct or a tuple without `repr`, the tag of an
+enum without `repr`, niches): `-Zrandomize-layout` must change no verdict, no check, no message.
+With it, `puns` takes the layout that `rustc` chose. `puns/DESIGN.md`, "What Rust keeps of a
+layout", is the design and the list of what Rust documents, with where. The tests of `puns` run
+with the feature (`puns` is a dev-dependency of itself, with it); `puns-stable` tests what happens
+without it, and must be built alone (`-p puns-stable`): with the rest of the workspace, `puns-model`
+turns the feature on, and its tests check nothing (they say so). A change of the analysis that
+changes a verdict of `puns-stable/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read:
+the record must be the same under every seed (CI runs three).
+
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
 `const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it
 compiles to nothing), **checked** (only what could not be proven is checked at run time) or
@@ -99,6 +113,8 @@ the library, and keep it, the crate docs and `README.md` in step with the code.
   shared by `#[path]` with the model check and the compile-fail cases), followed through their
   buffer, so that Miri runs them with stacked borrows too
 - **`puns-derive/`** — `#[derive(Pun)]`, re-exported as `puns::Pun`
+- **`puns-stable/`** — what `puns` does without the `unstable` feature (not published): the
+  record of verdicts that `-Zrandomize-layout` must not change, and the refusals
 - **`puns-model/`** — model check of the analysis against oracles that do not use it (not
   published; uses the test-only `verdict` feature of `puns`), with `fakecore/`, a `core`
   that lies, for what the derive must not trust
@@ -110,7 +126,7 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 
 - Config: `release-plz.toml`
 - Workflow: `.github/workflows/release-plz.yml`
-- Only `puns` and `puns-derive` are published; `xtask`, `puns-model` and `fakecore` are excluded
+- Only `puns` and `puns-derive` are published; `xtask`, `puns-model`, `fakecore` and `puns-stable` are excluded
 - `puns` owns the changelog and git tags (`v{{ version }}`); `puns-derive` has no changelog or tags of its own
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
 - `release_always = false`: nothing is published by an ordinary push, only by merging a release PR (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the first release PR

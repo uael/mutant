@@ -1,0 +1,18 @@
+[package]
+name = "puns-stable"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0 OR MIT"
+publish = false
+description = "What puns does without its `unstable` feature: the same whatever layout rustc chooses"
+
+# Without `unstable`: built alone (`cargo test -p puns-stable`), so that no other crate of the
+# workspace turns it on (`puns-model` does).
+[dependencies]
+puns = { path = "../puns", features = ["verdict"] }
+
+[dev-dependencies]
+trybuild = "1"
+
+[lints]
+workspace = true

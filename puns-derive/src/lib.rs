@@ -4,7 +4,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{
   Attribute, BinOp, Data, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprLit, ExprRange,
-  Fields, Ident, Index, Lit, Member, Path, RangeLimits, Result, Token, Type, UnOp, Visibility,
+  Fields, GenericParam, Ident, Index, Lit, Member, Path, RangeLimits, Result, Token, Type, UnOp,
+  Visibility,
   parse::{Parse, ParseStream},
   parse_macro_input, parse_quote,
   punctuated::Punctuated,
@@ -19,6 +20,11 @@ use syn::{
 /// Every field must be `Pun`. Any `repr` will do, but a struct whose last field is unsized must
 /// be `repr(C)` or `repr(transparent)`. The types of the fields must be at least as visible as
 /// the struct (`pub` types for a `pub` struct, wherever they are declared).
+///
+/// Without `repr`, Rust lets the compiler choose the order of the fields: without the `unstable`
+/// feature of `puns`, the struct is what every order has (all of it if every order is the same
+/// bytes, as of `(u8, [u8; 3])` or `(bool, bool)`; else that its bytes are initialized, if they
+/// are in every order, and itself). See `puns::layout::UNSTABLE`.
 ///
 /// Options of the struct:
 /// - `#[pun(size = EXPR)]`: the size in bytes of a value is `EXPR`;
@@ -131,14 +137,18 @@ use syn::{
 ///
 /// # Enums
 ///
-/// Enums without fields, of any `repr`: their valid values are read from the compiler.
+/// Enums without fields, of any `repr`: their valid values are read from the compiler. Without
+/// `repr`, Rust does not specify them: without the `unstable` feature of `puns`, such an enum only
+/// proves itself.
 ///
 /// Enums with fields, of a layout that is specified (`repr(C)`, `repr(u8)` or any other integer,
 /// or both) or of none: without `repr`, the layout that `rustc` chose is found by experiments in
 /// const evaluation on a value of each variant, which the layouts of the fields make (no field may
 /// hold a self-relative pointer). Every field must be `Pun`, and can have the `valid` option.
 /// What is known of such an enum is its tag; making one out of anything but itself checks the
-/// tag, then what the fields of the variant require.
+/// tag, then what the fields of the variant require. Without `repr`, what is found is what the
+/// compiler chose, which Rust does not keep: without the `unstable` feature of `puns`, the enum
+/// only proves itself.
 ///
 /// An enum without variants has no value: nothing is made of one.
 ///
@@ -295,14 +305,21 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 // -------------------------------------------------------------------------------------------------
 // Attributes
 
-/// The statement that refuses `ident`, a struct or an enum whose layout may change from one
-/// version of `rustc` to the next, unless the `unstable` feature of `puns` is on.
-fn unspecified(ident: &Ident, what: &str, add: &str, root: &TokenStream) -> TokenStream {
-  let message = format!(
-    "`{ident}` is {what}, whose layout may change from one version of `rustc` to the next: \
-     {add}, or enable the `unstable` feature of `puns`"
-  );
-  quote!(#root::layout::unspecified(#message);)
+/// The identity of the type of `input` (`puns::layout::Id`): where it is declared, and its name.
+/// A generic type has none: two of its instances are other types, which `rustc` may arrange
+/// otherwise, and what makes one is not all `Pun` (`PhantomData<T>`).
+fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
+  let generic =
+    input.generics.params.iter().any(|param| !matches!(param, GenericParam::Lifetime(_)));
+  if generic {
+    return quote!(#root::layout::Id::NONE);
+  }
+  let ident = &input.ident;
+  // Of the type that the traits name, whatever the path leads to (see `Layout::PIN`).
+  quote!({
+    let id: #root::layout::Id = #root::layout::Id::new(#root::__site!(#ident), &[]);
+    id
+  })
 }
 
 #[derive(Default)]
@@ -1714,9 +1731,12 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       }
     }
   });
-  // Only `repr(C)` and `repr(transparent)` specify the layout of a struct.
-  let gate = (!(repr.c || repr.transparent))
-    .then(|| unspecified(ident, "a struct of the `Rust` representation", "add `#[repr(C)]`", &root));
+  // The `Rust` representation: what every order of the fields has (`Layout::rust`).
+  let rust = (!(repr.c || repr.transparent)).then(|| {
+    let pack = repr.packed.clone().unwrap_or_else(|| quote!(::core::primitive::usize::MAX));
+    quote!(.rust(#pack))
+  });
+  let id = identity(input, &root);
   // A `repr(transparent)` struct around a type that `core` lays out in `Option` without a tag has
   // that guarantee too ("Representation" of `core::option`). Its other fields have size 0 and
   // alignment 1, which no such type has.
@@ -1751,13 +1771,14 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
         // is a slice.
         const LAYOUT: #root::layout::Layout = unsafe {
-          #gate
           #root::layout::Layout::structure::<Self>(
             Self::PROBE,
             const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
             const { &[#(#rules),*] },
           )
-        };
+        }
+        #rust
+        .identified(#id);
         #null_optimized
       }
 
@@ -1776,11 +1797,9 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let root = options.root.unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+  let id = identity(input, &root);
   if data.variants.is_empty() {
-    // No value: nothing is ever made of one, and nothing is valid for it. Its size is 0, but its
-    // alignment is not specified (it can have no `repr`).
-    let gate =
-      unspecified(ident, "an enum without variants", "use `core::convert::Infallible`", &root);
+    // No value: nothing is ever made of one, and nothing is valid for it.
     return Ok(quote! {
       // SAFETY: an enum without variants has no value, which is what the layout says.
       unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
@@ -1790,10 +1809,8 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
-        const LAYOUT: #root::layout::Layout = {
-          #gate
-          #root::layout::Layout::uninhabited::<Self>()
-        };
+        const LAYOUT: #root::layout::Layout =
+          #root::layout::Layout::uninhabited::<Self>().identified(#id);
       }
     });
   }
@@ -1910,26 +1927,19 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   }
   let count = variants.len();
   let repr = parse_repr(&input.attrs)?;
-  let gate = (!(repr.c || repr.transparent || repr.int.is_some())).then(|| {
-    unspecified(
-      ident,
-      "an enum without `repr`",
-      "add `#[repr(u8)]` (or another integer, or `C`)",
-      &root,
-    )
-  });
+  // Without `repr`, Rust does not specify how a variant is stored, nor its size.
+  let specified = repr.c || repr.transparent || repr.int.is_some();
   Ok(quote! {
     // SAFETY: the valid values are the ones of the variants, read from the compiler.
     unsafe impl #impl_generics #root::Scalar for #ident #ty_generics #where_clause {
-      const SPEC: #root::layout::Spec = {
-        #gate
-        if #root::layout::Spec::is_zero_sized::<Self>() {
+      const ID: #root::layout::Id = #id;
+      const SPECIFIED: bool = #specified;
+      const SPEC: #root::layout::Spec = if #root::layout::Spec::is_zero_sized::<Self>() {
         #root::layout::Spec::any::<Self>()
       } else {
         let merged: &'static ([(u128, u128); #count], usize) =
           const { &#root::layout::Spec::sorted_ranges([#(#variants),*]) };
         #root::layout::Spec::native_ranges::<Self>(merged.0.split_at(merged.1).0)
-      }
       };
     }
   })
@@ -1961,6 +1971,7 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
 /// of `repr(C)` structs, which the compiler is asked for.
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
+  let id = identity(input, root);
   if !repr.c && repr.int.is_none() {
     return derive_discovered(input, data, root);
   }
@@ -2154,7 +2165,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
               const { &[#(#variants),*] },
             )
           },
-        );
+        )
+        .identified(#id);
       }
     };
   })
@@ -2172,15 +2184,10 @@ fn derive_discovered(
   data: &DataEnum,
   root: &TokenStream,
 ) -> Result<TokenStream> {
+  let id = identity(input, root);
   let (ident, vis) = (&input.ident, &input.vis);
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
-  let gate = unspecified(
-    ident,
-    "an enum with fields and without `repr`",
-    "add `#[repr(u8)]` (or another integer, or `C`)",
-    root,
-  );
   let mut generics = input.generics.clone();
   let bounds = parse_options(&input.attrs, "an enum", &["crate", "bound"])?.bounds;
   for field in data.variants.iter().flat_map(|variant| &variant.fields) {
@@ -2394,10 +2401,11 @@ fn derive_discovered(
         type Rules = ();
         type Pointee = ();
         const PROBE: *const Self = ::core::ptr::null();
-        const LAYOUT: #root::layout::Layout = {
-          #gate
+        // Rust specifies nothing of it: opaque without the `unstable` feature.
+        const LAYOUT: #root::layout::Layout =
           #layout::enumeration::<Self>(const { &<Self as __PunDiscover>::ENUM })
-        };
+            .unspecified()
+            .identified(#id);
       }
     };
   })
@@ -2417,6 +2425,7 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
   let root = options.root.clone().unwrap_or_else(|| quote!(::puns));
   let (ident, vis) = (&input.ident, &input.vis);
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+  let id = identity(input, &root);
   let this = quote!(#ident #ty_generics);
   let mut generics = input.generics.clone();
   for field in &data.fields.named {
@@ -2506,7 +2515,8 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
         const PROBE: *const Self = ::core::ptr::null();
         const LAYOUT: #root::layout::Layout = #root::layout::Layout::union::<Self>(
           const { &#root::layout::Enum::union(const { &[#(#variants),*] }) },
-        );
+        )
+        .identified(#id);
       }
     };
   })

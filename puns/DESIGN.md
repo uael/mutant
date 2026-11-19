@@ -1095,93 +1095,104 @@ asserted). What the code assumes of `usize`, and what holds each:
 | The size given to the evaluator of rules is at most `isize::MAX`, and so are an offset that a rule read at and `size_of_val(self)` (`narrow::SIZE_MAX`, the ranges of "Narrowing") | Rust: it is the size of a value, or the length of a slice of bytes |
 | A register is 64 bits where `usize` is, else 32 (`narrow::REGISTER`) | a choice of speed, not of results: every width computes the same, and `narrow_tests.rs` checks both |
 
-### 12. What Rust guarantees of a layout, and the `unstable` feature
-
-*Status: this is the design. The branch still has a first gate, by type (`layout::unspecified`),
-which it replaces.*
+### 12. What Rust keeps of a layout, and the `unstable` feature
 
 Rust leaves a part of the layout of some types to the compiler, which may choose otherwise in its
-next version: the order of the fields of a struct or of a tuple of the `Rust` representation, the
-place and the values of the tag of an enum without `repr`. `puns` reads what the compiler chose
-(section 1), so a pun is always sound for the build that makes it. But a pun that holds for one
-choice only is not a property of the program: another compiler may refuse it, or check other
-bytes. Without the `unstable` feature, such a pun does not compile.
+next version, or at random with `-Zrandomize-layout`: the order of the fields of a struct or of a
+tuple of the `Rust` representation (and so its size: `(u8, u16, u8)` is 4 or 6 bytes), the place
+and the values of the tag of an enum without `repr`, the niches of `Option` but where `core`
+documents them. `puns` reads what the compiler chose (section 1), so a pun is sound for the build
+that makes it, whatever it chose. What the `unstable` feature is about is whether the pun is the
+same with another choice.
 
-**The rule.** A pun is *guaranteed* if it has the same verdict (proven, checked, refused), and if
-checked accepts the same values, for every layout of its two types that the documentation of Rust
-allows. Without `unstable`, a pun compiles only if it is guaranteed. This is a property of the
-pair, not of a type:
+**The rule.** Without the `unstable` feature, `-Zrandomize-layout` changes nothing that `puns`
+does: what compiles, what is checked, which values a check accepts and every message are the same
+whatever layout `rustc` chose where Rust lets it choose. With the feature, `puns` takes the layout
+that `rustc` chose, as it is, and does everything it can with it (the model check, section "Model
+check", runs with it). Within one build, the feature only adds: a pun that compiles without it
+compiles with it, and does the same.
 
-| Pun | | Why |
+It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven whatever byte its
+`bool` is, while bytes read as `(bool, u8)` would check one byte or the other.
+
+| Pun, without `unstable` | | Why |
 |---|---|---|
-| `(u8, u8)` as `[u8; 2]`, and back | guaranteed | two bytes of any value, whichever is first |
-| `(bool, u8)` as `[u8; 2]` | guaranteed | both bytes are initialized, whichever is first |
-| `[u8; 2]` as `(bool, bool)`, checked | guaranteed | both bytes must be 0 or 1, either way |
-| `[bool; 2]` as `(bool, u8)` | guaranteed | what any of the two places may require holds of both |
-| `[u8; 4]` as `(u8, u16)` | guaranteed | any initialized bytes are one, wherever its padding is |
-| `[u8; 2]` as `(bool, u8)`, checked | `unstable` | the byte that must be 0 or 1 is one or the other |
-| `(u8, u16)` as `[u8; 4]` | refused | a byte is padding, wherever it is |
-| the first byte of `(u8, u16)` | `unstable` | it is padding, or not |
-| bytes as an enum without `repr` | `unstable` | nothing documents its tag |
-| an enum without `repr` as itself | guaranteed | a type has one layout in a program |
+| `[u8; 2]` as `(u8, u8)`, and back | proven | bytes of any value, in either order |
+| `[u8; 2]` as `(bool, bool)` | checked | both bytes are a `bool`, in either order |
+| `(bool, u8)` as `[u8; 2]`, `as_bytes` | proven | both bytes are initialized, in either order |
+| `[u8; 4]` as `(u8, u16)` | proven | it only requires initialized bytes, wherever its padding is |
+| a `repr(C)` struct that holds a `(bool, u8)` as itself, or its first bytes as the `(bool, u8)` | proven | the same type at the same place |
+| an enum without `repr` as itself | proven | a type has one layout in a program |
+| `[u8; 2]` as `(bool, u8)` | refused | the byte that must be 0 or 1 is one or the other |
+| the first byte of `(u8, u16)` | refused | it is padding, or not |
+| anything of `(u8, u16, u8)` but itself | refused | 4 or 6 bytes |
+| bytes as an enum without `repr`, or as `Option<bool>` | refused | nothing documents where its tag is, nor its values |
+| `validate_in::<(bool, u8)>` | refused | which byte it checks |
 
-Two things are not predicted, but read from the compiler, as `transmute` reads them:
+Which field a byte is, is not part of it: `pun::<[u8; 2], (u8, u8)>([1, 2])` is `(1, 2)` or
+`(2, 1)`, a valid value either way, which is what a pun promises (and `transmute` does).
 
-- **The size and the alignment of a type.** A pun is between two sizes. Rust documents no bound
-  on the size of a struct of the `Rust` representation: should a later compiler make `(u8, u8)`
-  three bytes, `pun::<[u8; 2], (u8, u8)>` stops compiling, as `transmute` does, and does not start
-  to mean something else. (`repr(C)` offsets are computed from the sizes and the alignments of the
-  fields, so they are known as soon as these are.)
-- **Which field a byte is.** `pun::<[u8; 2], (u8, u8)>([1, 2])` is `(1, 2)` or `(2, 1)`: a valid
-  value either way, which is what a pun promises, and what `transmute` does.
+**How.** `Pun::LAYOUT` is the layout that `rustc` chose, with or without the feature: everything
+that reads values (validation, copies, the generated accessors) reads them where they are. Each
+node of it says what Rust keeps of it (`layout::Stable`), computed from the layouts of its parts:
 
-**The layout of a type is what is guaranteed of it.** Without `unstable`, `Pun::LAYOUT` holds what
-every layout that Rust allows for the type has in common, in the two directions that the analysis
-already tells apart for a scalar (what a source is *known* to be, what a target *requires*: section
-5). Where the compiler has a choice, a source is known to be less (what it may be under some
-choice), and a target requires more (what it requires under every choice). The analysis and the
-validation are the same code, on that layout: what they prove holds whatever the compiler chose,
-and nothing is computed twice. With `unstable`, `LAYOUT` is the layout that the compiler chose, as
-before, and the layouts of enums without `repr` are found (section 10): `discover.rs`, which rests
-on how `rustc` behaves (R1 to R4), only runs with the feature.
+- `fixed`: its offsets and its size are the same in every layout that Rust allows, given the
+  sizes of its parts. A `repr(C)` or `repr(transparent)` struct, an enum of `repr(C)` or of an
+  integer, a `repr(C)` union, an array: if the sizes of their parts are kept (their offsets are
+  computed from them). A struct or a tuple of the `Rust` representation (`Layout::rust`): if every
+  order of its fields is the same bytes, which is so if one field has a size (it is at 0); or if
+  the fields that have one are all multiples of the alignment of every field (no padding between
+  them in any order) and are all bytes of any value (`(u8, [u8; 3])`), or all the same layout of
+  a type that is fixed through and through (`(bool, bool)`); and if no rule reads its bytes by
+  offset. An enum without `repr`, `Option` and `Result` but where `core` documents them: never
+  (`Layout::unspecified`).
+- `size`: its size is the same in every layout. Of a struct of the `Rust` representation that is
+  not fixed, every order of its fields is tried, each placed at the first offset that its
+  alignment allows, as `rustc` places them (`Layout::orders`, up to 6 fields that matter; the
+  fields of `(u8, u16)` are 4 bytes in any order, the ones of `(u8, u16, u8)` are not).
+- `init`, of what is not fixed: its bytes are initialized in every layout (no padding in any
+  order, and the fields are).
+- `deep`: nothing in it, at any depth, is not fixed.
 
-A type of which something is left to the compiler is a node of its own in the tree
-(`Kind::Unspecified`), which has:
+Without the feature, the analysis (`analysis::STRICT`) does not look into a node that is not
+fixed: the cursor makes it one run, `RunKind::Opaque`. As a source, it is what every layout of it
+is: initialized bytes if `init`, else bytes that may be padding. As a target, it is proven by the
+same type at the same place (below), or, if it requires nothing but initialized bytes (no
+constrained scalar, no pointer, no rule), by initialized bytes; else the pun does not compile
+(`Relation::unspecified`): no check makes up for it, it would read at a place that the compiler
+may move. So nothing in such a node is ever checked at run time, and the marks of the analysis,
+which tell validation what to check, are at places that every layout keeps. A pun of a type whose
+size is not kept compiles only if both sides are the same type (`analysis::sizes_kept`), and a
+function of `Visit` only if nothing in what is not kept has something to check or a pointer
+(`Layout::checks_kept`). `zeroed` does not take the zeros of an enum that is not fixed.
 
-- **what a source is known to be**: its bytes, initialized (the fields fill it, and each is
-  initialized) or not; where the fields are scalars of one size, each place holds a value of one
-  of them;
-- **what a target requires**, if it can be said: any initialized bytes (each field accepts them);
-  where the fields are scalars of one size, a value that all of them accept, at each place. If it
-  cannot (a field that restricts its values among others that do not, an enum, a rule, a
-  pointer), nothing proves it but the type itself;
-- **its identity**: at the same place in the source and in the target, a type proves itself, since
-  a type has one layout in a program (`offset_of!`). Another type does not, even of the same
-  fields: Rust says so of `Wrapper<u8, u8>` and `Wrapper<u8, i8>`. The identity is a value (the
-  crate, the path, the name and the place of the declaration, and for a tuple, an `Option` or a
-  `Result` the identities of its parameters), compared by the analysis: stable Rust compares no
-  types in `const` (`TypeId` is not compared there, `type_name` is not `const`). A generic type
-  that derives `Pun` has none in the first version (its parameters are not all `Pun`): it does
-  not prove itself without `unstable`.
+**The same type** is told by an identity (`layout::Id`), and by the layouts being the same: a
+type has one layout in a program, but two types, however alike, may each be arranged otherwise
+(`Wrapper<u8, u8>` and `Wrapper<u8, i8>`, which `-Zrandomize-layout` does arrange otherwise).
+Stable Rust compares no types in `const` (`TypeId` cannot be compared there, `type_name` is not
+`const`), so an identity is a name and the identities of what makes the type: the primitive
+types, the types of `num`, arrays, slices, tuples, `Option`, `Result`, `MaybeUninit` (and
+`ManuallyDrop<T>` is `T`). What derives `Pun` is named by where it is declared (`__site!`: the
+module, the file, the line and the column, and its name). A generic type that derives `Pun`, a
+`PhantomData`, a `Scalar` implemented by hand and a self-relative pointer have none
+(`Id::NONE`), equal to nothing: a type that holds one only proves itself with the feature. An
+identity only ever refuses: the layouts are compared as well, so two types that would share a
+name are still read by their layouts.
 
-**Nothing in such a node is checked at run time.** A check there would read a place that the
-compiler may move, or require more than the type does. A pun that needs one does not compile, as
-one that needs to prove a pointer does not (`Relation::unspecified`, next to `Relation::pointer`),
-and the message names the type and the feature. So the feature only adds: a pun that compiles
-without it compiles with it (the chosen layout is one of those that the guaranteed one covers) and
-gives the same result (what was checked is at a place that no choice moves).
+**What this rests on, that Rust does not document**: that `rustc` places the fields of a struct
+of the `Rust` representation one after the other, each at the first offset that its alignment
+allows, in an order of its choosing, so that the sizes of the orders are the sizes it may give
+(`-Zrandomize-layout` draws the order at random, and does not do otherwise). Rust only bounds the
+offsets: should a compiler put padding where no alignment needs it, a size that is read would
+differ from the one that `Layout::rust` takes as kept, which makes it not kept (the size is
+compared with the one of the compiler), and a struct that was fixed would stop being so, which
+fails the pun at compile time rather than change what it does. And the alignment of a type, which
+is read: Rust gives the one of a primitive per platform, and of a struct the largest of its
+fields (`-Zrandomize-layout` keeps it).
 
-**What each type is, without `unstable`:**
-
-| Type | Its layout |
-|---|---|
-| integers, floats, `bool`, `char`, `()`, `NonZero`, arrays, slices, `str`, `PhantomData`, `ManuallyDrop`, `MaybeUninit`, `Infallible` | specified: as today (the size of a `MaybeUninit<T>` is read, whatever `T` is) |
-| struct of `repr(C)` or `repr(transparent)`, union of `repr(C)`, enum of `repr(C)` or of an integer | specified: as today |
-| struct or tuple of the `Rust` representation | its fields are somewhere in it, aligned, without overlap. The layout that the compiler chose when every other choice is the same bytes: no field has a size; one has, of the size of the struct (it is at 0: a newtype is its field); the fields fill the struct and are all initialized bytes of any value (`(u8, u16, u8)`); the fields fill it and have the same layout (`(bool, bool)`). Else a node as above. With rules (which name fields): nothing proves it but itself |
-| enum without `repr` | no variant: no value. One variant, no field with a size: no byte. Else a node of which nothing is known (its bytes may be padding) and that only itself proves; its layout is not looked for |
-| `Option<T>` | where `core` documents it (`T` a `NonZero` or a `repr(transparent)` struct around one): `T`, or zeros. Else as an enum without `repr` |
-| `Result<T, E>` | where `core` documents it (one of `T` and `E` as above, the other of size 0 and alignment 1): the same. Else as an enum without `repr` |
-| `Option` of a self-relative pointer | the pointer, or zeros: the declarer of the pointer promises that it is a `repr(transparent)` struct around a `NonZero` (`SelfRelative`) |
+**`Option` of a self-relative pointer** is the same pointer, that may be null, with or without the
+feature (section 10): Rust documents it of a `repr(transparent)` struct around a `NonZero`, which
+is how a pointer is to be declared (`self_relative!` says so; this crate cannot see the `repr`).
 
 **What this rests on**, each documented by Rust (R: the Reference, `doc.rust-lang.org/reference`;
 C: `doc.rust-lang.org/core`):
@@ -1232,10 +1243,21 @@ Niches are not guaranteed beyond the lines of `Option` and `Result` above: that 
 one byte, with `None` at 2, is how `rustc` does it today (`MaybeUninit` and `UnsafeCell` say that
 such optimizations vary). It needs `unstable`.
 
-**How it is checked.** The guaranteed layout of a struct or of a tuple is compared, in the tests,
-with every arrangement of its fields that the rules above allow (an oracle that places them, for
-small types): a pun that is accepted on the guaranteed layout must have the same verdict and
-accept the same values on each.
+Niches that Rust documents only as "ABI-compatible" are not taken either: an enum without `repr`
+of a variant that holds a `NonZero` and one without field (the `Ticket` of the README) needs the
+feature, though `rustc` lays it out as the `Option` of it.
+
+**How it is checked**: `puns-stable`, a crate of the workspace that depends on `puns` without the
+feature. `tests/seeds.rs` records the verdict of every function on every pair of 23 types (the
+ones of the table above, and the kept and the guaranteed ones next to them), the message of each
+refusal, and which byte patterns each type accepts from bytes, and compares the record with
+`tests/seeds.txt`; CI runs it without `-Zrandomize-layout` and with it, of several seeds, and the
+record must be the same each time. With the feature, the same record differs from one seed to the
+next (11 of the lines of a smaller one, between seeds 1 and 3): the check is not empty.
+`tests/refused.rs` holds each refusal and its message, and what compiles. The tests of `puns`
+itself run with the feature (a dev-dependency of the crate on itself), as before: what they test
+is what the feature keeps of the layout that `rustc` chose.
+
 
 ## Model check
 

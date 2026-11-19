@@ -24,6 +24,9 @@ verdict = []
 puns-derive = { version = "=0.1.5", path = "../puns-derive" }
 
 [dev-dependencies]
+# The tests of the crate test every layout, those of the `unstable` feature included. What the
+# crate does without it is tested by `puns-stable`.
+puns = { path = ".", features = ["unstable"] }
 trybuild = "1"
 
 # What is checked at run time, next to the same checks by hand: `cargo bench -p puns --features

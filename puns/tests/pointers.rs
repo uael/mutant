@@ -416,8 +416,6 @@ unsafe impl Fix for Wide {
 /// elements of the same size, aligned as its declarer says: here the larger of the alignment of
 /// the elements and the width of the offset, so that `[u8; 4]`s behind an `i32le` are `u32`s
 /// (but one `[u8; 4]` is not one `u32`).
-// A tuple: the `unstable` feature.
-#[cfg(feature = "unstable")]
 #[test]
 fn prefixes_and_sequences() {
   let wide = |value| Wide { value, more: !value };
@@ -435,7 +433,6 @@ fn prefixes_and_sequences() {
   assert_eq!(r.seq(numbers), expected);
 }
 
-#[cfg(feature = "unstable")]
 // SAFETY: every pointer, at its position.
 unsafe impl<A: Fix, B: Fix, C: Fix> Fix for (A, B, C) {
   fn fix(&mut self, at: usize) {
@@ -448,8 +445,6 @@ unsafe impl<A: Fix, B: Fix, C: Fix> Fix for (A, B, C) {
 
 /// A pointer that may be null is read as one that may be null, and as one that may not when it is
 /// not, checked at run time; text as text.
-// A tuple: the `unstable` feature.
-#[cfg(feature = "unstable")]
 #[test]
 fn null_and_text() {
   let mut b = Builder::new();
@@ -495,13 +490,7 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::as_bytes(&*r), [1, 2, 0, 0, 0, 0xf8, 0xff, 0xff, 0xff]);
   assert_eq!(puns::head_ref::<Table, u8>(&r), &1);
   assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), -8);
-  #[derive(Pun)]
-  #[repr(C)]
-  struct Flagged {
-    flag: bool,
-    rest: [u8; 8],
-  }
-  assert_eq!(puns::try_pun_ref::<Table, Flagged>(&r).map(|flagged| flagged.flag), Ok(true));
+  assert_eq!(puns::try_pun_ref::<Table, (bool, [u8; 8])>(&r).map(|pair| pair.0), Ok(true));
   assert_eq!(r.seq(&r.numbers)[0].get(), 3);
 }
 

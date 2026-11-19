@@ -189,6 +189,7 @@ dependencies = [
 name = "puns"
 version = "0.1.5"
 dependencies = [
+ "puns",
  "puns-derive",
  "trybuild",
 ]
@@ -208,6 +209,14 @@ version = "0.0.0"
 dependencies = [
  "fakecore",
  "puns",
+]
+
+[[package]]
+name = "puns-stable"
+version = "0.0.0"
+dependencies = [
+ "puns",
+ "trybuild",
 ]
 
 [[package]]

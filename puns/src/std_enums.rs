@@ -9,7 +9,7 @@ use core::{marker::PhantomData, mem::MaybeUninit};
 
 use crate::{
   At, Fields, Path, Pun, Variants,
-  layout::{self, Desc, Enum, Field, Layout, Variant},
+  layout::{Desc, Enum, Field, Id, Layout, Variant},
 };
 
 /// The offset of `field`, a field of the value `whole`.
@@ -171,19 +171,16 @@ unsafe impl<T: Pun> Pun for Option<T> {
   // What a pointer that may be null aims at, when `T` is a pointer.
   type Pointee = T::Pointee;
   const PROBE: *const Self = core::ptr::null();
-  const LAYOUT: Layout = match T::OPTION {
-    Some(layout) => layout,
-    None => {
-      if !T::NULL_OPTIMIZED {
-        layout::unspecified(
-          "`Option<T>` has a layout that may change from one version of `rustc` to the next, but \
-           where `T` is a `NonZero` integer or a `repr(transparent)` struct around one (see \
-           \"Representation\" in `core::option`): enable the `unstable` feature of `puns`",
-        );
-      }
-      // What is found is then what `core` guarantees: a niche at zero, which is `None`.
-      Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
-    }
+  const LAYOUT: Layout = if let Some(layout) = T::OPTION {
+    // The declarer of the pointer promises that it is a `NonZero` (see `SelfRelative`).
+    layout
+  } else {
+    let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
+      .identified(Id::new("Option", &[T::LAYOUT.id]));
+    // Where `core` documents it (a `NonZero`, a `repr(transparent)` struct around one), what is
+    // found is what it documents: a niche at zero, which is `None`. Else Rust specifies nothing
+    // of it (section 12 of the design).
+    if T::NULL_OPTIMIZED { layout } else { layout.unspecified() }
   };
 }
 
@@ -196,21 +193,21 @@ unsafe impl<T: Pun, E: Pun> Pun for Result<T, E> {
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = {
-    if !(T::NULL_OPTIMIZED && is_1_zst::<E>() || E::NULL_OPTIMIZED && is_1_zst::<T>()) {
-      layout::unspecified(
-        "`Result<T, E>` has a layout that may change from one version of `rustc` to the next, but \
-         where one of `T` and `E` is a `NonZero` integer (or a `repr(transparent)` struct around \
-         one) and the other has size 0 and alignment 1 (see \"Representation\" in \
-         `core::result`): enable the `unstable` feature of `puns`",
-      );
+    let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
+      .identified(Id::new("Result", &[T::LAYOUT.id, E::LAYOUT.id]));
+    // Where `core` documents it: one of `T` and `E` of the `Option` that it documents, the
+    // other of size 0 and alignment 1. What is found is then what it documents: the variant of
+    // the `NonZero` is its value, and the other one, a single value, the only bytes that are not
+    // one: zeros.
+    if T::NULL_OPTIMIZED && is_1_zst::<E>() || E::NULL_OPTIMIZED && is_1_zst::<T>() {
+      layout
+    } else {
+      layout.unspecified()
     }
-    // What is found is then what `core` guarantees: the variant of the `NonZero` is its value,
-    // and the other one, which is only one value, the only bytes that are not one: zeros.
-    Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
   };
 }
 
-/// Whether `T` has size 0 and alignment 1, a "1-ZST".
+/// Whatever `T` has size 0 and alignment 1, a "1-ZST".
 const fn is_1_zst<T>() -> bool {
   size_of::<T>() == 0 && align_of::<T>() == 1
 }

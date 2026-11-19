@@ -43,7 +43,6 @@ pub mod marker {
 }
 
 /// The default representation: the offsets of the fields were `offset_of!`.
-#[cfg(feature = "unstable")]
 #[derive(Pun, Debug)]
 struct Pair {
   a: u8,
@@ -58,7 +57,6 @@ enum Aligned {
   A(bool),
 }
 
-#[cfg(feature = "unstable")]
 #[test]
 fn offsets_are_not_read_from_core() {
   let mut bytes = [7u8; 2];

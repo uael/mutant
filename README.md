@@ -366,16 +366,50 @@ All are `const fn`s.
 - Integers, floating-point numbers, `bool`, `char`, `NonZero`, and enums without fields, whatever
   their `repr`: each has a set of valid values, and so has each of their bytes.
 - Structs of any `repr` (`C`, `transparent`, `packed`, `align`, or none), tuples, arrays, slices,
-  and structs that end with a slice: their padding, and what each of their bytes can be.
+  and structs that end with a slice: their padding, and what each of their bytes can be. Of a
+  struct or a tuple without `repr`, what every order of its fields has (see below).
 - Enums with fields, of any `repr` or of none: their tag, and what each variant is made of.
   Without `repr`, the layout that `rustc` chose (a tag, or a niche in a field) is found when the
   program is built, by experiments on a value of each variant; an experiment that goes wrong is
-  a compile error, never a wrong layout. `Option<T>` and `Result<T, E>` are such enums.
+  a compile error, never a wrong layout. `Option<T>` and `Result<T, E>` are such enums. What is
+  found is used with the `unstable` feature; without it, such an enum only proves itself (but
+  `Option` and `Result` where `core` documents them: of a `NonZero`).
 - `repr(C)` unions: as a target, one of their fields; as a source, nothing is known of them.
 - `MaybeUninit<T>`: bytes of which nothing is known, which take anything. `Infallible`, and enums
   without variants: no value.
 - `str`: bytes that are UTF-8.
 - What the derive is told, above.
+
+### What Rust keeps, and the `unstable` feature
+
+Rust lets the compiler choose the order of the fields of a struct or of a tuple without `repr`,
+and where the tag of an enum without `repr` is, and its values; the next version of `rustc` may
+choose otherwise, and `-Zrandomize-layout` chooses at random. A pun is always right for the build
+that makes it, but without the `unstable` feature, **`-Zrandomize-layout` changes nothing that
+`puns` does**: a pun compiles only if what it does, what it checks and which values it accepts are
+the same in every layout that Rust allows.
+
+It is a matter of the pun, not of the type: whatever byte the `bool` of a `(bool, u8)` is, its
+bytes are initialized, but which one bytes read as a `(bool, u8)` must check is not known.
+
+```rust
+// Bytes of any value, or both `bool`s, in either order.
+assert_eq!(puns::pun::<[u8; 2], (u8, u8)>([7, 7]), (7, 7));
+assert!(puns::try_pun::<[u8; 2], (bool, bool)>([1, 2]).is_err());
+// Initialized bytes, wherever the `bool` is.
+let _: &[u8] = puns::as_bytes(&(true, 1u8));
+// A value that `core` documents: `None` is zeros.
+assert_eq!(puns::pun::<u32, Option<core::num::NonZero<u32>>>(0), None);
+```
+
+```rust,ignore
+// Without `unstable`: does not compile, the byte that must be 0 or 1 is one or the other.
+let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
+```
+
+With `features = ["unstable"]`, `puns` takes the layout that `rustc` chose, as it is: what
+compiles without the feature compiles with it and does the same, and more compiles. What Rust
+documents, and where, is in [`puns/DESIGN.md`][design], "What Rust keeps of a layout".
 
 An enum is known by its tag, and a variant proves the variant of the same tag:
 
@@ -408,7 +442,8 @@ assert_eq!(puns::try_pun::<_, Shape>(Drawing::Rect(3, 2)), Err(puns::Error::Vali
 assert_eq!(puns::try_pun::<_, Shape>(Drawing::Nothing), Err(puns::Error::Validity));
 ```
 
-The same of enums without `repr`, `Option` included, whose layout is found rather than declared:
+With the `unstable` feature (see below), the same of enums without `repr`, `Option` included,
+whose layout is found rather than declared:
 
 ```rust
 use core::num::NonZero;
@@ -570,10 +605,11 @@ let bytes: &[u8] = puns::pun_ref(text.as_str());
 assert_eq!(bytes, b"text");
 ```
 
-**An enum without `repr`, read as bytes.** Its layout is found, and its padding with it.
+**An enum, read as bytes.** Its padding is known.
 
 ```rust,compile_fail
 #[derive(puns::Pun, Clone, Copy)]
+#[repr(u8)]
 enum Small {
   A(u8),
   B(u16),
@@ -710,7 +746,8 @@ this changes:
   `&mut [[bool; 2]; 2]`, an enum as another when each accepts what the other holds.
 - **Enums without `repr` are known**, `Option` and `Result` among them: their layout, which
   `rustc` chose, is found when the program is built, where a derive of a marker trait asks an
-  enum with fields for a `repr` that specifies it. A `bool` is an `Option<bool>`, proven.
+  enum with fields for a `repr` that specifies it. A `bool` is an `Option<bool>`, proven (with the
+  `unstable` feature: Rust does not keep where the `None` of an `Option<bool>` is).
 - **The rules of a format are in its type**: sizes and lengths that are in the data, values that
   tell what follows, checksums. With a marker trait, a cast gives a header, and the code that
   finds where the packet ends is still to be written, and to be trusted.
@@ -776,6 +813,10 @@ Rust 1.99 or later: the first stable release where `size_of_val_raw` and `align_
 `const`, which is how `puns` knows the layout of a type that ends with a slice. `puns` is `no_std`
 and depends on nothing but its derive. Build with `cargo build` to see refusals: `cargo check`
 does not evaluate what decides them.
+
+Without features, nothing that `puns` does depends on how `rustc` lays out what Rust lets it lay
+out otherwise; `features = ["unstable"]` takes the layout that `rustc` chose (see "What Rust
+keeps, and the `unstable` feature").
 
 `0.1`: the API may still change before `1.0`. "Not done yet", in
 [`puns/DESIGN.md`][design], lists what is missing.

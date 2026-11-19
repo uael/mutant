@@ -25,10 +25,10 @@ fn maybe_uninit_takes_anything() {
   let value: MaybeUninit<u32> = puns::pun(7u32);
   // SAFETY: made of a `u32`.
   assert_eq!(unsafe { value.assume_init() }, 7);
-  let padded = BytePair { byte: 1, word: 2 };
-  let erased: &MaybeUninit<BytePair> = puns::pun_ref(&padded);
+  let padded = (1u8, 2u16);
+  let erased: &MaybeUninit<(u8, u16)> = puns::pun_ref(&padded);
   // SAFETY: the same value.
-  assert_eq!(unsafe { erased.assume_init_ref() }, &padded);
+  assert_eq!(unsafe { erased.assume_init_ref() }, &(1, 2));
   let _: &MaybeUninit<[u8; 4]> = puns::pun_ref(&padded);
   // Between two `MaybeUninit`s, by `&mut` too: anything written through one is the other.
   let mut words = MaybeUninit::<u32>::new(0x0102_0304);
@@ -83,14 +83,7 @@ union Choice {
 #[repr(C)]
 union Padded {
   byte: u8,
-  pair: BytePair,
-}
-
-#[derive(puns::Pun, Clone, Copy, Debug, PartialEq)]
-#[repr(C)]
-struct BytePair {
-  byte: u8,
-  word: u16,
+  pair: (u8, u16),
 }
 
 #[test]
@@ -108,7 +101,7 @@ fn unions() {
   assert!(puns::try_pun::<u8, Choice>(2).is_ok());
   assert_eq!(puns::try_pun::<u8, Choice>(4).map(|_| ()), Err(Error::Validity));
   // Its first field takes one byte: the rest may be padding in the source.
-  let _: Padded = puns::pun(BytePair { byte: 1, word: 2 });
+  let _: Padded = puns::pun((1u8, 2u16));
   // As a source, nothing: only what takes anything.
   let _: MaybeUninit<u32> = puns::pun(word);
   let _: Word = puns::pun(word);

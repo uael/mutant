@@ -1,0 +1,304 @@
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8], Mixed>::TRY_REF` failed inside this call
+     |
+note: inside `puns::Plan::<[u8], Mixed>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_pun_ref::<[u8], Mixed>`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   try_pun_ref::<[u8], D>(bytes)
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const TRY: () = Self::require(Self::check(Need::TRY));
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<[u8; 2], (bool, u8)>::TRY` failed inside this call
+     |
+note: inside `puns::Plan::<[u8; 2], (bool, u8)>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |           ^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_pun::<[u8; 2], (bool, u8)>`
+  --> tests/refused/unspecified.rs:23:11
+   |
+23 |   let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: a byte that the target requires to be initialized is padding in the source.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const HEAD: () = Self::require(Self::check(Need::PART));
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16), u8>::HEAD` failed inside this call
+     |
+note: inside `puns::Plan::<(u8, u16), u8>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::HEAD };
+  |           ^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::HEAD };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn head::<(u8, u16), u8>`
+  --> tests/refused/unspecified.rs:25:11
+   |
+25 |   let _ = puns::head::<(u8, u16), u8>((1, 2));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const BY_REF: () = Self::require(Self::check(Need::REF));
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(u8, u16, u8), [u8]>::BY_REF` failed inside this call
+     |
+note: inside `puns::Plan::<(u8, u16, u8), [u8]>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn pun_ref::<(u8, u16, u8), [u8]>`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   pun_ref(value)
+  |   ^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const BY_VALUE: () = Self::require(Self::check(Need::VALUE));
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<Ticket, u32>::BY_VALUE` failed inside this call
+     |
+note: inside `puns::Plan::<Ticket, u32>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_VALUE };
+  |           ^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_VALUE };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn pun::<Ticket, u32>`
+  --> tests/refused/unspecified.rs:29:11
+   |
+29 |   let _ = puns::pun::<Ticket, u32>(Ticket::Free);
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+              This is at byte 0 of the target.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |   const TRY: () = Self::require(Self::check(Need::TRY));
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<u8, std::option::Option<bool>>::TRY` failed inside this call
+     |
+note: inside `puns::Plan::<u8, Option<bool>>::require`
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: the above error was encountered while instantiating `fn try_pun::<u8, Option<bool>>`
+  --> tests/refused/unspecified.rs:30:11
+   |
+30 |   let _ = puns::try_pun::<u8, Option<bool>>(2);
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked:
+              cannot pun: what may be written through the `&mut` is a valid source in the layout that `rustc` chose, not in every layout that Rust allows: the source has a part whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`).
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+
+    --> $WORKSPACE/puns/src/lib.rs
+     |
+     |       Message::new(Self::NOT_MUTABLE).panic();
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `puns::Plan::<(bool, u8), [u8; 2]>::BY_MUT` failed inside this call
+     |
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $WORKSPACE/puns/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_MUT };
+  |           ^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/lib.rs
+  |
+  |   const { Plan::<S, D>::BY_MUT };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn pun_mut::<(bool, u8), [u8; 2]>`
+  --> tests/refused/unspecified.rs:32:11
+   |
+32 |   let _ = puns::pun_mut::<(bool, u8), [u8; 2]>(&mut (true, 1));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked: the type has a part whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`), and something to check or a pointer in it, which would be at another place with another compiler.
+              Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`
+   --> $RUST/core/src/panic.rs
+    |
+    = note: evaluation of `puns::validate_in::<Mixed, NoPointers>::{constant#0}` failed here
+    |
+   ::: $WORKSPACE/puns/src/visit.rs
+    |
+    |   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
+    |           ----------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $WORKSPACE/puns/src/visit.rs
+  |
+  |   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn validate_in::<Mixed, NoPointers>`
+  --> tests/refused/unspecified.rs:34:11
+   |
+34 |   let _ = puns::validate_in::<Mixed, _>(&[1, 1], 0, &mut NoPointers);
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

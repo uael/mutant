@@ -8,8 +8,8 @@ use puns::{
   pun, pun_mut, pun_ref, try_pun, try_pun_mut, try_pun_ref,
 };
 
+/// An enum of the default representation: the compiler chooses its size and its values.
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
-#[repr(u8)]
 enum Level {
   Low,
   Mid,
@@ -31,9 +31,7 @@ enum Wide {
   B = 0xfffe,
 }
 
-/// A struct of the default representation: the compiler chooses the order of its fields, which
-/// may not be the same from one version of `rustc` to the next (the `unstable` feature).
-#[cfg(feature = "unstable")]
+/// A struct of the default representation: the compiler chooses the order of its fields.
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
 struct Rust {
   flag: bool,
@@ -82,11 +80,6 @@ fn by_value() {
   assert_eq!(try_pun::<u32, char>(0x1f980), Ok('🦀'));
   assert_eq!(try_pun::<u32, char>(0xd800), Err(Error::Validity));
   assert_eq!(try_pun::<u16, NonZero<u16>>(0), Err(Error::Validity));
-}
-
-#[cfg(feature = "unstable")]
-#[test]
-fn rust_representation() {
   // Whatever the order the compiler chose for the fields.
   let rust = Rust { flag: true, word: 0xdead_beef, level: Level::High, bytes: [7, 8] };
   assert_eq!(try_pun::<[u8; 8], Rust>(pun(rust)), Ok(rust));
