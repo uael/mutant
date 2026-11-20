@@ -557,6 +557,7 @@ impl Stable {
 /// `Scalar` implemented by hand): it is equal to none, not even itself. Where two types have
 /// the same identity, the analysis still requires their layouts to be the same: an identity
 /// only ever refuses.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
 pub struct Id {
   name: &'static str,
@@ -569,12 +570,14 @@ impl Id {
   pub const NONE: Self = Self { name: "", args: &[], len: 0 };
 
   /// The type `name`, of the types whose identities are `args`.
+  #[doc(hidden)]
   #[must_use]
   pub const fn new(name: &'static str, args: &'static [Id]) -> Self {
     Self { name, args, len: 0 }
   }
 
   /// The type `name` of a length (an array).
+  #[doc(hidden)]
   #[must_use]
   pub const fn sized(name: &'static str, args: &'static [Id], len: usize) -> Self {
     Self { name, args, len }
@@ -2753,6 +2756,24 @@ impl Layout {
 
   /// Whatever the layout keeps everything in every layout that Rust allows, at any depth: what
   /// [`validate_in`](crate::validate_in) checks of it is then the same in all.
+  ///
+  /// ```
+  /// use puns::Pun;
+  ///
+  /// #[derive(Pun)]
+  /// #[repr(C)]
+  /// struct Header {
+  ///   kind: u8,
+  ///   len: u16,
+  /// }
+  ///
+  /// // `repr(C)` places the fields in order.
+  /// assert!(Header::LAYOUT.is_specified());
+  /// // The same bytes in either order of the fields.
+  /// assert!(<(u8, u8)>::LAYOUT.is_specified());
+  /// // The padding byte is before the `u16` or after it.
+  /// assert!(!<(u8, u16)>::LAYOUT.is_specified());
+  /// ```
   #[must_use]
   pub const fn is_specified(&self) -> bool {
     self.stable.deep
