@@ -34,7 +34,9 @@ use puns::{
 #[repr(transparent)]
 struct Opt<T>(i32, PhantomData<T>);
 
-// SAFETY: the type is its `i32`; no value of it is made here.
+// SAFETY: `Opt<T>` is `repr(transparent)` over an `i32`, its offset, every byte of which is
+// initialized, and none in an `UnsafeCell`. Its scheme is its own. No value of it is made here, so
+// no pointer of it is followed, and nothing relies on more.
 unsafe impl<T: Pun> SelfRelative for Opt<T> {
   type Target = T;
   const POINTER: Pointer = Pointer::one::<T>("seeds", 4, Endian::NATIVE).or_null();

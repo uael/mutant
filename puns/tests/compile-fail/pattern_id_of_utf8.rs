@@ -12,7 +12,7 @@ const ANY: &Dfa =
 #[repr(transparent)]
 struct Lax([u8]);
 
-// SAFETY: a type of bytes that `ANY` accepts: any.
+// SAFETY: A `Lax` holds any bytes, all of which `ANY` accepts. A test implements `Pun` by hand.
 unsafe impl Pun for Lax {
   type Elem = ();
   type Fields = ();
@@ -20,7 +20,7 @@ unsafe impl Pun for Lax {
   type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = <[u8] as Pun>::PROBE as *const Self;
-  // SAFETY: the probe of a slice of bytes.
+  // SAFETY: `Lax` ends with a slice, and its probe is `<[u8] as Pun>::PROBE`, of 3 bytes.
   const LAYOUT: Layout = unsafe { Layout::pattern::<Self>(Self::PROBE, ANY) };
 }
 

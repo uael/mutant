@@ -46,7 +46,17 @@ macro_rules! model_fieldless {
         Ok([$($name::$variant),+].iter().any(|variant| {
           let mut bits = 0u128;
           let bytes: &[u8] =
-            // SAFETY: a fieldless enum has no padding.
+            // SAFETY: `variant` is a reference to a value of `$name`, valid for reads of its
+            // `size` bytes, of alignment 1 as `u8`s. A value of a fieldless enum is its
+            // discriminant. With `repr(C)` or a primitive representation, it has the size of
+            // that integer [1], so every byte is initialized. `Erust`, without `repr`, rests on
+            // the layout that `rustc` gives it, a one-byte tag. These are the requirements of
+            // `slice::from_raw_parts`.
+            //
+            // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.primitive.enum:
+            //
+            //     For field-less enums, primitive representations set the size and alignment to
+            //     be the same as the primitive type of the same name.
             unsafe { core::slice::from_raw_parts(core::ptr::from_ref::<$name>(variant).cast(), size) };
           for i in 0..size {
             let byte = if crate::NATIVE_LITTLE { bytes[size - 1 - i] } else { bytes[i] };
@@ -562,8 +572,12 @@ pub type Size8 = (
 #[repr(transparent)]
 pub struct Zero(pub core::mem::MaybeUninit<u8>);
 
-// SAFETY: every value of `SPEC.valid` (0) is a value of a `MaybeUninit<u8>`, and what a source of
-// it is known to be (anything, uninitialized too) is what a `MaybeUninit<u8>` is.
+// SAFETY: `Zero` is `repr(transparent)` over `MaybeUninit<u8>`, so `SPEC`, of a `u8`, has its
+// size. The items of the `# Safety` of `Scalar` hold:
+// - `SPEC` is made with `Spec::maybe_uninit`, so a value of `Zero` may hold any byte,
+//   uninitialized included.
+// - `SPEC` accepts 0, which is a valid `MaybeUninit<u8>`. `Zero` has no other invariant.
+// - `Zero` holds no `UnsafeCell`.
 unsafe impl puns::Scalar for Zero {
   const SPEC: puns::layout::Spec =
     puns::layout::Spec::ranges::<u8>(puns::layout::Endian::Little, &[(0, 0)]).maybe_uninit();

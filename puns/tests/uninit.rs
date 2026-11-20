@@ -14,7 +14,12 @@ use puns::{
 #[repr(transparent)]
 struct Zero(MaybeUninit<u8>);
 
-// SAFETY: 0 is a value of a `MaybeUninit<u8>`, and a `MaybeUninit<u8>` is known to be anything.
+// SAFETY: `Zero` is `repr(transparent)` over `MaybeUninit<u8>`, so `SPEC`, of a `u8`, has its
+// size. The items of the `# Safety` of `Scalar` hold:
+// - `SPEC` is made with `Spec::maybe_uninit`, so a value of `Zero` may hold any byte,
+//   uninitialized included.
+// - `SPEC` accepts 0, which is a valid `MaybeUninit<u8>`. `Zero` has no other invariant.
+// - `Zero` holds no `UnsafeCell`.
 unsafe impl Scalar for Zero {
   const SPEC: Spec = Spec::ranges::<u8>(Endian::Little, &[(0, 0)]).maybe_uninit();
 }
@@ -23,20 +28,22 @@ unsafe impl Scalar for Zero {
 fn maybe_uninit_takes_anything() {
   // Any value, padding included, is a `MaybeUninit` of its size: by value, by reference.
   let value: MaybeUninit<u32> = puns::pun(7u32);
-  // SAFETY: made of a `u32`.
+  // SAFETY: `value` holds the bytes of `7u32`, which are an initialized `u32`, as `assume_init`
+  // requires.
   assert_eq!(unsafe { value.assume_init() }, 7);
   let padded = (1u8, 2u16);
   let erased: &MaybeUninit<(u8, u16)> = puns::pun_ref(&padded);
-  // SAFETY: the same value.
+  // SAFETY: `erased` points to `padded`, a valid `(u8, u16)`, as `assume_init_ref` requires.
   assert_eq!(unsafe { erased.assume_init_ref() }, &(1, 2));
   let _: &MaybeUninit<[u8; 4]> = puns::pun_ref(&padded);
   // Between two `MaybeUninit`s, by `&mut` too: anything written through one is the other.
   let mut words = MaybeUninit::<u32>::new(0x0102_0304);
   let bytes: &mut MaybeUninit<[u8; 4]> = puns::pun_mut(&mut words);
   bytes.write([0; 4]);
-  // SAFETY: written.
+  // SAFETY: `words` was made of a `u32`, then its 4 bytes were written with zeros through
+  // `bytes`. They are an initialized `u32`, as `assume_init` requires.
   assert_eq!(unsafe { words.assume_init() }, 0);
-  // SAFETY: zeroed.
+  // SAFETY: `zeroed` makes 2 bytes of zeros, an initialized `u16`, as `assume_init` requires.
   assert_eq!(unsafe { puns::zeroed::<MaybeUninit<u16>>().assume_init() }, 0);
 }
 
@@ -91,11 +98,13 @@ union Padded {
 fn unions() {
   // As a target, one of its fields: proven by one that every source is.
   let word: Word = puns::pun(0x0102_0304u32);
-  // SAFETY: made of a `u32`.
+  // SAFETY: `word` holds the 4 bytes of a `u32`, at offset 0, which are a valid `u32`. A read of
+  // the field `word` reads them as a `u32`.
   assert_eq!(unsafe { word.word }, 0x0102_0304);
   let _: &Word = puns::pun_ref(&7u32);
   let flag: Choice = puns::pun(true);
-  // SAFETY: made of a `bool`.
+  // SAFETY: `flag` holds the byte of `true` at offset 0, which is a valid `bool`. A read of the
+  // field `flag` reads it as a `bool`.
   assert!(unsafe { flag.flag });
   let _: Choice = puns::pun(puns::num::u8in::<1, 2>::new(1).unwrap());
   // Checked, field by field, when no field is proven: 2 is no `bool`, but is a `small`.

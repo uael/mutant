@@ -12,7 +12,7 @@ enum E {
 
 const SAMPLE: MaybeUninit<E> = MaybeUninit::new(E::B(7));
 
-// SAFETY: in bounds; reading it is what must fail.
+// SAFETY: Not sound, on purpose: byte 2 of `E::B` is padding. Const evaluation must report it.
 const PADDING: u8 = unsafe { *SAMPLE.as_ptr().cast::<u8>().add(2) };
 
 fn main() {

@@ -164,11 +164,14 @@ pub const fn try_pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<Result<D,
   if const { !verdict::<S, D>().try_pun } {
     return None;
   }
-  // SAFETY: as in `try_pun`, which would compile.
+  // SAFETY: `verdict::<S, D>().try_pun` is `true`, which is `check(Need::TRY)` being `None`, the
+  // condition under which `Plan::<S, D>::TRY` compiles. The proof of the first block of
+  // `crate::try_pun` applies.
   if !unsafe { validate::<Plan<S, D>, Root, D>((&raw const value).cast()) } {
     return Some(Err(Error::Validity));
   }
-  // SAFETY: just validated.
+  // SAFETY: As in the second block of `crate::try_pun`: `validate` found the marked parts valid,
+  // and the analysis proves the others.
   Some(Ok(unsafe { pun_unchecked(value) }))
 }
 
@@ -178,7 +181,9 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   if const { !verdict::<S, D>().pun } {
     return None;
   }
-  // SAFETY: as in `pun`, which would compile.
+  // SAFETY: `verdict::<S, D>().pun` is `true`, which is `check(Need::VALUE)` being `None`, the
+  // condition under which `Plan::<S, D>::BY_VALUE` compiles. The proof of the block of `crate::pun`
+  // applies.
   Some(unsafe { pun_unchecked(value) })
 }
 
@@ -188,7 +193,9 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   if const { !verdict::<S, D>().head } {
     return None;
   }
-  // SAFETY: as in `head`, which would compile.
+  // SAFETY: `verdict::<S, D>().head` is `true`, which is `check(Need::PART)` being `None`, the
+  // condition under which `Plan::<S, D>::HEAD` compiles. The proof of the block of `crate::head`
+  // applies.
   Some(unsafe { pun_unchecked(value) })
 }
 
@@ -199,7 +206,9 @@ pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
     return None;
   }
   let shift = const { Plan::<S, D>::TAIL_ANALYSIS.shift };
-  // SAFETY: as in `tail`, which would compile.
+  // SAFETY: `parts::<S, D>().tail` is `true`, which is `check_tail(Need::PART)` being `None`, the
+  // condition under which `Plan::<S, D>::TAIL` compiles. The proof of the block of `crate::tail`
+  // applies.
   Some(unsafe { (&raw const value).cast::<u8>().add(shift).cast::<D>().read_unaligned() })
 }
 
@@ -209,7 +218,9 @@ pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
   if const { !parts::<S, D>().tail_ref } {
     return None;
   }
-  // SAFETY: as in `tail_ref`, which would compile.
+  // SAFETY: `parts::<S, D>().tail_ref` is `true`, which is `check_tail(Need::PART_REF)` being
+  // `None`, the condition under which `Plan::<S, D>::TAIL_REF` compiles. The proof of the block of
+  // `crate::tail_ref` applies.
   Some(unsafe { &*Plan::<S, D>::tail_cast(value) })
 }
 
@@ -219,7 +230,9 @@ pub fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<Result
   if const { !verdict::<S, D>().try_pun_ref } {
     return None;
   }
-  // SAFETY: as in `try_pun_ref`, which would compile.
+  // SAFETY: `verdict::<S, D>().try_pun_ref` is `true`, which is `check(Need::TRY_REF)` being
+  // `None`, the condition under which `Plan::<S, D>::TRY_REF` compiles. The proof of the block of
+  // `crate::try_pun_ref` applies.
   Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
 }
 
@@ -232,7 +245,9 @@ pub fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(
     return None;
   }
   let source: *mut S = value;
-  // SAFETY: as in `try_pun_mut`, which would compile.
+  // SAFETY: `verdict::<S, D>().try_pun_mut` is `true`, which is `check(Need::TRY_REF)` being `None`
+  // and `Plan::MUTABLE`, the condition under which `Plan::<S, D>::TRY_MUT` compiles. The proof of
+  // the block of `crate::try_pun_mut` applies.
   Some(Plan::<S, D>::try_cast(source).map(|target| unsafe { &mut *target.cast_mut() }))
 }
 
@@ -242,7 +257,9 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> 
   if const { !verdict::<S, D>().pun_ref } {
     return None;
   }
-  // SAFETY: as in `pun_ref`, which would compile.
+  // SAFETY: `verdict::<S, D>().pun_ref` is `true`, which is `check(Need::REF)` being `None`, the
+  // condition under which `Plan::<S, D>::BY_REF` compiles. The proof of the block of
+  // `crate::pun_ref` applies.
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
@@ -252,7 +269,9 @@ pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
   if const { !verdict::<S, D>().head_ref } {
     return None;
   }
-  // SAFETY: as in `head_ref`, which would compile.
+  // SAFETY: `verdict::<S, D>().head_ref` is `true`, which is `check(Need::PART_REF)` being `None`,
+  // the condition under which `Plan::<S, D>::HEAD_REF` compiles. The proof of the block of
+  // `crate::head_ref` applies.
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
@@ -263,7 +282,9 @@ pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option
     return None;
   }
   let source: *mut S = value;
-  // SAFETY: as in `head_mut`, which would compile.
+  // SAFETY: `parts::<S, D>().head_mut` is `true`, which is `check_head_mut()` being `None`, the
+  // condition under which `Plan::<S, D>::HEAD_MUT` compiles. The proof of the block of
+  // `crate::head_mut` applies.
   Some(unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() })
 }
 
@@ -274,7 +295,9 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option
     return None;
   }
   let source: *mut S = value;
-  // SAFETY: as in `tail_mut`, which would compile.
+  // SAFETY: `parts::<S, D>().tail_mut` is `true`, which is `check_tail_mut()` being `None`, the
+  // condition under which `Plan::<S, D>::TAIL_MUT` compiles. The proof of the block of
+  // `crate::tail_mut` applies.
   Some(unsafe { &mut *Plan::<S, D>::tail_cast(source).cast_mut() })
 }
 
@@ -284,9 +307,11 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&D, &[u8
   if const { !verdict::<[u8], D>().try_pun_ref } {
     return None;
   }
-  // SAFETY: bytes.
+  // SAFETY: `bytes` is valid for reads of `bytes.len()` initialized bytes, which is what
+  // `Plan::front` requires.
   Some(match unsafe { Plan::<[u8], D>::front(bytes.as_ptr(), bytes.len()) } {
-    // SAFETY: as in `from_head`, which would compile.
+    // SAFETY: As in the second block of `crate::from_head`, whose first block has the same
+    // condition.
     Ok((target, size)) => Ok((unsafe { &*target }, bytes.split_at(size).1)),
     Err(error) => Err(error),
   })
@@ -298,9 +323,11 @@ pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&[u8], &
   if const { Plan::<[u8], D>::check_from_tail().is_some() } {
     return None;
   }
-  // SAFETY: bytes.
+  // SAFETY: `bytes` is valid for reads of `bytes.len()` initialized bytes. `check_from_tail()` is
+  // `None`, and it refuses an unsized `D`. These are the requirements of `Plan::back`.
   Some(match unsafe { Plan::<[u8], D>::back(bytes.as_ptr(), bytes.len()) } {
-    // SAFETY: as in `from_tail`, which would compile.
+    // SAFETY: As in the second block of `crate::from_tail`, whose first block has the same
+    // condition.
     Ok((start, target)) => Ok((bytes.split_at(start).0, unsafe { &*target })),
     Err(error) => Err(error),
   })

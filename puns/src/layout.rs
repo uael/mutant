@@ -393,7 +393,8 @@ impl Spec {
   #[doc(hidden)]
   #[must_use]
   pub const unsafe fn bits_of<T>(value: &T) -> u128 {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: Every byte of `value` is initialized, by contract on the caller. This is the
+    // requirement of `bits_of`.
     unsafe { bits_of(value) }
   }
 
@@ -422,7 +423,9 @@ impl Spec {
   /// #[repr(transparent)]
   /// struct Be16([u8; 2]);
   ///
-  /// // SAFETY: any two bytes are one.
+  /// // SAFETY: `Be16` is `repr(transparent)` over `[u8; 2]`, so `SPEC` has its size. Every value
+  /// // is two initialized bytes, which `Spec::any` accepts, any two initialized bytes are a valid
+  /// // `Be16`, and it holds no `UnsafeCell`.
   /// unsafe impl Scalar for Be16 {
   ///   const SPEC: Spec = Spec::any::<Be16>().with_endian(Endian::Big);
   /// }
@@ -457,7 +460,9 @@ impl Spec {
   #[inline(always)]
   #[must_use]
   pub const unsafe fn load(&self, ptr: *const u8) -> u128 {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: `self.is_integer()` is `true`, by contract on the caller, so `self.size` is at most
+    // 16. `ptr` is valid for reads of `self.size` initialized bytes, by contract on the caller.
+    // These are the requirements of `load`.
     unsafe { load(ptr, self.size, self.endian) }
   }
 
@@ -502,7 +507,10 @@ impl Spec {
   pub(crate) const unsafe fn matches(&self, ptr: *const u8) -> bool {
     match self.valid {
       Valid::Uninit | Valid::Any => true,
-      // SAFETY: guaranteed by the caller.
+      // SAFETY: The scalar accepts only some values, so `ptr` is valid for reads of `self.size`
+      // initialized bytes, by contract on the caller. Only `Spec::with_ranges` makes a
+      // `Valid::In`, and it asserts that the size is 1 to 16. These are the requirements of
+      // `load`.
       Valid::In(ranges) => contains(ranges, unsafe { load(ptr, self.size, self.endian) }),
     }
   }
@@ -544,7 +552,26 @@ pub(crate) const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
 #[inline(always)]
 pub(crate) const unsafe fn load(ptr: *const u8, size: usize, endian: Endian) -> u128 {
   let mut buf = [0u8; 16];
-  // SAFETY: `size <= 16` and `ptr` is readable for `size` bytes.
+  // SAFETY: This satisfies the safety contract of `copy_nonoverlapping` [1]:
+  // - `ptr` is valid for reads of `size` bytes, by contract on the caller.
+  // - `buf` is 16 bytes, and `size <= 16`, by contract on the caller. So the `size` bytes at
+  //   `buf` or at `buf + 16 - size` are valid for writes, and `add(16 - size)` stays within `buf`.
+  // - A `u8` is aligned at any address.
+  // - `buf` is a local of this function, which no pointer from the caller reaches, so the two
+  //   regions do not overlap.
+  // The bytes of `buf` are then initialized, those that are copied by contract on the caller.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/core/ptr/fn.copy_nonoverlapping.html:
+  //
+  //     Behavior is undefined if any of the following conditions are violated:
+  //
+  //     - `src` must be valid for reads of `count * size_of::<T>()` bytes or that number must be
+  //       0.
+  //     - `dst` must be valid for writes of `count * size_of::<T>()` bytes or that number must
+  //       be 0.
+  //     - Both `src` and `dst` must be properly aligned.
+  //     - The region of memory beginning at `src` with a size of `count * size_of::<T>()` bytes
+  //       must not overlap with the region of memory beginning at `dst` with the same size.
   unsafe {
     match endian {
       Endian::Little => {
@@ -1699,7 +1726,7 @@ impl Variant {
 ///   Field::new(offset_of!(Pair, low), &LOW),
 ///   Field::new(offset_of!(Pair, high), &HIGH),
 /// ]);
-/// // SAFETY: `Pair` is sized.
+/// // SAFETY: `Pair` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
 /// const PAIR: Layout = unsafe { Layout::structure::<Pair>(core::ptr::null(), &FIELDS, &[]) };
 ///
 /// assert_eq!((PAIR.size(), PAIR.align()), (size_of::<Pair>(), align_of::<Pair>()));
@@ -1734,7 +1761,7 @@ impl Field {
   ///
   /// const VALUE: Layout = Layout::scalar::<u32>(Spec::any::<u32>());
   /// const FIELDS: [Field; 1] = [Field::new(0, &VALUE)];
-  /// // SAFETY: `Wrapper` is sized.
+  /// // SAFETY: `Wrapper` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   /// const WRAPPER: Layout =
   ///   unsafe { Layout::structure::<Wrapper>(core::ptr::null(), &FIELDS, &[]) };
   ///
@@ -1770,7 +1797,7 @@ impl Field {
   /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
   /// const DIGIT: Layout = BYTE.restricted(&[(0, 9)]);
   /// const FIELDS: [Field; 1] = [Field::restricted(0, &DIGIT)];
-  /// // SAFETY: `Version` is sized.
+  /// // SAFETY: `Version` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   /// const VERSION: Layout =
   ///   unsafe { Layout::structure::<Version>(core::ptr::null(), &FIELDS, &[]) };
   ///
@@ -1926,8 +1953,13 @@ const fn excludes_zero<P>() -> bool {
   let none = mem::MaybeUninit::new(None::<P>);
   let mut i = 0;
   while i < size_of::<P>() {
-    // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2 of
-    // `discover.rs`).
+    // SAFETY: `i < size_of::<P>()`, which is the size of `Option<P>`, so `add(i)` stays within
+    // `none`, and the byte is valid for reads and aligned. A read of a `u8` also requires the byte
+    // to be initialized, which nothing here ensures. `rustc` reports an error when const
+    // evaluation reads an uninitialized byte, as the module documentation of `discover` explains
+    // ("The experiments rest on these facts of the compiler"), and the Reference does not promise
+    // it. So this is sound only in const evaluation, where `self_relative!` evaluates it. A call
+    // at run time with such a `P` would be undefined behavior (see `# Panics`).
     let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
     assert!(
       byte == 0,
@@ -2258,6 +2290,8 @@ impl Layout {
   ///
   /// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
   /// - `probe` is `<[u8] as Pun>::PROBE`, cast to `*const T` with `as` casts only.
+  /// - The size of a value of `T` whose tail has the length of the tail of `probe` is at most
+  ///   `isize::MAX`.
   ///
   /// # Examples
   ///
@@ -2271,7 +2305,9 @@ impl Layout {
   /// #[repr(transparent)]
   /// struct Digits([u8]);
   ///
-  /// // SAFETY: the probe of a slice of bytes, as a pointer to `Digits`, which is one.
+  /// // SAFETY: `Digits` is a struct whose last field is a slice. The probe is the one of a slice
+  /// // of bytes, cast to `*const Digits` with an `as` cast, and has 3 bytes, a size that fits in
+  /// // an `isize`.
   /// const DIGITS: Layout =
   ///   unsafe { Layout::pattern::<Digits>(<[u8] as Pun>::PROBE as *const Digits, Dfa::DIGITS) };
   ///
@@ -2280,9 +2316,20 @@ impl Layout {
   /// assert!(!DIGITS.is_free());
   /// ```
   pub const unsafe fn pattern<T: ?Sized>(probe: *const T, dfa: &'static Dfa) -> Self {
-    // SAFETY: the caller gives the probe of a type whose pointers have a slice length.
+    // SAFETY: By contract on the caller, `T` is a slice, `str`, or a struct whose last field is
+    // one of these, and `probe` is `<[u8] as Pun>::PROBE` cast to `*const T` with `as` casts
+    // only. `<[u8] as Pun>::PROBE` is `slice_from_raw_parts(null(), PROBE_LEN)`. These are the
+    // requirements of `verify`.
     unsafe { ptr::verify::<T>(probe) };
-    // SAFETY: the metadata of `probe` is a small slice length.
+    // SAFETY: This satisfies the safety contract of `size_of_val_raw` [1]. The unsized tail of `T`
+    // is a slice or a `str`, by contract on the caller. The size of the value that `probe` points
+    // to fits in an `isize`, by contract on the caller.
+    //
+    // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.size_of_val_raw.html:
+    //
+    //     If the unsized tail of `T` is: a slice `[U]`, `str`, or a trait object `dyn Trait`, then
+    //     the size of the entire value (dynamic tail length + statically sized prefix) must fit in
+    //     `isize`.
     assert!(unsafe { mem::size_of_val_raw(probe) } == ptr::PROBE_LEN, "not a byte string");
     dfa.check();
     Self {
@@ -2433,7 +2480,10 @@ impl Layout {
     let none = mem::MaybeUninit::new(None::<P>);
     let mut i = 0;
     while i < size_of::<P>() {
-      // SAFETY: in bounds. A byte of `None` that is not initialized fails the build (R2).
+      // SAFETY: As in `excludes_zero`: `add(i)` stays within `none`, and the read is sound only
+      // in const evaluation, where `rustc` reports an error for an uninitialized byte. `nullable`
+      // is a safe `pub` function, so a call at run time with such a `P` would be undefined
+      // behavior (see `# Panics`).
       let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
       assert!(byte == 0, "`None` of this self-relative pointer is not zeros");
       i += 1;
@@ -2517,7 +2567,7 @@ impl Layout {
   ///   Field::new(offset_of!(Padded, byte), &BYTE),
   ///   Field::new(offset_of!(Padded, word), &WORD),
   /// ]);
-  /// // SAFETY: `Padded` is sized.
+  /// // SAFETY: `Padded` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   /// const PADDED: Layout =
   ///   unsafe { Layout::structure::<Padded>(core::ptr::null(), &FIELDS, &[]) };
   ///
@@ -2658,7 +2708,7 @@ impl Layout {
   /// };
   ///
   /// const WORD: Layout = Layout::scalar::<u16>(Spec::any::<u16>());
-  /// // SAFETY: the probe of a slice.
+  /// // SAFETY: The probe is `<[u16] as Pun>::PROBE`, as `Layout::slice` requires.
   /// const WORDS: Layout = unsafe { Layout::slice::<u16>(<[u16] as Pun>::PROBE, &WORD) };
   ///
   /// // Unsized: its size is where its elements start.
@@ -2667,7 +2717,8 @@ impl Layout {
   /// ```
   pub const unsafe fn slice<T>(probe: *const [T], elem: &'static Layout) -> Self {
     assert!(!elem.unsized_ && elem.size == size_of::<T>());
-    // SAFETY: `[T]` is a slice.
+    // SAFETY: `[T]` is a slice, and `probe` is `<[T] as Pun>::PROBE` by contract on the caller,
+    // which is `slice_from_raw_parts(null(), PROBE_LEN)`. These are the requirements of `verify`.
     unsafe { ptr::verify::<[T]>(probe) };
     Self {
       kind: Kind::Slice(elem),
@@ -2742,7 +2793,7 @@ impl Layout {
   ///   Op::Lt,
   /// ];
   /// const RULES: [Rule; 1] = [Rule::Assert(&OPS)];
-  /// // SAFETY: `Range` is sized.
+  /// // SAFETY: `Range` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   /// const RANGE: Layout =
   ///   unsafe { Layout::structure::<Range>(core::ptr::null(), &FIELDS, &RULES) };
   ///
@@ -2777,7 +2828,20 @@ impl Layout {
     }
     match tail {
       None => {
-        // SAFETY: `T` is `Sized` (none of its fields is unsized): `probe` is not even looked at.
+        // SAFETY: This satisfies the safety contracts of `size_of_val_raw` and
+        // `align_of_val_raw` [1], which are the same. If `T` is `Sized`, both are always safe to
+        // call. Otherwise, by contract on the caller, the tail of `T` is a slice or a `str`, and
+        // `probe` is `T::PROBE`, whose tail has `PROBE_LEN` elements. A value of `T` whose tail
+        // has 8 elements fits in an `isize`, by contract on the caller, and so does one of
+        // `PROBE_LEN` (3) elements.
+        //
+        // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.size_of_val_raw.html:
+        //
+        //     If `T` is `Sized`, this function is always safe to call.
+        //
+        //     If the unsized tail of `T` is: a slice `[U]`, `str`, or a trait object
+        //     `dyn Trait`, then the size of the entire value (dynamic tail length + statically
+        //     sized prefix) must fit in `isize`.
         let (size, align) = unsafe { (mem::size_of_val_raw(probe), mem::align_of_val_raw(probe)) };
         assert!(end <= size, "field out of bounds");
         let uniform = match (all_any && end == size, all_pad) {
@@ -2811,9 +2875,16 @@ impl Layout {
         this
       }
       Some(field) => {
-        // SAFETY: the tail of `T` is a slice (the tail of its last field is).
+        // SAFETY: `T` has an unsized field, so it is unsized. By contract on the caller, it is a
+        // struct whose last field is a slice, `str`, or a struct whose last field is one of these,
+        // and `probe` is `<[E] as Pun>::PROBE` cast to `*const T` with `as` casts only.
+        // `<[E] as Pun>::PROBE` is `slice_from_raw_parts(null(), PROBE_LEN)`. These are the
+        // requirements of `verify`.
         unsafe { ptr::verify::<T>(probe) };
-        // SAFETY: the metadata of `probe` is a small slice length.
+        // SAFETY: This satisfies the safety contract of `align_of_val_raw`, which is the one of
+        // `size_of_val_raw` quoted above. The tail of `T` is a slice or a `str`. The tail of
+        // `probe` has `PROBE_LEN` (3) elements, and a value of `T` whose tail has 8 elements fits
+        // in an `isize`, by contract on the caller.
         let align = unsafe { mem::align_of_val_raw(probe) };
         check_rules(rules, end);
         let this = Self {
@@ -2832,7 +2903,11 @@ impl Layout {
         // Check the size model against the compiler.
         let mut len = 0;
         while len <= 8 {
-          // SAFETY: `T` has a slice tail of `len` elements, and its size is tiny.
+          // SAFETY: `T` is a struct whose last field is a slice, `str`, or a struct whose last
+          // field is one of these, as `raw_with_len` requires. The pointer it returns has a tail
+          // of `len` elements, at most 8. A value of `T` whose tail has 8 elements fits in an
+          // `isize`, by contract on the caller, and so does one with fewer. This is the safety
+          // contract of `size_of_val_raw`, quoted above.
           let size = unsafe { mem::size_of_val_raw(ptr::raw_with_len(probe, len)) };
           assert!(
             matches!(this.size_of_val(len), Some(s) if s == size),
@@ -3719,7 +3794,7 @@ impl Layout {
   ///   Field::new(offset_of!(Mixed, narrow), &NARROW),
   ///   Field::new(offset_of!(Mixed, wide), &WIDE),
   /// ]);
-  /// // SAFETY: `Mixed` is sized.
+  /// // SAFETY: `Mixed` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   /// const MIXED: Layout =
   ///   unsafe { Layout::structure::<Mixed>(core::ptr::null(), &FIELDS, &[]) };
   ///
@@ -3778,7 +3853,7 @@ impl Layout {
   ///
   /// const BYTE: Layout = Layout::scalar::<u8>(Spec::any::<u8>());
   /// assert_eq!(Layout::array(&BYTE, 5).size(), 5);
-  /// // SAFETY: the probe of a slice.
+  /// // SAFETY: The probe is `<[u8] as Pun>::PROBE`, as `Layout::slice` requires.
   /// const BYTES: Layout = unsafe { Layout::slice::<u8>(<[u8] as Pun>::PROBE, &BYTE) };
   /// assert_eq!(BYTES.size(), 0);
   /// ```
@@ -4571,7 +4646,27 @@ impl Dfa {
   /// - `ptr` is valid for reads of `len` bytes, which are initialized.
   #[inline]
   pub(crate) const unsafe fn matches(&self, ptr: *const u8, len: usize) -> bool {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: This satisfies the safety contract of `slice::from_raw_parts` [1]. `ptr` is valid for
+    // reads of `len` initialized bytes, by contract on the caller, so it is non-null [2], and the
+    // bytes are in one allocation, whose size fits in an `isize`. A `u8` is aligned at any
+    // address. The slice lives only during this call, which writes no memory.
+    //
+    // [1] Per https://doc.rust-lang.org/1.99.0/core/slice/fn.from_raw_parts.html:
+    //
+    //     Behavior is undefined if any of the following conditions are violated:
+    //
+    //     - `data` must be non-null, valid for reads for `len * size_of::<T>()` many bytes, and
+    //       it must be properly aligned. [...]
+    //     - `data` must point to `len` consecutive properly initialized values of type `T`.
+    //     - The memory referenced by the returned slice must not be mutated for the duration of
+    //       lifetime `'a`, except inside an `UnsafeCell`.
+    //     - The total size `len * size_of::<T>()` of the slice must be no larger than
+    //       `isize::MAX`, and adding that size to `data` must not "wrap around" the address
+    //       space.
+    //
+    // [2] Per https://doc.rust-lang.org/1.99.0/core/ptr/index.html#safety:
+    //
+    //     A null pointer is never valid for reads/writes.
     self.accepts_bytes(unsafe { core::slice::from_raw_parts(ptr, len) })
   }
 
@@ -4585,7 +4680,8 @@ impl Dfa {
   /// - `ptr` is valid for reads of `len` bytes, which are initialized.
   #[inline]
   pub(crate) const unsafe fn matches_utf8(ptr: *const u8, len: usize) -> bool {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: As in `Dfa::matches`, the requirements of `slice::from_raw_parts` hold by contract
+    // on the caller, and the slice lives only during this call.
     core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }).is_ok()
   }
 }
@@ -4827,7 +4923,10 @@ impl Op {
   #[doc(hidden)]
   #[must_use]
   pub const fn constant<T: Unsigned>(value: &T) -> u128 {
-    // SAFETY: an unsigned integer is initialized, and has no padding.
+    // SAFETY: `Unsigned` is sealed, and implemented only for `u8`, `u16`, `u32`, `u64`, `u128` and
+    // `usize`, which are at most 16 bytes. `value` is a reference, so valid for reads of
+    // `size_of::<T>()` bytes. An integer is initialized and has no padding, so these bytes are
+    // initialized. These are the requirements of `load`.
     unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
   }
 
@@ -5451,7 +5550,9 @@ impl Varint {
   /// - `ptr` is valid for reads of `size` bytes, which are initialized.
   #[inline]
   const unsafe fn read(self, ptr: *const u8, size: usize) -> Option<(u128, usize)> {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: As in `Dfa::matches`: `ptr` is valid for reads of `size` initialized bytes, by
+    // contract on the caller, which meets the requirements of `slice::from_raw_parts`. The slice
+    // lives only during this call, which writes no memory.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, size) };
     if matches!(self, Varint::Quic) {
       if bytes.is_empty() {
@@ -5989,7 +6090,11 @@ impl Machine {
       Op::Lit(value) => self.push(value),
       Op::Load { offset, size, big } => {
         let endian = if big { Endian::Big } else { Endian::Little };
-        // SAFETY: `check_rules` made sure that the field is in the sized part of the struct.
+        // SAFETY: `op` is an operation of a rule that `Layout::structure` accepted, by contract on
+        // the caller. `check_ops` asserted that a load reads 1 to 16 bytes within the sized
+        // fields of the struct. `base` is valid for reads of these bytes, initialized, by
+        // contract on the caller. So `add(offset)` stays within them, and they meet the
+        // requirements of `load`.
         self.push(unsafe { load(base.add(offset), size as usize, endian) });
       }
       Op::Size => self.push(size as u128),
@@ -6002,7 +6107,10 @@ impl Machine {
       Op::Varint { form, length } => {
         let offset = self.get(depth - 1);
         let value = if offset <= size as u128 {
-          // SAFETY: in the bounds of the value.
+          // SAFETY: `offset <= size`, which is checked above, and `base` is valid for reads of
+          // `size` initialized bytes, by contract on the caller. So `add(offset)` stays within
+          // them, and the `size - offset` bytes from there meet the requirements of
+          // `Varint::read`.
           match unsafe { form.read(base.add(offset as usize), size - offset as usize) } {
             Some((value, bytes)) => Some(if length { bytes as u128 } else { value }),
             None => None,
@@ -6017,7 +6125,9 @@ impl Machine {
           (self.get(depth - 1), if big { Endian::Big } else { Endian::Little });
         // In the value: one comparison of the offset, with what does not change in a walk.
         if size >= width as usize && offset <= (size - width as usize) as u128 {
-          // SAFETY: in the bounds of the value.
+          // SAFETY: `offset + width <= size`, which is checked above, and `base` is valid for
+          // reads of `size` initialized bytes, by contract on the caller. `check_ops` asserted
+          // that `width` is 1 to 16. These are the requirements of `add` and of `load`.
           self.set(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
         } else {
           return false;
@@ -6036,7 +6146,11 @@ impl Machine {
           if operands == 4 { (self.get(depth - 2), self.get(depth - 1)) } else { (0, 0) };
         self.depth -= operands - 1;
         if start <= end && end <= size as u128 && zeros <= to && to <= size as u128 {
-          // SAFETY: in the bounds of the value.
+          // SAFETY: `start <= end <= size`, which is checked above, and `base` is valid for reads
+          // of `size` initialized bytes, by contract on the caller. So `add(start)` stays within
+          // them, and the `end - start` bytes from there meet the requirements of
+          // `slice::from_raw_parts`, as in `Dfa::matches`. The slice lives only during this
+          // call, which writes no memory but `self`.
           let bytes = unsafe {
             core::slice::from_raw_parts(base.add(start as usize), (end - start) as usize)
           };
@@ -6396,6 +6510,8 @@ pub const fn merge_ranges<const N: usize>(
 #[doc(hidden)]
 pub const unsafe fn bits_of<T>(value: &T) -> u128 {
   assert!(size_of::<T>() <= 16, "a fieldless enum cannot be larger than 16 bytes");
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `size_of::<T>() <= 16`, which is asserted above. `value` is a reference, so valid for
+  // reads of `size_of::<T>()` bytes, which are initialized, by contract on the caller. These are
+  // the requirements of `load`.
   unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
 }

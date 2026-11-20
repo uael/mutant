@@ -159,7 +159,9 @@ macro_rules! pointers {
     #[repr(transparent)]
     pub struct $name<$($param)?>(i32le, PhantomData<($($param,)?)>);
 
-    // SAFETY: the type is its offset, a byte array; no value of it is made.
+    // SAFETY: The type is `repr(transparent)` over its offset, an `i32le`, a byte array, every byte
+    // of which is initialized, and none in an `UnsafeCell`. Its scheme is its own. No value of it
+    // is made, so no pointer of it is followed, and nothing relies on more.
     unsafe impl<$($param: Pun)?> SelfRelative for $name<$($param)?> {
       type Target = $target;
       const POINTER: Pointer = $pointer;

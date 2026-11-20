@@ -117,7 +117,9 @@ fn fallback(input: &DeriveInput) -> TokenStream {
     }
   });
   quote! {
-    // SAFETY: never used, as the crate does not compile.
+    // SAFETY: This implementation is emitted only next to the compile error of the derive, so
+    // the crate that holds it does not compile, and no code uses it. Its `PROBE` and `LAYOUT`
+    // panic, so any evaluation of them is a compile error too.
     unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
       type Elem = ();
       type Fields = ();
@@ -1487,7 +1489,20 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       () => quote!({
         let value = #root::layout::Layout::uninit::<Self>();
         let start: *const Self = value.as_ptr();
-        // SAFETY: a place in the value, which is not read.
+        // SAFETY: `start` points to `value`, an uninitialized `Self` that is `Sized` (the
+        // implementation requires it), so `(*start).#member` is a place in its allocation. `&raw
+        // const` makes a pointer to it without reading it, which needs neither initialized
+        // bytes nor alignment. That pointer and `start` are derived from the same allocation, and
+        // the bytes between them are in it, as `byte_offset_from` requires [1]. The distance is
+        // the offset of the field, which is not negative, so `as usize` keeps it.
+        //
+        // [1] Per https://doc.rust-lang.org/1.99.0/core/primitive.pointer.html#method.offset_from:
+        //
+        //     `self` and `origin` must either
+        //
+        //     - point to the same address, or
+        //     - both be derived from a pointer to the same allocation, and the memory range
+        //       between the two pointers must be in bounds of that object.
         unsafe { (&raw const (*start).#member).byte_offset_from(start) as usize }
       }),
     };
@@ -1673,7 +1688,12 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       #[allow(non_camel_case_types)]
       #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: the field of the layout of the struct.
+      // SAFETY: `FIELD` is the field of the layout of the struct whose declaration index is `#i`:
+      // `layouts` holds the fields in the order of their declarations, each with the layout of
+      // its type or a restriction of it, and `Layout::sort_fields` gives each its index. Its type
+      // is `#ty`. `Next` is the field declared after it, or `()` after the last, and `Last` is the
+      // last. So the list from the first marker is the fields of the layout, in the order of
+      // their declarations, as the `# Safety` of `Fields` requires.
       unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
         type Type = #ty;
         type Next = #next;
@@ -1727,7 +1747,47 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
       #offsets_trait
 
-      // SAFETY: the layout comes from the compiler, field by field.
+      // SAFETY: For every struct that the derive accepts, the layout meets the `# Safety` of
+      // `Pun`:
+      // - `Layout::structure` takes the size and the alignment from the compiler. It asserts that
+      //   the fields do not overlap and are within the size, and that the trailing padding of an
+      //   unsized struct is the one it computes.
+      // - The offset of each field is the one of the compiler: for `repr(C)`, the one that the
+      //   representation specifies [1], from the sizes and alignments of the fields
+      //   (`Layout::tail_offset`, `Layout::tail_offset_packed`); for `repr(transparent)`, 0 for
+      //   the field with a size [2]; otherwise, the offset of a place projected from a pointer to
+      //   the `Sized` struct.
+      // - Each field has the layout of its type (`Pun`, section Safety), or a restriction of it
+      //   (`Layout::restricted`), which guarantees the same values and accepts fewer. A struct is
+      //   valid if each of its fields is valid [3], and a byte that no field covers is padding.
+      //   Rules are requirements of `puns`, never of the language.
+      // - `Fields` lists the fields in order (see the markers above). `Rules` lists the rules
+      //   that have an expression, which `validate::check_rules` asserts against the layout. The
+      //   other lists are `()`, and `OPTION` is `None`. `NULL_OPTIMIZED` changes only what the
+      //   analysis takes to be the same in every layout that Rust allows.
+      // - Each field is `Pun`, so no byte is inside an `UnsafeCell`.
+      // The functions called are those of the types that `Layout::PIN` fixes, which no path can
+      // lead elsewhere. A struct whose private fields keep an invariant must not derive `Pun`
+      // (crate documentation, section Soundness): the layout describes only what the language
+      // requires of its fields.
+      //
+      // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.struct.size-field-offset:
+      //
+      //     For each field in declaration order in the struct, first determine the size and
+      //     alignment of the field. If the current offset is not a multiple of the field's
+      //     alignment, then add padding bytes to the current offset until it is a multiple of the
+      //     field's alignment. The offset for the field is what the current offset is now. Then
+      //     increase the current offset by the size of the field.
+      //
+      // [2] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.transparent.layout-abi:
+      //
+      //     Structs and enums with this representation have the same layout and ABI as the only
+      //     non-size 0 non-alignment 1 field, if present, or unit otherwise.
+      //
+      // [3] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.struct:
+      //
+      //     A struct, tuple, and array requires all fields/elements to be valid at their
+      //     respective type.
       unsafe impl #impl_generics #root::Pun for #this #where_clause {
         type Elem = ();
         type Fields = #first;
@@ -1735,8 +1795,12 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         type Rules = #rule_list;
         type Pointee = ();
         const PROBE: *const Self = #probe;
-        // SAFETY: if the struct is unsized, its probe is the one of its last field, whose tail
-        // is a slice.
+        // SAFETY: `Layout::structure` requires nothing of a `Sized` struct. An unsized struct has
+        // an unsized last field, whose `Pun` type is a slice, `str`, or a struct whose last field
+        // is one of these. Its probe is the one of that field, `<[E] as Pun>::PROBE` cast with
+        // `as` casts, cast again to `*const Self`. The size of the struct with 8 elements in its
+        // tail must fit in an `isize`, which the derive does not check: `rustc` reports an error
+        // in const evaluation where it does not.
         const LAYOUT: #root::layout::Layout = unsafe {
           #root::layout::Layout::structure::<Self>(
             Self::PROBE,
@@ -1768,7 +1832,15 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   if data.variants.is_empty() {
     // No value: nothing is ever made of one, and nothing is valid for it.
     return Ok(quote! {
-      // SAFETY: an enum without variants has no value, which is what the layout says.
+      // SAFETY: An enum without variants has no valid value [1]. `Layout::uninhabited` has its
+      // size and alignment, and accepts no value. So every value that the layout accepts is
+      // valid, and every value holds what it says, since there are none. The lists are `()`,
+      // and it has no byte in an `UnsafeCell`.
+      //
+      // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.enum:
+      //
+      //     An enum must have a valid discriminant, and all fields of the variant indicated by
+      //     that discriminant must be valid at their respective type.
       unsafe impl #impl_generics #root::Pun for #ident #ty_generics #where_clause {
         type Elem = ();
         type Fields = ();
@@ -1894,7 +1966,10 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   let mut variants = vec![];
   for variant in &data.variants {
     let variant = &variant.ident;
-    // SAFETY (of the generated code): an enum without fields has no padding.
+    // SAFETY (of the generated code): `bits_of` requires every byte of the value to be
+    // initialized. A value of an enum without fields is its discriminant, which `rustc` stores
+    // in every byte of it. The call is evaluated in the constant `SPEC`, where `rustc` reports
+    // an error for a read of an uninitialized byte.
     variants.push(quote!(unsafe { #root::layout::Spec::bits_of(&Self::#variant) }));
   }
   let count = variants.len();
@@ -1902,7 +1977,18 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   // Without `repr`, Rust does not specify how a variant is stored, nor its size.
   let specified = repr.c || repr.transparent || repr.int.is_some();
   Ok(quote! {
-    // SAFETY: the valid values are the ones of the variants, read from the compiler.
+    // SAFETY: `SPEC` has the size of `Self`, and the items of the `# Safety` of `Scalar` hold:
+    // - A valid value of an enum without fields is one of its variants [1]. `SPEC` accepts the
+    //   bytes of each variant, read from a value of it, as an unsigned integer in the byte order
+    //   of the target. An enum of size 0 has one variant, and no byte.
+    // - Each value that `SPEC` accepts is the bytes of a variant, so a valid `Self`. The derive
+    //   is told of no other invariant.
+    // - An enum without fields holds no `UnsafeCell`.
+    //
+    // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.enum:
+    //
+    //     An enum must have a valid discriminant, and all fields of the variant indicated by
+    //     that discriminant must be valid at their respective type.
     unsafe impl #impl_generics #root::Scalar for #ident #ty_generics #where_clause {
       const ID: #root::layout::Id = #id;
       const SPECIFIED: bool = #specified;
@@ -2039,7 +2125,11 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         #[allow(non_camel_case_types)]
         #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-        // SAFETY: the field of the layout of the variant.
+        // SAFETY: `FIELD` is the field `#j` of the variant `#i` in the layout of the enum, of
+        // type `#ty`: `layouts` holds the fields of the variant in the order of their
+        // declarations. `Next` is the field after it, or `()` after the last. So the list is
+        // the fields of the variant in the layout, in order, as the `# Safety` of `Fields`
+        // requires.
         unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
           type Type = #ty;
           type Next = #next;
@@ -2059,7 +2149,10 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       #[allow(dead_code, non_camel_case_types)]
       #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: the variant of the layout of the enum.
+      // SAFETY: `TAG` is the tag of the variant `#i` of the layout of the enum, whose fields are
+      // the list from its first marker. `Next` is the variant after it, or `()` after the last.
+      // So the list is the variants of the layout, in order, as the `# Safety` of `Variants`
+      // requires.
       unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
         type Fields = #fields;
         type Next = #next;
@@ -2068,7 +2161,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       }
     });
     variants.push(quote!(#root::layout::Variant::new(
-      // SAFETY (of the generated code): an enum without fields has no padding.
+      // SAFETY (of the generated code): As for an enum without fields: `#tag` is one, whose
+      // value is its discriminant, and the call is evaluated in a constant.
       unsafe { #root::layout::Spec::bits_of(&#tag::#name) },
       const {
         &#root::layout::Layout::variant::<Self>(
@@ -2095,11 +2189,14 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       #[allow(dead_code, non_camel_case_types, clippy::enum_variant_names)]
       enum #tag { #(#tags),* }
 
-      // SAFETY: the valid values are the ones of the variants, read from the compiler.
+      // SAFETY: `#tag` is an enum without fields, of the variants of the enum and their
+      // discriminants. As for any enum without fields, `SPEC` accepts exactly the bytes of its
+      // variants, which are its valid values, and it holds no `UnsafeCell`.
       unsafe impl #root::Scalar for #tag {
         const SPEC: #root::layout::Spec = {
           let merged: &'static ([(u128, u128); #count], usize) = const {
-            // SAFETY: an enum without fields has no padding.
+            // SAFETY: As for an enum without fields: `#tag` is one, whose value is its
+            // discriminant, and the calls are evaluated in a constant.
             &#root::layout::Spec::sorted_ranges([
               #(unsafe { #root::layout::Spec::bits_of(&#tag::#names) }),*
             ])
@@ -2118,9 +2215,37 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
         #(#shape_defs)*
       }
 
-      // SAFETY: the layout is the one that RFC 2195 specifies, made from the sizes and alignments
-      // of the fields of each variant; it is checked against the size and the alignment of the
-      // enum.
+      // SAFETY: For every enum that `derive_tagged` accepts, the layout meets the `# Safety` of
+      // `Pun`:
+      // - The enum is `repr(C)` or of a primitive representation, whose layout Rust specifies
+      //   [1] [2]. Its tag is `#tag`, an enum without fields of the same representation and
+      //   discriminants. Each variant is a `repr(C)` struct, after the tag or in a union next to
+      //   it, and `Layout::repr_c` computes the offsets of its fields as `repr(C)` specifies.
+      //   `Layout::enumeration` asserts the result against the size and the alignment of the
+      //   enum, and asserts that the tag and the fields are within it.
+      // - Each field has the layout of its type, or a restriction of it. An enum is valid if its
+      //   tag is the one of a variant and the fields of that variant are valid [3], which is what
+      //   the layout accepts.
+      // - `Variants` lists the variants in order, each with its fields (see the markers above).
+      //   The other lists are `()`, and `OPTION` is `None`.
+      // - Each field is `Pun`, and the tag is an integer, so no byte is in an `UnsafeCell`.
+      //
+      // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.primitive.adt:
+      //
+      //     The representation of a primitive representation enum is a `repr(C)` union of
+      //     `repr(C)` structs for each variant with a field. The first field of each struct in
+      //     the union is the primitive representation version of the enum with all fields
+      //     removed ("the tag") and the remaining fields are the fields of that variant.
+      //
+      // [2] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.adt.intro:
+      //
+      //     The representation of a `repr(C)` enum with fields is a `repr(C)` struct with two
+      //     fields, also called a "tagged union" in C
+      //
+      // [3] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.enum:
+      //
+      //     An enum must have a valid discriminant, and all fields of the variant indicated by
+      //     that discriminant must be valid at their respective type.
       unsafe impl #impl_generics #root::Pun for #this #where_clause {
         type Elem = ();
         type Fields = ();
@@ -2203,7 +2328,9 @@ fn derive_discovered(
     samples.push(quote! {
       if #layout::inhabited_all(&[#(&<#types as #root::Pun>::LAYOUT),*]) {
         #layout::wrap(Self::#name {
-          // SAFETY (of the generated code): a valid value of each field, made by its layout.
+          // SAFETY (of the generated code): Each field type has values, which is checked above,
+          // so `Layout::sample` makes a valid value of it from its layout, as `assume_init`
+          // requires (see the samples of `Option<T>` in `std_enums.rs`).
           #(#members: unsafe { #layout::sample::<#types>().assume_init() }),*
         })
       } else {
@@ -2216,10 +2343,16 @@ fn derive_discovered(
         let sample = &<Self as __PunDiscover>::SAMPLES[#i];
         let base = sample.as_ptr();
         if #layout::inhabited_all(&[#(&<#types as #root::Pun>::LAYOUT),*]) {
-          // SAFETY (of the generated code): the sample of a variant that has values is one.
+          // SAFETY (of the generated code): The variant has values, which is checked above, so
+          // its sample is the variant made of valid fields, a valid `Self`. `base` points to it,
+          // in the constant `SAMPLES`, so it is aligned and not dangling. These are the
+          // requirements of a reference.
           match unsafe { &*base } {
             Self::#name { #(#members: #bindings),* } => [#(
-              // SAFETY (of the generated code): a field of the value at `base`.
+              // SAFETY (of the generated code): Each binding is a reference to a field of the
+              // value at `base`, made from `base`. So both pointers are derived from the same
+              // allocation, and the bytes between them are in it, as `byte_offset_from`
+              // requires. The distance is the offset of the field, not negative.
               unsafe { (#bindings as *const #types).byte_offset_from(base) } as #usize
             ),*],
             // Not the variant: `Layout::discover` finds that the sample is not.
@@ -2283,8 +2416,11 @@ fn derive_discovered(
         #[allow(non_camel_case_types)]
         #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-        // SAFETY: the field of the layout of the variant, if it has values (else the variant has
-        // no field in the layout, and the list ends).
+        // SAFETY: If the variant `#i` has values, `FIELD` is its field `#j` in the layout of the
+        // enum, of type `#ty`, at the offset observed on its sample, and `Next` is the field
+        // after it. Otherwise the layout of the variant has no field, and `FIELD` is `None`,
+        // which ends the list. Either way the list is the fields of the variant in the layout,
+        // in order, as the `# Safety` of `Fields` requires.
         unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
           type Type = #ty;
           type Next = #next;
@@ -2308,7 +2444,9 @@ fn derive_discovered(
       #[allow(dead_code, non_camel_case_types)]
       #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: the variant of the layout of the enum: its index, and its tags.
+      // SAFETY: `TAG` is the index of the variant `#i`, and `RANGES` its tags, in the layout of
+      // the enum. `Next` is the variant after it, or `()` after the last. So the list is the
+      // variants of the layout, in order, as the `# Safety` of `Variants` requires.
       unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
         type Fields = #first_field;
         type Next = #next;
@@ -2366,8 +2504,12 @@ fn derive_discovered(
         );
       }
 
-      // SAFETY: the layout that `rustc` gave the enum, found by experiments that fail to compile
-      // rather than find a wrong one (see `discover.rs`).
+      // SAFETY: The layout is the one that `rustc` gave the enum, found by the experiments of
+      // `Layout::discover`. These fail to compile rather than find a wrong layout, under the
+      // facts of the compiler that the module documentation of `discover` lists. Each variant
+      // holds its fields at the offsets observed on its sample, each with the layout of its type.
+      // `Variants` lists the variants in order, each with its fields. The other lists are `()`,
+      // and `OPTION` is `None`. Each field is `Pun`, so no byte is in an `UnsafeCell`.
       unsafe impl #impl_generics #root::Pun for #this #where_clause {
         type Elem = ();
         type Fields = ();
@@ -2449,7 +2591,9 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
       #[allow(non_camel_case_types)]
       #vis struct #marker #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: the field of the layout of the variant, the field of the union.
+      // SAFETY: `FIELD` is the one field of the variant `#i` of the layout of the union, the
+      // field `#i` of the union, of type `#ty`, at offset 0. `Next` is `()`. So the list is the
+      // fields of the variant, as the `# Safety` of `Fields` requires.
       unsafe impl #impl_generics #root::Fields for #marker #ty_generics #where_clause {
         type Type = #ty;
         type Next = ();
@@ -2462,7 +2606,9 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
       #[allow(dead_code, non_camel_case_types)]
       #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: the variant of the layout of the union: its field.
+      // SAFETY: `TAG` is the index `#i` of the variant of the layout of the union that is its
+      // field `#i`. `Next` is the variant after it, or `()` after the last. So the list is the
+      // variants of the layout, in order, as the `# Safety` of `Variants` requires.
       unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
         type Fields = #marker #ty_generics;
         type Next = #next;
@@ -2485,8 +2631,22 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
 
       #(#items)*
 
-      // SAFETY: the fields of a `repr(C)` union are at offset 0; a value is taken to be valid if
-      // it is one of them, and nothing is known of one (see `Layout::union`).
+      // SAFETY: The union is `repr(C)`, so each field is at offset 0 [1], which is where the
+      // layout puts it, with the layout of its type or a restriction of it. `Layout::union`
+      // takes the size and the alignment from the compiler. As a target, the layout accepts
+      // bytes that are a valid value of one field. Such bytes are a value that safe code makes
+      // by writing that field, which is valid [2]. As a source, the layout guarantees nothing,
+      // not even that a byte is initialized, which every value holds. `Variants` lists the
+      // fields in order. The other lists are `()`, and `OPTION` is `None`. Each field is `Pun`,
+      // so no byte is in an `UnsafeCell`.
+      //
+      // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.union.size-align:
+      //
+      //     Each field lives at byte offset 0 from the beginning of the union.
+      //
+      // [2] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.union:
+      //
+      //     Obviously, all values that can be created entirely in safe code are valid.
       unsafe impl #impl_generics #root::Pun for #this #where_clause {
         type Elem = ();
         type Fields = ();

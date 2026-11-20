@@ -603,12 +603,16 @@ impl puns::Visit for Trace<'_> {
       (Target::Sequence(to, len), false) => {
         puns::validate_elems_in::<puns::Pointee<P>, Self>(bytes, to, len, self)
       }
-      // SAFETY: the bytes that `validate_in` accepted, every pointer followed (`trace`): what
-      // the pointer aims at is a valid value, in the bytes.
+      // SAFETY: `trusted` is true only in the `Trace` that `trace` makes after `validate_in`
+      // accepted the same bytes with a `Trace` that followed every pointer. That walk accepted
+      // what this pointer aims at, `to` in `bytes`, as a `Pointee<P>`. So those bytes are valid
+      // for reads, and meet the requirements of `pointers_in`.
       (Target::One(to), true) => unsafe {
         puns::pointers_in::<puns::Pointee<P>, Self>(bytes.as_ptr(), to, self)
       },
-      // SAFETY: as above, `len` valid values.
+      // SAFETY: As for one target, the walk of `validate_in` accepted the `len` values from `to`
+      // in `bytes`. So each meets the requirements of `pointers_in`, as `pointers_elems_in`
+      // requires.
       (Target::Sequence(to, len), true) => unsafe {
         puns::pointers_elems_in::<puns::Pointee<P>, Self>(bytes.as_ptr(), to, len, self)
       },
@@ -728,8 +732,9 @@ fn trace<T: Model>(bytes: &[u8], at: usize, what: &str) -> Option<()> {
   let mut checked = Trace { follow: follow(bytes), trusted: false, seen: vec![] };
   puns::validate_in::<T, Trace<'_>>(bytes, at, &mut checked).ok()?;
   let mut trusted = Trace { follow: follow(bytes), trusted: true, seen: vec![] };
-  // SAFETY: `validate_in` accepted the bytes as a `T` at `at`, and every pointer that it handed
-  // over was followed, and what it aims at accepted, in turn.
+  // SAFETY: `validate_in` accepted the bytes as a `T` at `at`, so they are in `bytes`, valid for
+  // reads, and meet the requirements of `pointers_in`. `trusted` follows what each pointer aims
+  // at with `pointers_in` too, which the same walk accepted (see `Trace::pointer`).
   let walked = unsafe { puns::pointers_in::<T, Trace<'_>>(bytes.as_ptr(), at, &mut trusted) };
   assert_eq!(walked, Ok(()), "{}: {what}: `pointers_in` fails", name::<T>());
   assert_eq!(trusted.seen, checked.seen, "{}: {what}: other pointers", name::<T>());
@@ -828,7 +833,9 @@ pub fn check_copy_in<T: Model>(masks: &[u8]) -> usize {
     data(&T::desc(), &bytes[at..], 0, &mut held);
     for fill in [0x00, 0xee] {
       let mut dst = vec![fill; size_of::<T>()];
-      // SAFETY: `validate_in` accepted a `T` at `at`, every pointer followed; `dst` is its size.
+      // SAFETY: `validate_in` accepted a `T` at `at`, so the bytes from `at` are valid for reads
+      // and meet the requirements of `copy_in`. `dst` is `size_of::<T>()` bytes, valid for
+      // writes, in another allocation.
       unsafe { puns::copy_in::<T>(bytes[at..].as_ptr(), dst.as_mut_ptr()) };
       for (i, &byte) in dst.iter().enumerate() {
         let expected = if held[i] { bytes[at + i] } else { fill };
@@ -1020,7 +1027,8 @@ pub mod types {
   /// which may be null.
   macro_rules! chained {
     ($($ty:ident: $flag:expr, $alphabet:expr;)+) => {$(
-      // SAFETY: its pointer, at its position.
+      // SAFETY: `fix` calls `field` on the one field that holds a pointer, which fixes it at its
+      // position, and changes nothing else, as the `# Safety` of `Fix` requires.
       unsafe impl Fix for $ty {
         fn fix(&mut self, at: usize) {
           let whole = addr(self);
@@ -1100,7 +1108,8 @@ pub mod types {
   /// type.
   macro_rules! listed {
     ($($ty:ident: $flag:expr, $alphabet:expr;)+) => {$(
-      // SAFETY: its pointer, at its position.
+      // SAFETY: `fix` calls `field` on the one field that holds a pointer, which fixes it at its
+      // position, and changes nothing else, as the `# Safety` of `Fix` requires.
       unsafe impl Fix for $ty {
         fn fix(&mut self, at: usize) {
           let whole = addr(self);
@@ -1145,7 +1154,8 @@ pub mod types {
         pub to: $pointer,
       }
 
-      // SAFETY: its pointer, at its position.
+      // SAFETY: `fix` calls `field` on the one field that holds a pointer, which fixes it at its
+      // position, and changes nothing else, as the `# Safety` of `Fix` requires.
       unsafe impl Fix for $ty {
         fn fix(&mut self, at: usize) {
           let whole = addr(self);
@@ -1209,7 +1219,8 @@ pub mod types {
     pub raw: [u8; 4],
   }
 
-  // SAFETY: no pointer.
+  // SAFETY: The type holds no pointer, and `fix` changes nothing, as the `# Safety` of `Fix`
+  // requires.
   unsafe impl Fix for Raw {
     fn fix(&mut self, _: usize) {}
   }
@@ -1239,7 +1250,8 @@ pub mod types {
     Node(One<Tree>),
   }
 
-  // SAFETY: the pointer of the variant, at its position.
+  // SAFETY: `fix` calls `field` on the pointer of the variant that holds one, which fixes it
+  // at its position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Tree {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -1292,7 +1304,8 @@ pub mod types {
     Pair(Seq<Wood>),
   }
 
-  // SAFETY: the pointer of the variant, at its position.
+  // SAFETY: `fix` calls `field` on the pointer of the variant that holds one, which fixes it
+  // at its position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Wood {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);

@@ -326,7 +326,10 @@ fn keep(ops: Vec<Op>) -> &'static [Op] {
 fn release() {
   PLANS.with_borrow_mut(HashMap::clear);
   for ops in KEPT.take() {
-    // SAFETY: leaked by `keep`, and the expression that held it is no longer used.
+    // SAFETY: `ops` is a pointer that `Box::leak` returned in `keep`, of a `Box<[Op]>` of the
+    // global allocator, as `Box::from_raw` requires. `KEPT.take()` empties the list, so it is
+    // freed once. Each test calls `release` only after its last use of the expressions that
+    // `keep` made, so no reference to it is used after this.
     drop(unsafe { Box::from_raw(ops) });
   }
 }
@@ -431,7 +434,11 @@ fn run(ops: &[Op], entry: &Entry, narrowed: bool, machine: &mut Machine, bytes: 
       if !machine.replace(result) {
         return false;
       }
-    // SAFETY: the operations read the first `HEAD` bytes, and `size` of them, all initialized.
+    // SAFETY: Every expression that is run passed `check_ops` with `HEAD`, and so did the
+    // expressions of its walks, so a load reads 1 to 16 bytes within the first `HEAD` bytes.
+    // `bytes` has `HEAD` or `BYTES` bytes, at least `HEAD`, and `size` is their number. They are
+    // valid for reads and initialized, since they are the `u8`s of a slice. These are the
+    // requirements of `Machine::apply`.
     } else if !unsafe { machine.apply(op, at, how, base, size) } {
       return false;
     }

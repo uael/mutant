@@ -38,12 +38,32 @@ impl Checks for All {
 /// The caller must ensure that:
 ///
 /// - `ptr` is valid for reads of a `T`. It need not be aligned.
-/// - The bytes of that `T` that are not padding in its layout are initialized.
+/// - Every byte that a check marked by `C` reads is initialized. A marked scalar or self-relative
+///   pointer reads its own bytes, and a marked pattern its tail. An enum or a union with a marked
+///   leaf reads its tag and what the checks of its variants read, which check every part. A
+///   struct whose rules are marked reads all of its bytes, padding included.
 pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T) -> bool {
   if const { !C::MARKS.any(P::LEAF, T::LAYOUT.leaves) } {
     return true;
   }
-  // SAFETY: guaranteed by the caller; the layout of `T` tells what `ptr` points to.
+  // SAFETY: `ptr` is valid for reads of a `T`, and every byte that a marked check reads is
+  // initialized, by contract on the caller. A leaf of `T` is marked, since the function did not
+  // return above. `T::LAYOUT` is the layout of `T`, and `T::Elem`, `T::Fields` and `T::Variants`
+  // are its lists (`Pun`, section Safety). For each shape:
+  // - A scalar is `T` itself, of `spec.size` bytes, and is marked. So its bytes are initialized,
+  //   as `Spec::matches` requires.
+  // - An array or a slice is `len` or `ptr::metadata(ptr)` elements of type `T::Elem`, one after
+  //   the other, each valid for reads. Its elements share their leaves, so what is marked in one
+  //   is marked in each, as `validate_elems` requires.
+  // - A struct meets the requirements of `validate_fields`, since `T::Fields` are its fields. Its
+  //   rules are checked only if they are marked, and then all of its bytes are initialized, as
+  //   `check_rules` requires.
+  // - A pattern is its tail of `ptr::metadata(ptr)` bytes, which are marked, so initialized, as
+  //   `Dfa::matches_utf8` and `Dfa::matches` require.
+  // - An enum or a union with a marked leaf meets the requirements of `validate_union` and
+  //   `validate_enum`, and `layout` is the layout of `T`.
+  // - A pointer is marked, so its bytes are initialized. `load` requires its width to be at most
+  //   16, which `Pointer::new` asserts.
   unsafe {
     match const { T::LAYOUT.shape() } {
       Shape::Scalar(spec) => spec.matches(ptr.cast()),
@@ -88,8 +108,11 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
 #[inline(always)]
 const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> bool {
   let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
-  // SAFETY: the tag, and what any of the variants requires to be initialized, is: this is
-  // checked by the analysis.
+  // SAFETY: `Layout::enumeration` asserts that the tag is a scalar that `Spec::is_integer`
+  // accepts, so of at most 16 bytes, at `layout.tag.offset` within the size of `T`. So `add`
+  // stays within the `T` at `ptr`, and the tag is valid for reads. A leaf of the enum is marked,
+  // so its tag and what the checks of its variants read are initialized, by contract on the
+  // caller. These are the requirements of `load` and of `validate_variants`.
   unsafe {
     let tag = load(ptr.cast::<u8>().add(layout.tag.offset), spec.size, spec.endian);
     validate_variants::<T, T::Variants>(ptr, tag)
@@ -107,8 +130,8 @@ const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> 
 /// The caller must ensure that:
 ///
 /// - `ptr` is valid for reads of a `T`.
-/// - If a variant has the tag `tag`, the bytes of its fields that are not padding are
-///   initialized.
+/// - If a variant has the tag `tag`, every byte that the checks of its fields read, which check
+///   every part, is initialized.
 const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, tag: u128) -> bool {
   let Some(expected) = (const { V::TAG }) else { return false };
   let this = match const { V::RANGES } {
@@ -116,7 +139,10 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
     // The variant of a niche, or one that no value is (no range).
     Some(ranges) => layout::contains(ranges, tag),
   };
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `ptr` is valid for reads of a `T`, by contract on the caller. If `this`, `V` has the
+  // tag `tag`, and `V::Fields` are its fields (`Variants`, section Safety). What their checks
+  // read is initialized, by contract on the caller, as `validate_fields` requires. Otherwise the
+  // requirements of the call for the next variants are the ones of this call.
   unsafe {
     if this {
       validate_fields::<All, Root, T, V::Fields>(ptr)
@@ -141,7 +167,10 @@ const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> b
   if const { V::TAG.is_none() } {
     return false;
   }
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `V::Fields` is the one field of a variant of the layout of the union, at offset 0
+  // (`Variants`, section Safety). Every byte that its checks read is initialized, by contract on
+  // the caller, as `validate_fields` requires. The requirements of the call for the next fields
+  // are the ones of this call.
   unsafe { validate_fields::<All, Root, T, V::Fields>(ptr) || validate_union::<T, V::Next>(ptr) }
 }
 
@@ -166,7 +195,9 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: u
     while len - i >= block {
       let (mut valid, mut j) = (true, 0);
       while j < block {
-        // SAFETY: `ptr` points to `len` elements, and `i + j < len`.
+        // SAFETY: `i + j < len`, since `len - i >= block` and `j < block`. `ptr` is valid for
+        // reads of `len` elements, by contract on the caller, so `add(i + j)` stays within them
+        // and points to an element that meets the requirements of `validate`.
         valid &= unsafe { validate::<C, P, T>(ptr.add(i + j)) };
         j += 1;
       }
@@ -177,7 +208,9 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: u
     }
   }
   while i < len {
-    // SAFETY: `ptr` points to `len` elements.
+    // SAFETY: `i < len`. `ptr` is valid for reads of `len` elements, by contract on the caller,
+    // so `add(i)` stays within them and points to an element that meets the requirements of
+    // `validate`.
     if !unsafe { validate::<C, P, T>(ptr.add(i)) } {
       return false;
     }
@@ -217,7 +250,15 @@ const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Pun, F: Fields>(
     };
     assert!(<F::Path<P> as Path>::LEAF == leaf, "not where the field is");
   };
-  // SAFETY: `F` is a field of `T`: it is where it says it is.
+  // SAFETY: `F` is a field of `T`, by contract on the caller, and `field` is its place in the
+  // layout of `T`, `F::FIELD` (`Fields`, section Safety). So `ptr` holds a `F::Type` at
+  // `field.offset()`, as `ptr::field` and `add` require, and that field is valid for reads.
+  // - A restricted field is a scalar leaf. It is read only if it is marked, so its bytes are
+  //   initialized, as `Spec::matches` requires.
+  // - Any other field is a `F::Type` at the place `F::Path<P>`, which the assertion above shows
+  //   is the leaf of the field. What `C` marks there is what it marks of the field in `T`. So the
+  //   field meets the requirements of `validate`.
+  // The requirements of the call for the next fields are the ones of this call.
   unsafe {
     let valid = match field.restriction() {
       // A scalar that accepts less than its type does: there is no type to recurse into.
@@ -250,12 +291,14 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Pun>() -> bool {
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`validate`] hold.
+/// - `ptr` is valid for reads of a `T`. It need not be aligned.
+/// - Every byte of that `T` is initialized, padding included.
 #[inline(always)]
 pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T) -> bool {
   const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
   let (len, tail, size) = tail_of(ptr);
-  // SAFETY: the bytes of the struct are readable.
+  // SAFETY: `tail_of` returns `size`, the size of the `T` at `ptr`. That `T` is valid for reads,
+  // and its bytes are initialized, by contract on the caller, as `check_listed` requires.
   unsafe { check_listed::<T, T::Rules>(ptr.cast(), size, tail, len, 0) }
 }
 
@@ -281,7 +324,9 @@ const unsafe fn check_listed<T: ?Sized + Pun, L: Rules>(
   if const { L::RULE == usize::MAX } {
     return true;
   }
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `InRule<T, L>` is the rule `L::RULE` of `T`. `base` is valid for reads of the `size`
+  // bytes of a `T`, initialized, by contract on the caller, and these cover its sized fields. This
+  // is what `eval` requires.
   let Some(value) = (unsafe { eval::<InRule<T, L>, L::Expr>(base, size) }) else { return false };
   let regions = match const { T::LAYOUT.rule(L::RULE) } {
     Some(Rule::Size(_)) if value == size as u128 => regions,
@@ -290,7 +335,7 @@ const unsafe fn check_listed<T: ?Sized + Pun, L: Rules>(
     Some(Rule::Region(_)) if value <= (tail - regions) as u128 => regions + value as usize,
     _ => return false,
   };
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: The requirement of the call for the next rules is the one of this call.
   unsafe { check_listed::<T, L::Next>(base, size, tail, len, regions) }
 }
 
@@ -365,10 +410,16 @@ pub const unsafe fn length<T: ?Sized + Pun>(base: *const u8, n: usize) -> Option
     (own, offset)
   };
   if own {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: `own` is `true`, so the rule is the one of `T`. The requirements of
+    // `length_listed` are the ones of this call.
     return unsafe { length_listed::<T, T::Rules>(base, n) };
   }
-  // SAFETY: the struct that has the rule is in the last field, at `offset`.
+  // SAFETY: The rule is the one of the last field of `T`, at `offset`, whose type has the rule,
+  // which the assertion above shows. The `n` bytes at `base` cover the sized fields of the struct
+  // that has the rule, which is in that field, by contract on the caller. So `offset <= n`, and
+  // `add(offset)` stays within the `n` bytes, as `add` requires. The `n - offset` bytes from there
+  // are valid for reads, initialized, and cover the same sized fields. These are the
+  // requirements of `length` for the type of the last field.
   unsafe { length::<<<T::Fields as Fields>::Last as Fields>::Type>(base.add(offset), n - offset) }
 }
 
@@ -407,10 +458,12 @@ const unsafe fn length_listed<T: ?Sized + Pun, L: Rules>(
   }
   if const { matches!(T::LAYOUT.rule(L::RULE), Some(Rule::Size(_) | Rule::Len(_))) } {
     const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: `InRule<T, L>` is a rule of `T`, the struct that has the rule. `base` is valid for
+    // reads of `n` initialized bytes, which cover its sized fields, by contract on the caller.
+    // This is what `eval` requires.
     return unsafe { eval::<InRule<T, L>, L::Expr>(base, n) };
   }
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: The requirements of the call for the next rules are the ones of this call.
   unsafe { length_listed::<T, L::Next>(base, n) }
 }
 
@@ -435,6 +488,7 @@ const unsafe fn length_listed<T: ?Sized + Pun, L: Rules>(
 /// The caller must ensure that:
 ///
 /// - `base` is valid for reads of the `size` bytes of a `T`, initialized.
+/// - These bytes are not written for `'a`.
 /// - `head + tail` is at most `size`, and `start` is at most `tail`.
 #[inline(always)]
 pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
@@ -449,24 +503,51 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
   // The last region, which takes what remains, has no expression: it is not in the list.
   if const { L::RULE == usize::MAX } {
     assert!(count == index && T::LAYOUT.has_last_region(), "no such region");
-    // SAFETY: `start <= tail`, the size of what follows the `head` first bytes.
+    // SAFETY: `head + start + rest` is `head + tail`, at most `size`, by contract on the caller.
+    // So `add(head + start)` stays within the `size` bytes at `base`. This satisfies the safety
+    // contract of `slice::from_raw_parts` [1]: the `rest` bytes from there are in one allocation,
+    // valid for reads, so non-null [2], initialized, and not written for `'a`, by contract on the
+    // caller. A `u8` is aligned at any address, and `rest` bytes fit in an `isize`, since they
+    // are in an allocation.
+    //
+    // [1] Per https://doc.rust-lang.org/1.99.0/core/slice/fn.from_raw_parts.html:
+    //
+    //     Behavior is undefined if any of the following conditions are violated:
+    //
+    //     - `data` must be non-null, valid for reads for `len * size_of::<T>()` many bytes, and
+    //       it must be properly aligned. [...]
+    //     - `data` must point to `len` consecutive properly initialized values of type `T`.
+    //     - The memory referenced by the returned slice must not be mutated for the duration of
+    //       lifetime `'a`, except inside an `UnsafeCell`.
+    //     - The total size `len * size_of::<T>()` of the slice must be no larger than
+    //       `isize::MAX`, and adding that size to `data` must not "wrap around" the address
+    //       space.
+    //
+    // [2] Per https://doc.rust-lang.org/1.99.0/core/ptr/index.html#safety:
+    //
+    //     A null pointer is never valid for reads/writes.
     return unsafe { core::slice::from_raw_parts(base.add(head + start), rest) };
   }
   if const { !matches!(T::LAYOUT.rule(L::RULE), Some(Rule::Region(_))) } {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: The requirements of the call for the next rules are the ones of this call.
     return unsafe { region_at::<T, L::Next>(base, size, (head, tail), index, (start, count)) };
   }
   // A region that does not fit is cut short: the fields that size it are not trusted.
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `InRule<T, L>` is a rule of `T`. `base` is valid for reads of the `size` bytes of a
+  // `T`, initialized, by contract on the caller, and these cover its sized fields. This is what
+  // `eval` requires.
   let region = match unsafe { eval::<InRule<T, L>, L::Expr>(base, size) } {
     Some(region) if region <= rest as u128 => region as usize,
     _ => rest,
   };
   if count == index {
-    // SAFETY: `start + region <= tail`, the size of what follows the `head` first bytes.
+    // SAFETY: `region <= rest`, so `head + start + region <= head + tail <= size`. As for the last
+    // region above, the bytes are within the `size` bytes at `base`, and meet the safety contract
+    // of `slice::from_raw_parts`.
     return unsafe { core::slice::from_raw_parts(base.add(head + start), region) };
   }
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `start + region <= tail`, since `region <= rest`. The other requirements of the call
+  // for the next rules are the ones of this call.
   unsafe { region_at::<T, L::Next>(base, size, (head, tail), index, (start + region, count + 1)) }
 }
 
@@ -495,7 +576,7 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
 #[inline(always)]
 const unsafe fn eval<X: Ops, S: Steps>(base: *const u8, size: usize) -> Option<u128> {
   let mut machine = Machine::NEW;
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: The requirements of `steps` are the ones of this call.
   if unsafe { steps::<X, S>(&mut machine, base, size) } { Some(machine.result()) } else { None }
 }
 
@@ -529,7 +610,12 @@ const unsafe fn steps<X: Ops, S: Steps>(
       "not the operations of the expression"
     );
   };
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: `op` is the operation at `S::AT` of `X::OPS`, the expression of a rule of the layout of
+  // a struct, or of a walk in one (`InRule`, `InWalk`). `Layout::structure` accepted these
+  // operations (`check_ops`): a load reads 1 to 16 bytes within the sized fields. `base` is valid
+  // for reads of `size` initialized bytes, which cover the sized fields of the struct, by contract
+  // on the caller. These are the requirements of `Machine::apply`. The requirements of the calls
+  // for the parts and the walks are the ones of this call.
   unsafe {
     match const { S::KIND } {
       ONE => match const { op_at(X::OPS, S::AT) } {
@@ -597,7 +683,8 @@ const unsafe fn walk<X: Ops, W: Steps>(
   let (mut steps, limit) = (0, walk_limit(size));
   let result = loop {
     let (mut cond, mut next) = (machine.enter(var, state), machine.enter(var, state));
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: The condition of the walk is an expression of the same rule, over the same bytes.
+    // The requirements of `steps` are the ones of this call.
     if !unsafe { self::steps::<W::InCond<X>, W::Cond>(&mut cond, base, size) } {
       break None;
     }
@@ -608,7 +695,7 @@ const unsafe fn walk<X: Ops, W: Steps>(
       break None;
     }
     steps += 1;
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: As for the condition above.
     if !unsafe { self::steps::<W::InThen<X>, W::Then>(&mut next, base, size) } {
       break None;
     }

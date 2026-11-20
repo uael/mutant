@@ -69,7 +69,8 @@ pub const unsafe fn verify<T: ?Sized>(probe: *const T) {
   const MESSAGE: &str = "unsupported compiler: unexpected wide pointer representation";
   assert!(size_of::<*const T>() == size_of::<*const [u8]>(), "{}", MESSAGE);
   assert!(align_of::<*const T>() == align_of::<*const [u8]>(), "{}", MESSAGE);
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: By contract on the caller, `T` is a slice, `str`, or a struct whose last field is one
+  // of these. This is what `raw_len` and `raw_with_len` require.
   unsafe {
     assert!(raw_len(probe) == PROBE_LEN, "{}", MESSAGE);
     let other = raw_with_len(probe, PROBE_LEN + 39);
@@ -85,7 +86,12 @@ pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
   if const { !T::LAYOUT.unsized_ } {
     return 0;
   }
-  // SAFETY: `T` is unsized, and every unsized `Pun` type has a slice tail.
+  // SAFETY: `T` is a slice, `str`, or a struct whose last field is one of these, as `raw_len`
+  // requires. `T::LAYOUT.unsized_` is `true`. Only `Layout::slice`, `Layout::pattern` and
+  // `Layout::structure` of a struct whose last field is unsized make such a layout, and each
+  // calls `verify` on the probe of the type. By the `# Safety` of `Pun`, `T::LAYOUT` is the
+  // layout of `T`. `ManuallyDrop<T>` reuses the layout of `T`, and is a struct whose only field
+  // is a `T`.
   unsafe { raw_len(ptr) }
 }
 
@@ -121,7 +127,18 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 ) -> *const F {
   // An unsized field is the last one: it shares the slice length of its parent.
   let len = if const { F::LAYOUT.unsized_ } { metadata(ptr) } else { 0 };
-  // SAFETY: the field is in bounds of the allocation.
+  // SAFETY: This satisfies the safety contract of `add` [1]. By contract on the caller, `ptr`
+  // points to an allocation that holds a `T`, and `T` has a field at `offset`. So `offset` is at
+  // most the size of that `T`, and `ptr..ptr + offset` is in bounds of the allocation.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/core/primitive.pointer.html#method.add:
+  //
+  //     If the computed offset is non-zero, then `self` must be derived from a pointer to some
+  //     allocation, and the entire memory range between `self` and `result` [...] must be in
+  //     bounds of that allocation.
+  //
+  //     Allocations can never be larger than `isize::MAX` bytes [...], so technically the last
+  //     condition implies the first two.
   from_raw_parts(unsafe { ptr.cast::<u8>().add(offset) }, len)
 }
 

@@ -120,13 +120,23 @@ macro_rules! pointer {
       target: PhantomData<($($param,)?)>,
     }
 
-    // SAFETY: the type is its offset (`repr(transparent)`, a byte array: every byte initialized,
-    // no `UnsafeCell`). Where it aims is the scheme of this file, from its address and its bytes
-    // only, for every type of the scheme. A value in a buffer is only made by a `Builder`, which
-    // `Region::new` turns into a region, where a value of the target is where it aims (the
-    // contract of `Region::new`); a region never writes to its buffer, nor gives a `&mut` to any
-    // of it, and follows a pointer only by what is said here (`Region::get`...). `POINTER` is
-    // made for `Target`.
+    // SAFETY: Each item of the `# Safety` of `SelfRelative` holds:
+    // - The type is its offset: it is `repr(transparent)` over an `O`, a byte array or a packed
+    //   `NonZero<u32>`, every byte of which is initialized, and none in an `UnsafeCell`.
+    // - The scheme is the way to the target: where it aims, and how many elements or bytes, is
+    //   the scheme `SCHEME` of this file, from its address, its offset, its kind of aim and the
+    //   length before a sequence or a text, for every type of the scheme. Only this file
+    //   declares types of `SCHEME`.
+    // - What it aims at is there, valid, and its own: a value of this type in a buffer is made
+    //   by a `Builder`, which `Region::new` turns into a region whose pointers aim at valid
+    //   targets, aligned as `POINTER` says (the `# Safety` of `Region::new`, and
+    //   `Builder::reserve`). A region never writes to its buffer, nor gives a `&mut` to any of
+    //   it.
+    // - Null: `Opt` is made with `or_null`, and `Region::opt` follows no pointer of offset zero.
+    // - The target is the type: `POINTER` is made for `Target` by `Pointer::one`,
+    //   `Pointer::sequence` or `Pointer::text`.
+    // - The code of this file follows a pointer only through `Region::get`, `Region::opt`,
+    //   `Region::seq` and `Region::text`, which rely on nothing more.
     unsafe impl<$($param: Pun,)? O: Offset> SelfRelative for $name<$($param,)? O> {
       type Target = $target;
       const POINTER: Pointer = $pointer;
@@ -152,7 +162,9 @@ macro_rules! pointer {
       }
     }
 
-    // SAFETY: the pointer, whose position is `at`, is made to aim at the position that it holds.
+    // SAFETY: `fix` calls nothing, and changes only the offset of the pointer, whose position is
+    // `at`: from the position of its target to the distance to it. A null `Opt`, of offset zero,
+    // is left as it is. This is what the `# Safety` of `Fix` requires of a pointer.
     unsafe impl<$($param,)? O: Offset> Fix for $name<$($param,)? O> {
       fn fix(&mut self, at: usize) {
         let target = self.offset.get();
@@ -245,7 +257,8 @@ pub fn field<F: Fix>(whole: usize, at: usize, field: &mut F) {
 
 macro_rules! plain {
   ($($ty:ty)+) => {$(
-    // SAFETY: no pointer.
+    // SAFETY: The type holds no pointer, and `fix` changes nothing, as the `# Safety` of `Fix`
+    // requires.
     unsafe impl Fix for $ty {
       fn fix(&mut self, _: usize) {}
     }
@@ -268,7 +281,9 @@ unsafe impl<T: Fix> Fix for Option<T> {
   }
 }
 
-// SAFETY: each element, at its position.
+// SAFETY: `fix` calls `Fix::fix` on each element, at its position, `at + i * size_of::<T>()`, and
+// changes nothing else. Each element fixes its own pointers, as the `# Safety` of `Fix` requires
+// of `T`.
 unsafe impl<T: Fix, const N: usize> Fix for [T; N] {
   fn fix(&mut self, at: usize) {
     for (i, element) in self.iter_mut().enumerate() {
@@ -334,9 +349,12 @@ impl Builder {
   fn put<T: Fix>(&mut self, mut value: T) -> usize {
     let at = self.reserve(0, size_of::<T>(), align_of::<T>());
     value.fix(at);
-    // SAFETY: `at..at + size_of::<T>()` is in the buffer, at an address aligned for `T` (the
-    // buffer is aligned to `ALIGN`, which `reserve` asserted is enough, and `at` is a multiple
-    // of the alignment of `T`).
+    // SAFETY: `reserve` resized the blocks to hold `at + size_of::<T>() + 1` bytes, so `add(at)`
+    // stays in their allocation, and the `size_of::<T>()` bytes from there are valid for writes.
+    // `base` comes from `as_mut_ptr` of the blocks, with the provenance of all of them. The
+    // blocks are aligned to `ALIGN`, at least the alignment of `T`, which `reserve` asserts, and
+    // `at` is a multiple of the alignment of `T`. These are the requirements of `add` and of
+    // `write`.
     unsafe { self.base().add(at).cast::<T>().write(value) };
     at
   }
@@ -348,8 +366,9 @@ impl Builder {
   /// Panics if an `O` cannot hold `len`.
   fn length<O: Offset>(&mut self, at: usize, len: usize) {
     let len = O::new(isize::try_from(len).expect("a length that an `isize` holds"));
-    // SAFETY: `at - size_of::<O>()..at` is in the buffer (`reserve` left that much before
-    // `at`); an `O` is a byte array, of no alignment.
+    // SAFETY: `reserve` left `size_of::<O>()` bytes before `at`, so `at - size_of::<O>()..at` is
+    // in the blocks, valid for writes. An `O` is a byte array or a packed struct, of alignment 1.
+    // These are the requirements of `add` and of `write`.
     unsafe { self.base().add(at - size_of::<O>()).cast::<O>().write(len) };
   }
 
@@ -373,8 +392,10 @@ impl Builder {
     for (i, mut value) in values.into_iter().enumerate() {
       let place = at + i * size_of::<T>();
       value.fix(place);
-      // SAFETY: in the buffer (`reserve`), aligned for `T` (`first` is at least its alignment,
-      // and so is the size of `T`, between two elements).
+      // SAFETY: `reserve` made room for `values.len()` elements from `at`, so `place` and the
+      // `size_of::<T>()` bytes from it are in the blocks, valid for writes. `at` is a multiple of
+      // `first::<T, O>()`, at least the alignment of `T`, and so is `size_of::<T>()`. So `place`
+      // is aligned for `T`. These are the requirements of `add` and of `write`.
       unsafe { self.base().add(place).cast::<T>().write(value) };
     }
     Seq::to(at)
@@ -384,7 +405,9 @@ impl Builder {
   pub fn text<O: Offset>(&mut self, text: &str) -> Text<O> {
     let at = self.reserve(size_of::<O>(), text.len(), 1);
     self.length::<O>(at, text.len());
-    // SAFETY: `at..at + text.len()` is in the buffer (`reserve`), and is not `text`.
+    // SAFETY: This satisfies the safety contract of `copy_nonoverlapping`. `text` is valid for
+    // reads of its `len()` bytes. `reserve` made room for them from `at`, valid for writes. A `u8`
+    // is aligned at any address. `self` is borrowed exclusively, so `text` is not in its blocks.
     unsafe { ptr::copy_nonoverlapping(text.as_ptr(), self.base().add(at), text.len()) };
     Text::to(at)
   }
@@ -425,7 +448,10 @@ impl<T> Region<T> {
   /// Returns the bytes of the buffer, some of which are uninitialized (padding, gaps).
   #[must_use]
   pub const fn bytes(&self) -> &[MaybeUninit<u8>] {
-    // SAFETY: `len` bytes of the buffer, of any value; nothing writes to them.
+    // SAFETY: This satisfies the safety contract of `slice::from_raw_parts`. A region is made by
+    // `Region::new`, after `Builder::put`, so its blocks hold at least `len` bytes, valid for
+    // reads, in one allocation. A `MaybeUninit<u8>` is valid whatever the byte, and aligned at
+    // any address. A region never writes to its blocks, and the slice borrows `self`.
     unsafe { core::slice::from_raw_parts(self.base().cast(), self.len) }
   }
 
@@ -463,8 +489,10 @@ impl<T> Region<T> {
   /// Panics if that `O` starts before the buffer, or if its value is not a length.
   fn length<O: Offset>(&self, to: usize) -> usize {
     let at = to.checked_sub(size_of::<O>()).expect("a length in the buffer");
-    // SAFETY: in the buffer (`to` is), where the builder wrote a length (the scheme, which
-    // `Region::new` promises), an `O`, of no alignment.
+    // SAFETY: `to` is in the buffer, which `aim` asserted, and `at` is before it, so `add(at)`
+    // stays in the blocks. A pointer of a sequence or of a text aims after a length, an `O`,
+    // which the builder wrote there (`Builder::length`), by the `# Safety` of `Region::new`. So
+    // the bytes are an initialized `O`, of alignment 1, valid for reads.
     let len = unsafe { *self.base().add(at).cast::<O>() };
     usize::try_from(len.get()).expect("a length")
   }
@@ -477,9 +505,13 @@ impl<T> Region<T> {
   pub fn get<'a, U, O: Offset>(&'a self, pointer: &'a One<U, O>) -> &'a U {
     let (here, offset) = self.place(pointer, pointer.offset);
     let to = self.aim(here, offset, size_of::<U>());
-    // SAFETY: a pointer of the scheme in the buffer, which `Region::new` promises aims at a
-    // value of its target, or one that `puns::view_ref` read as such: a valid `U` (the contract
-    // of `SelfRelative`), aligned for it.
+    // SAFETY: `place` asserted that `pointer` is in the buffer of this region, and `aim` that its
+    // target, `size_of::<U>()` bytes from `to`, is too. So `add(to)` stays in the blocks. The
+    // pointer was made by the builder with its target, by the `# Safety` of `Region::new`, or was
+    // read as a `One<U, O>` by `puns::view_ref`, which proves that what it aims at is a valid
+    // `U`. So the bytes there are a valid `U`, aligned for it, by the requirement of
+    // `SelfRelative` that what it aims at is there and valid (`SelfRelative`, section Safety).
+    // The region never writes to its blocks, and the reference borrows `self`.
     unsafe { &*self.base().add(to).cast::<U>() }
   }
 
@@ -504,7 +536,8 @@ impl<T> Region<T> {
       return None;
     }
     let to = self.aim(here, offset, size_of::<U>());
-    // SAFETY: as in `get`.
+    // SAFETY: As in `get`: the offset is not zero, so the pointer is not null, and aims at a
+    // valid `U` in the buffer.
     Some(unsafe { &*self.base().add(to).cast::<U>() })
   }
 
@@ -518,7 +551,10 @@ impl<T> Region<T> {
     let to = self.aim(here, offset, 0);
     let len = self.length::<O>(to);
     self.aim(to, 0, len * size_of::<U>());
-    // SAFETY: as in `get`: `len` valid `U`s from `to`, aligned for them.
+    // SAFETY: As in `get`, the pointer aims at `len` valid `U`s from `to`, aligned for them, which
+    // `aim` asserted are in the buffer. `len` is the length that the builder wrote, the number of
+    // the values it put, so `len * size_of::<U>()` does not overflow. These are the requirements
+    // of `slice::from_raw_parts`.
     unsafe { core::slice::from_raw_parts(self.base().add(to).cast::<U>(), len) }
   }
 
@@ -532,7 +568,9 @@ impl<T> Region<T> {
     let to = self.aim(here, offset, 0);
     let len = self.length::<O>(to);
     self.aim(to, 0, len);
-    // SAFETY: as in `get`: `len` bytes of UTF-8 from `to`.
+    // SAFETY: As in `get`, the pointer aims at `len` bytes from `to`, which `aim` asserted are in
+    // the buffer, as `slice::from_raw_parts` requires. The builder copied them from a `str`
+    // (`Builder::text`), so they are UTF-8, as `from_utf8_unchecked` requires.
     unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(self.base().add(to), len)) }
   }
 }
@@ -541,7 +579,9 @@ impl<T> core::ops::Deref for Region<T> {
   type Target = T;
 
   fn deref(&self) -> &T {
-    // SAFETY: the root, a valid `T` (`Region::new`), aligned for it (`Builder::put`).
+    // SAFETY: `Region::new` put the root with `Builder::put`, which wrote a `T` at `root`, in the
+    // blocks and aligned for it. Its fix changed only offsets, which any bytes are, so it is a
+    // valid `T`. The region never writes to its blocks, and the reference borrows `self`.
     unsafe { &*self.base().add(self.root).cast::<T>() }
   }
 }

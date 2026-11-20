@@ -61,12 +61,14 @@ pub enum Expr<O: Offset> {
   Cond(Opt<Expr<O>, O>, char),
 }
 
-// SAFETY: no pointer.
+// SAFETY: The type holds no pointer, and `fix` changes nothing, as the `# Safety` of `Fix`
+// requires.
 unsafe impl Fix for Kind {
   fn fix(&mut self, _: usize) {}
 }
 
-// SAFETY: every pointer, at its position.
+// SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+// position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<O: Offset> Fix for Item<O> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -76,7 +78,8 @@ unsafe impl<O: Offset> Fix for Item<O> {
   }
 }
 
-// SAFETY: every pointer, at its position.
+// SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+// position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<O: Offset> Fix for Dir<O> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -85,7 +88,8 @@ unsafe impl<O: Offset> Fix for Dir<O> {
   }
 }
 
-// SAFETY: every pointer of the variant, at its position.
+// SAFETY: `fix` calls `field` on each field of the variant that holds a pointer, which fixes
+// it at its position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<O: Offset> Fix for Expr<O> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -117,7 +121,9 @@ fn expression<O: Offset>() -> Region<Expr<O>> {
   let none = Expr::Cond(b.opt(None), 'A');
   let args = b.seq([add, var, some, none]);
   let name = b.text("f");
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   unsafe { Region::new(b, Expr::Call(name, args)) }
 }
 
@@ -242,7 +248,9 @@ fn a_directory_as_its_next_version() {
   let parent = Dir { size: 3, flags: [false; 3], entries: b.seq([]), parent: b.opt(None) };
   let root =
     Dir { size: 1 << 40, flags: [true, false, true], entries, parent: b.opt(Some(parent)) };
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, root) };
 
   let new: &v2::Dir<i32le> = puns::view_ref(&*r);
@@ -279,7 +287,8 @@ fn checked_at_run_time() {
     more: Seq<Maybe>,
   }
 
-  // SAFETY: every pointer, at its position.
+  // SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+  // position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Maybe {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -291,14 +300,18 @@ fn checked_at_run_time() {
   let maybe = |level, owner: Option<u32>, more: Vec<Maybe>| {
     let mut b = Builder::new();
     let (owner, more) = (b.opt(owner), b.seq(more));
-    // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+    // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+    // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+    // `# Safety` requires. These are the requirements of `Region::new`.
     unsafe { Region::new(b, Maybe { level, owner, more }) }
   };
 
   let mut b = Builder::new();
   let inner = Maybe { level: 9, owner: b.opt(None), more: b.seq([]) };
   let (seven, more) = (b.opt(Some(7)), b.seq([inner]));
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let owned = unsafe { Region::new(b, Maybe { level: 1, owner: seven, more }) };
   let view = puns::try_view_ref::<Maybe, Named>(&owned).expect("an owner");
   assert_eq!((view.level, *owned.get(&view.owner), owned.seq(&view.more)[0].level), (1, 7, 9));
@@ -309,11 +322,14 @@ fn checked_at_run_time() {
 
   // A variant that the target does not have.
   let mut b = Builder::new();
-  // SAFETY: no pointer.
+  // SAFETY: The root holds no pointer, and `Builder::new()` holds nothing. These meet the
+  // requirements of `Region::new`.
   let lit = unsafe { Region::new(Builder::new(), Expr::<i32le>::Lit(3)) };
   assert!(puns::try_view_ref::<Expr<i32le>, Small>(&lit).is_ok_and(|s| matches!(s, Small::Lit(3))));
   let name = b.text("x");
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let var = unsafe { Region::new(b, Expr::<i32le>::Var(name)) };
   assert!(puns::try_view_ref::<Expr<i32le>, Small>(&var).is_err());
 }
@@ -348,7 +364,8 @@ enum Pong<O: Offset> {
   Ping(One<Ping<O>, O>),
 }
 
-// SAFETY: every pointer, at its position.
+// SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+// position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<O: Offset> Fix for Ping<O> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -356,7 +373,8 @@ unsafe impl<O: Offset> Fix for Ping<O> {
   }
 }
 
-// SAFETY: every pointer of the variant, at its position.
+// SAFETY: `fix` calls `field` on each field of the variant that holds a pointer, which fixes
+// it at its position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<O: Offset> Fix for Pong<O> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -375,7 +393,8 @@ struct Boxed<T: Pun> {
   more: Seq<T>,
 }
 
-// SAFETY: every pointer, at its position.
+// SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+// position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<T: Pun> Fix for Boxed<T> {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -390,7 +409,9 @@ fn generic_types() {
   let end = b.opt(Some(Pong::End(true)));
   let inner = Pong::Ping(b.one(Ping::<i16be> { id: 2, pong: end }));
   let first = b.opt(Some(inner));
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, Ping { id: 1, pong: first }) };
   let view: &Ping<i16be> = puns::view_ref(&*r);
   let Some(Pong::Ping(next)) = r.opt(&view.pong) else { panic!("a ping") };
@@ -398,7 +419,9 @@ fn generic_types() {
 
   let mut b = Builder::new();
   let (value, more) = (b.one(true), b.seq([false, true]));
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let flags = unsafe { Region::new(b, Boxed { id: 1, value, more }) };
   let bytes: &Boxed<u8> = puns::view_ref(&*flags);
   assert_eq!((bytes.id, *flags.get(&bytes.value), flags.seq(&bytes.more)), (1, 1, &[0, 1][..]));
@@ -415,7 +438,8 @@ struct Wide {
   more: u64,
 }
 
-// SAFETY: no pointer.
+// SAFETY: The type holds no pointer, and `fix` changes nothing, as the `# Safety` of `Fix`
+// requires.
 unsafe impl Fix for Wide {
   fn fix(&mut self, _: usize) {}
 }
@@ -435,7 +459,9 @@ fn prefixes_and_sequences() {
   let one = b.one::<_, i32le>(wide(1));
   let many = b.seq::<_, i32le>([wide(2), wide(3)]);
   let words = b.seq::<[u8; 4], i32le>([[1, 2, 3, 4], [5, 6, 7, 8]]);
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, (one, many, words)) };
   // `One<Wide>` is 16-aligned: its first 8 bytes are a `u64`.
   let (prefix, many, numbers): &(One<u64>, Seq<Wide>, Seq<u32>) = puns::view_ref(&*r);
@@ -445,7 +471,8 @@ fn prefixes_and_sequences() {
   assert_eq!(r.seq(numbers), expected);
 }
 
-// SAFETY: every pointer, at its position.
+// SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+// position, and changes nothing else, as the `# Safety` of `Fix` requires.
 unsafe impl<A: Fix, B: Fix, C: Fix> Fix for (A, B, C) {
   fn fix(&mut self, at: usize) {
     let whole = addr(self);
@@ -465,7 +492,9 @@ fn null_and_text() {
   let some = b.opt::<u8, i32le>(Some(5));
   let none = b.opt::<u8, i32le>(None);
   let text = b.text::<i32le>("\u{e9}t\u{e9}");
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, (some, none, text)) };
   let view: &(Opt<u8>, Opt<u8>, Text) = puns::view_ref(&*r);
   assert_eq!((r.opt(&view.0), r.opt(&view.1), r.text(&view.2)), (Some(&5), None, "\u{e9}t\u{e9}"));
@@ -487,7 +516,8 @@ fn pointers_are_read_as_bytes() {
     numbers: Seq<u16le>,
   }
 
-  // SAFETY: every pointer, at its position.
+  // SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+  // position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Table {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -497,7 +527,9 @@ fn pointers_are_read_as_bytes() {
 
   let mut b = Builder::new();
   let numbers = b.seq([u16le::new(3)]);
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, Table { version: 1, count: u32le::new(2), numbers }) };
   // The numbers are at 8 (their length at 4), the table at 11 (after a byte that nothing
   // writes): its pointer, at 16, is -8.
@@ -534,7 +566,8 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
     second: Option<One<u32, Nz32le>>,
   }
 
-  // SAFETY: every pointer, at its position.
+  // SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+  // position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Declared {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -543,7 +576,8 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
     }
   }
 
-  // SAFETY: every pointer, at its position.
+  // SAFETY: `fix` calls `field` on each field that holds a pointer, which fixes it at its
+  // position, and changes nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for WithOption {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -556,7 +590,9 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
   assert_eq!(size_of::<Option<One<u32, Nz32le>>>(), 4);
   let mut b = Builder::new();
   let first = b.opt(Some(7u32));
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, Declared { id: 1, first, second: Opt::none() }) };
   let view: &WithOption = puns::view_ref(&*r);
   let (first, second) = (view.first.as_ref(), view.second.as_ref());
@@ -564,7 +600,9 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
 
   let mut b = Builder::new();
   let first = Some(b.one(9u32));
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, WithOption { id: 2, first, second: None }) };
   let view: &Declared = puns::view_ref(&*r);
   assert_eq!((view.id, r.opt(&view.first), r.opt(&view.second)), (2, Some(&9), None));
@@ -593,7 +631,8 @@ fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
     pointer: One<u8, Nz32le>,
   }
 
-  // SAFETY: the pointer, at its position.
+  // SAFETY: `fix` calls `field` on the pointer, which fixes it at its position, and changes
+  // nothing else, as the `# Safety` of `Fix` requires.
   unsafe impl Fix for Plain {
     fn fix(&mut self, at: usize) {
       let whole = addr(self);
@@ -603,7 +642,9 @@ fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
 
   let mut b = Builder::new();
   let pointer = b.one(5u8);
-  // SAFETY: every pointer made by `b`, with what it aims at, in one value.
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
   let r = unsafe { Region::new(b, Plain { pointer }) };
   let view: &NeverZero = puns::try_view_ref(&*r).expect("not zero");
   assert_eq!(*r.get(&view.pointer), 5);
@@ -612,7 +653,8 @@ fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
   assert_eq!(*r.get(&back.pointer), 5);
 
   // An offset of zero: the pointer aims at itself, at a `u8` of zero; no `NonZero` is that.
-  // SAFETY: `One::here`, of a target that zeros are.
+  // SAFETY: The only pointer is `One::here()` of a `u8`, of which zero bytes are a valid value,
+  // and the builder holds nothing. These meet the requirements of `Region::new`.
   let r = unsafe { Region::new(Builder::new(), Plain { pointer: One::here() }) };
   assert_eq!(*r.get(&r.pointer), 0);
   assert_eq!(puns::try_view_ref::<Plain, NeverZero>(&r).err(), Some(puns::Error::Validity));

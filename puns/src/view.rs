@@ -453,8 +453,12 @@ where
   let value = match known.state[index] {
     IS => {
       let target = ptr::from_raw_parts(known.bytes.as_ptr(), known.taken[index].0);
-      // SAFETY: the bytes were found to be (to start with) a value of the type of `I`, with this
-      // length (`Known` is only written below, by this function, for the type of the index).
+      // SAFETY: `known.state[index]` is `IS` only where this function set it below, with
+      // `known.taken[index]` the tail length and the size of the value that `find` found for
+      // the type at `I`. The fields of `Known` are private, and only `Known::new` and this
+      // function write them. `INDEX` tells the places of `V::List` apart, so the type at `index`
+      // is the type at `I`, and `known.bytes` is the same since `Known::new`. So `target` is the
+      // value found then, and the reference is valid, as below.
       return Some(unsafe { &*target });
     }
     NOT => None,
@@ -465,7 +469,14 @@ where
     return None;
   };
   (known.state[index], known.taken[index]) = (IS, (ptr::metadata(target), size));
-  // SAFETY: validated.
+  // SAFETY: `find` returned `target` from `take`, a `D` at the address of `known.bytes`, of size
+  // at most their length. The reference is valid, as in `from_head` and `try_pun_ref`:
+  // - It is aligned: `Plan::front_by` and `Plan::try_cast_by` checked the address.
+  // - It is not dangling: it is within `known.bytes`.
+  // - It points to a valid `D`: `validate` found every part that `Choice<V, I>` marks to be
+  //   valid, and the base of `I`, or bytes, prove the others (`take`, section Safety).
+  // The reference has the lifetime `'a` of the shared borrow `known.bytes`, and `D` holds no
+  // `UnsafeCell` (`Pun`, section Safety).
   Some(unsafe { &*target })
 }
 
@@ -512,9 +523,11 @@ where
   } else {
     usize::MAX
   };
-  // SAFETY: bytes, of which `Choice` marks what is not proven of the variant: by its base, of
-  // which they are (start with) a value of that extent (all of them for `from_bytes`), or else by
-  // bytes.
+  // SAFETY: `Choice<V, I>` marks what is not proven of the type of `I`, as `take` requires. If
+  // `I` has a base, its marks include what the base does not prove, and `known.state[base]` is
+  // `IS`: the bytes are a value of the base, or start with one of extent `extent` for
+  // `from_head`. Otherwise its marks include those of `Plan` from bytes. More marks only check
+  // more.
   unsafe { take::<<V::List as Get<I>>::Type, Choice<V, I>, HEAD>(bytes, extent) }
 }
 
@@ -536,7 +549,9 @@ const unsafe fn take<D: ?Sized + Pun, C: Checks, const HEAD: bool>(
   bytes: &[u8],
   extent: usize,
 ) -> Option<(*const D, usize)> {
-  // SAFETY: bytes; the marks are guaranteed by the caller.
+  // SAFETY: `bytes` is valid for reads of `bytes.len()` initialized bytes, which `front_by`
+  // requires of `addr` and `n`, and which makes every byte that `try_cast_by` reads valid for
+  // reads and initialized. `C` marks what the bytes do not prove, by contract on the caller.
   let found = unsafe {
     if HEAD {
       Plan::<[u8], D>::front_by::<C>(bytes.as_ptr(), bytes.len(), extent)

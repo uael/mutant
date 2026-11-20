@@ -66,7 +66,8 @@ use crate::layout::{Endian, Field, Kind, Layout, Spec, Valid, load, max_value};
 pub const fn sample<T: crate::Pun>() -> MaybeUninit<T> {
   assert!(T::LAYOUT.is_inhabited(), "a type without values has no sample");
   let mut value = MaybeUninit::<T>::uninit();
-  // SAFETY: the bytes of the value, as its layout tells.
+  // SAFETY: `value` is a local `MaybeUninit<T>`, valid for writes of `size_of::<T>()` bytes,
+  // which is the size of `T::LAYOUT` (`Pun`, section Safety). This is what `write` requires.
   unsafe { write(&T::LAYOUT, value.as_mut_ptr().cast()) };
   value
 }
@@ -83,7 +84,21 @@ pub const fn sample<T: crate::Pun>() -> MaybeUninit<T> {
 ///
 /// - `ptr` is valid for writes of the size of `layout`.
 const unsafe fn write(layout: &Layout, ptr: *mut u8) {
-  // SAFETY: in the bounds of the value, as the layout tells.
+  // SAFETY: `ptr` is valid for writes of `layout.size` bytes, by contract on the caller. Every
+  // write is within them, as the layout tells:
+  // - A scalar is `spec.size` bytes, the size of the layout, as `store` requires.
+  // - An array is `len` elements of `elem.size` bytes. `write` of the first is within it. Each
+  //   copy reads `count * elem.size` bytes from `ptr`, within the `done` elements written, since
+  //   `count <= done`, and writes as many from element `done`, within the `len` elements, since
+  //   `count <= len - done`. The two regions do not overlap, since the first ends before element
+  //   `done` and the second starts there. Both are of `u8`s, aligned at any address. These are
+  //   the requirements of `copy_nonoverlapping`, which copies bytes whether they are initialized
+  //   or not.
+  // - A field of a struct is within the size of the struct, which `Layout::structure` asserts,
+  //   so `add` stays within the value, and `write` of the field is within it.
+  // - The tag of an enum, and each of its variants, are within the size of the enum, which
+  //   `Layout::enumeration` asserts. So `store` of the tag and `write` of the variant are within
+  //   the value.
   unsafe {
     match layout.kind {
       Kind::Scalar(spec) => match spec.valid {
@@ -142,7 +157,9 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
   let mut i = 0;
   while i < size {
     let digit = if endian.is_little() { i } else { size - 1 - i };
-    // SAFETY: `i < size`.
+    // SAFETY: `i < size`, and `ptr` is valid for writes of `size` bytes, by contract on the
+    // caller. So `add(i)` stays within them, and the byte there is valid for writes. A `u8` is
+    // aligned at any address. These are the requirements of `add` and of `write`.
     unsafe { ptr.add(i).write((value >> (8 * digit)) as u8) };
     i += 1;
   }
@@ -163,15 +180,36 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 ///
 /// - `ptr` points to an `E` whose tag is initialized.
 /// - The fields of the variant that its tag tells, if any, are valid.
+/// - Unless the call is evaluated in a constant, the tag is the tag of a variant that has values.
 const unsafe fn variant<E>(ptr: *const E) -> usize {
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: A reference must point to a valid value [1]. An `E` is valid if its tag is the tag of
+  // a variant and the fields of that variant are valid [2]. By contract on the caller, its tag is
+  // initialized and the fields of its variant are valid. Its tag is the tag of a variant, by
+  // contract on the caller, or else the call is evaluated in a constant, where `rustc` reports
+  // an error instead of making the reference (`discover`, module documentation). The Reference
+  // does not promise that error. `ptr` comes from a `MaybeUninit<E>`, so it is aligned and not
+  // dangling.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
+  //
+  //     A reference or `Box<T>` must be aligned and non-null, it cannot be dangling, and it must
+  //     point to a valid value
+  //
+  // [2] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.enum:
+  //
+  //     An enum must have a valid discriminant, and all fields of the variant indicated by that
+  //     discriminant must be valid at their respective type.
   let discriminant = mem::discriminant(unsafe { &*ptr });
   // R3: an `isize`, the index of the variant. Its size here, its value on every sample.
   assert!(
     size_of::<mem::Discriminant<E>>() == size_of::<isize>(),
     "the discriminant of an enum without `repr` is not an `isize`"
   );
-  // SAFETY: an `isize`, as asserted.
+  // SAFETY: `read` requires the pointer to be valid for reads, aligned, and to point to an
+  // initialized `isize`. `discriminant` is a local of the size of an `isize`, which is asserted
+  // above, so it is valid for reads. Its alignment, and the initialization of its bytes, are
+  // what `rustc` makes of a `Discriminant<E>`, which holds an `isize` (`discover`, module
+  // documentation). Rust documents neither, and the assertion checks only the size.
   let index = unsafe { core::ptr::from_ref(&discriminant).cast::<isize>().read() };
   index.cast_unsigned()
 }
@@ -183,7 +221,10 @@ impl<E> Buf<E> {
   /// Returns a copy of the bytes of `sample`, initialized or not.
   const fn of(sample: &MaybeUninit<E>) -> Self {
     let mut copy = MaybeUninit::<E>::uninit();
-    // SAFETY: an untyped copy: what is uninitialized stays so.
+    // SAFETY: This satisfies the safety contract of `copy_nonoverlapping`. `sample` is a
+    // reference to a `MaybeUninit<E>`, valid for reads of an `E` and aligned. `copy` is a local
+    // `MaybeUninit<E>`, valid for writes of an `E` and aligned, which `sample` cannot overlap.
+    // The copy is of bytes, initialized or not.
     unsafe { core::ptr::copy_nonoverlapping(sample.as_ptr(), copy.as_mut_ptr(), 1) };
     Self(copy)
   }
@@ -195,7 +236,11 @@ impl<E> Buf<E> {
   /// Panics if the bytes are not within an `E`.
   const fn transplant(&mut self, from: &MaybeUninit<E>, offset: usize, len: usize) {
     assert!(offset + len <= size_of::<E>());
-    // SAFETY: in bounds of both, which do not overlap.
+    // SAFETY: This satisfies the safety contract of `copy_nonoverlapping`. `offset + len` is at
+    // most the size of an `E`, which is asserted above, so both `add(offset)` stay within their
+    // `E`, and the `len` bytes from there are valid for reads in `from` and for writes in
+    // `self`. A `u8` is aligned at any address. `self` is an exclusive borrow and `from` a shared
+    // one, so the two do not overlap.
     unsafe {
       core::ptr::copy_nonoverlapping(
         from.as_ptr().cast::<u8>().add(offset),
@@ -212,7 +257,9 @@ impl<E> Buf<E> {
   /// Panics if the bytes are not within an `E`.
   const fn fill(&mut self, offset: usize, len: usize, byte: u8) {
     assert!(offset + len <= size_of::<E>());
-    // SAFETY: in bounds.
+    // SAFETY: `offset + len` is at most the size of an `E`, which is asserted above. So
+    // `add(offset)` stays within `self`, and the `len` bytes from there are valid for writes. A
+    // `u8` is aligned at any address. These are the requirements of `add` and of `write_bytes`.
     unsafe { core::ptr::write_bytes(self.0.as_mut_ptr().cast::<u8>().add(offset), byte, len) };
   }
 
@@ -220,9 +267,12 @@ impl<E> Buf<E> {
   ///
   /// In const evaluation, it fails the build if the tag is not valid (R2).
   const fn variant(&self) -> usize {
-    // SAFETY: experiments only write over what is not a field of the variant of the sample (or
-    // a tag that is copied whole): its fields are valid, and its tag is initialized (or the
-    // build fails, R2).
+    // SAFETY: The experiments write only over what is not a field of the variant of the sample,
+    // or over a tag that they copy whole. So the fields of that variant are valid. The tag may
+    // be uninitialized, or not the tag of a variant. Then `variant` is sound only in const
+    // evaluation, where `rustc` reports an error (`discover`, module documentation). This
+    // function is safe, and nothing makes a call at run time an error: it relies on being
+    // evaluated only in constants.
     unsafe { variant(self.0.as_ptr()) }
   }
 }
@@ -410,7 +460,11 @@ const fn decided_by<E>(
 /// Panics if the bytes are not within an `E`, or if `len` is more than 16.
 const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
   assert!(offset + len <= size_of::<E>() && len <= 16);
-  // SAFETY: in bounds; initialized, or the build fails.
+  // SAFETY: `offset + len` is at most the size of an `E`, and `len` at most 16, which is asserted
+  // above. So `add(offset)` stays within `sample`, and the `len` bytes from there are valid for
+  // reads. `load` also requires them to be initialized, which nothing here ensures. In const
+  // evaluation, `rustc` reports an error instead (`discover`, module documentation). This
+  // function is safe, and relies on being evaluated only in constants.
   unsafe { load(sample.as_ptr().cast::<u8>().add(offset), len, Endian::NATIVE) }
 }
 
@@ -448,7 +502,11 @@ pub const fn discover<E, const V: usize>(
       i += 1;
     }
     if inhabited {
-      // SAFETY: the sample of a variant that has values is one.
+      // SAFETY: `samples[v]` is the sample of the variant `v`, which has values, as `discover`
+      // documents. `Layout::sample` makes it a valid `E`, so its tag is initialized and is the
+      // tag of a variant, and the fields of that variant are valid. These are the requirements
+      // of `variant`. `discover` is safe and takes any `samples`. With other samples, this
+      // relies on being evaluated only in constants, as `Buf::variant` does.
       assert!(unsafe { variant(samples[v].as_ptr()) } == v, "the discriminant is not the index");
       let mut i = 0;
       while i < these.len() {

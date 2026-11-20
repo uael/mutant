@@ -81,8 +81,9 @@ enum Drawing {
 
 fn bytes<T: Copy, const N: usize>(value: T) -> [u8; N] {
   assert_eq!(size_of::<T>(), N);
-  // SAFETY: `[u8; N]` has the size of `T` (just asserted) and an alignment of 1, and the only
-  // value given is a `Bit`, a `u8` tag and a `u8`: its `N` bytes are all initialized.
+  // SAFETY: `transmute_copy` reads `size_of::<[u8; N]>()` bytes of `value`, which is the size of
+  // `T`, as asserted above. It reads them whatever the alignment. They must be a valid `[u8; N]`,
+  // so initialized. The only value given is a `Bit`, a `u8` tag and a `u8`, whose 2 bytes are.
   unsafe { core::mem::transmute_copy(&value) }
 }
 

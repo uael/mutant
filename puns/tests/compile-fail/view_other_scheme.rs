@@ -16,7 +16,7 @@ use relative::One;
 #[repr(transparent)]
 struct Other<T>(i32le, PhantomData<T>);
 
-// SAFETY: the type is its offset; no value of it is made.
+// SAFETY: The type is its `i32le` offset, of a scheme of its own, and no value of it is made.
 unsafe impl<T: Pun> SelfRelative for Other<T> {
   type Target = T;
   const POINTER: Pointer = Pointer::one::<T>("another scheme", 4, Endian::Little);

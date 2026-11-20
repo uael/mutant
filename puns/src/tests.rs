@@ -41,8 +41,10 @@ macro_rules! scalar {
     #[derive(Copy, Clone)]
     #[repr(transparent)]
     struct $name($repr);
-    // SAFETY: these types are only given to the analysis, never constructed: there is no value
-    // of them that `SPEC` could misdescribe.
+    // SAFETY: `$name` is `repr(transparent)` over `$repr`, so `SPEC` has its size. These types
+    // are only given to the analysis, and no value of them is made, so no value is outside what
+    // `SPEC` accepts. A value that `SPEC` accepts is a valid `$repr`, which any initialized bytes
+    // are, and `$name` has no other invariant. It holds no `UnsafeCell`.
     unsafe impl Scalar for $name {
       const SPEC: Spec = Spec::ranges::<$repr>(Endian::$endian, &$ranges);
     }
@@ -666,7 +668,8 @@ fn patterns_are_the_same_by_their_states() {
     &Dfa { id: Dfa::UTF8.id, states: &[DfaState { accept: true, edges: &[(0, 0xff, 0)] }] };
   /// The states of UTF-8, with another `id`.
   const AGAIN: &Dfa = &Dfa { id: 7, states: Dfa::UTF8.states };
-  // SAFETY: the probe of a slice of bytes, a type of bytes.
+  // SAFETY: `[u8]` is a slice, the probe is `<[u8] as Pun>::PROBE`, and its 3 bytes fit in an
+  // `isize`. These are the requirements of `Layout::pattern`.
   let pattern = |dfa: &'static Dfa| unsafe { Layout::pattern::<[u8]>(<[u8] as Pun>::PROBE, dfa) };
   assert!(pattern(Dfa::UTF8).equals(&pattern(Dfa::UTF8)));
   assert!(!pattern(ANY).equals(&pattern(Dfa::UTF8)));

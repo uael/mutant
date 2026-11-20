@@ -22,7 +22,7 @@ struct New {
   flag: One<One<bool>>,
 }
 
-// SAFETY: not kept: `Fields` is not the fields of the layout.
+// SAFETY: Not met, on purpose: `Fields` is not the fields of the layout, which must be refused.
 unsafe impl Pun for New {
   type Elem = ();
   type Fields = ();
@@ -30,7 +30,7 @@ unsafe impl Pun for New {
   type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
-  // SAFETY: a sized type.
+  // SAFETY: `New` is `Sized`, and `Layout::structure` requires nothing of a `Sized` type.
   const LAYOUT: Layout = unsafe {
     Layout::structure::<Self>(
       Self::PROBE,

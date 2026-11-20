@@ -95,8 +95,11 @@ const BITS: &Dfa =
 #[repr(transparent)]
 struct Bits([u8]);
 
-// SAFETY: a type of bytes that `BITS` accepts, which nothing else makes; `Layout::pattern`, with
-// the probe of a slice of bytes, is its layout.
+// SAFETY: `Pun` is not to be implemented by hand, and this test does so to check a pattern that
+// a user defines. `Bits` is `repr(transparent)` over `[u8]`, and this test makes a `Bits` only of
+// bytes that `BITS` accepts, through `puns`. So the layout of `Layout::pattern` with `BITS`, a tail
+// of bytes at offset 0 that the automaton accepts, is its layout. The lists are `()`, `OPTION` is
+// `None`, and it holds no `UnsafeCell`.
 unsafe impl Pun for Bits {
   type Elem = ();
   type Fields = ();
@@ -104,7 +107,9 @@ unsafe impl Pun for Bits {
   type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = <[u8] as Pun>::PROBE as *const Self;
-  // SAFETY: the probe of a slice of bytes.
+  // SAFETY: `Bits` is a struct whose last field is a slice. `Self::PROBE` is `<[u8] as Pun>::PROBE`
+  // cast with an `as` cast, and its 3 bytes fit in an `isize`. These are the requirements of
+  // `Layout::pattern`.
   const LAYOUT: Layout = unsafe { Layout::pattern::<Self>(Self::PROBE, BITS) };
 }
 

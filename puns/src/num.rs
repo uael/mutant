@@ -221,7 +221,12 @@ macro_rules! ints {
       }
     }
 
-    // SAFETY: a byte array.
+    // SAFETY: `$name` is `repr(transparent)` over `[u8; $size]`, so `SPEC` has its size. The
+    // items of the `# Safety` of `Scalar` hold:
+    // - Every value of `$name` is initialized bytes, all of which `Spec::any` accepts.
+    // - Every initialized `[u8; $size]` is a valid `$name`. No code of `$name` relies on what
+    //   its bytes are: `from_bytes` makes one of any bytes.
+    // - `$name` holds no `UnsafeCell`.
     unsafe impl Scalar for $name {
       const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian);
       const ID: Id = Id::new(stringify!($name), &[]);
@@ -343,7 +348,15 @@ macro_rules! ints {
       }
     }
 
-    // SAFETY: the only value that `new` makes.
+    // SAFETY: `$literal<V>` is `repr(transparent)` over `$name`, so `SPEC` has its size. The
+    // items of the `# Safety` of `Scalar` hold:
+    // - Its field is private, and `new` is the only code that makes one. `new` makes
+    //   `$name::new(V)`, whose bytes, read in the byte order `$endian`, are `V`. `SPEC` accepts
+    //   `V`. Its evaluation calls `new`, so a `V` that does not fit in `$size` bytes does not
+    //   compile.
+    // - The bytes of `V` are a valid `$name`, which any initialized bytes are. Code of
+    //   `$literal<V>` relies on its value being `V`, which is the only value `SPEC` accepts.
+    // - `$literal<V>` holds no `UnsafeCell`.
     unsafe impl<const V: $raw> Scalar for $literal<V> {
       const SPEC: Spec = {
         let _ = Self::new();
@@ -519,7 +532,12 @@ macro_rules! numbers {
       }
     }
 
-    // SAFETY: a byte array.
+    // SAFETY: `$name` is `repr(transparent)` over `[u8; $size]`, so `SPEC` has its size. The
+    // items of the `# Safety` of `Scalar` hold:
+    // - Every value of `$name` is initialized bytes, all of which `Spec::any` accepts.
+    // - Every initialized `[u8; $size]` is a valid `$name`. No code of `$name` relies on what
+    //   its bytes are: `from_bytes` makes one of any bytes.
+    // - `$name` holds no `UnsafeCell`.
     unsafe impl Scalar for $name {
       const SPEC: Spec = Spec::any::<Self>().with_endian(Endian::$endian).not_a_number();
       const ID: Id = Id::new(stringify!($name), &[]);
@@ -647,7 +665,13 @@ impl<const V: u8> u8c<V> {
   }
 }
 
-// SAFETY: the only value that `new` makes.
+// SAFETY: `u8c<V>` is `repr(transparent)` over `u8`, so `SPEC` has its size. The items of the
+// `# Safety` of `Scalar` hold:
+// - Its field is private, and `new` is the only code that makes one, of the byte `V`, which
+//   `SPEC` accepts.
+// - `V` is a valid `u8`. Code of `u8c<V>` relies on its value being `V`, which is the only value
+//   `SPEC` accepts.
+// - `u8c<V>` holds no `UnsafeCell`.
 unsafe impl<const V: u8> Scalar for u8c<V> {
   const SPEC: Spec = Spec::ranges::<Self>(Endian::NATIVE, const { &[(V as u128, V as u128)] });
   const ID: Id = Id::sized("u8c", &[], V as usize);
@@ -740,7 +764,14 @@ impl<const MIN: u8, const MAX: u8> u8in<MIN, MAX> {
   }
 }
 
-// SAFETY: the only values that `new` makes.
+// SAFETY: `u8in<MIN, MAX>` is `repr(transparent)` over `u8`, so `SPEC` has its size. The items
+// of the `# Safety` of `Scalar` hold:
+// - Its field is private, and `new` is the only code that makes one. `new` makes one only of a
+//   value from `MIN` to `MAX`, which `SPEC` accepts. If `MIN > MAX`, `new` makes none, and the
+//   evaluation of `SPEC` panics (`Spec::with_ranges` refuses an empty range).
+// - Every value from `MIN` to `MAX` is a valid `u8`. Code of `u8in<MIN, MAX>` relies on its value
+//   being in that range, which is what `SPEC` accepts.
+// - `u8in<MIN, MAX>` holds no `UnsafeCell`.
 unsafe impl<const MIN: u8, const MAX: u8> Scalar for u8in<MIN, MAX> {
   const SPEC: Spec = Spec::ranges::<Self>(Endian::NATIVE, const { &[(MIN as u128, MAX as u128)] });
   const ID: Id = Id::sized("u8in", &[], MIN as usize * 256 + MAX as usize);

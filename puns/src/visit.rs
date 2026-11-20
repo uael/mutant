@@ -208,8 +208,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: a `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. No `Rel` is followed in this example.
+/// // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
+/// // buffer, at an address aligned for it. Its scheme is its own. No `Rel` is followed in this
+/// // example, so nothing relies on more.
 /// unsafe impl<T: Pun> SelfRelative for Rel<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
@@ -258,7 +259,9 @@ pub fn validate_in<T: Pun, V: Visit>(
   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
   let size = const { T::LAYOUT.size() };
   match bytes.get(at..).and_then(|rest| rest.get(..size)) {
-    // SAFETY: the `size` bytes of a `T` at `at`, initialized, as `value` requires.
+    // SAFETY: `bytes.get(at..)` and `.get(..size)` returned `Some`, so the `size` bytes from
+    // `at` are in `bytes`. They are valid for reads and initialized, since they are `u8`s of a
+    // slice. This is what `value` requires.
     Some(_) => unsafe { value::<T, V>(bytes.as_ptr(), at, visit) },
     None => Err(Invalid::at(at).into()),
   }
@@ -344,8 +347,9 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
     return if count == 0 { Ok(()) } else { validate_in::<T, V>(bytes, at, visit) };
   }
   if const { !T::LAYOUT.has_pointers() } {
-    // SAFETY: `count` values of `T`, in bounds and initialized. `validate` reads them at any
-    // alignment.
+    // SAFETY: `elems` is the `size * count` bytes from `at`, which `bytes.get` returned, so
+    // `count` consecutive `T`s, valid for reads and initialized. This is what `validate_elems`
+    // requires.
     let valid = unsafe { validate_elems::<T>(elems.as_ptr(), count) };
     if valid {
       return Ok(());
@@ -353,7 +357,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
   }
   let mut i = 0;
   while i < count {
-    // SAFETY: the element `i`, in bounds (above).
+    // SAFETY: `i < count`, so the `size` bytes from `at + i * size` are in `elems`, which
+    // `bytes.get` returned. They are valid for reads and initialized, as `value` requires.
     unsafe { value::<T, V>(bytes.as_ptr(), at + i * size, visit)? };
     i += 1;
   }
@@ -434,8 +439,9 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// #   target: PhantomData<T>,
 /// # }
 /// #
-/// # // SAFETY: a `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// # // buffer, at an address aligned for it. No `Rel` is followed in this example.
+/// # // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
+/// # // buffer, at an address aligned for it. Its scheme is its own. No `Rel` is followed in this
+/// # // example, so nothing relies on more.
 /// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
 /// #   type Target = T;
 /// #   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
@@ -467,7 +473,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// puns::validate_in::<Pair, _>(&bytes, 0, &mut checked).unwrap();
 ///
 /// let mut walked = Positions(Vec::new());
-/// // SAFETY: `validate_in` accepted these bytes as a `Pair`.
+/// // SAFETY: `bytes` is valid for reads, and `validate_in` accepted it as a `Pair`, which meets
+/// // the requirements of `pointers_in`.
 /// unsafe { puns::pointers_in::<Pair, _>(bytes.as_ptr(), 0, &mut walked) }.unwrap();
 /// assert_eq!(walked.0, checked.0);
 /// ```
@@ -478,7 +485,7 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
   visit: &mut V,
 ) -> Result<(), V::Error> {
   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
-  // SAFETY: per the caller.
+  // SAFETY: The requirements of `follow` are the ones of this function.
   unsafe { follow::<T, V>(base, at, visit) }
 }
 
@@ -514,6 +521,9 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///
 /// The caller must ensure that each of the `count` values at `base + at`, `size_of::<T>()` apart,
 /// meets the requirements of [`pointers_in`].
+///
+/// If `T` holds no self-relative pointer, nothing is read, and nothing is required of `base`,
+/// `at` or `count`.
 #[inline]
 pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
   base: *const u8,
@@ -528,7 +538,9 @@ pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
   let size = const { T::LAYOUT.size() };
   let mut i = 0;
   while i < count {
-    // SAFETY: per the caller, the element `i`.
+    // SAFETY: `i < count`, and each of the `count` values at `base + at`, `size` apart, meets
+    // the requirements of `pointers_in`, by contract on the caller. This is what `follow`
+    // requires of the element `i`.
     unsafe { follow::<T, V>(base, at + i * size, visit)? };
     i += 1;
   }
@@ -577,7 +589,18 @@ unsafe fn follow<T: ?Sized + Pun, V: Visit>(
   };
   // The walk goes by the lists of types of `T`, as `validate_in` does.
   const { assert!(listed::<T>(), "{}", LISTS) };
-  // SAFETY: per the caller; the layout of `T` tells what is at `at`.
+  // SAFETY: The `T` at `base + at` meets the requirements of `pointers_in`, by contract on the
+  // caller. `T::LAYOUT` is its layout, and `listed` asserts that its lists are those of the
+  // layout. For each shape:
+  // - Each element of an array is a `T::Elem` within the `T`, `size` apart, and meets the same
+  //   requirements, as `follow` requires.
+  // - The fields of a struct are within the `T`, as `follow_fields` requires.
+  // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration`
+  //   asserts that it is within the enum, and of at most 16 bytes (`Spec::is_integer`), so
+  //   `add` stays within the `T`, and the tag meets the requirements of `load`. It selects a
+  //   variant, whose fields meet the requirements, as `follow_variants` requires.
+  // - The offset of a pointer is initialized, by contract on the caller, and of at most 16
+  //   bytes (`Pointer::new`), as `load` requires.
   unsafe {
     match const { T::LAYOUT.shape() } {
       Shape::Array(len) => {
@@ -631,8 +654,11 @@ unsafe fn follow_fields<F: Fields, V: Visit>(
   visit: &mut V,
 ) -> Result<(), V::Error> {
   let Some(field) = (const { F::FIELD }) else { return Ok(()) };
-  // SAFETY: per the caller; the field is where its layout says. A restricted field is a scalar,
-  // which holds no pointer.
+  // SAFETY: `F` is a field of the struct or the variant at `at` (`Fields`, section Safety), whose
+  // lists `listed` asserts are its layout. So a `F::Type` is at `at + field.offset()`, within the
+  // value, and meets the requirements of `pointers_in`, as `follow` requires. A restricted field
+  // is a scalar, which holds no pointer. The requirements of the call for the next fields are
+  // the ones of this call.
   unsafe {
     if field.restriction().is_none() {
       follow::<F::Type, V>(base, at + field.offset(), visit)?;
@@ -665,7 +691,10 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
   let expected = const { W::TAG }?;
   // As `variants`: the variant of a niche, or one that no value is, has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: per the caller.
+  // SAFETY: If `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
+  // (`Variants`, section Safety). They meet the requirements of `pointers_in`, by contract on the
+  // caller, as `follow_fields` requires. Otherwise the requirements of the call for the next
+  // variants are the ones of this call.
   unsafe {
     if this {
       Some(follow_fields::<W::Fields, V>(base, at, visit))
@@ -744,7 +773,8 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 ///
 /// let entry = Entry { kind: 7, value: 0x0102_0304 };
 /// let mut buffer = [0xAA; size_of::<Entry>()];
-/// // SAFETY: `entry` is a valid `Entry`, and `buffer` is as large and does not overlap it.
+/// // SAFETY: `entry` is a valid `Entry`, valid for reads. `buffer` is as large, valid for writes,
+/// // and does not overlap it.
 /// unsafe { puns::copy_in::<Entry>(core::ptr::from_ref(&entry).cast(), buffer.as_mut_ptr()) };
 ///
 /// let at = offset_of!(Entry, value);
@@ -755,7 +785,7 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// ```
 #[inline]
 pub unsafe fn copy_in<T: Pun>(src: *const u8, dst: *mut u8) {
-  // SAFETY: per the caller.
+  // SAFETY: The requirements of `copy` are the ones of this function.
   unsafe { copy::<T>(src, dst) }
 }
 
@@ -801,7 +831,10 @@ const fn whole(layout: &layout::Layout) -> bool {
 unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
   let size = const { T::LAYOUT.size() };
   if const { whole(&T::LAYOUT) } {
-    // SAFETY: per the caller, `size` initialized bytes, which do not overlap.
+    // SAFETY: This satisfies the safety contract of `copy_nonoverlapping`. The `size` bytes at
+    // `src` are valid for reads, the `size` bytes at `dst` valid for writes, and they do not
+    // overlap, by contract on the caller. A `u8` is aligned at any address. `whole` is `true`, so
+    // every byte of a valid `T` is initialized, and `dst` is left initialized.
     unsafe { core::ptr::copy_nonoverlapping(src, dst, size) };
     return;
   }
@@ -814,7 +847,19 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
   };
   // The walk goes by the lists of types of `T`, as `validate_in` does.
   const { assert!(listed::<T>(), "{}", LISTS) };
-  // SAFETY: per the caller; the layout of `T` tells what is where.
+  // SAFETY: The `T` at `src` and the bytes at `dst` meet the requirements of `copy_in`, by
+  // contract on the caller. `T::LAYOUT` is the layout of `T`, and `listed` asserts that its lists
+  // are those of the layout. For each shape:
+  // - Each element of an array is within both ranges, `size` apart, and meets the same
+  //   requirements, as `copy` requires.
+  // - The fields of a struct are within both ranges, as `copy_fields` requires.
+  // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration`
+  //   asserts that it is within the enum, and of at most 16 bytes, so `add` stays within both
+  //   ranges, and the tag meets the requirements of `load`. Its `spec.size` bytes are valid for
+  //   reads at `src` and writes at `dst`, which do not overlap, as `copy_nonoverlapping`
+  //   requires. It selects a variant, whose fields meet the requirements of `copy_variants`.
+  // - The offset of a pointer is initialized, by contract on the caller, and of at most 16
+  //   bytes, as `load` requires. Its `size` bytes are copied as the tag is.
   unsafe {
     match const { T::LAYOUT.shape() } {
       Shape::Array(len) => {
@@ -861,8 +906,11 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
 unsafe fn copy_fields<F: Fields>(src: *const u8, dst: *mut u8) {
   let Some(field) = (const { F::FIELD }) else { return };
   let off = field.offset();
-  // SAFETY: per the caller; the field is where its layout says. A restricted field is a scalar
-  // of its type, whose bytes are those of the type.
+  // SAFETY: `F` is a field of the struct or the variant at `src` (`Fields`, section Safety),
+  // whose lists `listed` asserts are its layout. So a `F::Type` is at `off`, within both ranges,
+  // and meets the requirements of `copy_in`, as `copy` requires. A restricted field is a scalar
+  // of its type, whose bytes are those of the type. The requirements of the call for the next
+  // fields are the ones of this call.
   unsafe {
     copy::<F::Type>(src.add(off), dst.add(off));
     copy_fields::<F::Next>(src, dst);
@@ -884,7 +932,10 @@ unsafe fn copy_variants<W: Variants>(src: *const u8, dst: *mut u8, tag: u128) {
   let Some(expected) = (const { W::TAG }) else { return };
   // As `variants`: the variant of a niche, or one that no value is, has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: per the caller.
+  // SAFETY: If `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
+  // (`Variants`, section Safety). They meet the requirements of `copy_in`, by contract on the
+  // caller, as `copy_fields` requires. Otherwise the requirements of the call for the next
+  // variants are the ones of this call.
   unsafe {
     if this {
       copy_fields::<W::Fields>(src, dst);
@@ -902,11 +953,13 @@ unsafe fn copy_variants<W: Variants>(src: *const u8, dst: *mut u8, tag: u128) {
 ///
 /// The caller must ensure that:
 ///
-/// - `base` is valid for reads of `count` consecutive `T`s, initialized but for their padding.
-///   It need not be aligned.
+/// - `base` is valid for reads of `count` consecutive `T`s, all of whose bytes are initialized,
+///   padding included. It need not be aligned.
 #[inline(always)]
 const unsafe fn validate_elems<T: Pun>(base: *const u8, count: usize) -> bool {
-  // SAFETY: per the caller: a slice of `count` `T`s, which `validate` reads at any alignment.
+  // SAFETY: `ptr::from_raw_parts` makes a pointer to a `[T]` of `count` elements at `base`, valid
+  // for reads, by contract on the caller, which `validate` does not need aligned. Every byte is
+  // initialized, by contract on the caller, so every byte that a check reads is.
   unsafe { validate::<All, Root, [T]>(ptr::from_raw_parts::<[T]>(base, count)) }
 }
 
@@ -950,22 +1003,27 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
   };
   // The walk goes by the lists of types of `T`, which the derive writes: they must be its layout.
   const { assert!(listed::<T>(), "{}", LISTS) };
-  // SAFETY: per the caller.
+  // SAFETY: `base + at` is valid for reads of a `T`, by contract on the caller, so `add(at)` stays
+  // in bounds of the allocation of `base`.
   let here = unsafe { base.add(at) };
   if const { !T::LAYOUT.has_pointers() } {
     // The code of `try_pun_ref` is the verdict; where it fails, the walk tells where, and the
     // value itself if the walk finds nothing.
-    // SAFETY: per the caller; a sized `T` (`Sized` at the root, so are its parts).
+    // SAFETY: `T` is `Sized`: the root of a walk is, and so are its fields and elements. So
+    // `ptr::from_raw_parts` makes a pointer to the `T` at `here`, valid for reads, by contract on
+    // the caller, which `validate` does not need aligned. Every byte of it is initialized, by
+    // contract on the caller, so every byte that a check reads is.
     if unsafe { validate::<All, Root, T>(ptr::from_raw_parts::<T>(here, 0)) } {
       return Ok(());
     }
-    // SAFETY: per the caller.
+    // SAFETY: The requirements of `walk` are the ones of this function, and `here` is
+    // `base + at`.
     return match unsafe { walk::<T, V>(base, at, here, visit) } {
       Ok(()) => Err(Invalid::at(at).into()),
       error => error,
     };
   }
-  // SAFETY: per the caller.
+  // SAFETY: The requirements of `walk` are the ones of this function, and `here` is `base + at`.
   unsafe { walk::<T, V>(base, at, here, visit) }
 }
 
@@ -992,7 +1050,17 @@ unsafe fn walk<T: ?Sized + Pun, V: Visit>(
   here: *const u8,
   visit: &mut V,
 ) -> Result<(), V::Error> {
-  // SAFETY: per the caller; the layout of `T` tells what is at `here`.
+  // SAFETY: The `T` at `here` is valid for reads, and its bytes are initialized, by contract on
+  // the caller. `T::LAYOUT` is its layout, and `value` asserted that its lists are those of the
+  // layout. For each shape:
+  // - A scalar is the `spec.size` bytes at `here`, as `Spec::matches` requires.
+  // - Each element of an array is within the `T`, `size` apart, as `value` requires.
+  // - The fields of a struct are within it, as `fields` requires. `check_rules` requires a `T`
+  //   valid for reads, all of whose bytes are initialized, at `here`. `T` is `Sized`, as in
+  //   `value`, so `ptr::from_raw_parts` makes a pointer to it.
+  // - An enum meets the requirements of `enumeration`, and `layout` is the layout of `T`.
+  // - The offset of a pointer is initialized, and of at most 16 bytes (`Pointer::new`), as
+  //   `load` requires.
   unsafe {
     match const { T::LAYOUT.shape() } {
       Shape::Scalar(spec) => {
@@ -1138,7 +1206,11 @@ unsafe fn fields<F: Fields, V: Visit>(
 ) -> Result<(), V::Error> {
   let Some(field) = (const { F::FIELD }) else { return Ok(()) };
   let place = at + field.offset();
-  // SAFETY: per the caller; the field is where its layout says.
+  // SAFETY: `F` is a field of the struct or the variant at `at` (`Fields`, section Safety), whose
+  // lists `value` asserted are its layout. So it is at `place`, within the value, valid for
+  // reads, and initialized, by contract on the caller. A restricted field is a scalar of
+  // `spec.size` bytes, as `add` and `Spec::matches` require. Any other is a `F::Type`, as
+  // `value` requires. The requirements of the call for the next fields are the ones of this call.
   unsafe {
     match field.restriction() {
       // A scalar that accepts less than its type does.
@@ -1175,9 +1247,12 @@ unsafe fn enumeration<T: ?Sized + Pun, V: Visit>(
 ) -> Result<(), V::Error> {
   let Kind::Scalar(spec) = layout.tag.layout.kind else { return Err(Invalid::at(at).into()) };
   let place = at + layout.tag.offset;
-  // SAFETY: the tag is in the bytes of the enum.
+  // SAFETY: `layout` is the layout of `T`, by contract on the caller. `Layout::enumeration`
+  // asserts that its tag is within the enum, and of at most 16 bytes (`Spec::is_integer`). The
+  // bytes of the enum are valid for reads and initialized, by contract on the caller. So `add`
+  // stays within them, and the tag meets the requirements of `load`.
   let tag = unsafe { load(base.add(place), spec.size, spec.endian) };
-  // SAFETY: per the caller.
+  // SAFETY: The requirements of `variants` are the ones of this function.
   unsafe { variants::<T::Variants, V>(base, at, tag, visit) }
     .unwrap_or_else(|| Err(Invalid::at(place).into()))
 }
@@ -1206,7 +1281,10 @@ unsafe fn variants<W: Variants, V: Visit>(
   let expected = const { W::TAG }?;
   // The variant of a niche, or one that no value is (no range), has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: per the caller.
+  // SAFETY: If `this`, `W::Fields` are the fields of the variant `W` of the enum at `at`
+  // (`Variants`, section Safety), whose bytes are valid for reads and initialized, by contract on
+  // the caller, as `fields` requires. Otherwise the requirements of the call for the next
+  // variants are the ones of this call.
   unsafe {
     if this {
       Some(fields::<W::Fields, V>(base, at, visit))

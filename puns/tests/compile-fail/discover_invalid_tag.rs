@@ -6,8 +6,8 @@ use core::mem::{self, MaybeUninit};
 
 const fn variant_of_two() -> mem::Discriminant<Option<bool>> {
   let mut value = MaybeUninit::new(Some(true));
-  // SAFETY: the byte of the `bool`, written with a value that is no tag of `Option<bool>` (0 and 1
-  // are `Some`, 2 is `None`).
+  // SAFETY: Not sound, on purpose: 3 is no tag of `Option<bool>` (0 and 1 are `Some`, 2 is `None`),
+  // so the reference is to an invalid value. Const evaluation must report it, and fail the build.
   unsafe {
     value.as_mut_ptr().cast::<u8>().write(3);
     mem::discriminant(&*value.as_ptr())

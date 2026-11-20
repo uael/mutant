@@ -103,9 +103,10 @@ use crate::{Pun, layout::Pointer};
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: a `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. The only one of this example is made where that holds
-/// // (below), and nothing writes to the buffer while it is read.
+/// // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
+/// // buffer, at an address aligned for it. Its scheme is its own, and is the way to the target.
+/// // The only one of this example is made where it aims at a valid `T` (below), and nothing
+/// // writes to the buffer while it is read. Nothing in this example relies on more.
 /// unsafe impl<T: Pun> SelfRelative for Rel<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer = Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
@@ -137,7 +138,9 @@ use crate::{Pun, layout::Pointer};
 /// bytes[4..8].copy_from_slice(&4i32.to_ne_bytes());
 /// bytes[8] = 1;
 /// let buffer = Buffer(bytes);
-/// // SAFETY: the bytes at 0 are an `Old`, whose pointer aims at a `bool` of the same buffer.
+/// // SAFETY: `buffer` is aligned to 4, as `Old` is. Its bytes at 0 are a valid `Old`: a `bool`
+/// // of 1, padding, and an offset of 4, which aims at the `bool` of 1 at 8 of the same buffer.
+/// // `buffer` is not written while `old` lives.
 /// let old: &Old = unsafe { &*core::ptr::from_ref(&buffer).cast::<Old>() };
 ///
 /// // Proven at compile time: every `Old`, and what its pointer aims at, is a `New`.
@@ -241,8 +244,9 @@ pub unsafe trait SelfRelative: Sized {
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: a `Ptr<T>` is its offset, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. None is made in this example.
+/// // SAFETY: A `Ptr<T>` is its offset, the distance from its own address to a `T` of the same
+/// // buffer, at an address aligned for it. Its scheme is its own. No `Ptr<T>` that is followed
+/// // is made in this example.
 /// unsafe impl<T: Pun> SelfRelative for Ptr<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer =
@@ -273,9 +277,21 @@ pub unsafe trait SelfRelative: Sized {
 #[macro_export]
 macro_rules! self_relative {
   (impl [$($generics:tt)*] $ty:ty) => {
-    // SAFETY: what the implementation of `SelfRelative`, required here, promises of the type:
-    // the type is the offset of its `POINTER` (its size is asserted), and it aims at its
-    // `Target`, for which `POINTER` is made (asserted).
+    // SAFETY: `$ty: SelfRelative` is required, so its implementation guarantees the items of
+    // the `# Safety` of `SelfRelative`. The layout meets the `# Safety` of `Pun`:
+    // - `Layout::pointer` has the size of the offset, which it asserts is the size of `$ty`, and
+    //   the alignment of `$ty`. `$ty` is that offset and nothing else, every byte of it is
+    //   initialized, and none is inside an `UnsafeCell`, by the requirement that the type is its
+    //   offset (`SelfRelative`, section Safety).
+    // - The layout says only that the bytes are initialized, and not zero if `Option<$ty>` shows
+    //   a niche at zero (`excludes_zero`). Every value of `$ty` holds this. A value that the
+    //   layout accepts is a valid `$ty`, since an initialized offset is one. What it aims at is
+    //   proven only by a pointer of the same scheme, which `SelfRelative` lets `puns` rely on.
+    // - `Layout::pointer` asserts that `POINTER` is made for `Target`, of its size and
+    //   alignment, and `Pointee` is `Target`. The other lists are `()`.
+    // - `OPTION` is `Layout::nullable`, which asserts that `Option<$ty>` has the size of `$ty`
+    //   and that `None` is zeros. So `Some(p)` has the bytes of `p`, which are not all zero, and
+    //   `Option<$ty>` is the same pointer, which may be null.
     unsafe impl<$($generics)*> $crate::Pun for $ty where $ty: $crate::SelfRelative {
       type Elem = ();
       type Fields = ();
@@ -288,7 +304,8 @@ macro_rules! self_relative {
         <$ty as $crate::SelfRelative>::Target,
       >(<$ty as $crate::SelfRelative>::POINTER);
       // `Option` of the pointer is the same pointer, that may be null: if `None` is the pointer
-      // of zeros, which `nullable` checks where `Option` of it is used (S5).
+      // of zeros, which `nullable` checks where `Option` of it is used (the requirement of
+      // `SelfRelative` on a pointer that may be null, `SelfRelative`, section Safety).
       const OPTION: ::core::option::Option<$crate::layout::Layout> =
         ::core::option::Option::Some($crate::layout::Layout::nullable::<
           Self,
