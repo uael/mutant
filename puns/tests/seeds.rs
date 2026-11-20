@@ -1,6 +1,7 @@
 //! Every verdict of `puns` without the `unstable` feature, on pairs of types of which Rust keeps
 //! some layouts and not others, and which bytes each type accepts: the same whatever layout
-//! `rustc` chooses where Rust lets it choose.
+//! `rustc` chooses where Rust lets it choose. Not the message of a refusal, which may name what
+//! `rustc` chose (the cases of `compile-fail-kept` hold messages, of the layout of this build).
 //!
 //! The record is compared with `seeds.txt`, which CI requires under `-Zrandomize-layout` with
 //! several seeds, and without (`PUNS_BLESS=1` writes it). It is the record of `x86_64`: the
@@ -137,8 +138,7 @@ const BYTES: [u8; 5] = [0, 1, 2, 0x7f, 0xff];
 #[repr(align(16))]
 struct Aligned([u8; 16]);
 
-/// The verdicts of every function on a pun from `S` to `D`, and why `try_pun_ref` does not
-/// compile.
+/// The verdicts of every function on a pun from `S` to `D`.
 fn line<S: Pun, D: Pun>() -> String {
   let v = hook::verdict::<S, D>();
   let p = hook::parts::<S, D>();
@@ -161,8 +161,7 @@ fn line<S: Pun, D: Pun>() -> String {
     hook::tries_view::<S, D>(1),
   ];
   let flags: String = flags.iter().map(|&ok| if ok { '+' } else { '-' }).collect();
-  let why = v.why().trim().replace('\n', " ");
-  format!("{} -> {}: {flags} {why}\n", type_name::<S>(), type_name::<D>())
+  format!("{} -> {}: {flags}\n", type_name::<S>(), type_name::<D>())
 }
 
 /// Which byte patterns of the size of `D` it accepts from bytes (`try_pun_ref`): how many of

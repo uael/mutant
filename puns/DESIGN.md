@@ -1289,23 +1289,23 @@ Niches that Rust documents only as "ABI-compatible" are not taken either: an enu
 of a variant that holds a `NonZero` and one without field (the `Ticket` of the README) needs the
 feature, though `rustc` lays it out as the `Option` of it.
 
-**How it is checked**: the tests of `puns` run without the feature and with it. Without it
-(`cargo test -p puns --features verdict`), `tests/seeds.rs` records the verdict of every function on every pair of 34 types (the
-ones of the table above, and next to them what holds them: an enum and a union of a specified
-representation, a struct with a rule, arrays, pointers), whole, in part (by `&mut`, from the end)
-and behind pointers, the message of each refusal, and which byte patterns each type accepts from
-bytes, and compares the record with `tests/seeds.txt`; CI runs it without `-Zrandomize-layout`
-and with it, of several seeds, and the record must be the same each time. With the feature, the
-same record differs from one seed to the next (11 of the lines of a smaller one, between seeds 1
-and 3): the check is not empty. It is what found that a rule, an enum checked as a whole and
-what a pointer aims at had each been left to the layout that `rustc` chose: a type of each is in
-the record. The cases of `tests/compile-fail-kept` hold each refusal and its message, and the
-ones of `tests/compile-pass-kept` what compiles (`tests/compile_fail.rs` takes them without the
-feature, and `tests/compile-fail-unstable` with it; the other cases are the same both ways). With
-the feature (`--features unstable`), the targets that need it run as well (`required-features`
-in `Cargo.toml`: enums without `repr`, `validate_in` of `Option<bool>`, the `codegen` example,
-the benchmark), and the tests that are about the layout that `rustc` chose
-(`#[cfg(feature = "unstable")]`).
+**How it is checked**: the tests of `puns` run without the feature and with it. Without it (`cargo
+test -p puns --features verdict`), `tests/seeds.rs` records the verdict of every function on every
+pair of 34 types (the ones of the table above, and next to them what holds them: an enum and a union
+of a specified representation, a struct with a rule, arrays, pointers), whole, in part (by `&mut`,
+from the end) and behind pointers, and which byte patterns each type accepts from bytes (not the
+message of a refusal, which may name what `rustc` chose), and compares the record with
+`tests/seeds.txt`; CI runs it without `-Zrandomize-layout` and with it, of several seeds, and the
+record must be the same each time. With the feature, the same record differs from one seed to the
+next (11 of the lines of a smaller one, between seeds 1 and 3): the check is not empty. It is what
+found that a rule, an enum checked as a whole and what a pointer aims at had each been left to the
+layout that `rustc` chose: a type of each is in the record. The cases of `tests/compile-fail-kept`
+hold each refusal and its message, and the ones of `tests/compile-pass-kept` what compiles
+(`tests/compile_fail.rs` takes them without the feature, and `tests/compile-fail-unstable` with it;
+the other cases are the same both ways). With the feature (`--features unstable`), the targets that
+need it run as well (`required-features` in `Cargo.toml`: enums without `repr`, `validate_in` of
+`Option<bool>`, the `codegen` example, the benchmark), and the tests that are about the layout that
+`rustc` chose (`#[cfg(feature = "unstable")]`).
 
 
 ## Model check
