@@ -230,6 +230,107 @@
 //! Each function lists its conditions under "Compile-time errors". Rust has no const traits on
 //! stable, which would let these conditions be trait bounds.
 //!
+//! ### Messages
+//!
+//! Each refusal prints a message that says why the pun is refused. When the reason is at a byte of
+//! the target, the message names that byte. The most common messages follow, each with code that
+//! compiles.
+//!
+//! **The sizes differ.**
+//!
+//! ```compile_fail,E0080
+//! let n: u32 = puns::pun([1u8, 2, 3]);
+//! ```
+//!
+//! ```text
+//! cannot pun: the source is smaller than the target.
+//! ```
+//!
+//! A source larger than the target gives "the source is larger than the target", and the message
+//! suggests [`head`] and [`tail`], which read a part of the source.
+//!
+//! ```
+//! assert_eq!(puns::head::<[u8; 3], [u8; 2]>([1, 2, 3]), [1, 2]);
+//! ```
+//!
+//! **The target needs a greater alignment than the source.** A `[u8; 4]` can be at any address, and
+//! a `u32` cannot.
+//!
+//! ```compile_fail,E0080
+//! let n: &u32 = puns::pun_ref(&[0u8; 4]);
+//! ```
+//!
+//! ```text
+//! cannot pun: the target has a greater alignment than the source.
+//! Use `try_pun_ref` or `try_pun_mut` to check the address at run time.
+//! ```
+//!
+//! A value has no address, so [`pun`] copies the bytes into a `u32`. A [`num::u32le`] has
+//! alignment 1, so a reference to four bytes can be read as one. Otherwise, [`try_pun_ref`] checks
+//! the address at run time.
+//!
+//! ```
+//! use puns::num::u32le;
+//!
+//! assert_eq!(puns::pun::<[u8; 4], u32>([1, 0, 0, 0]), u32::from_ne_bytes([1, 0, 0, 0]));
+//! assert_eq!(puns::pun_ref::<[u8; 4], u32le>(&[1, 0, 0, 0]).get(), 1);
+//! let n: Result<&u32, puns::Error> = puns::try_pun_ref(&[0u8; 4]);
+//! assert!(n == Ok(&0) || n == Err(puns::Error::Alignment));
+//! ```
+//!
+//! **Some values of the source are not valid for the target, and the function checks nothing.**
+//!
+//! ```compile_fail,E0080
+//! let text: &str = puns::pun_ref(&[0xffu8; 4]);
+//! ```
+//!
+//! ```text
+//! cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
+//! Use a `try_*` function to check them at run time.
+//! This is at byte 0 of the target.
+//! ```
+//!
+//! ```
+//! assert_eq!(puns::try_pun_ref::<[u8; 4], str>(b"text"), Ok("text"));
+//! assert_eq!(puns::try_pun_ref::<[u8; 4], str>(&[0xff; 4]), Err(puns::Error::Validity));
+//! ```
+//!
+//! **A value that is not valid for the source could be written through a `&mut`.** Here, the value
+//! would be bytes that are not UTF-8.
+//!
+//! ```compile_fail,E0080
+//! let mut text = String::from("text");
+//! let bytes: &mut [u8] = puns::pun_mut(text.as_mut_str());
+//! ```
+//!
+//! ```text
+//! cannot pun: some values of the target are not valid for the source (or are padding where the
+//! source is not), and could be written through the `&mut`.
+//! ```
+//!
+//! Nothing is written through a shared reference, and every `str` is bytes.
+//!
+//! ```
+//! let text = String::from("text");
+//! let bytes: &[u8] = puns::pun_ref(text.as_str());
+//! assert_eq!(bytes, b"text");
+//! ```
+//!
+//! **No value of the source is valid for the target.** A byte that is always 2 is never a `bool`.
+//! No function can make this pun, so the code that asks for it has a mistake.
+//!
+//! ```compile_fail,E0080
+//! let never = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
+//! ```
+//!
+//! ```text
+//! cannot pun: no value of the source is valid for the target.
+//! This is at byte 0 of the target.
+//! ```
+//!
+//! A byte that is padding in the source, and that the target requires to be initialized, is refused
+//! as well. [Enums: what is refused](#enums-what-is-refused) shows it for an enum.
+//!
 //! # Enums: what is refused
 //!
 //! A `Shape` is not 4 bytes. The byte after the tag of a `Circle` is padding, and nothing tells a
