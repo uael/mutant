@@ -2325,10 +2325,10 @@ fn derive_discovered(
         #[allow(unreachable_code)]
         const SAMPLES: [::core::mem::MaybeUninit<Self>; #count] = [#(#samples),*];
         #(#offsets)*
-        const DESC: #root::layout::Desc<#count> = #layout::discover::<Self, #count>(
-          &<Self as __PunDiscover>::SAMPLES,
-          &[#(#observed),*],
-        );
+        // In a constant, which is what `discover` requires of its caller.
+        const DESC: #root::layout::Desc<#count> = unsafe {
+          #layout::discover::<Self, #count>(&<Self as __PunDiscover>::SAMPLES, &[#(#observed),*])
+        };
         const TAG: #root::layout::Layout = const { &<Self as __PunDiscover>::DESC }.tag();
         const VARIANTS: [#root::layout::Variant; #count] = [#(#variants),*];
         const ENUM: #root::layout::Enum = #root::layout::Enum::discovered(

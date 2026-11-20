@@ -89,10 +89,13 @@ impl<T: Pun> Found for Option<T> {
   const DESC: Desc<2> = if Self::GIVEN {
     Desc::none()
   } else {
-    Layout::discover::<Self, 2>(
-      &<Self as Found>::SAMPLES,
-      &[&[], &[Field::new(<Self as Found>::OFFSETS[1], &T::LAYOUT)]],
-    )
+    // SAFETY: in a constant, where an experiment that reads what it must not fails the build.
+    unsafe {
+      Layout::discover::<Self, 2>(
+        &<Self as Found>::SAMPLES,
+        &[&[], &[Field::new(<Self as Found>::OFFSETS[1], &T::LAYOUT)]],
+      )
+    }
   };
   const TAG: Layout = const { &<Self as Found>::DESC }.tag();
   const VARIANTS: [Variant; 2] = [variant!(Self, 0), variant!(Self, 1, T)];
@@ -143,13 +146,16 @@ impl<T: Pun, E: Pun> Found for Result<T, E> {
     };
     [at, other]
   };
-  const DESC: Desc<2> = Layout::discover::<Self, 2>(
-    &<Self as Found>::SAMPLES,
-    &[
-      &[Field::new(<Self as Found>::OFFSETS[0], &T::LAYOUT)],
-      &[Field::new(<Self as Found>::OFFSETS[1], &E::LAYOUT)],
-    ],
-  );
+  // SAFETY: in a constant, where an experiment that reads what it must not fails the build.
+  const DESC: Desc<2> = unsafe {
+    Layout::discover::<Self, 2>(
+      &<Self as Found>::SAMPLES,
+      &[
+        &[Field::new(<Self as Found>::OFFSETS[0], &T::LAYOUT)],
+        &[Field::new(<Self as Found>::OFFSETS[1], &E::LAYOUT)],
+      ],
+    )
+  };
   const TAG: Layout = const { &<Self as Found>::DESC }.tag();
   const VARIANTS: [Variant; 2] = [variant!(Self, 0, T), variant!(Self, 1, E)];
   const ENUM: Enum = Enum::discovered(

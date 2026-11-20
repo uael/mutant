@@ -181,8 +181,8 @@ impl<E> Buf<E> {
   /// The variant of the value: a failure of const evaluation if its tag is not valid.
   const fn variant(&self) -> usize {
     // SAFETY: experiments only write over what is not a field of the variant of the sample (or
-    // a tag that is copied whole): its fields are valid, and its tag is initialized (or the
-    // build fails, R2).
+    // a tag that is copied whole): its fields are valid. Its tag is initialized and valid, as the
+    // caller of `discover` ensures (R2).
     unsafe { variant(self.0.as_ptr()) }
   }
 }
@@ -348,7 +348,7 @@ const fn decided_by<E>(
 /// the sample, makes it a byte of the tag (R4).
 const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
   assert!(offset + len <= size_of::<E>() && len <= 16);
-  // SAFETY: in bounds; initialized, or the build fails.
+  // SAFETY: in bounds; initialized, as the caller of `discover` ensures (R2).
   unsafe { load(sample.as_ptr().cast::<u8>().add(offset), len, Endian::NATIVE) }
 }
 
@@ -357,13 +357,17 @@ const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
 /// fields of each, observed on its sample.
 ///
 /// # Panics
-/// If the layout is not of a shape that `rustc` gives (R1), with why; or a failure of const
-/// evaluation (R2) if an experiment reads what it must not.
+/// If the layout is not of a shape that `rustc` gives (R1), with why.
+///
+/// # Safety
+/// The caller must ensure that every byte that an experiment reads is initialized, and that every
+/// tag it reads is valid. Evaluating the call in a constant ensures it: there, an experiment that
+/// reads what it must not fails the build instead (R2).
 #[expect(
   clippy::many_single_char_names,
   reason = "`v`, `u` and `d` are variants, `i` and `c` fields and candidates, by their index"
 )]
-pub const fn discover<E, const V: usize>(
+pub const unsafe fn discover<E, const V: usize>(
   samples: &[MaybeUninit<E>; V],
   fields: &[&[Field]; V],
 ) -> Desc<V> {
