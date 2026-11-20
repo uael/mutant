@@ -51,12 +51,18 @@ of the workspace each time): check what matters, and time a check before adding 
 counts is the one of the job on GitHub, which this machine does not tell: about 15 seconds of each
 job go to the checkout and the toolchain before anything runs, its runners are slower and vary by a
 third from one run to the next, so aim at 45 seconds and read the times of the jobs after a change
-of the workflow (the first run after a change of a cache key has nothing cached). This is why `cargo
-test --all` is six jobs there (the tests in three, the sample of the model check in three), and why each Miri run of the tests of `puns` is three jobs (every third test file each:
-split a job again rather than let it pass 45 seconds), with a cache of the standard library that Miri builds and
-of the sources it builds it from (Miri builds it again when the modification time of a source
-changes, which a fresh install of the toolchain does). What is exhaustive (the full model check,
-behind the `full` feature of `puns-model`) runs in `.github/workflows/model.yml`, every night and on
+of the workflow (the first run after a change of a cache key has nothing cached). With the
+caches, what comes before the work is 15 to 20 seconds, so the work of a job is at most about 20
+seconds: the build of the tests of `miri_sample` or of `parts` of the model is that alone. This is
+why `cargo test --all` is seven jobs there (the tests of `puns` in four, the sample of the model
+check in three), and why each Miri run of the tests of `puns` is four jobs (three named parts of
+about the same time, and every other file: split a job again rather than let it pass 45 seconds),
+with a cache of the standard library that Miri builds and of the sources it builds it from (Miri
+builds it again when the modification time of a source changes, which a fresh install of the
+toolchain does). Balance the parts by the time that passes for each test binary in the log of the
+job: the time that Miri reports for a test is not that one. Under Miri, a test that loops is a
+fraction of its size (`cfg!(miri)`): what Miri is there for is each unsafe path, not each value.
+What is exhaustive (the full model check, behind the `full` feature of `puns-model`) runs in `.github/workflows/model.yml`, every night and on
 demand, with a check of the compiler (an optimized build refuses a wrong view behind pointers): run
 it when `rust-toolchain` changes. Under Miri, the model check runs a selection of pairs that reaches
 every unsafe path (`puns-model/tests/miri_sample.rs` says which pair is for which, and

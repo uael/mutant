@@ -12,8 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # `cargo test --workspace --exclude puns-model`, in three jobs: what it builds (every test file
-  # is a binary, eleven of which hold an example) is most of its minute. With the two jobs of the
+  # `cargo test --workspace --exclude puns-model`, in four jobs: what it builds (every test file
+  # is a binary, eleven of which hold an example) is most of its minute. With the jobs of the
   # model check below, this is `cargo test --all`. With the `unstable` feature, which some targets
   # need (`required-features`): what `puns` does without it is the job "Kept layouts".
   test:
@@ -23,17 +23,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The unit tests, the compile-fail tests (trybuild), the doc tests (README included).
-          - name: library, compile-fail, docs
+          # The unit tests, the doc tests (README included).
+          - name: library, docs
+            id: library
             run: |
-              cargo test -p puns --features unstable --lib --test compile_fail
+              cargo test -p puns --features unstable --lib
               cargo test --workspace --exclude puns-model --doc
+          # Apart: trybuild builds each program, about twenty seconds.
+          - name: compile-fail
+            id: compile-fail
+            run: cargo test -p puns --features unstable --test compile_fail
           # The other test files, every other one each. Each example is run through its test
           # (`tests/ethernet.rs`...), which asserts its results; `codegen` has none, and is built.
           - name: integration, 1 of 2
+            id: integration-1
             part: 1
             run: cargo test -p puns --features unstable $TESTS
           - name: integration, 2 of 2
+            id: integration-2
             part: 2
             run: |
               cargo test -p puns --features unstable $TESTS
@@ -45,8 +52,9 @@ jobs:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
-          # A cache for each job of the matrix: they do not build the same binaries.
-          key: test-${{ matrix.part || 0 }}
+          # A cache for each job of the matrix: they do not build the same binaries. Not the
+          # name: a key of a cache has no comma.
+          key: test-${{ matrix.id }}
       - name: Select the test files of the job
         if: matrix.part
         run: |
@@ -56,8 +64,9 @@ jobs:
       - run: ${{ matrix.run }}
 
   # The sample of the model check that every push runs (the exhaustive one is `model.yml`): about
-  # as long to build as everything else, so jobs of its own: whole puns, unsized types, pointers
-  # and view enums, parts. Together they are `cargo test -p puns-model`.
+  # as long to build as everything else, so jobs of its own. `miri_sample` and `parts` are each
+  # about twenty seconds of build, a job each; the other files together are less. Together they
+  # are `cargo test -p puns-model`.
   model:
     name: Model check (sample, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -66,9 +75,11 @@ jobs:
       matrix:
         include:
           - name: puns
-            tests: --lib --test miri_sample --test core_shadowed --test regressions --test rules
-          - name: unsized, pointers, views
-            tests: --test dst --test pointers --test views
+            tests: --test miri_sample
+          - name: rules, unsized, pointers, views
+            tests: >-
+              --lib --test core_shadowed --test regressions --test rules --test dst
+              --test pointers --test views
           - name: parts
             tests: --test parts
     steps:
@@ -86,7 +97,8 @@ jobs:
   # the verdict of every function on pairs of types, and which bytes each accepts: the record must
   # be `tests/seeds.txt` without `-Zrandomize-layout`, and with it, of each seed (one job each: a
   # seed is other flags, which build everything again). The cases of `compile-fail-kept` hold the
-  # refusals and their messages (trybuild takes them without the feature).
+  # refusals and their messages (trybuild takes them without the feature), a job of their own:
+  # the record and trybuild are each about fifteen seconds of build.
   stable:
     name: Kept layouts (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -97,10 +109,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: refusals, record
+          - name: record
             id: stable
             toolchain: 1.100.0
-            run: cargo test -p puns --features verdict --test seeds --test compile_fail
+            run: cargo test -p puns --features verdict --test seeds
+          - name: refusals
+            id: refusals
+            toolchain: 1.100.0
+            run: cargo test -p puns --features verdict --test compile_fail
           - name: seed 1
             id: seed-1
             toolchain: nightly-2026-11-17
@@ -224,71 +240,79 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Of the tests of `puns`, the ones that Miri runs (see the step that selects them), in
-          # three jobs for each run: every third test file each.
-          - name: tree borrows, 1 of 3
+          # Of the tests of `puns`, the ones that Miri runs, in four parts of about the same time
+          # under Miri for each run (see the step that selects them).
+          - name: tree borrows, 1 of 4
             id: tree
             args: -p puns --features unstable
-            select: true
             part: 1
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          - name: tree borrows, 2 of 3
+          - name: tree borrows, 2 of 4
             id: tree
             args: -p puns --features unstable
-            select: true
             part: 2
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          - name: tree borrows, 3 of 3
+          - name: tree borrows, 3 of 4
             id: tree
             args: -p puns --features unstable
-            select: true
             part: 3
+            flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          - name: tree borrows, 4 of 4
+            id: tree
+            args: -p puns --features unstable
+            part: 4
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           # Stacked borrows, on a big-endian target: what loads integers, sums and CRCs several
           # bytes at a time must not depend on the byte order of the target, and the rules of
-          # stacked borrows do not depend on the target (x86-64 has the three jobs above).
-          - name: stacked borrows, big-endian, 1 of 3
+          # stacked borrows do not depend on the target (x86-64 has the four jobs above).
+          - name: stacked borrows, big-endian, 1 of 4
             id: stacked-s390x
             args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
-            select: true
             part: 1
             flags: -Zmiri-strict-provenance
-          - name: stacked borrows, big-endian, 2 of 3
+          - name: stacked borrows, big-endian, 2 of 4
             id: stacked-s390x
             args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
-            select: true
             part: 2
             flags: -Zmiri-strict-provenance
-          - name: stacked borrows, big-endian, 3 of 3
+          - name: stacked borrows, big-endian, 3 of 4
             id: stacked-s390x
             args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
-            select: true
             part: 3
+            flags: -Zmiri-strict-provenance
+          - name: stacked borrows, big-endian, 4 of 4
+            id: stacked-s390x
+            args: -p puns --features unstable
+            target: s390x-unknown-linux-gnu
+            part: 4
             flags: -Zmiri-strict-provenance
           # 32 bits: a smaller `usize`, a `u64` aligned to 4.
-          - name: 32 bits, 1 of 3
+          - name: 32 bits, 1 of 4
             id: i686
             args: -p puns --features unstable
             target: i686-unknown-linux-gnu
-            select: true
             part: 1
             flags: -Zmiri-strict-provenance
-          - name: 32 bits, 2 of 3
+          - name: 32 bits, 2 of 4
             id: i686
             args: -p puns --features unstable
             target: i686-unknown-linux-gnu
-            select: true
             part: 2
             flags: -Zmiri-strict-provenance
-          - name: 32 bits, 3 of 3
+          - name: 32 bits, 3 of 4
             id: i686
             args: -p puns --features unstable
             target: i686-unknown-linux-gnu
-            select: true
             part: 3
+            flags: -Zmiri-strict-provenance
+          - name: 32 bits, 4 of 4
+            id: i686
+            args: -p puns --features unstable
+            target: i686-unknown-linux-gnu
+            part: 4
             flags: -Zmiri-strict-provenance
           # The model check under Miri: a selection of pairs that runs every unsafe path it
           # reaches (see `puns-model/tests/miri_sample.rs`); the verdicts of every pair are the
@@ -350,18 +374,30 @@ jobs:
       # A test file that is not for Miri says so (`#![cfg(not(miri))]`: the examples other than
       # `ethernet`, the trybuild test, what is about the derive and not the unsafe code). With
       # `--tests`, each would still be a binary that Miri starts to run nothing, a second each.
+      # The first three parts are named, about eighteen seconds of Miri each on x86-64 with tree
+      # borrows (less on the other targets); the fourth is every other file that Miri runs, so
+      # that a new file runs. A named file that is not there fails the job.
       - name: Select the tests that Miri runs
-        if: matrix.select
+        if: matrix.part
         run: |
-          tests=$(grep -L 'cfg(not(miri))' puns/tests/*.rs | sed 's|.*/|--test |; s|\.rs$||')
-          part="${{ matrix.part }}"
-          if [ -n "$part" ]; then
-            tests=$(echo "$tests" | awk -v part="$part" 'NR % 3 == part % 3')
-          fi
-          # The unit tests of the library go with the last part, the lightest one.
-          if [ -z "$part" ] || [ "$part" = 3 ]; then
-            tests="--lib $tests"
-          fi
+          one="--lib --test patterns --test uninit --test core_shadowed --test str"
+          two="--test ethernet --test validate_in --test checksums"
+          three="--test rust_enums --test bytes --test api --test soundness"
+          case "${{ matrix.part }}" in
+            1) tests=$one ;;
+            2) tests=$two ;;
+            3) tests=$three ;;
+            4)
+              tests=""
+              for file in $(grep -L 'cfg(not(miri))' puns/tests/*.rs); do
+                name=$(basename "$file" .rs)
+                case " $one $two $three " in
+                  *" --test $name "*) ;;
+                  *) tests="$tests --test $name" ;;
+                esac
+              done
+              ;;
+          esac
           echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
       - run: >-
           cargo miri test ${{ matrix.args }}
