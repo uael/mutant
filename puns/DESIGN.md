@@ -1120,7 +1120,7 @@ It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven w
 |---|---|---|
 | `[u8; 2]` as `(u8, u8)`, and back | proven | bytes of any value, in either order |
 | `[u8; 2]` as `(bool, bool)` | checked | both bytes are a `bool`, in either order |
-| `(u8, u8)` as `[bool; 2]` | checked | both bytes are checked alike: the answer is the same in either order |
+| `(u8, u8)` as `[bool; 2]` | refused | the check of each element reads a byte that, in another layout, holds the other field |
 | `(bool, u8)` as `[u8; 2]`, `as_bytes` | proven | both bytes are initialized, in either order |
 | `[u8; 4]` as `(u8, u16)` | proven | it only requires initialized bytes, wherever its padding is |
 | a `repr(C)` struct that holds a `(bool, u8)` as itself, or its first bytes as the `(bool, u8)` | proven | the same type at the same place |
@@ -1141,11 +1141,9 @@ the same is what `puns` does with given bytes; which bytes a value of a struct w
 is the compiler's choice, with or without `puns`. What a check says of a value is what `puns`
 does: whether `try_pun::<(u8, u8), F>((0, 2))` is `Ok`, for `F` a `repr(C)` `{ bool, u8 }`, must
 not depend on which byte holds the `0`. So a check that reads a byte of a struct whose fields Rust
-may put in another order is refused (`analysis::reads_moved`), but where every order gives the
-same answer: where what may move is whole elements of an array that is checked (each element as
-the others), or whole fields of a struct of one layout, any order only moves where each element
-is (`(u8, u8)` as `[bool; 2]`). A check of a scalar is not of that kind: its bytes are read in an
-order, so `(u8, u8)` as `NonZero<u16>` is refused, though no order makes that one fail.
+may put in another order is refused (`analysis::reads_moved`). The rule is general: it does not
+look for the cases where every order would give the same answer, such as `(u8, u8)` as
+`[bool; 2]`, or `(u8, u8)` as `NonZero<u16>`, which no order makes fail.
 
 **How.** `Pun::LAYOUT` is the layout that `rustc` chose, with or without the feature: everything
 that reads values (validation, copies, the generated accessors) reads them where they are. Each
