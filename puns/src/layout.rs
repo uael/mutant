@@ -492,11 +492,17 @@ pub(crate) enum Uniform {
 /// is known as a source by what every arrangement of it has (`init`), and only proves itself as a
 /// target (the same type at the same place, [`Id`]).
 #[derive(Copy, Clone, Debug)]
-#[expect(clippy::struct_excessive_bools, reason = "four facts of a layout, each asked alone")]
+#[expect(clippy::struct_excessive_bools, reason = "five facts of a layout, each asked alone")]
 pub(crate) struct Stable {
   /// The offsets of its parts and its size are the same in every layout that Rust allows, given
-  /// the sizes of its parts: it may be looked into.
+  /// the sizes of its parts, or every layout of it is the same bytes (see [`Layout::rust`]): it
+  /// may be looked into.
   pub(crate) fixed: bool,
+  /// Every byte of a value is of the same part in every layout that Rust allows. Not of a layout
+  /// that is not `fixed`, nor of a struct whose orders all make the same bytes (`(u8, u8)`): the
+  /// bytes are the same, but which field each holds is not, so what a check reads of a value is
+  /// not either.
+  pub(crate) ordered: bool,
   /// Its size is the same in every layout that Rust allows.
   pub(crate) size: bool,
   /// Nothing in it, at any depth, is not `fixed`.
@@ -507,11 +513,12 @@ pub(crate) struct Stable {
 
 impl Stable {
   /// A layout that Rust specifies, of parts that it specifies.
-  pub(crate) const FIXED: Self = Self { fixed: true, size: true, deep: true, init: false };
+  pub(crate) const FIXED: Self =
+    Self { fixed: true, ordered: true, size: true, deep: true, init: false };
 
   /// A layout of which Rust specifies nothing but the size, if `size`.
   const fn opaque(size: bool, init: bool) -> Self {
-    Self { fixed: false, size, deep: false, init: size && init }
+    Self { fixed: false, ordered: false, size, deep: false, init: size && init }
   }
 
   /// Of a node whose own offsets are computed from the sizes and the alignments of its `parts`
@@ -523,7 +530,7 @@ impl Stable {
       deep &= parts[i].layout.stable.deep;
       i += 1;
     }
-    Self { fixed: size, size, deep: size && deep, init: false }
+    Self { fixed: size, ordered: size, size, deep: size && deep, init: false }
   }
 
   /// Of an enum of a representation that Rust specifies, or of a union: its variants are
@@ -536,13 +543,13 @@ impl Stable {
       deep &= fields.deep;
       i += 1;
     }
-    Self { fixed: size, size, deep: size && deep, init: false }
+    Self { fixed: size, ordered: size, size, deep: size && deep, init: false }
   }
 
   /// Of a node of one part (the element of an array), as [`Stable::of_parts`].
   const fn of_part(part: &Layout) -> Self {
     let size = part.stable.size;
-    Self { fixed: size, size, deep: size && part.stable.deep, init: false }
+    Self { fixed: size, ordered: size, size, deep: size && part.stable.deep, init: false }
   }
 }
 
@@ -2556,7 +2563,7 @@ impl Layout {
   #[must_use]
   pub const fn sized_like(self, like: &Layout) -> Self {
     let size = like.stable.size;
-    Self { stable: Stable { fixed: size, size, deep: size, init: false }, ..self }
+    Self { stable: Stable { fixed: size, ordered: size, size, deep: size, init: false }, ..self }
   }
 
   /// What is kept of a struct whose offsets are the ones that its representation specifies
@@ -2654,7 +2661,14 @@ impl Layout {
       };
     if same_bytes {
       return Self {
-        stable: Stable { fixed: true, size: true, deep: parts.deep, init: false },
+        // One part of a size is at 0 in every layout; more are in some order.
+        stable: Stable {
+          fixed: true,
+          ordered: sized <= 1,
+          size: true,
+          deep: parts.deep,
+          init: false,
+        },
         ..self
       };
     }

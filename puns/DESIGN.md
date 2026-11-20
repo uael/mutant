@@ -1120,6 +1120,7 @@ It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven w
 |---|---|---|
 | `[u8; 2]` as `(u8, u8)`, and back | proven | bytes of any value, in either order |
 | `[u8; 2]` as `(bool, bool)` | checked | both bytes are a `bool`, in either order |
+| `(u8, u8)` as `[bool; 2]` | checked | both bytes are checked alike: the answer is the same in either order |
 | `(bool, u8)` as `[u8; 2]`, `as_bytes` | proven | both bytes are initialized, in either order |
 | `[u8; 4]` as `(u8, u16)` | proven | it only requires initialized bytes, wherever its padding is |
 | a `repr(C)` struct that holds a `(bool, u8)` as itself, or its first bytes as the `(bool, u8)` | proven | the same type at the same place |
@@ -1128,6 +1129,8 @@ It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven w
 | `[u8; 2]` as `(bool, u8)` | refused | the byte that must be 0 or 1 is one or the other |
 | the first two bytes of `(u8, u16)` | refused | the second is padding, or not |
 | bytes as a `struct P { a: u8, b: u8 }` of which `a < b` | refused | which byte is `a` |
+| `(u8, u8)` as a `repr(C)` `{ bool, u8 }` | refused | the check reads one field or the other: `(0, 2)` passes in one order only |
+| `(u8, u8)` as `NonZero<u16>` | refused | a check of a scalar reads its bytes in an order, which is the order of the fields |
 | anything of `(u8, u16, u8)` but itself | refused | 4 or 6 bytes |
 | bytes as an enum without `repr`, or as `Option<bool>` | refused | nothing documents where its tag is, nor its values |
 | `validate_in::<(bool, u8)>` | refused | which byte it checks |
@@ -1135,7 +1138,14 @@ It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven w
 Which field a byte is, is not part of it: `pun::<[u8; 2], (u8, u8)>([1, 2])` is `(1, 2)` or
 `(2, 1)`, a valid value either way, which is what a pun promises (and `transmute` does). What is
 the same is what `puns` does with given bytes; which bytes a value of a struct without `repr` has
-is the compiler's choice, with or without `puns`.
+is the compiler's choice, with or without `puns`. What a check says of a value is what `puns`
+does: whether `try_pun::<(u8, u8), F>((0, 2))` is `Ok`, for `F` a `repr(C)` `{ bool, u8 }`, must
+not depend on which byte holds the `0`. So a check that reads a byte of a struct whose fields Rust
+may put in another order is refused (`analysis::reads_moved`), but where every order gives the
+same answer: where what may move is whole elements of an array that is checked (each element as
+the others), or whole fields of a struct of one layout, any order only moves where each element
+is (`(u8, u8)` as `[bool; 2]`). A check of a scalar is not of that kind: its bytes are read in an
+order, so `(u8, u8)` as `NonZero<u16>` is refused, though no order makes that one fail.
 
 **How.** `Pun::LAYOUT` is the layout that `rustc` chose, with or without the feature: everything
 that reads values (validation, copies, the generated accessors) reads them where they are. Each
@@ -1159,6 +1169,10 @@ node of it says what Rust keeps of it (`layout::Stable`), computed from the layo
 - `init`, of what is not fixed: its bytes are initialized in every layout (no padding in any
   order, and the fields are).
 - `deep`: nothing in it, at any depth, is not fixed.
+- `ordered`: each byte of a value is of the same part in every layout. As `fixed`, but not of a
+  struct whose orders all make the same bytes: `(u8, u8)` is fixed (two bytes of any value in
+  either order) and not ordered (which byte is the first field is not kept). What a check reads
+  must be ordered, but as above.
 
 Without the feature, the analysis (`analysis::STRICT`) does not look into a node that is not
 fixed (`Layout::is_opaque`): the cursor makes it one run, `RunKind::Opaque`.

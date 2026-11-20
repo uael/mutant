@@ -673,3 +673,52 @@ fn patterns_are_the_same_by_their_states() {
   assert!(Dfa::UTF8.is_utf8());
   assert!(!ANY.is_utf8() && !AGAIN.is_utf8());
 }
+
+/// A check reads the bytes of the source that every layout has there: not those of a struct
+/// whose fields Rust may put in another order, though every order makes the same bytes.
+#[test]
+fn a_check_reads_what_every_layout_has_there() {
+  // Proven in every layout, whichever field is where.
+  assert_eq!(verdict::<(u8, u8), [u8; 2]>(), "infallible, mutable");
+  assert_eq!(verdict::<(bool, bool), [bool; 2]>(), "infallible, mutable");
+  // What is checked is of a struct of the `C` representation, or of the target only.
+  assert_eq!(verdict::<Pair<u8, (u8, u8)>, Pair<bool, [u8; 2]>>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<[u8; 2], (bool, bool)>(), "fallible at 0, mutable");
+  // Each element is checked as the others, and the fields that move are whole elements: in any
+  // order, the same elements.
+  assert_eq!(verdict::<(u8, u8), [bool; 2]>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<(u8, u8), (bool, bool)>(), "fallible at 0, mutable");
+  assert_eq!(verdict::<(u16, u16), [NonZero<u16>; 2]>(), "fallible at 0, mutable");
+  // The check of the `bool`, or of the rule, would read one field or the other.
+  let moved = [
+    verdict::<(u8, u8), Pair<bool, u8>>(),
+    verdict::<(bool, u8), Pair<bool, u8>>(),
+    verdict::<(u8, u8), Ruled>(),
+    verdict::<Pair<u8, (u8, u8)>, Pair<u8, Pair<bool, u8>>>(),
+    // An element of two bytes of fields of one: `[b, x, y, z]` or `[x, y, z, b]`.
+    verdict::<(bool, [u8; 3]), [NonZero<u16>; 2]>(),
+  ];
+  if crate::layout::UNSTABLE {
+    assert_eq!(
+      moved,
+      [
+        "fallible at 0, mutable",
+        "infallible, mutable",
+        "fallible at 0, mutable",
+        "fallible at 1, mutable",
+        "fallible at 0",
+      ]
+    );
+  } else {
+    assert_eq!(
+      moved,
+      [
+        "unspecified at 0",
+        "unspecified at 0",
+        "unspecified at 0",
+        "unspecified at 1",
+        "unspecified at 0"
+      ]
+    );
+  }
+}

@@ -311,7 +311,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, [u8; 3]) -> [bool; 2]: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 (bool, [u8; 3]) -> [bool; 4]: --+--+-+-----+ 
 (bool, [u8; 3]) -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
-(bool, [u8; 3]) -> [core::num::nonzero::NonZero<u16>; 2]: --+--+-------+ 
+(bool, [u8; 3]) -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, [u8; 3]) -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, [u8; 3]) -> (bool, [u8; 3]): ++++++++++++++ 
 (bool, [u8; 3]) -> (u8, u8): -+--+----++--- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
@@ -344,7 +344,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (u8, u8) -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 (u8, u8) -> [bool; 2]: --+--+-+-----+ 
 (u8, u8) -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-(u8, u8) -> core::num::nonzero::NonZero<u16>: --+--+-+-----+ 
+(u8, u8) -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (u8, u8) -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 (u8, u8) -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 (u8, u8) -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -357,7 +357,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (u8, u8) -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (u8, u8) -> seeds::Twins: --+--+-+-----+ 
 (u8, u8) -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-(u8, u8) -> seeds::Ruled: --+--+-+-----+ 
+(u8, u8) -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (u8, u8) -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 (u8, u8) -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 (u8, u8) -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -378,7 +378,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, bool) -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 (bool, bool) -> [bool; 2]: ++++++++++++++ 
 (bool, bool) -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-(bool, bool) -> core::num::nonzero::NonZero<u16>: --+--+-------+ 
+(bool, bool) -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, bool) -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 (bool, bool) -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 (bool, bool) -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -391,7 +391,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, bool) -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, bool) -> seeds::Twins: ++++++++++++++ 
 (bool, bool) -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-(bool, bool) -> seeds::Ruled: --+--+-------+ 
+(bool, bool) -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, bool) -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 (bool, bool) -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 (bool, bool) -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -412,7 +412,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, u8) -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 (bool, u8) -> [bool; 2]: --+--+-+-----+ 
 (bool, u8) -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-(bool, u8) -> core::num::nonzero::NonZero<u16>: --+--+-------+ 
+(bool, u8) -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, u8) -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 (bool, u8) -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 (bool, u8) -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -425,7 +425,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, u8) -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, u8) -> seeds::Twins: --+--+-+-----+ 
 (bool, u8) -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-(bool, u8) -> seeds::Ruled: --+--+-------+ 
+(bool, u8) -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 (bool, u8) -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 (bool, u8) -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 (bool, u8) -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -514,7 +514,7 @@ seeds::Mixed -> [u8; 2]: ++++++---++-++
 seeds::Mixed -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 seeds::Mixed -> [bool; 2]: --+--+-+-----+ 
 seeds::Mixed -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-seeds::Mixed -> core::num::nonzero::NonZero<u16>: --+--+-------+ 
+seeds::Mixed -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Mixed -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 seeds::Mixed -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 seeds::Mixed -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -527,7 +527,7 @@ seeds::Mixed -> seeds::Mixed: ++++++++++++++
 seeds::Mixed -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Mixed -> seeds::Twins: --+--+-+-----+ 
 seeds::Mixed -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-seeds::Mixed -> seeds::Ruled: --+--+-------+ 
+seeds::Mixed -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Mixed -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 seeds::Mixed -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 seeds::Mixed -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -548,7 +548,7 @@ seeds::Ordered -> [u8; 2]: ++++++---++-++
 seeds::Ordered -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 seeds::Ordered -> [bool; 2]: --+--+-------+ 
 seeds::Ordered -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-seeds::Ordered -> core::num::nonzero::NonZero<u16>: --+--+-------+ 
+seeds::Ordered -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Ordered -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 seeds::Ordered -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 seeds::Ordered -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -561,7 +561,7 @@ seeds::Ordered -> seeds::Mixed: -------------- cannot pun: the pun depends on a 
 seeds::Ordered -> seeds::Ordered: ++++++++++++++ 
 seeds::Ordered -> seeds::Twins: --+--+-------+ 
 seeds::Ordered -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-seeds::Ordered -> seeds::Ruled: --+--+-------+ 
+seeds::Ordered -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Ordered -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 seeds::Ordered -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 seeds::Ordered -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -582,7 +582,7 @@ seeds::Twins -> [u8; 2]: ++++++---++-++
 seeds::Twins -> [u8; 4]: -------------- cannot pun: the source is smaller than the target
 seeds::Twins -> [bool; 2]: ++++++++++++++ 
 seeds::Twins -> [bool; 4]: -------------- cannot pun: the source is smaller than the target
-seeds::Twins -> core::num::nonzero::NonZero<u16>: --+--+-------+ 
+seeds::Twins -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Twins -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the source is smaller than the target
 seeds::Twins -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the source is smaller than the target
 seeds::Twins -> (bool, [u8; 3]): -------------- cannot pun: the source is smaller than the target
@@ -595,7 +595,7 @@ seeds::Twins -> seeds::Mixed: ++++++---++-++
 seeds::Twins -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Twins -> seeds::Twins: ++++++++++++++ 
 seeds::Twins -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-seeds::Twins -> seeds::Ruled: --+--+-------+ 
+seeds::Twins -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Twins -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 seeds::Twins -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 seeds::Twins -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -617,7 +617,7 @@ seeds::Holds -> [u8; 4]: ++++++---++-++
 seeds::Holds -> [bool; 2]: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 seeds::Holds -> [bool; 4]: --+--+-+-----+ 
 seeds::Holds -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
-seeds::Holds -> [core::num::nonzero::NonZero<u16>; 2]: --+--+-------+ 
+seeds::Holds -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Holds -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Holds -> (bool, [u8; 3]): -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Holds -> (u8, u8): -+--+----+++-- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
@@ -699,7 +699,7 @@ seeds::Carries -> seeds::Twins: -------------- cannot pun: the source is larger 
 seeds::Carries -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
 seeds::Carries -> seeds::Ruled: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 seeds::Carries -> seeds::Carries: ++++++++++++++ 
-seeds::Carries -> seeds::InOrder: --+--+-------+ 
+seeds::Carries -> seeds::InOrder: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Carries -> seeds::Wraps: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 1 of the target
 seeds::Carries -> seeds::Either: -+--+----++--- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 seeds::Carries -> [seeds::Mixed; 2]: -------------- cannot pun: the source is smaller than the target
@@ -767,7 +767,7 @@ seeds::Wraps -> seeds::Twins: -------------- cannot pun: the source is larger th
 seeds::Wraps -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
 seeds::Wraps -> seeds::Ruled: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 seeds::Wraps -> seeds::Carries: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
-seeds::Wraps -> seeds::InOrder: -------------- cannot pun: a byte that the target requires to be initialized is padding in the source. This is at byte 2 of the target
+seeds::Wraps -> seeds::InOrder: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Wraps -> seeds::Wraps: ++++++++++++++ 
 seeds::Wraps -> seeds::Either: -+--+--------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 seeds::Wraps -> [seeds::Mixed; 2]: -------------- cannot pun: the source is smaller than the target
@@ -799,7 +799,7 @@ seeds::Either -> seeds::Mixed: -------------- cannot pun: the pun depends on a p
 seeds::Either -> seeds::Ordered: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Either -> seeds::Twins: -------------- cannot pun: a byte that the target requires to be initialized is padding in the source. This is at byte 0 of the target
 seeds::Either -> seeds::Holds: -------------- cannot pun: the source is smaller than the target
-seeds::Either -> seeds::Ruled: -------------- cannot pun: a byte that the target requires to be initialized is padding in the source. This is at byte 0 of the target
+seeds::Either -> seeds::Ruled: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 seeds::Either -> seeds::Carries: -------------- cannot pun: the source is smaller than the target
 seeds::Either -> seeds::InOrder: -------------- cannot pun: the source is smaller than the target
 seeds::Either -> seeds::Wraps: -------------- cannot pun: the source is smaller than the target
@@ -821,7 +821,7 @@ seeds::Either -> core::result::Result<core::num::nonzero::NonZero<u8>, ()>: ----
 [seeds::Mixed; 2] -> [bool; 2]: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
 [seeds::Mixed; 2] -> [bool; 4]: --+--+-+-----+ 
 [seeds::Mixed; 2] -> core::num::nonzero::NonZero<u16>: -------------- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source
-[seeds::Mixed; 2] -> [core::num::nonzero::NonZero<u16>; 2]: --+--+-------+ 
+[seeds::Mixed; 2] -> [core::num::nonzero::NonZero<u16>; 2]: -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 [seeds::Mixed; 2] -> (core::num::nonzero::NonZero<u16>, u16): -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 [seeds::Mixed; 2] -> (bool, [u8; 3]): -------------- cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it. Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`. This is at byte 0 of the target
 [seeds::Mixed; 2] -> (u8, u8): -+--+----++--- cannot pun: the source is larger than the target. Use `head` or `tail` (or their `_ref` and `_mut` forms) to take a part of the source

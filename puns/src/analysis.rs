@@ -554,6 +554,267 @@ pub const fn relate_at(
   relation
 }
 
+/// The offset of the first byte in `start..end` that a check of a part of `target` (at `base_b`,
+/// whose first leaf is `leaf`) that `marks` has reads, and that is of a part of `source` (at
+/// `base_a`) that the compiler may put elsewhere ([`moves`]): in another layout, the check would
+/// read another part of the same value, and may say otherwise of it. Of the checks of an
+/// analysis, rules included ([`analyze`], [`analyze_tail`]).
+///
+/// The elements of an array share their leaves, so each one is checked if one is. Where the source
+/// has elements of the same size at the same places, what the first reads tells of every one;
+/// else any byte under the array counts, which may find a byte that no check reads. Within a
+/// variant of an enum, only the values of the source of its `tag` are read ([`moves`]).
+#[expect(clippy::too_many_arguments, reason = "two layouts where they are, the bytes, the tag")]
+const fn reads_moved(
+  source: &'static Layout,
+  base_a: usize,
+  target: &'static Layout,
+  base_b: usize,
+  leaf: usize,
+  marks: &Marks,
+  start: usize,
+  end: usize,
+  tag: Option<Tag>,
+) -> Option<usize> {
+  let (lo, hi) = (max(start, base_b), min(end, extent_end(target, base_b)));
+  if lo >= hi || !marks.any(leaf, target.leaves) {
+    return None;
+  }
+  // Parts one after the other, each checked as the others: the elements of an array, or the
+  // fields of a struct whose orders all make the same bytes, which are then of one layout. Where
+  // what may move in the source is whole parts, an order of it only changes where each is.
+  let part = match target.kind {
+    Kind::Array(elem, _) | Kind::Slice(elem) => elem.size,
+    Kind::Struct(fields, _) if target.stable.fixed && !target.stable.ordered => {
+      let mut i = 0;
+      while fields[i].layout.size == 0 {
+        i += 1;
+      }
+      fields[i].layout.size
+    }
+    _ => 0,
+  };
+  if part > 0 && whole_parts(source, base_a, lo, hi, base_b, part) {
+    return None;
+  }
+  match target.kind {
+    Kind::Struct(fields, rules) => {
+      // Its rules, the last of its leaves, read any of its bytes.
+      let rules_read = !rules.is_empty() && marks.any(leaf + target.leaves - 1, 1);
+      if rules_read && moves(source, base_a, lo, hi, tag) {
+        return Some(lo);
+      }
+      let mut i = 0;
+      while i < fields.len() {
+        let (field, at) = (fields[i].layout, base_b + fields[i].offset);
+        let leaf = leaf + fields[i].leaf;
+        let found = reads_moved(source, base_a, field, at, leaf, marks, start, end, tag);
+        if found.is_some() {
+          return found;
+        }
+        i += 1;
+      }
+      None
+    }
+    // Its tag, then the fields of the variant that the tag is: of the values of the source whose
+    // tag is that variant's, where the source has an enum of its tag at the same place.
+    Kind::Enum(layout) if !layout.union => {
+      let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
+      let at = base_b + layout.tag.offset;
+      if moves(source, base_a, max(lo, at), min(hi, at + spec.size), tag) {
+        return Some(max(lo, at));
+      }
+      // Every leaf of the variant: the check of an enum checks the whole of it.
+      let mut i = 0;
+      while i < layout.variants.len() {
+        let variant = &layout.variants[i];
+        i += 1;
+        let tag = Some(Tag { at, size: spec.size, endian: spec.endian, tags: variant.tags() });
+        let found =
+          reads_moved(source, base_a, variant.layout, base_b, 0, &Marks::ALL, lo, hi, tag);
+        if found.is_some() {
+          return found;
+        }
+      }
+      None
+    }
+    Kind::Array(elem, _) | Kind::Slice(elem)
+      if elem.size > 0 && same_elements(source, base_b - base_a, target) =>
+    {
+      reads_moved(source, base_a, elem, base_b, leaf, marks, start, end, tag)
+    }
+    // A scalar, a union (each of its fields), a pattern, a pointer, or every element of an
+    // array.
+    _ => {
+      if moves(source, base_a, lo, hi, tag) {
+        Some(lo)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// A tag of a target, at `at` from the start of the outermost of the source and the target, and
+/// the values of it that a check reads past it for.
+#[derive(Copy, Clone)]
+struct Tag {
+  at: usize,
+  size: usize,
+  endian: Endian,
+  tags: Tags,
+}
+
+/// Whatever a byte in `start..end` of `source`, at `base`, is of a part that the compiler may put
+/// elsewhere, without the `unstable` feature: the part is not [`ordered`](Stable::ordered). Of
+/// the values whose tag is one of `tag`, where it is the place of the tag of an enum of `source`:
+/// a check reads no further of the others.
+const fn moves(source: &Layout, base: usize, start: usize, end: usize, tag: Option<Tag>) -> bool {
+  let (lo, hi) = (max(start, base), min(end, extent_end(source, base)));
+  if !STRICT || lo >= hi {
+    return false;
+  }
+  if !source.stable.ordered {
+    return true;
+  }
+  match source.kind {
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        if moves(fields[i].layout, base + fields[i].offset, lo, hi, tag) {
+          return true;
+        }
+        i += 1;
+      }
+      false
+    }
+    Kind::Enum(layout) => {
+      let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
+      let only = match tag {
+        Some(tag)
+          if !layout.union
+            && tag.at == base + layout.tag.offset
+            && tag.size == spec.size
+            && tag.endian.equals(spec.endian) =>
+        {
+          Some(tag.tags)
+        }
+        _ => None,
+      };
+      let mut i = 0;
+      while i < layout.variants.len() {
+        let variant = &layout.variants[i];
+        i += 1;
+        if let Some(tags) = only
+          && !variant.tags().meets(&tags)
+        {
+          continue;
+        }
+        if moves(variant.layout, base, lo, hi, tag) {
+          return true;
+        }
+      }
+      false
+    }
+    // Every element is the same: the first and the last that the bytes overlap tell, and a whole
+    // one between them.
+    Kind::Array(elem, _) | Kind::Slice(elem) if elem.size > 0 => {
+      let (first, last) = ((lo - base) / elem.size, (hi - 1 - base) / elem.size);
+      if last - first >= 2 {
+        let whole = base + (first + 1) * elem.size;
+        return moves(elem, whole, whole, whole + elem.size, tag);
+      }
+      moves(elem, base + first * elem.size, lo, hi, tag)
+        || moves(elem, base + last * elem.size, lo, hi, tag)
+    }
+    _ => false,
+  }
+}
+
+/// Whatever every part of `source` (at `base`) in `start..end` that the compiler may put elsewhere
+/// is within `start..end`, at a multiple of `size` from `origin`, and [made of](of_parts) parts of
+/// `size` bytes: in every order, the same parts of `size` bytes from `origin`, elsewhere.
+const fn whole_parts(
+  source: &Layout,
+  base: usize,
+  start: usize,
+  end: usize,
+  origin: usize,
+  size: usize,
+) -> bool {
+  let stop = extent_end(source, base);
+  if !STRICT || stop <= start || base >= end {
+    return true;
+  }
+  if !source.stable.ordered {
+    return base >= start
+      && stop <= end
+      && (base - origin).is_multiple_of(size)
+      && of_parts(source, size);
+  }
+  match source.kind {
+    Kind::Struct(fields, _) => {
+      let mut i = 0;
+      while i < fields.len() {
+        let at = base + fields[i].offset;
+        if !whole_parts(fields[i].layout, at, start, end, origin, size) {
+          return false;
+        }
+        i += 1;
+      }
+      true
+    }
+    Kind::Enum(layout) => {
+      let mut i = 0;
+      while i < layout.variants.len() {
+        if !whole_parts(layout.variants[i].layout, base, start, end, origin, size) {
+          return false;
+        }
+        i += 1;
+      }
+      true
+    }
+    // The first and the last element that the bytes overlap, and the ones between, each at the
+    // place of parts that the first is if the elements are of a multiple of `size`.
+    Kind::Array(elem, _) | Kind::Slice(elem) if elem.size > 0 => {
+      if !moves(elem, 0, 0, elem.size, None) {
+        return true;
+      }
+      let (lo, hi) = (max(start, base), min(end, stop));
+      let first = base + (lo - base) / elem.size * elem.size;
+      let last = base + (hi - 1 - base) / elem.size * elem.size;
+      whole_parts(elem, first, start, end, origin, size)
+        && whole_parts(elem, last, start, end, origin, size)
+        && (last <= first + elem.size || elem.size.is_multiple_of(size))
+    }
+    _ => true,
+  }
+}
+
+/// Whatever `layout`, which the compiler may arrange otherwise, is in every arrangement its fields
+/// one right after the other (no padding in any order), each of a multiple of `size` bytes and
+/// [whole parts](whole_parts) of `size` bytes where it may move within.
+const fn of_parts(layout: &Layout, size: usize) -> bool {
+  let Kind::Struct(fields, _) = layout.kind else { return false };
+  if !layout.size.is_multiple_of(size) || !(layout.stable.fixed || layout.stable.init) {
+    return false;
+  }
+  let mut i = 0;
+  while i < fields.len() {
+    let field = fields[i].layout;
+    if !field.size.is_multiple_of(size) || !whole_parts(field, 0, 0, field.size, 0, size) {
+      return false;
+    }
+    i += 1;
+  }
+  true
+}
+
+/// The end of the bytes of `layout` at `base`: of a type of a length, as many as there are.
+const fn extent_end(layout: &Layout, base: usize) -> usize {
+  if layout.unsized_ { usize::MAX } else { base + layout.size }
+}
+
 /// Whatever how the sizes of `a` and `b` compare is the same in every layout that Rust allows,
 /// without the `unstable` feature: both sizes are kept, or `a` and `b` are the same type.
 const fn sizes_kept(a: &'static Layout, b: &'static Layout) -> bool {
@@ -1185,6 +1446,10 @@ const fn find_skip(
     i += 1;
   }
   Skip::No
+}
+
+const fn max(a: usize, b: usize) -> usize {
+  if a > b { a } else { b }
 }
 
 const fn min(a: usize, b: usize) -> usize {
@@ -1968,6 +2233,9 @@ pub const fn analyze(a: &'static Layout, b: &'static Layout) -> Analysis {
   let mut relation = if hopeless { Relation::NEW } else { relate(a, b, fit.end, Checked::Marked) };
   if !hopeless {
     mark_rules(a, b, 0, 0, &mut relation);
+    if let Some(pos) = reads_moved(a, 0, b, 0, 0, &relation.marks, 0, fit.end, None) {
+      relation.unspecified(pos);
+    }
   }
   Analysis { fit, relation, aligned: b.align <= a.align, shift: 0 }
 }
@@ -2001,6 +2269,9 @@ pub const fn analyze_tail(a: &'static Layout, b: &'static Layout) -> Analysis {
   let fit = Fit { exact, shrink: true, end: b.size };
   let mut relation = relate_at(a, 0, b, shift, shift, a.size, Checked::Marked);
   mark_rules(a, b, shift, 0, &mut relation);
+  if let Some(pos) = reads_moved(a, 0, b, shift, 0, &relation.marks, shift, a.size, None) {
+    relation.unspecified(pos);
+  }
   // The source is at a multiple of its alignment: the target is at a multiple of its own if both
   // the alignment of the source and the shift are.
   let aligned = b.align <= a.align && shift.is_multiple_of(b.align);
