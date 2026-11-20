@@ -10,10 +10,10 @@ type, in place, without `unsafe`. When the program is built, it compares the two
 byte. Each pun is then **proven** and compiles to nothing, **checked** at run time for what could
 not be proven, or **refused** with a compile error that says why.
 
-## A tour in one example
+## Example
 
 A dungeon game saves its hero to a file. Version 2 of the game adds keys, and must still load the
-saves of version 1. Every type below is declared once, and `#[derive(Pun)]` is all it needs.
+saves of version 1. The example has no `unsafe` and no hand-written implementation.
 
 ```rust
 use core::num::NonZero;
@@ -103,10 +103,10 @@ puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
 assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-In this example, `puns` never parses anything. The declarations are the file format, and every
-read happens where the bytes lie.
+The declarations describe the file format. Every value read from the file is a reference into its
+bytes.
 
-## Proven, checked, refused
+## How it works
 
 `puns` decides what each pun costs when the program is built.
 
@@ -122,7 +122,7 @@ A refusal is raised when a generic function is monomorphized, so `cargo build` r
 `cargo check` does not. [Compile-time errors](https://docs.rs/puns/latest/puns/#compile-time-errors)
 explains why.
 
-## A network packet, as its declaration
+## Parsing a network packet
 
 A format often says more than the types of its fields: a size stored in a header, a checksum, a
 value that tells what follows. These facts are attributes of the derive. The example below reads
@@ -246,7 +246,7 @@ assert_eq!((size_of_val(packet), rest), (33, &[0xaa, 0xbb][..]));
 [`puns/examples/ethernet.rs`][ethernet] is the complete version. It adds the checksums of UDP
 and TCP, IPv6 behind any chain of extension headers, VLAN tags, and the frame check sequence.
 
-## What the derive is told
+## Attributes
 
 | Attribute or type                          | Meaning                                                    |
 |--------------------------------------------|------------------------------------------------------------|
@@ -279,7 +279,7 @@ the rule does not hold. A rule cannot fail in any other way. The
 [documentation of the derive](https://docs.rs/puns/latest/puns/derive.Pun.html) is the complete
 reference.
 
-## The functions
+## Functions
 
 The functions differ by what they read, a typed value or bytes, and by how much of it.
 
@@ -316,7 +316,7 @@ assert_eq!(puns::from_bytes::<str>(b"caf\xc3\xa9"), Ok("café"));
 
 All of these functions are `const fn`.
 
-## Through `&mut`, both ways
+## Mutable references
 
 A `&mut` lets safe code write any value of the target, which the source then holds. So a pun by
 `&mut` needs more than a pun by `&`: each type must accept every value of the other.
@@ -335,7 +335,7 @@ let mut flag = true;
 let byte: &mut u8 = puns::pun_mut(&mut flag);
 ```
 
-## What is refused
+## Compile errors
 
 A refusal is a compile error. It says why the pun is refused, at which byte, and often what to
 write instead. Here is a classic mistake with `transmute`: reading a struct with padding as bytes.
@@ -500,7 +500,7 @@ A refusal is raised when a generic function is monomorphized. **`cargo build` re
 `cargo check` does not.** [Compile-time errors](https://docs.rs/puns/latest/puns/#compile-time-errors)
 explains why.
 
-## Layouts that Rust leaves to the compiler, and the `unstable` feature
+## The `unstable` feature
 
 Rust leaves some layouts to the compiler: the order of the fields of a struct or tuple without
 `repr`, and the place and values of the tag of an enum without `repr`. The next version of `rustc`
@@ -641,7 +641,7 @@ inlines the view where it is called, while its checksums stay calls. It does not
 hand-written check, which is why some frames take less time than by hand. The documentation of
 [`puns/src/view.rs`][view] explains how a view enum decides its variants.
 
-### What to keep in mind
+### Costs
 
 - **A check never allocates and never panics, and its time is bounded by the size of the
   value.** Where Rust would panic, the rule fails. A `walk` takes at most `8 * size + 128` steps.
@@ -667,7 +667,7 @@ hand-written check, which is why some frames take less time than by hand. The do
   in debug, and in about a minute in release with LTO and one codegen unit.
 - **The functions are `const fn`.** A pun of constants is done when the program is built.
 
-## Next to `transmute`, `bytemuck` and `zerocopy`
+## Comparison with `transmute`, `bytemuck` and `zerocopy`
 
 `transmute` checks that the sizes are equal. Everything else must be proven by hand, in a
 comment.
@@ -697,7 +697,7 @@ helpers that allocate, and refusals expressed as trait bounds, which `cargo chec
 editor shows. `puns` runs its analysis in the compiler when it evaluates constants. This costs
 build time, a fraction of a second for each new pair of types.
 
-## How it is verified
+## Testing
 
 - **A model check.** Every verdict of the analysis is compared with oracles that do not use it.
   It covers every ordered pair of the model's types of the same size, and every value of the
@@ -758,7 +758,7 @@ because `cargo check` does not evaluate the constants that decide them.
 
 By default, nothing that `puns` does depends on a layout that Rust leaves to the compiler. With
 `features = ["unstable"]`, `puns` uses the layout that `rustc` chose. See
-[Layouts that Rust leaves to the compiler](#layouts-that-rust-leaves-to-the-compiler-and-the-unstable-feature).
+[The `unstable` feature](#the-unstable-feature).
 
 The version is `0.1`, so the API may change before `1.0`.
 [Limitations](https://docs.rs/puns/latest/puns/#limitations) lists what is not supported yet.
