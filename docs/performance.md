@@ -93,9 +93,8 @@ of UDP over IPv4 is computed once, for the IPv4 variant.
 A check never allocates and never panics. Its time grows with the size of the value. A `walk`
 takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a `walk` makes the
 time grow with the square of the size. Keep this in mind before you give such a type untrusted
-bytes. Each checked pun is code specialized for its two types. Measure
-the checks in release. They rely on inlining, which a debug build mostly does not do.
-
+bytes. Each checked pun is code specialized for its two types. Measure the checks in release. They
+rely on inlining, which a debug build mostly does not do.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
