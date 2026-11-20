@@ -618,9 +618,11 @@ fn a_crc_a_byte_at_a_time_is_the_same() {
   use crate::layout::Crc;
   static CRCS: [Crc; 3] =
     [Crc::CRC32, Crc::new(16, 0x8005, 0xffff, true, 0), Crc::new(15, 0x4599, 0, false, 0)];
+  // Under Miri, the lengths around the blocks of sixteen bytes; natively, every one up to 70.
+  let lengths: Vec<usize> = if cfg!(miri) { vec![0, 1, 15, 16, 17, 33] } else { (0..70).collect() };
   for crc in &CRCS {
     let bytes: Vec<u8> = (0..70u32).map(|i| (i.wrapping_mul(97) ^ 0x5a) as u8).collect();
-    for len in 0..bytes.len() {
+    for len in lengths.iter().copied() {
       assert_eq!(crc.check(&bytes[..len]), crc.bytewise(&bytes[..len]), "{len} bytes");
     }
   }
