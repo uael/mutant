@@ -1105,12 +1105,13 @@ documents them. `puns` reads what the compiler chose (section 1), so a pun is so
 that makes it, whatever it chose. What the `unstable` feature is about is whether the pun is the
 same with another choice.
 
-**The rule.** Without the `unstable` feature, `-Zrandomize-layout` changes nothing that `puns`
-does: what compiles, what is checked, which values a check accepts and every message are the same
-whatever layout `rustc` chose where Rust lets it choose. With the feature, `puns` takes the layout
-that `rustc` chose, as it is, and does everything it can with it (the model check, section "Model
-check", runs with it). Within one build, the feature only adds: a pun that compiles without it
-compiles with it, and does the same.
+**The rule.** Without the `unstable` feature, `-Zrandomize-layout` changes nothing that `puns` does:
+what compiles, what is checked and which values a check accepts are the same whatever layout `rustc`
+chose where Rust lets it choose. The message of a refusal may name what it chose (`(u8, u16, u8)` as
+`[u8; 4]` is refused for its layout, or for its size when it is 6 bytes). With the feature, `puns`
+takes the layout that `rustc` chose, as it is, and does everything it can with it (the model check,
+section "Model check", runs with it). Within one build, the feature only adds: a pun that compiles
+without it compiles with it, and does the same.
 
 It is a property of a pun, not of a type: `(bool, u8)` read as bytes is proven whatever byte its
 `bool` is, while bytes read as `(bool, u8)` would check one byte or the other.

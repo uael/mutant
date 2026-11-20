@@ -14,9 +14,9 @@ categories = ["encoding", "parsing", "no-std", "rust-patterns"]
 [features]
 # The layout that `rustc` chose, as it is, where Rust lets it choose otherwise: the order of the
 # fields of a struct or a tuple without `repr`, the tag of an enum without `repr`, niches. Without
-# it, nothing that `puns` does depends on that choice (`puns::layout::UNSTABLE`). The tests run
-# both ways: `cargo test -p puns --features verdict` holds what is kept (`tests/seeds.rs`, the
-# cases of `compile-fail-kept`), `--features unstable` the targets that need the feature.
+# it, nothing that `puns` does depends on that choice (`puns::layout::UNSTABLE`). Most tests run
+# without it, the default (`cargo test -p puns --features verdict` adds the record of
+# `tests/seeds.rs`); `--features unstable` runs the targets and the tests about it.
 unstable = []
 # Test-only, for `puns-model` and `tests/seeds.rs`: `puns::hook`, what the analysis says of a
 # pun without failing to compile. Not part of the API; nothing else changes with it.

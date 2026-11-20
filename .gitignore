@@ -18,6 +18,7 @@
 !.github/
 !.github/workflows/
 !.github/**/*.yml
+!.github/tests.sh
 
 # Rust
 !Cargo.toml
