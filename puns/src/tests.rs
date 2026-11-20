@@ -16,6 +16,9 @@ fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> String {
     Exact::Never(why) => return format!("never: {why}"),
   };
   let relation = match () {
+    () if a.relation.unspecified.is_some() => {
+      return format!("unspecified at {}", a.relation.unspecified.unwrap());
+    }
     () if a.relation.uninit.is_some() => {
       return format!("uninit at {}", a.relation.uninit.unwrap());
     }
@@ -79,6 +82,26 @@ fn scalars() {
   assert_eq!(verdict::<u8, u16>(), "never: the source is smaller than the target");
   assert_eq!(verdict::<Enum3, NonZero<u32>>(), "infallible");
   assert_eq!(verdict::<NonZero<u32>, Enum3>(), "fallible at 0, mutable");
+}
+
+/// A struct with a rule, `a < b`.
+#[derive(Pun)]
+#[repr(C)]
+#[pun(crate, assert(a < b))]
+struct Ruled {
+  a: u8,
+  b: u8,
+}
+
+/// The rule of a field holds of the bytes where the field is: in a tuple, which Rust may order
+/// otherwise, it is not of the same bytes in every layout.
+#[test]
+fn a_rule_of_a_field_is_where_the_field_is() {
+  assert!(!<(Ruled, [u8; 2])>::LAYOUT.is_specified());
+  assert!(<(Ruled, Ruled)>::LAYOUT.is_specified());
+  if !crate::layout::UNSTABLE {
+    assert_eq!(verdict::<[u8; 4], (Ruled, [u8; 2])>(), "unspecified at 0");
+  }
 }
 
 #[test]
@@ -172,6 +195,9 @@ fn tail<S: ?Sized + Pun, D: ?Sized + Pun>() -> String {
     return format!("never: {why}");
   }
   let relation = match () {
+    () if a.relation.unspecified.is_some() => {
+      format!("unspecified at {}", a.relation.unspecified.unwrap() - shift)
+    }
     () if a.relation.uninit.is_some() => {
       format!("uninit at {}", a.relation.uninit.unwrap() - shift)
     }

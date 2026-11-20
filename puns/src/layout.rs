@@ -542,7 +542,7 @@ impl Stable {
   /// Of a node of one part (the element of an array), as [`Stable::of_parts`].
   const fn of_part(part: &Layout) -> Self {
     let size = part.stable.size;
-    Self { fixed: size, size, deep: size && part.stable.deep, init: size && part.always_init() }
+    Self { fixed: size, size, deep: size && part.stable.deep, init: false }
   }
 }
 
@@ -2583,8 +2583,9 @@ impl Layout {
   /// - the whole layout, if every order makes the same bytes: one field has a size (it is at 0,
   ///   and no rule reads bytes by offset); or the fields that have one are all multiples of the
   ///   alignment of every field (no padding between them, whatever their order), and are all
-  ///   bytes of any value, or all the same layout (`(u8, [u8; 3])`, `(bool, bool)`), and the
-  ///   struct has no rule (a rule names fields: `a < b` holds of other bytes in another order);
+  ///   bytes of any value without a rule in them, or all the same layout (`(u8, [u8; 3])`,
+  ///   `(bool, bool)`), and the struct has no rule (a rule names fields: `a < b` holds of other
+  ///   bytes in another order, and a rule of a field holds of the bytes where the field is);
   /// - else its size, if every order makes the one that `rustc` chose, and whatever its bytes
   ///   are all initialized in every order: the struct is then *opaque* (see [`Stable`]). Orders
   ///   are tried for up to 6 fields that matter (a size, or an alignment greater than 1); past
@@ -2616,7 +2617,8 @@ impl Layout {
         sized += 1;
         sum += field.size;
         init &= field.always_init();
-        all_any &= matches!(field.uniform, Uniform::Any);
+        // Of no rule either: one in a field is checked where the field is, which is its order.
+        all_any &= matches!(field.uniform, Uniform::Any) && !field.has_rules;
         match first {
           None => {
             all_same &= field.stable.deep;
@@ -2645,12 +2647,12 @@ impl Layout {
           while fields[i].layout.size == 0 {
             i += 1;
           }
-          fields[i].offset == 0 && round_up(fields[i].layout.size, self.align).is_some()
+          fields[i].offset == 0 && tiled_size == self.size
         }
         // A rule names fields: which bytes it holds of depends on their order.
         _ => rules.is_empty() && tiled && (all_any || all_same) && tiled_size == self.size,
       };
-    if same_bytes && (sized != 1 || sum.next_multiple_of(self.align) == self.size) {
+    if same_bytes {
       return Self {
         stable: Stable { fixed: true, size: true, deep: parts.deep, init: false },
         ..self

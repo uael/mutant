@@ -444,7 +444,7 @@ assert_eq!(puns::try_pun::<_, Shape>(Drawing::Rect(3, 2)), Err(puns::Error::Vali
 assert_eq!(puns::try_pun::<_, Shape>(Drawing::Nothing), Err(puns::Error::Validity));
 ```
 
-With the `unstable` feature (see below), the same of enums without `repr`, `Option` included,
+With the `unstable` feature (see above), the same of enums without `repr`, `Option` included,
 whose layout is found rather than declared:
 
 ```rust

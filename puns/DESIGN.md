@@ -1146,9 +1146,10 @@ node of it says what Rust keeps of it (`layout::Stable`), computed from the layo
   computed from them). A struct or a tuple of the `Rust` representation (`Layout::rust`): if every
   order of its fields is the same bytes, which is so if one field has a size (it is at 0); or if
   the fields that have one are all multiples of the alignment of every field (no padding between
-  them in any order) and are all bytes of any value (`(u8, [u8; 3])`), or all the same layout of
-  a type that is fixed through and through (`(bool, bool)`), and the struct has no rule: a rule
-  names fields, so `a < b` holds of other bytes in another order. An enum without `repr`,
+  them in any order) and are all bytes of any value with no rule in them (`(u8, [u8; 3])`), or
+  all the same layout of a type that is fixed through and through (`(bool, bool)`), and the
+  struct has no rule: a rule names fields, so `a < b` holds of other bytes in another order, and
+  the rule of a field holds of the bytes where the field is. An enum without `repr`,
   `Option` and `Result` but where `core` documents them: never (`Layout::unspecified`).
 - `size`: its size is the same in every layout. Of a struct of the `Rust` representation that is
   not fixed, every order of its fields is tried, each placed at the first offset that its

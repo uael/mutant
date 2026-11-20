@@ -1971,10 +1971,10 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
 /// of `repr(C)` structs, which the compiler is asked for.
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
-  let id = identity(input, root);
   if !repr.c && repr.int.is_none() {
     return derive_discovered(input, data, root);
   }
+  let id = identity(input, root);
   let (ident, vis) = (&input.ident, &input.vis);
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
