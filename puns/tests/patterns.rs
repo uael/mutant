@@ -1,4 +1,5 @@
-//! Patterns that a struct requires of its bytes (`matches`), and numbers of a given byte order.
+//! Tests the patterns that a struct requires of its bytes (`matches`), and numbers of a given
+//! byte order.
 
 use puns::{
   Pun, from_bytes, from_head,
@@ -6,7 +7,8 @@ use puns::{
   num::{f64be, i16be, i32le},
 };
 
-/// A tar header, reduced: a name of ASCII, a size of octal digits ended by a space or a zero.
+/// A reduced tar header. It holds an ASCII name, then a size in octal digits ended by a space or
+/// a zero byte.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(matches(Dfa::ASCII, 0, 8)))]
@@ -16,7 +18,7 @@ struct Tar {
   size: [u8; 12],
 }
 
-/// An MQTT string: a length, then UTF-8 without `U+0000`.
+/// An MQTT string, which is a length followed by UTF-8 without `U+0000`.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = 2 + length)]
@@ -26,7 +28,8 @@ struct MqttString {
   text: [u8],
 }
 
-/// An identifier: a letter or `_`, then letters, digits or `_`. A pattern of the user.
+/// A pattern that the user defines, for identifiers. An identifier is a letter or `_`, then
+/// letters, digits or `_`.
 const IDENTIFIER: &Dfa = &Dfa {
   id: 1000,
   states: &[
@@ -63,7 +66,8 @@ fn patterns() {
   assert!(from_bytes::<Identifier>(b"").is_err());
 }
 
-/// A bitmap's height is signed (negative: top to bottom), a GPS position is a big-endian `f64`.
+/// Numbers of a given byte order. The height of a bitmap is a signed little-endian integer, which
+/// is negative when the rows go from top to bottom. A GPS latitude is a big-endian `f64`.
 #[derive(Pun)]
 #[repr(C)]
 struct Numbers {
@@ -82,11 +86,12 @@ fn numbers_of_a_byte_order() {
   assert_eq!((i32le::new(-3).to_bytes(), i16be::from(-2).get()), ([0xfd, 0xff, 0xff, 0xff], -2));
 }
 
-/// Bytes 0 and 1, with the `id` of UTF-8: an automaton of the user, stricter than UTF-8.
+/// A pattern that the user defines, which accepts only the bytes 0 and 1. It has the `id` of
+/// UTF-8, but accepts fewer byte strings than UTF-8.
 const BITS: &Dfa =
   &Dfa { id: Dfa::UTF8.id, states: &[DfaState { accept: true, edges: &[(0, 1, 0)] }] };
 
-/// A pattern type of the user: bytes that `BITS` accepts.
+/// A type that the user defines, whose values are the bytes that `BITS` accepts.
 #[repr(transparent)]
 struct Bits([u8]);
 
@@ -103,8 +108,8 @@ unsafe impl Pun for Bits {
   const LAYOUT: Layout = unsafe { Layout::pattern::<Self>(Self::PROBE, BITS) };
 }
 
-/// A pattern is checked by its states and edges, whatever its `id`: `BITS`, which has the one of
-/// UTF-8, was checked as UTF-8 (`str::from_utf8`), so that `"a"` was a `Bits`.
+/// Checks that a pattern is checked by its states and edges, whatever its `id`. `BITS` has the
+/// `id` of UTF-8, and a check by `id` alone, with `str::from_utf8`, would accept `"a"`.
 #[test]
 fn a_pattern_is_checked_by_its_states() {
   assert_eq!(from_bytes::<Bits>(&[0, 1, 1]).map(|bits| &bits.0), Ok(&[0, 1, 1][..]));

@@ -1,5 +1,11 @@
-//! Enums whose layout `rustc` chose (no `repr`), found by experiments in const evaluation, and
-//! types without values.
+//! Tests enums whose layout Rust leaves to the compiler, and types without values.
+//!
+//! `puns` finds the layout that `rustc` chose for an enum without `repr` by experiments in const
+//! evaluation. The tests also cover `Option` and `Result`, and enums read from types that are not
+//! enums.
+//!
+//! This file needs the `unstable` feature (`required-features` in `puns/Cargo.toml`). Without it,
+//! `puns` does not depend on the layout that `rustc` chose.
 
 // Validation recurses over the variants of an enum: `Many` has 300.
 #![recursion_limit = "1024"]
@@ -8,7 +14,7 @@ use core::{convert::Infallible, num::NonZero};
 
 use puns::{Error, Pun};
 
-/// A variant that holds a type without values is one that no value is.
+/// An enum with a variant that holds a type without values. No value is that variant.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 #[repr(u8)]
 #[expect(dead_code, reason = "no value is `B`, which is the point")]
@@ -24,7 +30,7 @@ enum Unit {
   B(()),
 }
 
-/// An enum without variants: no value.
+/// An enum without variants, which has no values.
 #[derive(Pun, Clone, Copy)]
 #[expect(clippy::empty_enums, reason = "a type without values, which is the point")]
 enum Void {}
@@ -45,28 +51,28 @@ fn uninhabited() {
 
 // --- Enums without `repr` -------------------------------------------------------------------------
 
-/// A direct tag, of one byte: the first field of `A` follows it.
+/// An enum with a direct tag of one byte. The first field of `A` follows the tag.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Direct {
   A(u8),
   B(u16),
 }
 
-/// A direct tag that `rustc` widened to two bytes: no field starts before 2.
+/// An enum with a direct tag that `rustc` widened to two bytes. No field starts before offset 2.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Widened {
   A(u16),
   B(u32),
 }
 
-/// A niche: the values of the `bool` that are not one.
+/// An enum whose tag is a niche, the values of the byte of the `bool` that are not a `bool`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum MaybeFlag {
   Nothing,
   Flag(bool),
 }
 
-/// A niche in a `char`, for two variants.
+/// An enum with a niche in a `char`, for two variants.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Letter {
   Char(char),
@@ -74,7 +80,7 @@ enum Letter {
   Error,
 }
 
-/// A niche in the field of one variant, and another variant with a field beside it.
+/// An enum with a niche in the field of one variant, and another variant with a field beside it.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Mixed {
   Both(u8, bool),
@@ -82,34 +88,35 @@ enum Mixed {
   Nothing,
 }
 
-/// One variant: a struct.
+/// An enum with one variant, which has the layout of a struct.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Single {
   Only { byte: u8, flag: bool },
 }
 
-/// Generic, as `Option` is.
+/// A generic enum, as `Option` is.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Maybe<T> {
   No,
   Yes(T),
 }
 
-/// A niche in the tag of another enum, which `rustc` widened.
+/// An enum with a niche in the widened tag of another enum.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Outer {
   Inner(Widened),
   Other,
 }
 
-/// A variant without values, which has a field with a size: `rustc` gives it a tag all the same.
+/// An enum with a variant that has no values but has a field with a size. `rustc` gives that
+/// variant a tag all the same.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum OneOfTwo {
   A(u8),
   B(u32, Infallible),
 }
 
-/// The bytes of the integer `value` of `N` bytes, in native byte order.
+/// Returns the `N` low bytes of `value`, in native byte order.
 fn bytes<const N: usize>(value: u128) -> [u8; N] {
   let mut out = [0; N];
   for (i, byte) in out.iter_mut().enumerate() {
@@ -182,7 +189,7 @@ fn single_and_generic() {
   assert!(puns::try_pun::<[u8; 8], OneOfTwo>([1, 3, 0, 0, 0, 0, 0, 0]).is_err());
 }
 
-/// More than 256 variants: a tag of two bytes.
+/// An enum with more than 256 variants, whose tag is two bytes.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Many {
   First(u16),
@@ -487,14 +494,15 @@ enum Many {
   V298,
 }
 
-/// As `Result` is.
+/// A generic enum of two variants with a field each, as `Result` is.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Either<T, E> {
   Left(T),
   Right(E),
 }
 
-/// A field that only some values of its type are valid for: not a niche, but checked.
+/// An enum with a field that requires some values of its type (`valid(..)`). The requirement is
+/// not a niche, and it is checked.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 enum Restricted {
   Small(#[pun(valid(0..=9))] u8),
@@ -527,7 +535,7 @@ fn generic_and_restricted() {
 
 // --- Enums made of what is not an enum ------------------------------------------------------------
 
-/// An enum of a specified layout: a tag of one byte, then the byte of `Some`.
+/// An enum whose layout Rust specifies. It is a tag of one byte, then the byte of `Some`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
 #[repr(u8)]
 enum Opt {
@@ -535,7 +543,7 @@ enum Opt {
   Some(u8),
 }
 
-/// Two bytes, the first of which is always 1.
+/// A struct of two bytes, the first of which is always 1.
 #[derive(Pun, Clone, Copy)]
 #[repr(C)]
 struct Tagged {
@@ -601,8 +609,10 @@ fn option_and_result() {
   assert_eq!(puns::pun::<Result<NonZero<u8>, bool>, Result<u8, u8>>(Err(true)), Err(1));
 }
 
-/// A field restricted to a value, in a struct whose rule no value meets: safe code makes values of
-/// it all the same (`valid(..)` and rules are requirements, not what the type system enforces).
+/// A struct whose field requires one value and whose rule no value meets.
+///
+/// Safe code can make values of it all the same, because `valid(..)` and rules are requirements,
+/// not guarantees of the type system.
 #[derive(Pun, Clone, Copy)]
 #[repr(C)]
 #[pun(assert(x == 1 && x == 2))]
@@ -617,9 +627,11 @@ enum HoldsImpossible {
   B(u16),
 }
 
-/// "No value" is only said of what the type system makes so (a field of a type without values),
-/// never of what a requirement excludes: a variant believed to have no value would be left out of
-/// what a source can be.
+/// Checks that a layout has no values only where the type system says so, as for a field of a
+/// type without values.
+///
+/// A requirement never makes a layout have no values. A variant taken to have no values would be
+/// left out of what a source can be.
 #[test]
 fn no_value_is_what_the_type_system_says() {
   assert!(<Impossible as puns::Pun>::LAYOUT.is_inhabited());

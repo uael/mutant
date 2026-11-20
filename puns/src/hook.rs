@@ -1,50 +1,63 @@
-//! Test-only access to the verdicts of the analysis, for the model check of
-//! `puns-model`: the same checks as the public functions, but answering `None` instead of
-//! failing to compile.
+//! The verdicts of the analysis, for the model check of `puns-model`.
 //!
-//! Not part of the API: only compiled with the `verdict` feature, which nothing but tests may
-//! enable. It changes nothing else.
+//! Each function of this module makes the same checks as the public function of the same name.
+//! Where the public function does not compile, this one returns `None` instead.
+//!
+//! This module is not part of the API. It is compiled only with the `verdict` feature, which only
+//! tests may enable. The feature changes nothing else.
 
 use crate::{Error, Need, Plan, Pun, Root, pun_unchecked, validate::validate};
 
-/// What each public function would do with a pun from `S` to `D`: whatever it
-/// compiles.
+/// Whether each of these public functions compiles for a pun from `S` to `D`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "one for each function of the API")]
 pub struct Verdict {
+  /// Whether [`pun`](crate::pun) compiles.
   pub pun: bool,
+  /// Whether [`head`](crate::head) compiles.
   pub head: bool,
+  /// Whether [`try_pun`](crate::try_pun) compiles.
   pub try_pun: bool,
+  /// Whether [`pun_ref`](crate::pun_ref) compiles.
   pub pun_ref: bool,
+  /// Whether [`head_ref`](crate::head_ref) compiles.
   pub head_ref: bool,
+  /// Whether [`try_pun_ref`](crate::try_pun_ref) compiles.
   pub try_pun_ref: bool,
+  /// Whether [`pun_mut`](crate::pun_mut) compiles.
   pub pun_mut: bool,
+  /// Whether [`try_pun_mut`](crate::try_pun_mut) compiles.
   pub try_pun_mut: bool,
-  /// Why `try_pun_ref` does not compile, if it does not.
+  /// The message of the compile error of `try_pun_ref`, and its length. The length is 0 if
+  /// `try_pun_ref` compiles.
   why: ([u8; 512], usize),
 }
 
 impl Verdict {
-  /// Why `try_pun_ref` does not compile, if it does not (empty if it does).
+  /// Returns the message of the compile error of `try_pun_ref`, or `""` if it compiles.
+  ///
+  /// The message is cut to 512 bytes. Returns `"(not UTF-8)"` if the cut is not UTF-8.
   #[must_use]
   pub fn why(&self) -> &str {
     core::str::from_utf8(self.why.0.split_at(self.why.1).0).unwrap_or("(not UTF-8)")
   }
 
-  /// Whatever `try_pun_ref` does not compile because the pun depends on what Rust does not keep
-  /// of a layout: without the `unstable` feature, by design.
+  /// Returns whether `try_pun_ref` does not compile because the pun depends on a layout that Rust
+  /// leaves to the compiler.
+  ///
+  /// This happens only without the `unstable` feature, by design.
   #[must_use]
   pub fn unspecified(&self) -> bool {
     self.why().contains(crate::UNSPECIFIED)
   }
 }
 
-/// Whatever the pun from `S` to `D` meets the `need`.
+/// Returns whether the plan of a pun from `S` to `D` accepts the `need`.
 const fn ok<S: ?Sized + Pun, D: ?Sized + Pun>(need: Need) -> bool {
   Plan::<S, D>::check(need).is_none()
 }
 
-/// What the analysis says of a pun from `S` to `D`.
+/// Returns which of the public functions of [`Verdict`] compile for a pun from `S` to `D`.
 #[must_use]
 pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
   let mutable = Plan::<S, D>::MUTABLE;
@@ -65,23 +78,28 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
   }
 }
 
-/// Whatever [`view_ref`](crate::view_ref) compiles for `S` and `D`.
+/// Returns whether [`view_ref`](crate::view_ref) compiles for `S` and `D`.
 ///
-/// This is its plan, and what the pointers of `D` aim at, followed `fuel` times. The function
-/// itself follows them through instances of functions, without a bound: `fuel` must be the
-/// number of pairs of types that can be met for the answer to be the same.
+/// It checks the plan of `view_ref`, then what the pointers of `D` aim at, followed `fuel`
+/// times. `view_ref` itself follows pointers through instances of functions, without a bound.
+/// The answer is the one of `view_ref` only if `fuel` is at least the number of pairs of types
+/// that can be met.
 #[must_use]
 pub const fn views<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
   ok::<S, D>(Need::VIEW) && crate::deep::local::<S, D>(fuel).is_none()
 }
 
-/// Whatever [`try_view_ref`](crate::try_view_ref) compiles for `S` and `D`, as [`views`].
+/// Returns whether [`try_view_ref`](crate::try_view_ref) compiles for `S` and `D`.
+///
+/// `fuel` is as for [`views`].
 #[must_use]
 pub const fn tries_view<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
   ok::<S, D>(Need::TRY_VIEW) && crate::deep::local::<S, D>(fuel).is_none()
 }
 
-/// [`view_ref`](crate::view_ref), if it compiles (see [`views`] for `FUEL`).
+/// Returns what [`view_ref`](crate::view_ref) returns, or `None` if it does not compile.
+///
+/// `FUEL` is as for [`views`].
 #[must_use]
 pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(value: &S) -> Option<&D> {
   if const { !views::<S, D>(FUEL) } {
@@ -92,7 +110,9 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(value: &S) 
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
-/// [`try_view_ref`](crate::try_view_ref), if it compiles (see [`views`] for `FUEL`).
+/// Returns what [`try_view_ref`](crate::try_view_ref) returns, or `None` if it does not compile.
+///
+/// `FUEL` is as for [`views`].
 #[must_use]
 pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
   value: &S,
@@ -104,23 +124,28 @@ pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
   Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
 }
 
-/// What each function that takes a part of a value would do with a pun from `S` to `D`:
-/// whatever it compiles.
+/// Whether each public function that takes a part of a value compiles for a pun from `S` to `D`.
 ///
-/// Apart from [`Verdict`], so that what only looks at the whole does not pay for the analyses of
-/// the end of the source and of the `&mut` to a part.
+/// It is apart from [`Verdict`], so that a test of whole values does not pay for the analyses of
+/// the end of the source and of a `&mut` to a part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "one for each function of the API")]
 pub struct Parts {
+  /// Whether [`head`](crate::head) compiles.
   pub head: bool,
+  /// Whether [`head_ref`](crate::head_ref) compiles.
   pub head_ref: bool,
+  /// Whether [`head_mut`](crate::head_mut) compiles.
   pub head_mut: bool,
+  /// Whether [`tail`](crate::tail) compiles.
   pub tail: bool,
+  /// Whether [`tail_ref`](crate::tail_ref) compiles.
   pub tail_ref: bool,
+  /// Whether [`tail_mut`](crate::tail_mut) compiles.
   pub tail_mut: bool,
 }
 
-/// What the analysis says of the parts of `S` as a `D`.
+/// Returns which public functions that take a part of a value compile for a pun from `S` to `D`.
 #[must_use]
 pub const fn parts<S: ?Sized + Pun, D: ?Sized + Pun>() -> Parts {
   Parts {
@@ -133,7 +158,7 @@ pub const fn parts<S: ?Sized + Pun, D: ?Sized + Pun>() -> Parts {
   }
 }
 
-/// [`try_pun`](crate::try_pun), if it compiles.
+/// Returns what [`try_pun`](crate::try_pun) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn try_pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<Result<D, Error>> {
   if const { !verdict::<S, D>().try_pun } {
@@ -147,7 +172,7 @@ pub const fn try_pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<Result<D,
   Some(Ok(unsafe { pun_unchecked(value) }))
 }
 
-/// [`pun`](crate::pun), if it compiles.
+/// Returns what [`pun`](crate::pun) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   if const { !verdict::<S, D>().pun } {
@@ -157,7 +182,7 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   Some(unsafe { pun_unchecked(value) })
 }
 
-/// [`head`](crate::head), if it compiles.
+/// Returns what [`head`](crate::head) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   if const { !verdict::<S, D>().head } {
@@ -167,7 +192,7 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   Some(unsafe { pun_unchecked(value) })
 }
 
-/// [`tail`](crate::tail), if it compiles.
+/// Returns what [`tail`](crate::tail) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   if const { !parts::<S, D>().tail } {
@@ -178,7 +203,7 @@ pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> Option<D> {
   Some(unsafe { (&raw const value).cast::<u8>().add(shift).cast::<D>().read_unaligned() })
 }
 
-/// [`tail_ref`](crate::tail_ref), if it compiles.
+/// Returns what [`tail_ref`](crate::tail_ref) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> {
   if const { !parts::<S, D>().tail_ref } {
@@ -188,7 +213,7 @@ pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
   Some(unsafe { &*Plan::<S, D>::tail_cast(value) })
 }
 
-/// [`try_pun_ref`](crate::try_pun_ref), if it compiles.
+/// Returns what [`try_pun_ref`](crate::try_pun_ref) returns, or `None` if it does not compile.
 #[must_use]
 pub fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<Result<&D, Error>> {
   if const { !verdict::<S, D>().try_pun_ref } {
@@ -198,7 +223,7 @@ pub fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<Result
   Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
 }
 
-/// [`try_pun_mut`](crate::try_pun_mut), if it compiles.
+/// Returns what [`try_pun_mut`](crate::try_pun_mut) returns, or `None` if it does not compile.
 #[must_use]
 pub fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(
   value: &mut S,
@@ -211,7 +236,7 @@ pub fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(
   Some(Plan::<S, D>::try_cast(source).map(|target| unsafe { &mut *target.cast_mut() }))
 }
 
-/// [`pun_ref`](crate::pun_ref), if it compiles.
+/// Returns what [`pun_ref`](crate::pun_ref) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> {
   if const { !verdict::<S, D>().pun_ref } {
@@ -221,7 +246,7 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> 
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
-/// [`head_ref`](crate::head_ref), if it compiles.
+/// Returns what [`head_ref`](crate::head_ref) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D> {
   if const { !verdict::<S, D>().head_ref } {
@@ -231,7 +256,7 @@ pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<&D>
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
-/// [`head_mut`](crate::head_mut), if it compiles.
+/// Returns what [`head_mut`](crate::head_mut) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
   if const { !parts::<S, D>().head_mut } {
@@ -242,7 +267,7 @@ pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option
   Some(unsafe { &mut *Plan::<S, D>::cast(source).cast_mut() })
 }
 
-/// [`tail_mut`](crate::tail_mut), if it compiles.
+/// Returns what [`tail_mut`](crate::tail_mut) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option<&mut D> {
   if const { !parts::<S, D>().tail_mut } {
@@ -253,7 +278,7 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Option
   Some(unsafe { &mut *Plan::<S, D>::tail_cast(source).cast_mut() })
 }
 
-/// [`from_head`](crate::from_head), if it compiles.
+/// Returns what [`from_head`](crate::from_head) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&D, &[u8]), Error>> {
   if const { !verdict::<[u8], D>().try_pun_ref } {
@@ -267,7 +292,7 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&D, &[u8
   })
 }
 
-/// [`from_tail`](crate::from_tail), if it compiles.
+/// Returns what [`from_tail`](crate::from_tail) returns, or `None` if it does not compile.
 #[must_use]
 pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Option<Result<(&[u8], &D), Error>> {
   if const { Plan::<[u8], D>::check_from_tail().is_some() } {

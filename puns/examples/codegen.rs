@@ -1,10 +1,23 @@
-//! Functions whose machine code is worth looking at:
+//! Functions whose machine code shows what `puns` checks at run time, and what it does not.
+//!
+//! Each function makes one call to `puns`: a pun, a view, a part, a read from the head or the tail
+//! of bytes, or a region. A pun that is proven compiles to no check. A pun that is checked
+//! compiles to the checks of what the analysis could not prove. Each function is `#[no_mangle]`,
+//! so that its name appears in the assembly.
+//!
+//! The following command writes the assembly:
 //!
 //! ```text
 //! cargo rustc --release --features unstable --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel
 //! ```
 //!
-//! and look for their names in `target/release/**/codegen*.s`. See `DESIGN.md` for what to expect.
+//! The functions are in `target/release/**/codegen*.s`, under their names. `puns/DESIGN.md`
+//! records the machine code of each one on x86-64, as instructions or as their count. A change of
+//! the library must not make any of them longer, so compare the assembly before and after it.
+//!
+//! The example requires the `unstable` feature, since some of its types have a layout that Rust
+//! leaves to the compiler (`Ticket`, `Small` and a tuple). `main` is empty, because the example is
+//! compiled to be read, not run.
 #![expect(
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
@@ -112,7 +125,7 @@ pub struct Ipv6 {
   pub data: [u8],
 }
 
-/// A trailer: a kind, and a magic number.
+/// A trailer of a kind and a magic number, which `back_trailer` reads from the end of bytes.
 #[derive(Pun)]
 #[repr(C)]
 pub struct Trailer {
@@ -136,8 +149,10 @@ pub enum Drawing {
   Line(u8, u8) = 9,
 }
 
-/// Self-relative pointers, declared as a crate of its own would: an offset of 4 bytes,
-/// little-endian, of no alignment. No value of them is made here, only the views are compiled.
+/// Declares self-relative pointers through the public API, as another crate would.
+///
+/// Each pointer is a little-endian offset of 4 bytes, aligned to 1 byte. No value of these
+/// pointers is made, since only the code of the views is compiled.
 macro_rules! pointers {
   ($($(#[$doc:meta])* $name:ident[$($param:ident)?] $target:ty, $pointer:expr;)+) => {$(
     $(#[$doc])*
@@ -156,23 +171,26 @@ macro_rules! pointers {
 
 const SCHEME: &str = "codegen";
 
-/// The alignment of the first element of a sequence of `T`.
+/// Returns the alignment of the first element of a sequence of `T`, the larger of 4 and the
+/// alignment of `T`.
 const fn first<T>() -> usize {
   if align_of::<T>() > 4 { align_of::<T>() } else { 4 }
 }
 
 pointers! {
-  /// To one `T`.
+  /// A pointer to one `T`.
   Rel[T] T, Pointer::one::<T>(SCHEME, 4, Endian::Little);
-  /// To one `T`, or none.
+  /// A pointer to one `T`, or a null pointer.
   RelOpt[T] T, Pointer::one::<T>(SCHEME, 4, Endian::Little).or_null();
-  /// To a sequence of `T`, at least 4-aligned.
+  /// A pointer to a sequence of `T`, whose first element is aligned to at least 4 bytes.
   RelSeq[T] T, Pointer::sequence::<T>(SCHEME, 4, Endian::Little, first::<T>());
-  /// To text.
+  /// A pointer to text.
   RelStr[] (), Pointer::text(SCHEME, 4, Endian::Little);
 }
 
-/// An expression, and the next version of it: a `bool` read as a `u8`, one more variant.
+/// An expression of a schema, which `view_new` views as its next version, [`New`].
+///
+/// [`New`] reads the `bool` of `Leaf` as a `u8`, and has one more variant, `Pair`.
 #[derive(Pun)]
 #[repr(u8)]
 pub enum Old {
@@ -190,7 +208,8 @@ pub enum New {
   Pair(Rel<New>, Rel<New>),
 }
 
-/// A pointer that may be null, read as one that is not.
+/// A record whose pointer may be null, which `try_view_owned` views as an [`Owned`] after it
+/// checks that the pointer is not null.
 #[derive(Pun)]
 #[repr(C)]
 pub struct Maybe {
@@ -348,7 +367,7 @@ pub fn try_view_owned(maybe: &Maybe) -> Option<&Owned> {
   puns::try_view_ref(maybe).ok()
 }
 
-/// A packet of a protocol, whose payload is a typed region of its bytes, as `Ipv4` in the README.
+/// A packet whose payload is a typed region of its bytes, like `Ipv4` in the README.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = 4 + length)]

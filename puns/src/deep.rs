@@ -1,40 +1,46 @@
-//! What self-relative pointers aim at, proven through the types.
+//! Proofs of what the self-relative pointers of a target aim at.
 //!
-//! A [`Layout`](crate::layout::Layout) does not hold what a pointer aims at: the layout of a
-//! recursive type would have no end, and const evaluation has no identity of a type or of a
-//! static (`TypeId` is not compared in `const`, pointers neither) by which an analysis could tell
-//! that it has been somewhere before. Types have one: an instance of a generic function exists
-//! once, however often it is named. So the proof that a `D` can be read where an `S` is,
+//! A [`Layout`](crate::layout::Layout) does not hold what a pointer aims at. The layout of a
+//! recursive type would have no end. Const evaluation has no identity of a type or of a static by
+//! which an analysis could tell that it has been somewhere before: `TypeId` cannot be compared in
+//! `const`, and neither can pointers. An instance of a generic function has such an identity: it
+//! exists once, however often it is named. So the proof that a `D` can be read where an `S` is,
 //! pointers followed, is a set of instances:
 //!
-//! - `target::<X, Y>` ([`target`]), one per pair of types `X` (aimed at by a pointer of the
-//!   source) and `Y` (aimed at by the pointer of the target at the same place). Its `const` block
-//!   is the whole proof of that pair up to the next pointers ([`behind`]): every `X` is a valid
-//!   `Y` over the bytes of `Y`, with nothing left to check, and every pointer of `Y` is, in `X`,
-//!   a pointer of which it can read the target ([`local`]);
-//! - `pair::<A, B>` ([`pair`]) names `target` for the pointers that `A` and `B` hold at the same
-//!   place, through their fields, variants and elements. It *names* it (a function pointer that
-//!   nothing calls), so a recursive type closes a cycle of instances, which the compiler makes
-//!   once: an induction over the pairs of types that can be met from `S` and `D`.
+//! - [`target::<X, Y>`](target) exists once for each pair of a type `X` that a pointer of the
+//!   source aims at and a type `Y` that the pointer of the target at the same place aims at. Its
+//!   `const` block is the whole proof of that pair up to the next pointers ([`behind`]). It
+//!   requires that every `X` is a valid `Y` over the bytes of `Y`, with nothing left to check,
+//!   and that every pointer of `Y` is, in `X`, a pointer whose target it can read ([`local`]).
+//! - [`pair::<A, B>`](pair) names `target` for the pointers that `A` and `B` hold at the same
+//!   place, through their fields, variants and elements. It names `target` as a function pointer
+//!   that nothing calls. A recursive type thus closes a cycle of instances, which the compiler
+//!   makes once. The proof is an induction over the pairs of types that can be met from `S` and
+//!   `D`.
 //!
-//! [`proof`] is called by [`view_ref`](crate::view_ref), and with it everything up to the first
-//! pointers: `const` blocks of functions that run. Behind a pointer, the `const` block of
-//! `target` is evaluated because the compiler makes every function that code it compiles names,
-//! whether that code ever runs or not: this is what the build of a function pointer needs, and
-//! what `rustc` does whatever the optimizations (compile-fail tests hold it to that).
+//! [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref) call [`proof`], whose
+//! `const` blocks are evaluated up to the first pointers, as in any function that runs. Behind a
+//! pointer, the `const` block of `target` is evaluated because the compiler makes every function
+//! that the code it compiles names, whether that code runs or not. Building a function pointer
+//! needs the function, and `rustc` makes it whatever the optimizations. The Reference does not
+//! promise this of a `const` block that is not executed. Compile-fail tests hold the compiler to
+//! it.
 //!
-//! `pair` cannot choose what it names: the compiler also makes the instances that a branch names
-//! when a constant rules the branch out. So it pairs by position (the fields of two structs and
-//! the variants of two enums in the order of their declarations, elements with elements), which
-//! names more pairs than matter: where the source has nothing, its side is `()`, and `target`
-//! has nothing to prove of what has no size (no pointer aims at such a type: [`Pointer::one`],
-//! [`Pointer::sequence`]; the target type of text is `()`).
-//! The pairs that matter are decided exactly by `local`, which is `const` code: every pointer of
-//! the target must be, in the source, a pointer at the same offset that `pair` pairs it with,
-//! or the build fails. Hence two limits, which are refusals: a field that holds a pointer keeps
-//! its position among the fields of its struct, a variant that does keeps its position among
-//! the variants of its enum (new ones go last), and a struct that only holds a pointer is not
-//! that pointer.
+//! `pair` cannot choose what it names, because the compiler also makes the instances that a
+//! branch names when a constant rules the branch out. So `pair` pairs by position: the fields of
+//! two structs and the variants of two enums in the order of their declarations, and elements
+//! with elements. This names more pairs than matter. Where the source has nothing, its side is
+//! `()`. `target` has nothing to prove of a type without size, since no pointer aims at one
+//! ([`Pointer::one`], [`Pointer::sequence`]), and the type that text aims at is `()`.
+//!
+//! `local` decides exactly which pairs matter, in `const` code. Every pointer of the target must
+//! be, in the source, a pointer at the same offset that `pair` pairs it with, or the build fails.
+//! This sets limits, each of which is a refusal:
+//!
+//! - A field that holds a pointer keeps its position among the fields of its struct.
+//! - A variant that holds a pointer keeps its position among the variants of its enum. New
+//!   variants go last.
+//! - A struct that only holds a pointer is not that pointer.
 //!
 //! [`Pointer::one`]: crate::layout::Pointer::one
 //! [`Pointer::sequence`]: crate::layout::Pointer::sequence
@@ -77,29 +83,58 @@ const LISTS: &str = "an implementation of `Pun` lists fields, variants, elements
                      pointer (`Fields`, `Variants`, `Elem`, `Pointee`) that are not those of its \
                      layout: pointers cannot be followed through it";
 
-/// Fail to compile if `why` says why.
+/// Fails with the message `why`, if there is one.
+///
+/// # Panics
+///
+/// Panics if `why` is `Some`. In const evaluation, the panic is a compile error.
 const fn require(why: Option<&'static str>) {
   if let Some(why) = why {
     Message::new(why).panic();
   }
 }
 
-/// The proof of what the pointers of `D` aim at, when a `D` is read where an `S` is: called by
-/// [`view_ref`](crate::view_ref), whose plan proved the bytes of `S` as a `D`.
+/// Proves what the pointers of `D` aim at, when a `D` is read where an `S` is.
+///
+/// [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref) call it, after their
+/// plans have related the bytes of `S` to `D`. It does nothing at run time.
+///
+/// # Compile-time errors
+///
+/// A call compiles only if all of the following hold:
+///
+/// - Every pointer of `D` is, in `S`, a pointer at the same place whose target it can read
+///   ([`local`]).
+/// - For every pair of types that [`pair`] names behind pointers, [`behind`] finds nothing that
+///   prevents the read.
+///
+/// These conditions are checked after monomorphization. `cargo check` does not report a
+/// violation, but `cargo build` does.
 #[inline(always)]
 pub fn proof<S: ?Sized + Pun, D: ?Sized + Pun>() {
   const { require(local::<S, D>(0)) };
   pair::<S, D>();
 }
 
-/// The `X` that a pointer of the source aims at is read as a `Y`, which the pointer of the target
-/// at the same place aims at. Never called: see the module documentation.
+/// Holds the proof that an `X` that a pointer of the source aims at can be read as the `Y` that
+/// the pointer of the target at the same place aims at.
+///
+/// It is never called, only named by [`pair`]. Its `const` block is evaluated because the
+/// compiler makes every function that compiled code names.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if [`behind`] finds that an `X` can be read as a `Y`, with no fuel.
 fn target<X: Pun, Y: Pun>() {
   const { require(behind::<X, Y>(0)) };
   pair::<X, Y>();
 }
 
 /// Names the [`target`] of every pair of pointers that `A` and `B`, at the same place, may hold.
+///
+/// It names the `target` of `A::Pointee` and `B::Pointee`, which has nothing to prove unless
+/// both are pointers. If `B` holds a pointer, it then pairs by position: the fields of `A` and
+/// `B` in the order of their declarations, their variants in the same order, and their elements.
 #[inline(always)]
 fn pair<A: ?Sized + Pun, B: ?Sized + Pun>() {
   // Named, not called: this is what makes a recursive type a finite proof.
@@ -111,6 +146,8 @@ fn pair<A: ?Sized + Pun, B: ?Sized + Pun>() {
   }
 }
 
+/// Applies [`pair`] to the field `FB` of the target and the ones after it, each with the field
+/// `FA` of the source at the same position.
 #[inline(always)]
 fn fields<FA: Fields, FB: Fields>() {
   if const { FB::FIELD.is_some() } {
@@ -119,6 +156,8 @@ fn fields<FA: Fields, FB: Fields>() {
   }
 }
 
+/// Applies [`fields`] to the variant `VB` of the target and the ones after it, each with the
+/// variant `VA` of the source at the same position.
 #[inline(always)]
 fn variants<VA: Variants, VB: Variants>() {
   if const { VB::TAG.is_some() } {
@@ -134,10 +173,24 @@ fn variants<VA: Variants, VB: Variants>() {
 // check asks what `view_ref` would do without failing to compile (`hook::view_ref`). The proof
 // itself asks with none, the instances being what follows pointers there.
 
-/// Why an `X` that a pointer aims at cannot be read as a `Y`, if it cannot: a `Y` is the first
-/// bytes of an `X` (the pointers themselves told that it is not more aligned, and that elements
-/// of sequences have the same size), every value of which is valid for it, with nothing left to
-/// check: nothing is checked behind a pointer.
+/// Returns why an `X` that a pointer aims at cannot be read as a `Y`, or `None` if it can.
+///
+/// A `Y` is read from the first bytes of an `X`. The pointers already showed that `Y` needs no
+/// more alignment than `X`, and that the elements of two sequences have the same size. Every
+/// value of `X` must be a valid `Y` with nothing left to check, since nothing is checked behind
+/// a pointer. If `X` or `Y` has size 0, the pair is not a pair of pointers, and `None` is
+/// returned.
+///
+/// With `fuel` greater than 0, the pointers of `Y` are followed that many more times. The model
+/// check asks so (`hook::views`). The proof asks with 0, and follows pointers through the
+/// instances of [`target`].
+///
+/// # Errors
+///
+/// Returns the message of the first reason found: `Y` is larger than `X`, the pun depends on a
+/// layout that Rust leaves to the compiler, a byte that `Y` requires to be initialized is padding
+/// in `X`, a pointer of `Y` is not proven by a pointer of `X`, or some value of `X` is not a
+/// valid `Y` or does not meet one of its rules. Then the reasons of [`local`].
 pub const fn behind<X: Pun, Y: Pun>(fuel: usize) -> Option<&'static str> {
   // Not a pair of pointers: no pointer aims at a type without size (`Pointer::one`,
   // `Pointer::sequence`), and the target type of text is `()`.
@@ -163,8 +216,24 @@ pub const fn behind<X: Pun, Y: Pun>(fuel: usize) -> Option<&'static str> {
   local::<X, Y>(fuel)
 }
 
-/// Why a pointer of `B` is not, in `A` at the same place, the pointer that [`pair`] pairs it
-/// with, if one is not: `A` and `B` are at the same offset of a source and of a target.
+/// Returns why a pointer of `B` is not, in `A`, the pointer that [`pair`] pairs it with, or
+/// `None` if every pointer of `B` is.
+///
+/// `A` and `B` are at the same offset of a source and of a target. A pointer of `B` must be
+/// paired with a pointer of `A` whose target it can read ([`Pointer::reads_as`]). Fields are
+/// paired in the order of their declarations, and must be at the same offset. Variants are paired
+/// in the order of their declarations, and must have the same tag. Elements are paired only with
+/// elements of the same size. A variant of `B` whose tag no variant of `A` has needs no pair, if
+/// the variant of `A` at its position holds no pointer.
+/// With `fuel` greater than 0, what two paired pointers aim at is checked as well, by [`behind`]
+/// with one less `fuel`.
+///
+/// # Errors
+///
+/// Returns a message if the lists of `A` or `B` are not what their layouts hold ([`listed`]), or
+/// if a pointer of `B` is not paired with a pointer of `A` as above.
+///
+/// [`Pointer::reads_as`]: crate::layout::Pointer::reads_as
 pub const fn local<A: ?Sized + Pun, B: ?Sized + Pun>(fuel: usize) -> Option<&'static str> {
   let (a, b) = (A::LAYOUT, B::LAYOUT);
   if !b.has_pointers() {
@@ -197,8 +266,13 @@ pub const fn local<A: ?Sized + Pun, B: ?Sized + Pun>(fuel: usize) -> Option<&'st
   }
 }
 
-/// The field `FB` of the target, and the ones after it, with the field `FA` of the source and
-/// the ones after it.
+/// Applies [`local`] to each field of the target from `FB` on that holds a pointer, with the
+/// field of the source at the same position.
+///
+/// # Errors
+///
+/// Returns a message if such a field of the target has no field of the source at the same
+/// position and offset, or if [`local`] returns one for the two fields.
 const fn local_fields<FA: Fields, FB: Fields>(fuel: usize) -> Option<&'static str> {
   let Some(b) = FB::FIELD else { return None };
   if b.layout.has_pointers() {
@@ -214,8 +288,17 @@ const fn local_fields<FA: Fields, FB: Fields>(fuel: usize) -> Option<&'static st
   local_fields::<FA::Next, FB::Next>(fuel)
 }
 
-/// The variant `VB` of the target, and the ones after it, with the variant `VA` of the source,
-/// whose first variant is `A0`, and the ones after it.
+/// Applies [`local_fields`] to each variant of the target from `VB` on that holds a pointer, with
+/// the variant of the source at the same position, from `VA` on.
+///
+/// `A0` is the first variant of the source. A variant of the target whose tag no variant of the
+/// source has is never read through the target, so it needs no pair. It only has to be where
+/// the variant of the source holds no pointer, since [`pair`] names nothing there that matters.
+///
+/// # Errors
+///
+/// Returns a message if a variant of the target that holds a pointer is not paired as above, or
+/// if [`local_fields`] returns one for two paired variants.
 const fn local_variants<A0: Variants, VA: Variants, VB: Variants>(
   fuel: usize,
 ) -> Option<&'static str> {
@@ -236,10 +319,11 @@ const fn local_variants<A0: Variants, VA: Variants, VB: Variants>(
   local_variants::<A0, VA::Next, VB::Next>(fuel)
 }
 
-/// Whatever the lists of `T` are what its layout holds, as [`Pun`] requires: its fields in the
-/// order of their declarations, its variants, the type of its elements, and the size and the
-/// alignment of what it aims at if it is a pointer (of `()` for text). One level: [`local`] asks
-/// again further down.
+/// Returns whether the lists of `T` are what its layout holds, as [`Pun`] requires.
+///
+/// The lists are its fields in the order of their declarations, its variants, the type of its
+/// elements, and, for a pointer, the type it aims at (`()` for text), of the size and alignment
+/// that the pointer says. Only `T` itself is checked. [`local`] checks the types further down.
 const fn listed<T: ?Sized + Pun>() -> bool {
   match T::LAYOUT.kind {
     Kind::Struct(fields, _) => listed_fields::<T::Fields>(fields, 0),
@@ -253,8 +337,9 @@ const fn listed<T: ?Sized + Pun>() -> bool {
   }
 }
 
-/// The list `F` is the `fields` from the one declared at `index` on, each of the type that the
-/// list says where it holds a pointer.
+/// Returns whether the list `F` is the `fields` from the one declared at `index` on.
+///
+/// The type that the list gives a field is checked only if the field holds a pointer.
 const fn listed_fields<F: Fields>(fields: &[Field], index: usize) -> bool {
   match F::FIELD {
     None => index == fields.len(),
@@ -267,8 +352,8 @@ const fn listed_fields<F: Fields>(fields: &[Field], index: usize) -> bool {
   }
 }
 
-/// The list `V` is the `variants` from the one at `index` on: the same tags, in the same order,
-/// with the same fields.
+/// Returns whether the list `V` is the `variants` from the one at `index` on: the same tags, in
+/// the same order, with the same fields.
 const fn listed_variants<V: Variants>(variants: &[Variant], index: usize) -> bool {
   match V::TAG {
     None => index == variants.len(),
@@ -281,6 +366,7 @@ const fn listed_variants<V: Variants>(variants: &[Variant], index: usize) -> boo
   }
 }
 
+/// Returns whether a field of the list `F` holds a pointer.
 const fn has_pointers<F: Fields>() -> bool {
   match F::FIELD {
     Some(field) => field.layout.has_pointers() || has_pointers::<F::Next>(),
@@ -288,6 +374,7 @@ const fn has_pointers<F: Fields>() -> bool {
   }
 }
 
+/// Returns whether a variant of the list `V` has the tag `tag`.
 const fn has_tag<V: Variants>(tag: u128) -> bool {
   match V::TAG {
     Some(other) => other == tag || has_tag::<V::Next>(tag),

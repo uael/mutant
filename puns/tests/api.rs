@@ -1,4 +1,8 @@
-//! The functions of the crate, on types of all sorts.
+//! Tests the public functions of `puns` on types of every kind.
+//!
+//! The tests cover puns by value and by reference, values read from the head of bytes, rules,
+//! regions, walks, view enums and calls in `const`. Some tests need the `unstable` feature,
+//! because they use types whose layout Rust leaves to the compiler.
 
 use core::num::NonZero;
 
@@ -8,7 +12,7 @@ use puns::{
   pun, pun_mut, pun_ref, try_pun, try_pun_mut, try_pun_ref,
 };
 
-/// An enum of the default representation: the compiler chooses its size and its values.
+/// An enum without `repr`. The compiler chooses its size and the values of its discriminants.
 #[cfg(feature = "unstable")]
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
 enum Level {
@@ -32,7 +36,7 @@ enum Wide {
   B = 0xfffe,
 }
 
-/// A struct of the default representation: the compiler chooses the order of its fields.
+/// A struct without `repr`. The compiler chooses the order of its fields.
 #[cfg(feature = "unstable")]
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
 struct Rust {
@@ -42,7 +46,7 @@ struct Rust {
   bytes: [u8; 2],
 }
 
-/// An unsized struct with trailing padding: a value with one byte of `tail` is 8 bytes.
+/// An unsized struct with trailing padding. A value whose `tail` has one byte is 8 bytes long.
 #[derive(Pun, Debug, PartialEq)]
 #[repr(C)]
 struct Padded {
@@ -50,7 +54,7 @@ struct Padded {
   tail: [u8],
 }
 
-/// A count of elements, in a tuple struct.
+/// A tuple struct whose first field gives the length of its slice (`len = self.0 / 2`).
 #[derive(Pun)]
 #[repr(C)]
 struct List(u8, #[pun(len = self.0 / 2)] [u16le]);
@@ -82,8 +86,10 @@ fn by_value() {
   assert_eq!(try_pun::<u16, NonZero<u16>>(0), Err(Error::Validity));
 }
 
-/// The layouts that the compiler chose: the values of `Level`, the order of the fields of
-/// `Rust`, which Rust lets it choose otherwise (the `unstable` feature).
+/// Checks the layouts that the compiler chose for `Level` and `Rust`.
+///
+/// Rust leaves the values of `Level` and the order of the fields of `Rust` to the compiler. This
+/// test therefore needs the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
 fn default_representation() {
@@ -183,7 +189,8 @@ fn in_const() {
   assert_eq!(LIST.map(|(list, rest)| (list.1[0].get(), rest.len())), Ok((7, 1)));
 }
 
-/// A header, a body, and the sum of both: for a tail that is a slice or an array.
+/// A header byte, a body, and the 16-bit sum of the header and the body. The tail `T` is a slice
+/// or an array.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(sum16(0, size_of_val(self) - 2) == be(size_of_val(self) - 2, 2)))]
@@ -220,7 +227,8 @@ fn rules_on_sized_and_unsized() {
   assert_eq!(puns::sum16(&[0xff, 0xff, 0x00, 0x01, 0x80]), 0x8001);
 }
 
-/// What `&&` and `||` do not need may be out of the value.
+/// A struct whose rules name bytes past the end of some values. A byte that `&&` or `||` does not
+/// need to evaluate may be outside the value.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(self.0 != 7 || be(3, 2) == 0xcafe))]
@@ -243,14 +251,14 @@ fn what_is_not_needed_is_not_read() {
   assert!(!lazy(&[8]));
 }
 
-/// Messages that tell what they carry, and views of "one or the other".
+/// Messages that tell the type of what they carry, and a view enum that reads one of them.
 mod views {
   use puns::{
     Error, Pun, Tag,
     num::{u8c, u16be},
   };
 
-  /// The kind of a message, when what it carries is not known.
+  /// The kind of a message, when the type of what it carries is not known.
   #[derive(Pun, Debug, Copy, Clone, PartialEq, Eq)]
   #[repr(transparent)]
   pub struct Kind(pub u8);
@@ -311,8 +319,8 @@ mod views {
 mod walks {
   use puns::{Error, Pun, try_pun_ref};
 
-  /// "Type, length, value"s, down to the one of type 0, which is followed by a sum of what is
-  /// before: where it is depends on every length before it.
+  /// A version, then type, length and value entries up to a type of 0, then the 16-bit sum of the
+  /// bytes before that type. The position of the sum depends on every length before it.
   #[derive(Pun)]
   #[repr(C)]
   #[pun(assert({
@@ -325,7 +333,8 @@ mod walks {
     values: [u8],
   }
 
-  /// Choices, and names.
+  /// A kind, then a value of 4 bytes if the kind is 1 and of 2 bytes otherwise, that is not 0.
+  /// Its rule uses `if` expressions and `let` bindings.
   #[derive(Pun)]
   #[repr(C)]
   #[pun(assert({
@@ -385,8 +394,8 @@ mod walks {
   }
 }
 
-/// A signed `NonZero` is its integer without the bits of 0: every other bit pattern, the
-/// negative ones included, and `Option` of it is the integer.
+/// Checks that a signed `NonZero` accepts every bit pattern of its integer but 0, negative ones
+/// included, and that an `Option` of it has the same values as the integer.
 #[test]
 fn signed_non_zero() {
   let minus = NonZero::new(-1i32).unwrap();

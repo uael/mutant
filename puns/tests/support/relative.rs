@@ -1,27 +1,27 @@
-//! Self-relative pointers of the tests, and a way to build values that hold them.
+//! Self-relative pointers for the tests, and a builder of the values that hold them.
 //!
-//! They are declared through the public API of `puns` only, as a crate of its own would
-//! ([`puns::SelfRelative`], [`puns::self_relative!`]).
+//! The pointers are declared through the public API of `puns` only ([`puns::SelfRelative`] and
+//! [`puns::self_relative!`]), as another crate would declare them.
 //!
-//! The scheme, [`SCHEME`]: a pointer is an offset `O`, a signed integer of a given byte order
-//! ([`Offset`]: the numbers of `puns::num`, byte arrays of no alignment), from the address of the
-//! pointer to
+//! In the scheme [`SCHEME`], a pointer is an offset of type `O` from the address of the pointer.
+//! `O` is a signed integer of a given byte order ([`Offset`]). It is one of the numbers of
+//! `puns::num`, which are byte arrays without alignment. The offset leads to the following:
 //!
-//! - [`One<T, O>`]: one `T`, at an address aligned for it; [`Opt<T, O>`] is the same, or none
-//!   (zero);
-//! - [`Seq<T, O>`]: the first of a sequence of `T`, at an address that is a multiple of the
-//!   larger of the alignment of `T` and the width of `O`, whose length, an `O`, is right before
-//!   it;
-//! - [`Text<O>`]: the first byte of UTF-8, whose length, an `O`, is right before it.
+//! - For [`One<T, O>`], one `T`, at an address aligned for it. [`Opt<T, O>`] is the same, or null
+//!   if the offset is zero.
+//! - For [`Seq<T, O>`], the first element of a sequence of `T`, at an address that is a multiple
+//!   of the larger of the alignment of `T` and the width of `O`. The length, an `O`, is right
+//!   before that element.
+//! - For [`Text<O>`], the first byte of UTF-8 text. The length, an `O`, is right before that byte.
 //!
 //! A pointer is followed through the [`Region`] that holds it ([`Region::get`], [`Region::opt`],
-//! [`Region::seq`], [`Region::text`]), with the provenance of the whole buffer, never from its
-//! own address: so what is read through a view is sound under stacked borrows as well as tree
-//! borrows. A pointer that is not in the buffer of the region is refused (a panic).
+//! [`Region::seq`], [`Region::text`]). The read uses the provenance of the whole buffer, never the
+//! address of the pointer. What is read through a view is therefore sound under stacked borrows as
+//! well as under tree borrows. Following a pointer that is not in the buffer of the region panics.
 //!
-//! What `unsafe` code here assumes of the target is asserted where it is used: the alignment of
-//! what is put in a buffer (at most [`ALIGN`]); an offset is converted to and from `isize` by
-//! checked conversions (an `i64le` on a 32-bit target), and its byte order is its own.
+//! What the unsafe code here assumes of the target is asserted where it is used. What a buffer
+//! holds is aligned to at most [`ALIGN`]. An offset is converted to and from `isize` by checked
+//! conversions, as for an `i64le` on a 32-bit target, and it has its own byte order.
 
 use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr};
 
@@ -34,24 +34,26 @@ use puns::{
 /// The name of the scheme of these pointers.
 pub const SCHEME: &str = "puns tests: an offset to the target, a length before a sequence";
 
-/// The alignment of a buffer: the largest of what is put in one.
+/// The alignment of a buffer, which is the largest alignment of what is put in one.
 pub const ALIGN: usize = 16;
 
-/// An offset: a signed integer of a given byte order.
+/// The offset of a pointer, a signed integer of a given byte order.
 pub trait Offset: Pun + Copy + 'static {
-  /// Its byte order.
+  /// The byte order of the offset.
   const ENDIAN: Endian;
 
-  /// The integer that `n` is.
+  /// Returns the offset whose value is `n`.
   ///
   /// # Panics
-  /// If it does not hold `n`.
+  ///
+  /// Panics if the offset cannot hold `n`.
   fn new(n: isize) -> Self;
 
-  /// The integer of its bytes.
+  /// Returns the value of the offset.
   ///
   /// # Panics
-  /// If an `isize` does not hold it.
+  ///
+  /// Panics if an `isize` cannot hold the value.
   fn get(self) -> isize;
 }
 
@@ -82,10 +84,11 @@ offsets! {
 
 /// An offset of four bytes in little-endian byte order that is never zero.
 ///
-/// Its zero is a niche, as the one of a `NonZero`, so that `Option` of a pointer of it is the same
-/// pointer, `None` being the pointer of zeros (`puns::layout::Layout::nullable`, which
-/// `self_relative!` gives `Option`). Packed, of no alignment, as the other offsets (packing keeps the niche). For [`One`]
-/// only: a length can be zero.
+/// Its zero is a niche, as the zero of a `NonZero` is. An `Option` of a pointer with this offset
+/// is therefore the same pointer, and `None` is the pointer of zero bytes
+/// (`puns::layout::Layout::nullable`, which `self_relative!` gives `Option`). The offset is packed,
+/// so it has no alignment, as the other offsets, and packing keeps the niche. It is for [`One`]
+/// only, because a length can be zero.
 #[derive(Clone, Copy, Pun)]
 #[repr(C, packed)]
 pub struct Nz32le(core::num::NonZero<u32>);
@@ -109,8 +112,8 @@ macro_rules! pointer {
   ($(#[$doc:meta])* $name:ident [$($param:ident)?] $target:ty, $pointer:expr) => {
     $(#[$doc])*
     ///
-    /// While a value is built, its offset holds the position of its target in the buffer, which
-    /// [`Fix::fix`] replaces with the distance.
+    /// While a value is built, its offset holds the position of its target in the buffer.
+    /// [`Fix::fix`] replaces that position with the distance.
     #[repr(transparent)]
     pub struct $name<$($param,)? O = i32le> {
       offset: O,
@@ -132,7 +135,11 @@ macro_rules! pointer {
     puns::self_relative!(impl[$($param: Pun,)? O: Offset] $name<$($param,)? O>);
 
     impl<$($param,)? O: Offset> $name<$($param,)? O> {
-      /// A pointer that holds the position of its target, not yet the distance to it.
+      /// Returns a pointer that holds the position of its target, not yet the distance to it.
+      ///
+      /// # Panics
+      ///
+      /// Panics if an `isize` or an `O` cannot hold `position`.
       fn to(position: usize) -> Self {
         let position = isize::try_from(position).expect("a position that an `isize` holds");
         Self { offset: O::new(position), target: PhantomData }
@@ -163,7 +170,7 @@ pointer! {
 }
 
 pointer! {
-  /// A pointer to one `T`, or none: zero.
+  /// A pointer to one `T` that may be null. Its offset is zero when it is null.
   Opt[T] T, Pointer::one::<T>(SCHEME, size_of::<O>(), O::ENDIAN).or_null()
 }
 
@@ -173,19 +180,22 @@ pointer! {
 }
 
 pointer! {
-  /// A pointer to text.
+  /// A pointer to UTF-8 text.
   Text[] (), Pointer::text(SCHEME, size_of::<O>(), O::ENDIAN)
 }
 
-/// The alignment of the first element of a sequence of `T` whose length is an `O`.
+/// Returns the alignment of the first element of a sequence of `T` whose length is an `O`.
 const fn first<T, O>() -> usize {
   if align_of::<T>() > size_of::<O>() { align_of::<T>() } else { size_of::<O>() }
 }
 
 impl<T, O: Offset> One<T, O> {
-  /// A pointer of offset zero, which aims at its own address: at the bytes of its offset, all
-  /// zero. For a target that zeros are (a `u8`), which is then there (S3 of `SelfRelative`): a
-  /// pointer whose offset is zero, not null, which a pointer whose offset cannot be zero is not.
+  /// Returns a pointer of offset zero, which aims at its own address, at the zero bytes of its
+  /// offset.
+  ///
+  /// It is for a target of which zero bytes are a valid value, such as `u8`. That target is then
+  /// there, as the `# Safety` section of `SelfRelative` requires. The pointer has an offset of
+  /// zero but is not null. A pointer whose offset cannot be zero cannot be this pointer.
   #[must_use]
   pub fn here() -> Self {
     Self { offset: O::new(0), target: PhantomData }
@@ -193,7 +203,7 @@ impl<T, O: Offset> One<T, O> {
 }
 
 impl<T, O: Offset> Opt<T, O> {
-  /// No pointer.
+  /// Returns a null pointer.
   #[must_use]
   pub fn none() -> Self {
     Self { offset: O::new(0), target: PhantomData }
@@ -201,28 +211,33 @@ impl<T, O: Offset> Opt<T, O> {
 }
 
 impl<T> Opt<T> {
-  /// No pointer, in a constant.
+  /// A null pointer, for a constant.
   pub const NONE: Self = Self { offset: i32le::new(0), target: PhantomData };
 }
 
-/// A value that can be put in a buffer: the pointers it holds are made to aim at the positions
-/// that they hold, once its own is known.
+/// A value that can be put in a buffer.
+///
+/// Once the position of the value is known, the pointers that it holds are made to aim at the
+/// positions that they hold.
 ///
 /// # Safety
-/// `fix` calls `Fix::fix` for every pointer of the value, with the position of the pointer, and
-/// changes nothing else.
+///
+/// An implementation must guarantee that `fix` calls `Fix::fix` on every pointer of the value,
+/// with the position of the pointer, and changes nothing else. Each type that holds pointers
+/// implements this trait by hand.
 pub unsafe trait Fix: Sized {
-  /// Makes the pointers of the value aim where they should, the value being at `at`.
+  /// Makes the pointers of the value aim at their targets, the value being at the position `at`.
   fn fix(&mut self, at: usize);
 }
 
-/// The address of a reference, as an integer: what a field is, in its value.
+/// Returns the address of `value` as an integer. The difference of two addresses gives the offset
+/// of a field in its value.
 #[must_use]
 pub fn addr<T: ?Sized>(value: &T) -> usize {
   ptr::from_ref(value).addr()
 }
 
-/// Fixes the `field` of a value at `at` whose address is `whole`.
+/// Fixes `field`, a field of the value at the position `at` whose address is `whole`.
 pub fn field<F: Fix>(whole: usize, at: usize, field: &mut F) {
   let offset = addr(field) - whole;
   field.fix(at + offset);
@@ -262,15 +277,15 @@ unsafe impl<T: Fix, const N: usize> Fix for [T; N] {
   }
 }
 
-/// A block of a buffer, of the alignment of every buffer.
+/// A block of a buffer, with the alignment of every buffer.
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
 struct Block([MaybeUninit<u8>; ALIGN]);
 
 const _: () = assert!(align_of::<Block>() == ALIGN && size_of::<Block>() == ALIGN);
 
-/// A buffer that values are put in, each at a position aligned for it, before the values that
-/// point to them: what a value points to is put first.
+/// A buffer that values are put in, each at a position aligned for it. What a value points to is
+/// put before the value.
 pub struct Builder {
   blocks: Vec<Block>,
   len: usize,
@@ -283,17 +298,24 @@ impl Default for Builder {
 }
 
 impl Builder {
-  /// An empty buffer. Nothing is put at 0, which is a null `Opt` while a value is built.
+  /// Returns an empty buffer. Nothing is put at position 0, which is the position that a null
+  /// `Opt` holds while a value is built.
   #[must_use]
   pub const fn new() -> Self {
     Self { blocks: Vec::new(), len: 1 }
   }
 
-  /// `size` bytes at a position that is a multiple of `align`, after `before` more.
+  /// Reserves `size` bytes at a position that is a multiple of `align`, with `before` more bytes
+  /// before them, and returns that position.
   ///
-  /// A byte that nothing writes follows: what reads past a value reads it (which Miri, and the
-  /// oracle of the model check, report), and a pointer, which is put after what it aims at, never
-  /// aims at itself (even at an empty sequence), so that it is zero only if null.
+  /// A byte that nothing writes follows the reserved bytes. A read past a value reads that byte,
+  /// which Miri and the oracle of the model check report. A pointer is put after what it aims at,
+  /// so it never aims at itself, even at an empty sequence. Its offset is therefore zero only if
+  /// it is null.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `align` is not a power of two or is larger than [`ALIGN`].
   fn reserve(&mut self, before: usize, size: usize, align: usize) -> usize {
     // What the buffer holds is at most as aligned as the buffer.
     assert!(align.is_power_of_two() && align <= ALIGN, "a buffer is aligned to {ALIGN}");
@@ -303,12 +325,12 @@ impl Builder {
     at
   }
 
-  /// The start of the buffer, for writes.
+  /// Returns the start of the buffer, for writes.
   const fn base(&mut self) -> *mut u8 {
     self.blocks.as_mut_ptr().cast()
   }
 
-  /// Puts `value`, and returns its position.
+  /// Puts `value` in the buffer, fixes its pointers, and returns its position.
   fn put<T: Fix>(&mut self, mut value: T) -> usize {
     let at = self.reserve(0, size_of::<T>(), align_of::<T>());
     value.fix(at);
@@ -319,7 +341,11 @@ impl Builder {
     at
   }
 
-  /// Writes the length `len` right before `at`.
+  /// Writes the length `len` right before the position `at`.
+  ///
+  /// # Panics
+  ///
+  /// Panics if an `O` cannot hold `len`.
   fn length<O: Offset>(&mut self, at: usize, len: usize) {
     let len = O::new(isize::try_from(len).expect("a length that an `isize` holds"));
     // SAFETY: `at - size_of::<O>()..at` is in the buffer (`reserve` left that much before
@@ -332,13 +358,13 @@ impl Builder {
     One::to(self.put(value))
   }
 
-  /// Puts `value`, if there is one, and returns a pointer to it, or none.
+  /// Puts `value`, if there is one, and returns a pointer to it, or a null pointer.
   pub fn opt<T: Fix, O: Offset>(&mut self, value: Option<T>) -> Opt<T, O> {
     value.map_or_else(Opt::none, |value| Opt::to(self.put(value)))
   }
 
-  /// Puts the `values`, one after the other, and their number before them; returns a pointer to
-  /// the first.
+  /// Puts the `values` one after the other, with their number before them, and returns a pointer
+  /// to the first.
   pub fn seq<T: Fix, O: Offset>(&mut self, values: impl IntoIterator<Item = T>) -> Seq<T, O> {
     let values: Vec<T> = values.into_iter().collect();
     let size = values.len() * size_of::<T>();
@@ -354,7 +380,7 @@ impl Builder {
     Seq::to(at)
   }
 
-  /// Puts the bytes of `text`, and their number before them; returns a pointer to the first.
+  /// Puts the bytes of `text`, with their number before them, and returns a pointer to the first.
   pub fn text<O: Offset>(&mut self, text: &str) -> Text<O> {
     let at = self.reserve(size_of::<O>(), text.len(), 1);
     self.length::<O>(at, text.len());
@@ -364,7 +390,7 @@ impl Builder {
   }
 }
 
-/// A buffer whose root is a `T`: what [`Builder`] made.
+/// A buffer made by a [`Builder`], whose root is a `T`.
 pub struct Region<T> {
   blocks: Vec<Block>,
   len: usize,
@@ -373,12 +399,17 @@ pub struct Region<T> {
 }
 
 impl<T: Fix> Region<T> {
-  /// Puts `root` in what `builder` holds: the region of the value.
+  /// Puts `root` in the buffer of `builder`, and returns the region of the value.
   ///
   /// # Safety
-  /// Every pointer of `root`, and of what was put in `builder`, was made by `builder` (`one`,
-  /// `opt`, `seq`, `text`), with what it aims at, and is in one value only, or is `One::here` of
-  /// a target that zeros are; every value that holds pointers implements [`Fix`] as it says.
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - Every pointer of `root`, and of what was put in `builder`, was made by `builder` (`one`,
+  ///   `opt`, `seq` or `text`) with what it aims at, or is `One::here` of a target of which zero
+  ///   bytes are a valid value.
+  /// - Every such pointer is in one value only.
+  /// - Every value that holds pointers implements [`Fix`] as its `# Safety` section requires.
   pub unsafe fn new(mut builder: Builder, root: T) -> Self {
     let root = builder.put(root);
     Self { blocks: builder.blocks, len: builder.len, root, value: PhantomData }
@@ -386,44 +417,50 @@ impl<T: Fix> Region<T> {
 }
 
 impl<T> Region<T> {
-  /// The start of the buffer, with the provenance of all of it.
+  /// Returns the start of the buffer, with the provenance of all of it.
   const fn base(&self) -> *const u8 {
     self.blocks.as_ptr().cast()
   }
 
-  /// The bytes of the buffer, some of which are not initialized (padding, gaps).
+  /// Returns the bytes of the buffer, some of which are uninitialized (padding, gaps).
   #[must_use]
   pub const fn bytes(&self) -> &[MaybeUninit<u8>] {
     // SAFETY: `len` bytes of the buffer, of any value; nothing writes to them.
     unsafe { core::slice::from_raw_parts(self.base().cast(), self.len) }
   }
 
-  /// The position of the root.
+  /// Returns the position of the root.
   #[must_use]
   pub const fn root(&self) -> usize {
     self.root
   }
 
-  /// The position in the buffer of the pointer `pointer`, and its offset.
+  /// Returns the position of `pointer` in the buffer, and the value of `offset`.
   ///
   /// # Panics
-  /// If it is not in the buffer.
+  ///
+  /// Panics if `pointer` is not in the buffer, or if an `isize` cannot hold `offset`.
   fn place<P, O: Offset>(&self, pointer: &P, offset: O) -> (usize, isize) {
     let here = addr(pointer).wrapping_sub(self.base().addr());
     assert!(here + size_of::<P>() <= self.len, "a pointer of another buffer");
     (here, offset.get())
   }
 
-  /// The position of a target of `size` bytes at `offset` from `here`.
+  /// Returns the position of a target of `size` bytes at `offset` from the position `here`.
   ///
   /// # Panics
-  /// If it is not in the buffer.
+  ///
+  /// Panics if the target is not in the buffer.
   fn aim(&self, here: usize, offset: isize, size: usize) -> usize {
     let to = here.checked_add_signed(offset).filter(|to| to + size <= self.len);
     to.expect("a pointer that aims in its buffer")
   }
 
-  /// The length right before the `O` at `to`.
+  /// Returns the length that the `O` right before the position `to` holds.
+  ///
+  /// # Panics
+  ///
+  /// Panics if that `O` starts before the buffer, or if its value is not a length.
   fn length<O: Offset>(&self, to: usize) -> usize {
     let at = to.checked_sub(size_of::<O>()).expect("a length in the buffer");
     // SAFETY: in the buffer (`to` is), where the builder wrote a length (the scheme, which
@@ -432,10 +469,11 @@ impl<T> Region<T> {
     usize::try_from(len.get()).expect("a length")
   }
 
-  /// What `pointer` aims at.
+  /// Returns what `pointer` aims at.
   ///
   /// # Panics
-  /// If the pointer is not in this region.
+  ///
+  /// Panics if the pointer is not in this region, or if what it aims at is not in the buffer.
   pub fn get<'a, U, O: Offset>(&'a self, pointer: &'a One<U, O>) -> &'a U {
     let (here, offset) = self.place(pointer, pointer.offset);
     let to = self.aim(here, offset, size_of::<U>());
@@ -445,19 +483,21 @@ impl<T> Region<T> {
     unsafe { &*self.base().add(to).cast::<U>() }
   }
 
-  /// What `pointer`, `Option` of a pointer, aims at if it is one.
+  /// Returns what `pointer`, an `Option` of a pointer, aims at, if it is `Some`.
   ///
   /// # Panics
-  /// If the pointer is not in this region.
+  ///
+  /// Panics if the pointer is not in this region, or if what it aims at is not in the buffer.
   #[must_use]
   pub fn option<'a, U, O: Offset>(&'a self, pointer: Option<&'a One<U, O>>) -> Option<&'a U> {
     pointer.map(|pointer| self.get(pointer))
   }
 
-  /// What `pointer` aims at, if anything.
+  /// Returns what `pointer` aims at, or `None` if it is null.
   ///
   /// # Panics
-  /// If the pointer is not in this region.
+  ///
+  /// Panics if the pointer is not in this region, or if what it aims at is not in the buffer.
   pub fn opt<'a, U, O: Offset>(&'a self, pointer: &'a Opt<U, O>) -> Option<&'a U> {
     let (here, offset) = self.place(pointer, pointer.offset);
     if offset == 0 {
@@ -468,10 +508,11 @@ impl<T> Region<T> {
     Some(unsafe { &*self.base().add(to).cast::<U>() })
   }
 
-  /// The sequence that `pointer` aims at.
+  /// Returns the sequence that `pointer` aims at.
   ///
   /// # Panics
-  /// If the pointer is not in this region.
+  ///
+  /// Panics if the pointer is not in this region, or if what it aims at is not in the buffer.
   pub fn seq<'a, U, O: Offset>(&'a self, pointer: &'a Seq<U, O>) -> &'a [U] {
     let (here, offset) = self.place(pointer, pointer.offset);
     let to = self.aim(here, offset, 0);
@@ -481,10 +522,11 @@ impl<T> Region<T> {
     unsafe { core::slice::from_raw_parts(self.base().add(to).cast::<U>(), len) }
   }
 
-  /// The text that `pointer` aims at.
+  /// Returns the text that `pointer` aims at.
   ///
   /// # Panics
-  /// If the pointer is not in this region.
+  ///
+  /// Panics if the pointer is not in this region, or if what it aims at is not in the buffer.
   pub fn text<'a, O: Offset>(&'a self, pointer: &'a Text<O>) -> &'a str {
     let (here, offset) = self.place(pointer, pointer.offset);
     let to = self.aim(here, offset, 0);

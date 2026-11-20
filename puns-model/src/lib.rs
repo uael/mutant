@@ -1,29 +1,45 @@
-//! Model check of the analysis of `puns` against an oracle that does not use it.
+//! A model check of the analysis of `puns`, against oracles that do not use it.
 //!
-//! For each type, [`Oracle::check`] tells whatever some bytes (`None`: uninitialized) are a valid
-//! value, written by hand from what the language and the documentation of the type say, with the
-//! offsets that the compiler gives (`offset_of!`, addresses of the fields of a value). The valid
-//! values of a type are found by enumeration ([`values`]), and every verdict of the library on a
-//! pair of types is compared with what they imply ([`check_pair`]).
+//! For each type of the model, [`Oracle::check`] decides whether some bytes are a [valid] value of
+//! that type. Each oracle is written by hand from what the language and the documentation of the
+//! type say. It takes the offsets of the fields from the compiler, through `offset_of!` or through
+//! the addresses of the fields of a value. An uninitialized byte is `None`.
 //!
-//! The parts of a value are checked the same way ([`check_part`]), for targets of any size not
-//! greater than the source: the first bytes (`head`, `head_ref`) and the last (`tail`,
-//! `tail_ref`) against the oracle of the target at that offset, the bytes and the address that
-//! the functions give at run time, and a `&mut` to a part (`head_mut`, `tail_mut`) by writing
-//! every value of the target into every value of the source: what results must be a valid
-//! source, and must still meet the requirements of the source if it did and if what was written
-//! meets those of the target.
+//! [`values`] enumerates the valid values of a type over an alphabet of bytes ([`alphabet`]).
+//! [`check_pair`] compares every verdict of the library on a pair of types with what these values
+//! imply.
 //!
-//! What a value of a struct is known to be does not include what `#[pun(valid(..))]` or a rule
-//! requires: safe code can write anything to a plain field. The oracle has two modes for that.
+//! [`check_part`] checks the parts of a value in the same way, for every target that is not larger
+//! than the source:
 //!
-//! A requirement of the target that the library does not check is right only where the
-//! requirements of the source imply it: then a source that met its own meets it (and one that did
-//! not is not something the library promised anything of). The oracle finds this by itself, one
-//! requirement at a time ([`require`]): a requirement of the target is implied if every value of
-//! the source that meets the requirements of the source meets it. This is what the library proves
-//! from the same rules of the source in a struct of the same extent at the same place, decided
-//! without that rule: any other requirement left unchecked is reported.
+//! - The first bytes (`head`, `head_ref`) and the last bytes (`tail`, `tail_ref`) are checked
+//!   against the oracle of the target at their offset.
+//! - The bytes and the address that these functions return at run time are compared with those of
+//!   the source.
+//! - A `&mut` to a part (`head_mut`, `tail_mut`) is checked by writing every value of the target
+//!   into every value of the source. The result must be a valid source. If the source met its
+//!   requirements and the value written meets those of the target, the result must still meet the
+//!   requirements of the source.
+//!
+//! # Requirements
+//!
+//! A value that safe code holds need not meet what `#[pun(valid(..))]` or a rule requires, because
+//! safe code can write any value of its type to a field. The oracles therefore have two modes.
+//! Without `target`, an oracle decides only what the type system guarantees. With `target`, the
+//! requirements count too.
+//!
+//! The library may leave a requirement of the target unchecked only if the requirements of the
+//! source imply it. A source that meets its own requirements then meets it, and the library
+//! promises nothing of a source that does not. The model finds these implications by itself, one
+//! requirement at a time ([`require`]). A requirement of the target is implied if every value of
+//! the source that meets the requirements of the source meets it.
+//!
+//! The library proves such an implication only from the same rules of the source, in a struct of
+//! the same extent at the same place. The model does not use that test. It reports every
+//! requirement that the library leaves unchecked and that the requirements of the source do not
+//! imply.
+//!
+//! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 
 pub mod pointers;
 // The self-relative pointers of the tests of `puns`, declared through its public API only.
@@ -39,30 +55,42 @@ use puns::{
   hook::{self, Parts, Verdict},
 };
 
-/// Bytes of a value, `None` where they are uninitialized.
+/// The bytes of a value, with `None` for each uninitialized byte.
 pub type Bytes = [Option<u8>];
 
-/// Whatever the value was decided without reading an uninitialized byte.
+/// Whether some bytes are a valid value, or [`Uninit`] if the decision reads an uninitialized
+/// byte.
 pub type Valid = Result<bool, Uninit>;
 
+/// The error of an oracle whose decision reads an uninitialized byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Uninit;
 
-/// What the bytes of a type must be.
+/// An oracle of the valid values of a type, written without the analysis of `puns`.
 pub trait Oracle: Pun + Copy + 'static {
-  /// Whatever `b[off..off + size_of::<Self>()]` is a valid value. With `target`, requirements
-  /// (`valid(..)`, rules) count; without, only what the type system guarantees. Every byte that is
-  /// looked at is set in `reads`.
+  /// Returns whether `b[off..off + size_of::<Self>()]` is a valid value of `Self`.
+  ///
+  /// With `target`, the requirements of the type count (`valid(..)`, rules). Without it, only what
+  /// the type system guarantees counts. The oracle sets `reads[i]` for every byte `b[i]` that it
+  /// looks at, and leaves the other elements of `reads` unchanged.
   ///
   /// # Errors
-  /// [`Uninit`] if what decides is an uninitialized byte.
+  ///
+  /// Returns [`Uninit`] if the decision depends on an uninitialized byte.
   fn check(b: &Bytes, off: usize, reads: &mut [bool], target: bool) -> Valid;
 }
 
-/// Read the integer of `size` bytes at `off`.
+/// Reads the unsigned integer of `size` bytes at `off`, least significant byte first if `little`.
+///
+/// It marks the `size` bytes as read in `reads`, whether they are initialized or not.
 ///
 /// # Errors
-/// [`Uninit`] if one of them is uninitialized.
+///
+/// Returns [`Uninit`] if one of the bytes is uninitialized.
+///
+/// # Panics
+///
+/// Panics if `off + size` is greater than the length of `b` or of `reads`.
 pub fn int(
   b: &Bytes,
   off: usize,
@@ -83,25 +111,30 @@ pub fn int(
   if uninit { Err(Uninit) } else { Ok(value) }
 }
 
+/// Whether the target is little-endian, the byte order in which the oracles read native integers.
 pub const NATIVE_LITTLE: bool = cfg!(target_endian = "little");
 
-/// A requirement of a value: where it is in the value, what it is, and whatever it holds.
+/// A requirement of a value: its offset in the value, its name, and whether it holds.
 type Requirement = (usize, &'static str, Valid);
 
 thread_local! {
-  /// The requirements that [`require`] records, while [`requirements`] asks for them.
+  /// The requirements that [`require`] records, or `None` when nothing records them.
+  ///
+  /// [`requirements`] sets it to `Some` while it runs an oracle.
   static REQUIRED: std::cell::RefCell<Option<Vec<Requirement>>> =
     const { std::cell::RefCell::new(None) };
 }
 
-/// A requirement of a value that the type system does not guarantee: `holds`, which is returned.
+/// Records a requirement of a value that the type system does not guarantee, and returns `holds`.
 ///
-/// It is a `valid(..)`, a rule, what a scalar that may be uninitialized must be. It is recorded
-/// with where it is (`off`) and what it is (`what`, the same for the same requirement wherever it
-/// is).
+/// A requirement is a `valid(..)`, a rule, or what a target requires of a scalar that may be
+/// uninitialized. `off` is its offset in the value. `what` names it, and must be the same for the
+/// same requirement at every offset. The requirement is recorded only while `requirements`
+/// collects them.
 ///
 /// # Errors
-/// `holds`, if it is [`Uninit`].
+///
+/// Returns [`Uninit`] if `holds` is [`Uninit`].
 pub fn require(off: usize, what: &'static str, holds: Valid) -> Valid {
   REQUIRED.with(|required| {
     if let Some(required) = required.borrow_mut().as_mut() {
@@ -111,13 +144,15 @@ pub fn require(off: usize, what: &'static str, holds: Valid) -> Valid {
   holds
 }
 
-/// What `holds` is, as one requirement (`off`, `what`), whatever it requires within.
+/// Runs `holds`, and records its result as one requirement named `what` at `off`.
 ///
-/// The requirements that it records are not recorded, as they are not requirements of the value
-/// on their own (the fields of a union, of which one must be valid).
+/// The requirements that `holds` records itself are discarded, because none of them is a
+/// requirement of the value on its own. For example, a union requires that one of its fields is
+/// valid, not that each field meets its requirements.
 ///
 /// # Errors
-/// What `holds` returns, if it is [`Uninit`].
+///
+/// Returns [`Uninit`] if `holds` returns [`Uninit`].
 pub fn require_whole(off: usize, what: &'static str, holds: impl FnOnce() -> Valid) -> Valid {
   let outer = REQUIRED.with(|required| required.borrow_mut().take());
   let valid = holds();
@@ -125,7 +160,10 @@ pub fn require_whole(off: usize, what: &'static str, holds: impl FnOnce() -> Val
   require(off, what, valid)
 }
 
-/// The requirements of `p[off..off + size_of::<D>()]` as a `D`, each with where it is in the `D`.
+/// Returns the requirements of `p[off..off + size_of::<D>()]` as a `D`, each with its offset in the
+/// `D`.
+///
+/// A requirement in a variant that the bytes are not is not returned.
 fn requirements<D: Oracle>(p: &Bytes, off: usize) -> Vec<Requirement> {
   let p = &p[off..off + size_of::<D>()];
   let mut reads = vec![false; p.len()];
@@ -136,10 +174,14 @@ fn requirements<D: Oracle>(p: &Bytes, off: usize) -> Vec<Requirement> {
     .unwrap_or_default()
 }
 
-/// For each value of the source, whatever every requirement of the `D` at `off` that it does not
-/// meet is implied by the requirements of the source: met by every value of the source that meets
-/// those (a requirement that is not there in a value, in a variant that it is not, is met). Then
-/// the library may leave them unchecked: a source that does not meet them did not meet its own.
+/// Returns, for each value of `source`, whether the requirements of the `D` at `off` that the value
+/// does not meet are all implied by the requirements of `S`.
+///
+/// A requirement is identified by its offset and its name. It is implied if every value of
+/// `source` that meets the requirements of `S` meets it. A value that does not have the
+/// requirement, because it is another variant, meets it. The library may leave an implied
+/// requirement unchecked, because a source that does not meet it does not meet its own
+/// requirements.
 fn implied<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Vec<bool> {
   let required: Vec<Vec<Requirement>> = source.iter().map(|p| requirements::<D>(p, off)).collect();
   let mut broken = std::collections::BTreeSet::<(usize, &'static str)>::new();
@@ -160,10 +202,11 @@ fn implied<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Vec<
     .collect()
 }
 
-/// All the fields of a struct: valid if each is, an uninitialized byte under any is an error.
+/// Combines the results of the fields of a struct: valid if every field is valid.
 ///
 /// # Errors
-/// [`Uninit`] if one of `results` is.
+///
+/// Returns [`Uninit`] if one of `results` is [`Uninit`], even if another field is invalid.
 pub fn all(results: &[Valid]) -> Valid {
   if results.iter().any(std::result::Result::is_err) {
     return Err(Uninit);
@@ -215,8 +258,11 @@ scalar_oracle! {
   u32be => |_v| true, true;
 }
 
-/// Two niches in one byte, after the values of the `bool` (`Some(None)`, 2) and where `rustc`
-/// puts the other, read from a value of it (below the valid values today: 255).
+/// The oracle of two niches in one byte.
+///
+/// `Some(None)` is 2, the first value after those of the `bool`. `rustc` chooses the byte of
+/// `None`, so the oracle reads it from a value of `None`. The current `rustc` uses 255, the value
+/// below 0 when the byte wraps.
 impl Oracle for Option<Option<bool>> {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
     let v = int(b, off, 1, true, reads)?;
@@ -227,7 +273,7 @@ impl Oracle for Option<Option<bool>> {
   }
 }
 
-/// A niche in a `bool`: `None` is 2.
+/// The oracle of a niche in a `bool`, where `None` is 2.
 impl Oracle for Option<bool> {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
     Ok(int(b, off, 1, true, reads)? <= 2)
@@ -328,8 +374,13 @@ impl<A: Oracle, B: Oracle, C: Oracle, D: Oracle> Oracle for (A, B, C, D) {
   }
 }
 
-/// The byte values that the enumeration of the values of a type of `size` bytes takes for each
-/// byte: all of them up to 2 bytes, else the bounds of the ranges of the types of the model.
+/// Returns the values that each byte takes in the enumeration of the values of a type of `size`
+/// bytes.
+///
+/// Natively, the alphabet is every byte for a type of up to 2 bytes. For a larger type, it is the
+/// bounds of the ranges of the types of the model. Under Miri, it is a few bytes that tell the
+/// valid values of the pairs of its sample from the invalid ones. The alphabet always ends with
+/// `None`, an uninitialized byte.
 pub fn alphabet(size: usize) -> Vec<Option<u8>> {
   let bytes: Vec<u8> = match size {
     // Miri executes the code (an interpreter is some thousand times slower): just what tells the
@@ -350,13 +401,13 @@ pub fn alphabet(size: usize) -> Vec<Option<u8>> {
   alphabet
 }
 
-/// Every pattern of `size` bytes over the alphabet.
+/// Returns every pattern of `size` bytes over the alphabet of a type of `size` bytes.
 #[must_use]
 pub fn patterns(size: usize) -> Vec<Vec<Option<u8>>> {
   patterns_over(size, size)
 }
 
-/// Every pattern of `size` bytes over the alphabet of values of `of` bytes.
+/// Returns every pattern of `size` bytes over the alphabet of a type of `of` bytes.
 #[must_use]
 pub fn patterns_over(size: usize, of: usize) -> Vec<Vec<Option<u8>>> {
   let alphabet = alphabet(of);
@@ -375,14 +426,17 @@ pub fn patterns_over(size: usize, of: usize) -> Vec<Vec<Option<u8>>> {
   out
 }
 
-/// The values of `T` (as a source: what safe code may hold), over the alphabet: the patterns that
-/// are valid and that are uninitialized wherever they are not looked at (padding).
+/// Returns the values of `T` as a source, over the alphabet of a type of its size.
+///
+/// The values of a source are what safe code may hold, so requirements do not count. A value is a
+/// pattern that the oracle of `T` accepts without `target`. Its bytes that the oracle does not
+/// read are padding, and are uninitialized in the pattern.
 #[must_use]
 pub fn values<T: Oracle>() -> Vec<Vec<Option<u8>>> {
   values_over::<T>(size_of::<T>())
 }
 
-/// The values of `T` over the alphabet of values of `of` bytes.
+/// Returns the values of `T` as a source, over the alphabet of a type of `of` bytes.
 #[must_use]
 pub fn values_over<T: Oracle>(of: usize) -> Vec<Vec<Option<u8>>> {
   let size = size_of::<T>();
@@ -395,7 +449,11 @@ pub fn values_over<T: Oracle>(of: usize) -> Vec<Vec<Option<u8>>> {
     .collect()
 }
 
-/// A `T` made of `bytes`, which the oracle says are a valid `T`.
+/// Returns a `T` made of `bytes`, leaving the `None` bytes uninitialized.
+///
+/// This function is safe to call, but it assumes that `bytes` has `size_of::<T>()` elements and
+/// that the oracle of `T` accepts them as a source. A wrong oracle makes it return an invalid `T`,
+/// which is undefined behavior that Miri reports.
 #[must_use]
 pub fn make<T: Oracle>(bytes: &Bytes) -> T {
   let mut value = MaybeUninit::<T>::uninit();
@@ -410,7 +468,11 @@ pub fn make<T: Oracle>(bytes: &Bytes) -> T {
   unsafe { value.assume_init() }
 }
 
-/// The bytes of a value, as the oracle sees them.
+/// Returns the bytes of `value` that the oracle of `T` reads, with `None` for every other byte.
+///
+/// Which bytes the oracle reads depends on the value, for example on the tag of an enum. The
+/// function therefore reads the bytes of `value` in rounds, only those that the oracle has read so
+/// far, until a round reads no new byte. If the oracle is right, no byte that it reads is padding.
 pub fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
   let size = size_of::<T>();
   let mut reads = vec![false; size];
@@ -433,35 +495,52 @@ pub fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
   }
 }
 
-/// What the library did wrong, or did not do as well as it could.
+/// The findings of a model check: what the library did wrong, and what it did less well than it
+/// could.
 #[derive(Default)]
 pub struct Report {
+  /// The number of pairs of types whose verdicts were checked ([`check_pair`]).
   pub pairs: usize,
-  /// Pairs whose parts (`head`, `tail` and their `_ref` and `_mut` forms) were checked.
+  /// The number of pairs whose parts were checked (`head`, `tail` and their `_ref` and `_mut`
+  /// forms, [`check_part`]).
   pub parts: usize,
+  /// The number of values of sources that were enumerated.
   pub values: usize,
+  /// The number of conversions run at run time.
   pub conversions: usize,
-  /// Soundness: a verdict that lets an invalid value through.
+  /// The unsound verdicts. Each lets safe code make an invalid value or read padding.
   pub unsound: Vec<String>,
-  /// A run-time check that rejects a valid value, or a verdict that contradicts the truth in a
-  /// way that is not unsound.
+  /// The verdicts that contradict the oracle without being unsound. For example, a run-time check
+  /// rejects a valid value, or a requirement of the target that the source does not imply is left
+  /// unchecked.
   pub incorrect: Vec<String>,
-  /// Valid conversions rejected, or demoted to run-time checks, by cause.
+  /// The imprecise verdicts, by cause. Each is a valid conversion that is refused, or that is
+  /// checked at run time while it could be proven.
   pub imprecise: BTreeMap<String, Vec<String>>,
-  /// How the library classified the pairs.
+  /// The number of pairs in each class of verdict.
   pub classes: BTreeMap<String, usize>,
-  /// View enums checked (`views::check_view`), and how many of their variants have a base.
+  /// The number of view enums checked ([`views::check_view`]).
   pub views: usize,
+  /// The number of variants of these view enums that have a base.
   pub view_bases: usize,
 }
 
+/// The report of the running process, which every check of every test adds to.
+///
+/// [`finish`] takes it. Tests that run in parallel share it.
 pub static REPORT: Mutex<Option<Report>> = Mutex::new(None);
 
+/// Adds to [`REPORT`] with `f`, creating it if it is `None`.
+///
+/// # Panics
+///
+/// Panics if [`REPORT`] is poisoned.
 fn record(f: impl FnOnce(&mut Report)) {
   let mut report = REPORT.lock().unwrap();
   f(report.get_or_insert_with(Report::default));
 }
 
+/// Formats bytes in hexadecimal, with `__` for an uninitialized byte.
 fn show(p: &Bytes) -> String {
   let mut s = String::from("[");
   for (i, b) in p.iter().enumerate() {
@@ -477,6 +556,7 @@ fn show(p: &Bytes) -> String {
   s
 }
 
+/// Returns the name of `T` without the paths of the crates that the model uses.
 pub(crate) fn name<T: ?Sized>() -> String {
   std::any::type_name::<T>()
     .replace("puns_model::", "")
@@ -487,19 +567,21 @@ pub(crate) fn name<T: ?Sized>() -> String {
     .replace("core::marker::", "")
 }
 
-/// What a pattern is for a type: valid for what the type system guarantees (`hard`), and for what
-/// it requires on top (`soft`: `valid(..)`, rules).
+/// What the oracle of a type says of a pattern, in its two modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Truth {
+  /// Whether the pattern is valid for what the type system guarantees.
   hard: Valid,
+  /// Whether the pattern is also valid for what the type requires (`valid(..)`, rules).
   soft: Valid,
 }
 
+/// Returns what the oracle of `D` says of the first `size_of::<D>()` bytes of `p`.
 fn truth<D: Oracle>(p: &Bytes) -> Truth {
   truth_at::<D>(p, 0)
 }
 
-/// What `p[off..off + size_of::<D>()]` is for `D`.
+/// Returns what the oracle of `D` says of `p[off..off + size_of::<D>()]`.
 fn truth_at<D: Oracle>(p: &Bytes, off: usize) -> Truth {
   let p = &p[off..off + size_of::<D>()];
   let mut reads = vec![false; p.len()];
@@ -508,15 +590,21 @@ fn truth_at<D: Oracle>(p: &Bytes, off: usize) -> Truth {
   Truth { hard, soft }
 }
 
-/// Compare what the library says of `S -> D` with the truth. `limit` bounds the number of values
-/// of the source that are converted at run time (all of them with `usize::MAX`).
+/// Checks the verdict of the library on `S -> D` against the oracles, and records the findings in
+/// [`REPORT`].
 ///
-/// A requirement of the target (`valid(..)`, a rule) that the library does not check is not
-/// unsound, and it is by design when the source has the same requirement: it is then only
-/// counted. Anything that lets a value through that the type system does not allow is unsound.
+/// At most `limit` values of the source are converted at run time. With `usize::MAX`, all of them
+/// are.
+///
+/// A verdict is unsound if it lets through a value that the type system does not allow, or if it
+/// reads padding. A requirement of the target (`valid(..)`, a rule) that the library leaves
+/// unchecked is not unsound. It is correct if the requirements of the source imply it, and
+/// incorrect otherwise.
 ///
 /// # Panics
-/// If a conversion that the verdict says compiles does not, or if the report is poisoned.
+///
+/// Panics if a conversion that the verdict says compiles does not compile, or if [`REPORT`] is
+/// poisoned.
 pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
   let v: Verdict = const { hook::verdict::<S, D>() };
   let pair = format!("{} -> {}", name::<S>(), name::<D>());
@@ -703,18 +791,22 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
   });
 }
 
-/// What may go wrong when anything is written through a `&mut D` to the bytes `off..` of a
-/// source: a source that is not valid any more (`hard`), or one that met its requirements and
-/// does not any more although what was written meets those of `D` (`soft`: a rule or a
-/// `valid(..)` of the source that depends on the bytes), with an example of each.
+/// What can go wrong when a value is written through a `&mut D` to the bytes `off..` of a source,
+/// with an example of each failure.
 struct Writes {
+  /// A write that leaves a source that is not valid.
   hard: Option<String>,
+  /// A write of a `D` that meets its requirements, to a source that met its own, that leaves a
+  /// source that does not meet them. A rule or a `valid(..)` of the source that depends on the
+  /// bytes written is such a requirement.
   soft: Option<String>,
 }
 
-/// Write every value of `D` (over the alphabet of the source) into the bytes `off..` of every
-/// value of `S` (what is outside of those bytes, once each), and judge the result with the
-/// oracle of `S`.
+/// Writes every value of `D` into the bytes `off..` of every value of `source`, and judges each
+/// result with the oracle of `S`.
+///
+/// The values of `D` are those over the alphabet of the source. Sources that differ only in the
+/// bytes written are tried once.
 fn writes<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Writes {
   let (ss, ds) = (size_of::<S>(), size_of::<D>());
   // What a source is outside of the bytes, and whatever one of those sources meets its
@@ -753,24 +845,30 @@ fn writes<S: Oracle, D: Oracle>(source: &[Vec<Option<u8>>], off: usize) -> Write
   Writes { hard, soft }
 }
 
-/// The offset of `part` in `whole`.
+/// Returns the offset of `part` in `whole`.
+///
+/// # Panics
+///
+/// Panics if `part` starts before `whole` and overflow checks are enabled.
 fn offset_in<S, D: ?Sized>(whole: &S, part: &D) -> usize {
   std::ptr::from_ref(part).cast::<u8>().addr() - std::ptr::from_ref(whole).cast::<u8>().addr()
 }
 
-/// Compare what the library says of the parts of `S` as a `D` with the truth.
+/// Checks the verdicts of the library on the parts of `S` as a `D` against the oracles, and records
+/// the findings in [`REPORT`].
 ///
-/// The parts are its first bytes (`head`, `head_ref`, `head_mut`) and its last (`tail`,
-/// `tail_ref`, `tail_mut`). `limit` bounds the number of values of the source that are converted
-/// at run time.
+/// The parts are the first bytes of `S` (`head`, `head_ref`, `head_mut`) and its last bytes
+/// (`tail`, `tail_ref`, `tail_mut`). At most `limit` values of the source are converted at run
+/// time.
 ///
-/// A part is proven if every source holds a valid `D` there. A `&mut` to it is sound if every
-/// `D` written there leaves a valid source, and, on top of what `pun_mut` requires, if it leaves
-/// a source that met its requirements (rules, `valid(..)`) meeting them: nothing of the source
-/// outside the part may depend on it.
+/// A part may be proven only if every source holds a valid `D` there. A `&mut` to the part is
+/// sound only if every `D` written there leaves a valid source. It must also keep the requirements
+/// (rules, `valid(..)`) of a source that met them, which `pun_mut` does not require. So nothing of
+/// the source outside the part may depend on the bytes of the part.
 ///
 /// # Panics
-/// If a conversion that the verdict says compiles does not, or if the report is poisoned.
+///
+/// Panics if [`REPORT`] is poisoned.
 pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
   let v: Parts = const { hook::parts::<S, D>() };
   let pair = format!("{} -> {}", name::<S>(), name::<D>());
@@ -893,10 +991,11 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
   });
 }
 
-/// Print the report, and fail if anything is unsound or incorrect.
+/// Takes [`REPORT`] and prints it under `title`.
 ///
 /// # Panics
-/// If anything is unsound or incorrect.
+///
+/// Panics if the report holds an unsound or an incorrect verdict, or if [`REPORT`] is poisoned.
 pub fn finish(title: &str) {
   let report = REPORT.lock().unwrap().take().unwrap_or_default();
   println!(
@@ -929,7 +1028,10 @@ pub fn finish(title: &str) {
   );
 }
 
-/// Every ordered pair of the types, through `check_pair`.
+/// Checks every ordered pair of the types, a type with itself included, with [`check_pair`] and
+/// [`check_part`].
+///
+/// The first argument is the `limit` of both functions.
 #[macro_export]
 macro_rules! all_pairs {
   ($limit:expr; $($ty:ty),+ $(,)?) => {
@@ -943,8 +1045,9 @@ macro_rules! all_pairs {
   };
 }
 
-/// The given pairs, through `check_pair` or `check_part` (`$check`): a selection rather than a
-/// product, for Miri.
+/// Checks the given pairs of types with `$check`, which is `check_pair` or `check_part`.
+///
+/// The pairs are a selection rather than a product, for Miri.
 #[macro_export]
 macro_rules! pairs {
   ($check:ident, $limit:expr; $(($s:ty, $d:ty)),+ $(,)?) => {
@@ -952,8 +1055,10 @@ macro_rules! pairs {
   };
 }
 
-/// Every pair of a source of the first list and a target of the second, through `check_part`:
-/// for targets smaller than their sources.
+/// Checks the parts of every source of the first list as every target of the second, with
+/// [`check_part`].
+///
+/// The targets are meant to be smaller than the sources.
 #[macro_export]
 macro_rules! part_pairs {
   ($limit:expr; [$($s:ty),+ $(,)?]; $targets:tt) => {

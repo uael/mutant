@@ -1,10 +1,12 @@
-//! Values that hold self-relative pointers, read as other types: the next version of a schema,
-//! through recursive types, sequences, text and enums (`view_ref`); what only some values are,
-//! checked at run time (`try_view_ref`); pointers read as bytes.
+//! Tests reading values that hold self-relative pointers as other types.
 //!
-//! The pointers are the ones of `support/relative.rs`, declared through the public API only, as
-//! a crate of its own would. They are followed through their buffer, so these tests are for
-//! Miri with stacked borrows as well as tree borrows.
+//! The tests read a value as the next version of its schema with `view_ref`, through recursive
+//! types, sequences, text and enums. They check at run time, with `try_view_ref`, what only some
+//! values are. They also read pointers as bytes.
+//!
+//! The pointers are those of `support/relative.rs`, which declares them through the public API
+//! only, as a crate of its own would. They are followed through their buffer, so Miri runs these
+//! tests with stacked borrows as well as with tree borrows.
 
 #[path = "support/relative.rs"]
 #[expect(dead_code, reason = "what the model check uses, and these tests do not")]
@@ -19,7 +21,7 @@ use relative::{Builder, Fix, Offset, One, Opt, Region, Seq, Text, addr, field};
 // -------------------------------------------------------------------------------------------------
 // A schema, generic over the offset
 
-/// An enum without fields: a scalar.
+/// An enum without fields, which is a scalar.
 #[derive(Pun, Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub enum Kind {
@@ -104,7 +106,8 @@ unsafe impl<O: Offset> Fix for Expr<O> {
   }
 }
 
-/// `f(2 + -5, x, 40 if .. else 'z', 'A')`.
+/// Returns the expression `f(2 + -5, x, 40 if .. else 'z', 'A')` in a region, with offsets of the
+/// type `O`.
 fn expression<O: Offset>() -> Region<Expr<O>> {
   let mut b = Builder::new();
   let (two, five) = (b.one(Expr::Lit(2)), b.one(Expr::Lit(5)));
@@ -121,9 +124,10 @@ fn expression<O: Offset>() -> Region<Expr<O>> {
 // -------------------------------------------------------------------------------------------------
 // A value read as another type
 
-/// The next version of the schema, which reads every value of the first as it is: a variant
-/// added at the end of each enum, a `bool` read as a `u8`, a `char` as a `u32`, `[u16]` as
-/// `[[u8; 2]]`.
+/// The next version of the schema, which reads every value of the first version as it is.
+///
+/// The changes are a variant added at the end of each enum, a `bool` read as a `u8`, a `char`
+/// read as a `u32`, and `[u16]` read as `[[u8; 2]]`.
 mod v2 {
   use puns::Pun;
 
@@ -135,7 +139,7 @@ mod v2 {
     File,
     Dir,
     Link,
-    /// New.
+    /// A variant that the first version does not have.
     Socket,
   }
 
@@ -143,11 +147,11 @@ mod v2 {
   #[repr(C)]
   pub struct Item<O: Offset> {
     pub id: u32,
-    /// Was a `bool`: there are more flags now.
+    /// A `bool` in the first version. The next version has more flags.
     pub hidden: u8,
     pub kind: Kind,
     pub name: Text<O>,
-    /// Was `[u16]`: read as bytes.
+    /// A `[u16]` in the first version, read as bytes.
     pub tags: Seq<[u8; 2], O>,
     pub next: Opt<Item<O>, O>,
   }
@@ -170,13 +174,13 @@ mod v2 {
     Add(One<Expr<O>, O>, One<Expr<O>, O>),
     Var(Text<O>),
     Call(Text<O>, Seq<Expr<O>, O>),
-    /// Was a `char`.
+    /// A `char` in the first version.
     Cond(Opt<Expr<O>, O>, u32),
-    /// New.
+    /// A variant that the first version does not have.
     Mul(One<Expr<O>, O>, One<Expr<O>, O>),
   }
 
-  /// Evaluates an expression of `r`; variables are 0, calls sum their arguments.
+  /// Evaluates an expression of `r`. A variable is 0, and a call returns the sum of its arguments.
   pub fn eval<R, O: Offset>(r: &Region<R>, e: &Expr<O>) -> i64 {
     match e {
       Expr::Lit(n) => *n,
@@ -190,7 +194,7 @@ mod v2 {
   }
 }
 
-/// An expression read as its next version, with offsets of the type `O`.
+/// Checks that an expression with offsets of the type `O` reads in place as its next version.
 fn an_expression_as_its_next_version<O: Offset>() {
   let r = expression::<O>();
   let new: &v2::Expr<O> = puns::view_ref(&*r);
@@ -208,8 +212,9 @@ fn an_expression_as_its_next_version<O: Offset>() {
   assert!(core::ptr::addr_eq(slice, args));
 }
 
-/// Each offset: both byte orders, each width (an `i64le` holds more than an `isize` on a 32-bit
-/// target, and is converted with a check).
+/// Checks that an expression reads as its next version with offsets of each width and of both
+/// byte orders. On a 32-bit target, an `i64le` holds more than an `isize` and is converted with a
+/// check.
 #[test]
 fn expressions_as_their_next_version() {
   an_expression_as_its_next_version::<i32le>();
@@ -253,7 +258,8 @@ fn a_directory_as_its_next_version() {
   assert_eq!((parent.size, r.seq(&parent.entries).len()), (3, 0));
 }
 
-/// What only some values are: checked, for the value itself.
+/// Checks that `try_view_ref` reads a value as a type that only some values are, by a check at
+/// run time of the value itself.
 #[test]
 fn checked_at_run_time() {
   #[derive(Pun)]
@@ -312,7 +318,7 @@ fn checked_at_run_time() {
   assert!(puns::try_view_ref::<Expr<i32le>, Small>(&var).is_err());
 }
 
-/// The first variants of `Expr`.
+/// An enum with the first two variants of `Expr`.
 #[derive(Pun)]
 #[repr(u8)]
 #[expect(dead_code, reason = "a type that values are read as, never made")]
@@ -321,9 +327,11 @@ enum Small {
   Neg(One<Expr<i32le>>),
 }
 
-/// Two generic types that hold each other: the bounds that the derive would find go round in a
-/// circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
-/// they are told: none but the ones that the types declare.
+/// One of two generic types that hold each other.
+///
+/// The bounds that the derive would infer are circular. `Ping<O>` is `Pun` if the pointer to
+/// `Pong<O>` is, which holds if `Pong<O>` is `Pun`, and so on. `#[pun(bound())]` therefore gives
+/// no bounds but the ones that the types declare.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(bound())]
@@ -358,7 +366,7 @@ unsafe impl<O: Offset> Fix for Pong<O> {
   }
 }
 
-/// A generic type whose parameter is what it holds: the derive finds its bounds.
+/// A generic type that holds values of its parameter. The derive infers its bounds.
 #[derive(Pun)]
 #[repr(C)]
 struct Boxed<T: Pun> {
@@ -399,7 +407,7 @@ fn generic_types() {
 // -------------------------------------------------------------------------------------------------
 // What the pointers themselves allow
 
-/// Over-aligned: what a buffer holds at its own alignment.
+/// An over-aligned struct, which a buffer holds at its own alignment.
 #[derive(Pun, Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(C, align(16))]
 struct Wide {
@@ -412,10 +420,12 @@ unsafe impl Fix for Wide {
   fn fix(&mut self, _: usize) {}
 }
 
-/// A value is read as a prefix of it that is not more aligned; a sequence as a sequence of
-/// elements of the same size, aligned as its declarer says: here the larger of the alignment of
-/// the elements and the width of the offset, so that `[u8; 4]`s behind an `i32le` are `u32`s
-/// (but one `[u8; 4]` is not one `u32`).
+/// Checks that a pointer reads as a pointer to a prefix of its target that is not more aligned,
+/// and that a sequence reads as a sequence of elements of the same size.
+///
+/// The elements of a sequence are aligned as its declarer says. Here the declarer aligns them to
+/// the larger of their alignment and the width of the offset. A sequence of `[u8; 4]` behind an
+/// `i32le` is therefore a sequence of `u32`, but one `[u8; 4]` is not one `u32`.
 // Tuples of the `Rust` representation, read as other tuples: the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
@@ -445,8 +455,8 @@ unsafe impl<A: Fix, B: Fix, C: Fix> Fix for (A, B, C) {
   }
 }
 
-/// A pointer that may be null is read as one that may be null, and as one that may not when it is
-/// not, checked at run time; text as text.
+/// Checks that a pointer that may be null reads as one that may be null, and as one that may not
+/// after a check at run time that it is not null. Checks that text reads as text.
 // Tuples of the `Rust` representation, read as other tuples: the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
@@ -465,7 +475,8 @@ fn null_and_text() {
   assert_eq!(puns::try_view_ref::<_, One<u8>>(&r.1).err(), Some(puns::Error::Validity));
 }
 
-/// A value that holds pointers is read as plain data: an offset is initialized bytes.
+/// Checks that a value that holds pointers reads as plain data, because an offset is initialized
+/// bytes.
 #[test]
 fn pointers_are_read_as_bytes() {
   #[derive(Pun)]
@@ -500,9 +511,9 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(r.seq(&r.numbers)[0].get(), 3);
 }
 
-/// `Option` of a pointer whose offset has a niche at zero is the same pointer, that may be null
-/// (what `self_relative!` gives it): it agrees with a pointer declared nullable (`Opt`), both
-/// ways, and is followed as one.
+/// Checks that an `Option` of a pointer whose offset has a niche at zero is a pointer that may be
+/// null, as `self_relative!` declares it. It reads as a pointer declared nullable (`Opt`) and
+/// back, and is followed as one.
 #[test]
 fn option_of_a_pointer_is_a_nullable_pointer() {
   use relative::Nz32le;
@@ -563,8 +574,9 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
   assert_eq!(puns::try_view_ref::<_, One<u32>>(&r.second).err(), Some(puns::Error::Validity));
 }
 
-/// A pointer whose offset can be zero (it then aims at its own address), read as one of the same
-/// scheme whose offset cannot (a `NonZero`): only when it is not zero, checked at run time.
+/// Checks that a pointer whose offset can be zero reads as a pointer of the same scheme whose
+/// offset is a `NonZero`, after a check at run time that the offset is not zero. An offset of zero
+/// aims at the address of the pointer itself.
 #[test]
 fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
   use relative::Nz32le;

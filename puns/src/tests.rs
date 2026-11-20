@@ -6,7 +6,7 @@ use crate::{
   layout::{Endian, Spec},
 };
 
-/// What the analysis says of a pun from `S` to `D`.
+/// Returns what the analysis says of a pun from `S` to `D`, in words.
 fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> String {
   let a = const { analyze(&S::LAYOUT, &D::LAYOUT) };
   let fit = match a.fit.exact {
@@ -187,7 +187,7 @@ fn unsized_types() {
   assert_eq!(<Pair<u32, [u8]> as Pun>::LAYOUT.size_of_val(5), Some(12));
 }
 
-/// What the analysis says of the last bytes of `S` as a `D`.
+/// Returns what the analysis says of the last bytes of `S` as a `D`, in words.
 fn tail<S: ?Sized + Pun, D: ?Sized + Pun>() -> String {
   let a = const { analyze_tail(&S::LAYOUT, &D::LAYOUT) };
   let shift = a.shift;
@@ -289,8 +289,9 @@ struct Distinct {
   b: u8,
 }
 
-/// Whatever a `&mut` to the first (or with `tail`, the last) bytes of `S` as a `D` compiles: `ok`,
-/// or why not, in a word.
+/// Returns `ok` if a `&mut` to the first bytes of `S` as a `D` compiles, or why not, in a word.
+///
+/// With `tail`, the bytes are the last ones.
 fn part_mut<S: ?Sized + Pun, D: ?Sized + Pun>(tail: bool) -> String {
   let message = if tail { Plan::<S, D>::check_tail_mut() } else { Plan::<S, D>::check_head_mut() };
   let Some(message) = message else { return "ok".into() };
@@ -493,7 +494,8 @@ const TAIL_UNSIZED: &str = "\ncannot pun: the source is unsized: where its last 
                             depends on its length, which is only known at run time.\nUse \
                             `from_tail` to take a value from the end of bytes";
 
-/// Word by word, folded at each step: what `sum16` computes faster.
+/// Returns the sum of the 16-bit words of `bytes`, folded at each step: what `sum16` computes
+/// faster.
 fn sum16_reference(bytes: &[u8]) -> u16 {
   let (mut sum, mut i) = (0u64, 0);
   while i < bytes.len() {
@@ -505,7 +507,7 @@ fn sum16_reference(bytes: &[u8]) -> u16 {
   sum as u16
 }
 
-/// Pseudo-random bytes.
+/// Returns `len` pseudo-random bytes, from `seed`.
 fn noise(len: usize, seed: &mut u64) -> Vec<u8> {
   (0..len)
     .map(|_| {
@@ -544,8 +546,8 @@ fn sum16_is_the_sum_word_by_word() {
   assert_eq!(sum, 0xffff);
 }
 
-/// Bit by bit, as the catalogue of CRCs defines one by its parameters: what `crc32` and `Crc`
-/// compute faster.
+/// Returns the CRC of `bytes` of the given parameters, computed bit by bit as the catalogue of
+/// CRCs defines it: what `crc32` and `Crc` compute faster.
 fn crc_reference(
   width: u32,
   poly: u64,

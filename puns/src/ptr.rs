@@ -1,19 +1,19 @@
-//! Raw pointer helpers that work in `const fn` for both thin and wide (slice-tailed) pointers.
+//! Raw pointers to sized and to slice-tailed types, split and made in `const fn`.
 //!
-//! Stable Rust has no way to split a `*const T` into an address and a slice length, or to build
-//! one back, when `T` is a generic `?Sized` type: `core::ptr::metadata` is unstable and `as` casts
-//! between wide pointers are only accepted for concrete types.
+//! Stable Rust cannot split a `*const T` into an address and a length, or make one from them,
+//! when `T` is a generic `?Sized` type. `core::ptr::metadata` is unstable, and `as` casts between
+//! wide pointers compile only for concrete types.
 //!
-//! This module does it by reinterpreting `*const T` as `*const [u8]`, which assumes that every
-//! pointer to a slice-tailed type is represented like a pointer to a slice. This is how the
-//! compiler works, but it is not a documented guarantee, hence the assumption is **checked at
-//! compile time for every unsized type** by [`verify`], against a pointer built with a genuine
-//! `as` cast (`Pun::PROBE`). If the representation ever changes, the crate fails to build instead
-//! of misbehaving.
+//! This module reinterprets a `*const T` as a `*const [u8]`. This assumes that a pointer to a
+//! slice-tailed type is represented as a pointer to a slice, whose length is the length of the
+//! tail. The compiler does so, but Rust does not guarantee it. So the layout of each unsized type
+//! is made with [`verify`], which checks the assumption at compile time against a pointer made
+//! with `as` casts (`Pun::PROBE`). If the representation changes, the crate fails to build
+//! instead of misbehaving.
 
 use crate::Pun;
 
-/// Slice length of `Pun::PROBE` pointers.
+/// The length of the slice tail of `Pun::PROBE`, for an unsized type.
 #[doc(hidden)]
 pub const PROBE_LEN: usize = 3;
 
@@ -22,20 +22,26 @@ union Cast<A: Copy, B: Copy> {
   to: B,
 }
 
-/// Slice length of a wide pointer.
+/// Returns the length of the slice tail of `ptr`.
 ///
 /// # Safety
-/// `T` must be a slice, or a struct with a slice tail.
+///
+/// The caller must ensure that:
+///
+/// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
 #[inline(always)]
 pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
   // SAFETY: see the module documentation.
   unsafe { Cast::<*const T, *const [u8]> { from: ptr }.to }.len()
 }
 
-/// Same pointer as `ptr`, with another slice length.
+/// Returns a pointer to the address of `ptr`, whose slice tail has `len` elements.
 ///
 /// # Safety
-/// `T` must be a slice, or a struct with a slice tail.
+///
+/// The caller must ensure that:
+///
+/// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
 #[inline(always)]
 pub const unsafe fn raw_with_len<T: ?Sized>(ptr: *const T, len: usize) -> *const T {
   let slice = core::ptr::slice_from_raw_parts(ptr.cast::<u8>(), len);
@@ -43,11 +49,22 @@ pub const unsafe fn raw_with_len<T: ?Sized>(ptr: *const T, len: usize) -> *const
   unsafe { Cast::<*const [u8], *const T> { from: slice }.to }
 }
 
-/// Check, at compile time, that pointers to `T` are represented like pointers to slices.
+/// Asserts that pointers to `T` are represented as pointers to slices.
+///
+/// It compares `probe` with what [`raw_len`] reads of it and with what [`raw_with_len`] makes of
+/// it: the size and the alignment of the pointer, the length of the tail, and the address.
+///
+/// # Panics
+///
+/// Panics if the representation differs. In const evaluation, the panic is a compile error.
 ///
 /// # Safety
-/// `T` must be a slice, or a struct with a slice tail, and `probe` must come from
-/// `core::ptr::slice_from_raw_parts(core::ptr::null(), PROBE_LEN)` through `as` casts only.
+///
+/// The caller must ensure that:
+///
+/// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
+/// - `probe` is `core::ptr::slice_from_raw_parts(core::ptr::null(), PROBE_LEN)`, cast to
+///   `*const T` with `as` casts only.
 pub const unsafe fn verify<T: ?Sized>(probe: *const T) {
   const MESSAGE: &str = "unsupported compiler: unexpected wide pointer representation";
   assert!(size_of::<*const T>() == size_of::<*const [u8]>(), "{}", MESSAGE);
@@ -62,7 +79,7 @@ pub const unsafe fn verify<T: ?Sized>(probe: *const T) {
   }
 }
 
-/// Slice length of `ptr`, `0` if `T` is `Sized`.
+/// Returns the length of the slice tail of `ptr`, or 0 if `T` is `Sized`.
 #[inline(always)]
 pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
   if const { !T::LAYOUT.unsized_ } {
@@ -72,7 +89,9 @@ pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
   unsafe { raw_len(ptr) }
 }
 
-/// Pointer to a `T` at `addr`, whose tail slice has `len` elements (ignored if `T` is `Sized`).
+/// Returns a pointer to a `T` at `addr`, whose slice tail has `len` elements.
+///
+/// `len` is ignored if `T` is `Sized`.
 #[inline(always)]
 pub const fn from_raw_parts<T: ?Sized + Pun>(addr: *const u8, len: usize) -> *const T {
   if const { T::LAYOUT.unsized_ } {
@@ -85,11 +104,16 @@ pub const fn from_raw_parts<T: ?Sized + Pun>(addr: *const u8, len: usize) -> *co
   }
 }
 
-/// Pointer to the field of type `F` at `offset` in the `T` at `ptr`.
+/// Returns a pointer to the field of type `F` at `offset` in the `T` at `ptr`.
+///
+/// An unsized field is the last field of `T`, so its tail has the length of the tail of `ptr`.
 ///
 /// # Safety
-/// `ptr` must point to an allocation that holds a `T`, and `T` must have a field of type `F` at
-/// `offset`.
+///
+/// The caller must ensure that:
+///
+/// - `ptr` points to an allocation that holds a `T`.
+/// - `T` has a field of type `F` at `offset`.
 #[inline(always)]
 pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
   ptr: *const T,
@@ -101,10 +125,10 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
   from_raw_parts(unsafe { ptr.cast::<u8>().add(offset) }, len)
 }
 
-/// Whatever `addr` is a multiple of `align`.
+/// Returns whether `addr` is a multiple of `align`.
 ///
-/// This cannot be evaluated at compile time, where pointers have no address: doing so is a
-/// compilation error.
+/// `align` must be a power of two, or the result is meaningless. The address is read as an
+/// integer, which const evaluation cannot do: a call evaluated at compile time does not compile.
 #[inline(always)]
 pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
   // SAFETY: a pointer can be read as an integer at run time (this does not expose its

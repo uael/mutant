@@ -1,58 +1,68 @@
-//! The layout of an enum whose representation `rustc` chose (no `repr`), found by experiments in
-//! const evaluation on a sample of each variant.
+//! The layout of an enum without `repr`, found by experiments in const evaluation on a sample of
+//! each variant.
 //!
-//! Stable Rust names neither the place of the tag of such an enum nor its values, but const
-//! evaluation runs code on values of it: the offsets of the fields of a sample (a `match`), its
-//! variant (`mem::discriminant`), its bytes. Everything that is concluded is either observed, or
-//! a hypothesis that an experiment verifies. When a hypothesis is wrong, the experiment gives
-//! another answer (the enum is then refused, with a message) or is an error of const evaluation
-//! (the build fails): never a wrong layout. What this rests on, of the compiler:
+//! Stable Rust names neither the place of the tag of such an enum nor its values. But const
+//! evaluation runs code on its values: it finds the offsets of the fields of a sample (with a
+//! `match`), its variant (with `mem::discriminant`), and its bytes. Every conclusion is either
+//! observed, or a hypothesis that an experiment verifies. When a hypothesis is wrong, the
+//! experiment gives another answer, and the enum is refused with a message, or it is an error of
+//! const evaluation, and the build fails. It never finds a wrong layout.
 //!
-//! - **R0** the layout of a type is the same in const evaluation and at run time, for a target
-//!   (const evaluation computes it for that target, with the same code);
-//! - **R1** the variant of a value is told by one scalar at a fixed place, its *tag*: either a
-//!   direct tag, before the fields of every variant, of one value per variant, or a *niche*: a
-//!   scalar in the fields of one variant (the *dataful* one) that no field of another variant
-//!   covers, whose values that are valid for that field are that variant, and whose other values
-//!   are each one other variant (or no value). This is how `rustc` lays out enums, stable since
-//!   2017 for one variant with fields, since 1.64 for several;
-//! - **R2** const evaluation reports as an error reading an uninitialized byte, and reading the
-//!   variant of a value whose tag is not the one of a variant that has values;
-//! - **R3** `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, which is the
-//!   index of the variant, as an `isize` (asserted for its size, and checked on every sample);
-//! - **R4** a value made in const evaluation (`E::A(x)`) has its padding uninitialized: making a
-//!   variant writes its fields and its tag, nothing else. So a byte of a fresh sample outside its
-//!   fields that can be read is a byte of the tag.
+//! The experiments rest on these facts of the compiler:
 //!
-//! R2 and R4 are held by compile-fail tests (`discover_reads_padding`, `discover_invalid_tag`),
-//! R1 by the experiments themselves (a layout that is not of that shape is refused), R3 by an
-//! assertion on every sample. Each experiment, and what it holds:
+//! - **R0.** The layout of a type is the same in const evaluation and at run time, for a target.
+//!   Const evaluation computes it for that target, with the same code.
+//! - **R1.** The variant of a value is told by one scalar at a fixed place, its *tag*. This is
+//!   either a direct tag, before the fields of every variant, of one value per variant, or a
+//!   *niche*. A niche is a scalar in the fields of one variant, the *dataful* one, that no field
+//!   of another variant covers. Its values that are valid for that field are that variant, and
+//!   each of its other values is one other variant, or no value. This is how `rustc` lays out
+//!   enums: since 2017 for one variant with fields, and since 1.64 for several.
+//! - **R2.** Const evaluation reports an error when it reads an uninitialized byte, or the variant
+//!   of a value whose tag is not the tag of a variant that has values.
+//! - **R3.** `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, the index of
+//!   the variant, as an `isize`.
+//! - **R4.** A value made in const evaluation (`E::A(x)`) has its padding uninitialized. Making a
+//!   variant writes its fields and its tag, and nothing else. So a byte of a fresh sample outside
+//!   its fields that can be read is a byte of the tag.
 //!
-//! - every sample reads as its own variant: R3 (and that the samples are values);
-//! - the bytes of the tag, moved from the sample of each variant to the one of another (`try_tag`),
-//!   make it that variant: R1, the tag is there (a wrong candidate changes nothing, and is
-//!   dropped; a byte moved that is padding stays padding);
-//! - the gaps of each variant that has one tag, outside the tag, filled with zeros then with ones,
-//!   leave it that variant (`decided_by`): R1, nothing else tells it (a byte of a tag outside would
-//!   take two values for one variant); and the same of every gap of the dataful variant of a niche,
-//!   and of the only variant of an enum laid out as a struct: R1, its fields tell it alone;
-//! - the tag of each variant but the dataful one is read in its sample, and must be initialized:
-//!   R4 makes it a byte of the tag, R2 fails the build if it is padding; for a direct tag, every
-//!   byte before the first field of any variant is read so (which `rustc` widens the tag to);
-//! - the tags differ, and are not values of the scalar of a niche: R1.
+//! Compile-fail tests hold R2 and R4 (`discover_reads_padding`, `discover_invalid_tag`). The
+//! experiments hold R1: a layout that is not of that shape is refused. An assertion of its size,
+//! and a check of every sample, hold R3. Each experiment holds the following:
 //!
-//! The library's own validity of a type is a subset of the one of `rustc` (what `Pun::LAYOUT`
-//! promises): the values that `rustc` gives to the other variants of a niche are invalid for the
-//! field that holds it, so "every other value" is the dataful variant once its fields are valid.
+//! - Every sample reads as its own variant. This holds R3, and that the samples are values.
+//! - The bytes of the tag, moved from the sample of each variant to the sample of another
+//!   ([`try_tag`]), make it that variant. This holds R1: the tag is there. A wrong candidate
+//!   changes nothing, and is dropped. A byte that is moved and is padding stays padding.
+//! - The gaps of each variant that has one tag, outside the tag, filled with zeros and then with
+//!   ones, leave it that variant ([`decided_by`]). This holds R1: nothing else tells the variant,
+//!   since a byte of a tag outside would take two values for one variant. The same holds of every
+//!   gap of the dataful variant of a niche, and of the only variant of an enum laid out as a
+//!   struct: its fields alone tell it.
+//! - The tag of each variant but the dataful one is read in its sample, and must be initialized.
+//!   R4 makes it a byte of the tag, and R2 fails the build if it is padding. For a direct tag,
+//!   every byte before the first field of any variant is read so, since `rustc` widens the tag to
+//!   these bytes.
+//! - The tags differ, and are not values of the scalar of a niche. This holds R1.
+//!
+//! The valid values of a type in its layout are a subset of those of `rustc`, as `Pun::LAYOUT`
+//! promises. So the values that `rustc` gives to the other variants of a niche are invalid for
+//! the field that holds it. "Every other value" is then the dataful variant once its fields are
+//! valid.
 
 use core::mem::{self, MaybeUninit};
 
 use crate::layout::{Endian, Field, Kind, Layout, Spec, Valid, load, max_value};
 
-/// A valid `T`: every scalar the least of its values, padding left uninitialized.
+/// Returns a valid `T`, in which every scalar is the least of its values and padding is
+/// uninitialized.
+///
+/// Of an enum, the sample is its first variant that has values.
 ///
 /// # Panics
-/// If `T` has no value, or holds a self-relative pointer (no value of one is made of nothing).
+///
+/// Panics if `T` has no value, or if it holds a self-relative pointer, since no pointer is made
+/// of nothing.
 pub const fn sample<T: crate::Pun>() -> MaybeUninit<T> {
   assert!(T::LAYOUT.is_inhabited(), "a type without values has no sample");
   let mut value = MaybeUninit::<T>::uninit();
@@ -61,10 +71,17 @@ pub const fn sample<T: crate::Pun>() -> MaybeUninit<T> {
   value
 }
 
-/// Write a value of `layout` at `ptr`.
+/// Writes the least value of `layout` at `ptr`, and leaves its padding as it is.
+///
+/// # Panics
+///
+/// Panics if `layout` holds a self-relative pointer, a slice or a pattern.
 ///
 /// # Safety
-/// `ptr` must be valid for writes of the size of `layout`.
+///
+/// The caller must ensure that:
+///
+/// - `ptr` is valid for writes of the size of `layout`.
 const unsafe fn write(layout: &Layout, ptr: *mut u8) {
   // SAFETY: in the bounds of the value, as the layout tells.
   unsafe {
@@ -114,10 +131,13 @@ const unsafe fn write(layout: &Layout, ptr: *mut u8) {
   }
 }
 
-/// Write the integer `value` of `size` bytes at `ptr`, in `endian` byte order.
+/// Writes the integer `value` as `size` bytes at `ptr`, in `endian` byte order.
 ///
 /// # Safety
-/// `ptr` must be valid for writes of `size` bytes.
+///
+/// The caller must ensure that:
+///
+/// - `ptr` is valid for writes of `size` bytes.
 const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
   let mut i = 0;
   while i < size {
@@ -128,13 +148,21 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
   }
 }
 
-/// The variant (its index) of the `E` at `ptr`.
+/// Returns the index of the variant of the `E` at `ptr`.
 ///
-/// A failure of const evaluation if its tag is not the one of a variant that has values (R2).
+/// In const evaluation, it fails the build if the tag is not the tag of a variant that has
+/// values (R2).
+///
+/// # Panics
+///
+/// Panics if `mem::Discriminant<E>` is not the size of an `isize` (R3).
 ///
 /// # Safety
-/// `ptr` must point to an `E` whose tag is initialized, and whose fields are valid for the variant
-/// its tag tells, if any.
+///
+/// The caller must ensure that:
+///
+/// - `ptr` points to an `E` whose tag is initialized.
+/// - The fields of the variant that its tag tells, if any, are valid.
 const unsafe fn variant<E>(ptr: *const E) -> usize {
   // SAFETY: guaranteed by the caller.
   let discriminant = mem::discriminant(unsafe { &*ptr });
@@ -152,6 +180,7 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
 struct Buf<E>(MaybeUninit<E>);
 
 impl<E> Buf<E> {
+  /// Returns a copy of the bytes of `sample`, initialized or not.
   const fn of(sample: &MaybeUninit<E>) -> Self {
     let mut copy = MaybeUninit::<E>::uninit();
     // SAFETY: an untyped copy: what is uninitialized stays so.
@@ -159,7 +188,11 @@ impl<E> Buf<E> {
     Self(copy)
   }
 
-  /// Copy the `len` bytes at `offset` of `from` (initialized or not) over the same bytes.
+  /// Copies the `len` bytes at `offset` of `from`, initialized or not, over the same bytes.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the bytes are not within an `E`.
   const fn transplant(&mut self, from: &MaybeUninit<E>, offset: usize, len: usize) {
     assert!(offset + len <= size_of::<E>());
     // SAFETY: in bounds of both, which do not overlap.
@@ -172,13 +205,20 @@ impl<E> Buf<E> {
     }
   }
 
+  /// Writes `byte` over the `len` bytes at `offset`.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the bytes are not within an `E`.
   const fn fill(&mut self, offset: usize, len: usize, byte: u8) {
     assert!(offset + len <= size_of::<E>());
     // SAFETY: in bounds.
     unsafe { core::ptr::write_bytes(self.0.as_mut_ptr().cast::<u8>().add(offset), byte, len) };
   }
 
-  /// The variant of the value: a failure of const evaluation if its tag is not valid.
+  /// Returns the index of the variant of the value.
+  ///
+  /// In const evaluation, it fails the build if the tag is not valid (R2).
   const fn variant(&self) -> usize {
     // SAFETY: experiments only write over what is not a field of the variant of the sample (or
     // a tag that is copied whole): its fields are valid, and its tag is initialized (or the
@@ -187,32 +227,38 @@ impl<E> Buf<E> {
   }
 }
 
-/// What is known of the layout of an enum of `V` variants.
+/// What the experiments find of the layout of an enum of `V` variants.
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
 pub struct Desc<const V: usize> {
-  /// The offset and the size of the tag: `(0, 0)` if there is none (a single variant laid out as
-  /// a struct, or no variant that has values).
+  /// The offset and the size of the tag, or `(0, 0)` if there is none.
+  ///
+  /// There is none for a single variant laid out as a struct, or if no variant has values.
   tag: (usize, usize),
-  /// The variant that holds the tag (a niche), `V` if none.
+  /// The variant that holds the tag in a niche, or `V` if none does.
   dataful: usize,
-  /// The variants that have values.
+  /// Whether each variant has values.
   inhabited: [bool; V],
-  /// The tag of each variant that has values but the dataful one, as a range of one value.
+  /// The tag of each variant that has values, but the dataful one, as a range of one value.
   tags: [(u128, u128); V],
-  /// The tags of the dataful variant: every value but the tags of the others.
+  /// The tags of the dataful variant, every value but the tags of the others, and their number.
   dataful_tags: ([(u128, u128); V], usize),
-  /// Or better, the values of the scalar of its field that holds the niche, if they are known as
-  /// tags are read: the others are none of them (R1, and the library's validity is in the one of
-  /// `rustc`).
+  /// The values of the scalar of the field of the dataful variant that holds the niche, if they
+  /// are known as a tag is read.
+  ///
+  /// These are the tags of the dataful variant, more exactly than `dataful_tags`. The tags of the
+  /// other variants are none of them, by R1, and because the valid values of a layout are a
+  /// subset of those of `rustc`.
   dataful_known: Option<&'static [(u128, u128)]>,
-  /// The valid values of the tag, sorted.
+  /// The valid values of the tag, sorted, and their number.
   valid: ([(u128, u128); V], usize),
 }
 
 impl<const V: usize> Desc<V> {
-  /// No variant that has values: what an enum whose layout is given otherwise is found to be
-  /// (`Option` of a self-relative pointer, see `Pun::OPTION`), so that nothing is tried of it.
+  /// Returns a description in which no variant has values.
+  ///
+  /// This is what an enum whose layout is given otherwise is found to be, so that nothing is
+  /// tried of it: `Option` of a self-relative pointer (`Pun::OPTION`).
   #[must_use]
   pub const fn none() -> Self {
     Self {
@@ -226,25 +272,33 @@ impl<const V: usize> Desc<V> {
     }
   }
 
-  /// The offset of the tag.
+  /// Returns the offset of the tag.
   #[must_use]
   pub const fn tag_offset(&self) -> usize {
     self.tag.0
   }
 
-  /// Whatever the `variant`th variant holds the tag (a niche).
+  /// Returns whether the `variant`th variant holds the tag in a niche.
   #[must_use]
   pub const fn holds_tag(&self, variant: usize) -> bool {
     variant == self.dataful
   }
 
-  /// Whatever the `variant`th variant has values.
+  /// Returns whether the `variant`th variant has values.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `variant` is not less than `V`.
   #[must_use]
   pub const fn inhabited(&self, variant: usize) -> bool {
     self.inhabited[variant]
   }
 
-  /// The tags of the `variant`th variant, sorted: none if it has no value.
+  /// Returns the tags of the `variant`th variant, sorted, or none if it has no value.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `variant` is not less than `V`.
   #[must_use]
   pub const fn variant_ranges(&'static self, variant: usize) -> &'static [(u128, u128)] {
     if !self.inhabited[variant] {
@@ -259,7 +313,7 @@ impl<const V: usize> Desc<V> {
     }
   }
 
-  /// The layout of the tag: a scalar of native byte order whose values are the tags.
+  /// Returns the layout of the tag: a scalar of native byte order whose valid values are the tags.
   #[must_use]
   pub const fn tag(&'static self) -> Layout {
     let (size, ranges) = (self.tag.1, self.valid.0.split_at(self.valid.1).0);
@@ -273,7 +327,7 @@ impl<const V: usize> Desc<V> {
   }
 }
 
-/// Whatever some field of `fields` covers a byte of `offset..offset + len`.
+/// Returns whether a field of `fields` covers a byte of `offset..offset + len`.
 const fn covers(fields: &[Field], offset: usize, len: usize) -> bool {
   let mut i = 0;
   while i < fields.len() {
@@ -289,8 +343,9 @@ const fn covers(fields: &[Field], offset: usize, len: usize) -> bool {
   false
 }
 
-/// Fill the bytes of `buf` that no field of `fields` covers, but `skip..skip + len`, with `byte`:
-/// one write for each gap.
+/// Writes `byte` over the bytes of `buf` that no field of `fields` covers, but `skip..skip + len`.
+///
+/// It makes one write for each gap.
 const fn fill_gaps<E>(buf: &mut Buf<E>, fields: &[Field], skip: usize, len: usize, byte: u8) {
   let (size, mut pos) = (size_of::<E>(), 0);
   while pos < size {
@@ -327,9 +382,11 @@ const fn fill_gaps<E>(buf: &mut Buf<E>, fields: &[Field], skip: usize, len: usiz
   }
 }
 
-/// Nothing but `offset..offset + len` tells the variant `v` from the others: its gaps outside of
-/// these bytes, filled with zeros then with ones, leave it the same variant. A byte of a tag that
-/// tells `v` has one value in `v`, not two.
+/// Returns whether nothing but `offset..offset + len` tells the variant `v` from the others.
+///
+/// It is so if the gaps of `v` outside these bytes, filled with zeros and then with ones, leave it
+/// the same variant. A byte of a tag that tells `v` has one value in `v`, not two. In const
+/// evaluation, it fails the build if a fill makes the tag invalid (R2).
 const fn decided_by<E>(
   sample: &MaybeUninit<E>,
   fields: &[Field],
@@ -343,22 +400,30 @@ const fn decided_by<E>(
   zeros.variant() == v && ones.variant() == v
 }
 
-/// The integer of `len` bytes at `offset` of `sample`, in native byte order: a failure of const
-/// evaluation if one of them is not initialized (R2), which, out of the fields of the variant of
-/// the sample, makes it a byte of the tag (R4).
+/// Returns the integer of `len` bytes at `offset` of `sample`, in native byte order.
+///
+/// In const evaluation, it fails the build if one of the bytes is not initialized (R2). So a byte
+/// that is read outside the fields of the variant of the sample is a byte of the tag (R4).
+///
+/// # Panics
+///
+/// Panics if the bytes are not within an `E`, or if `len` is more than 16.
 const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
   assert!(offset + len <= size_of::<E>() && len <= 16);
   // SAFETY: in bounds; initialized, or the build fails.
   unsafe { load(sample.as_ptr().cast::<u8>().add(offset), len, Endian::NATIVE) }
 }
 
-/// Find the layout of the enum `E` from a sample of each variant that has values (`samples[v]`
-/// is the `v`th variant in the order of declarations, anything if it has no value) and the
-/// fields of each, observed on its sample.
+/// Returns the layout of the enum `E`, found from a sample of each variant and the fields of each.
+///
+/// `samples[v]` is a sample of the `v`th variant in the order of declarations, or anything if
+/// that variant has no value. `fields[v]` are its fields, at the offsets observed on its sample.
 ///
 /// # Panics
-/// If the layout is not of a shape that `rustc` gives (R1), with why; or a failure of const
-/// evaluation (R2) if an experiment reads what it must not.
+///
+/// Panics, with the reason, if the layout is not of a shape that `rustc` gives (R1), if a field
+/// holds a self-relative pointer, or if a sample is not its own variant (R3). In const
+/// evaluation, it also fails the build if an experiment reads what it must not (R2).
 #[expect(
   clippy::many_single_char_names,
   reason = "`v`, `u` and `d` are variants, `i` and `c` fields and candidates, by their index"
@@ -489,14 +554,24 @@ pub const fn discover<E, const V: usize>(
   panic!("no tag found in the enum: unsupported layout")
 }
 
-/// Try the bytes `offset..offset + len` of `window` as the tag, in the fields of `dataful` (a
-/// niche, whose values are the last of `window` if they are known) or of none (`V`, a direct
-/// tag): `desc` is filled if they are.
+/// Returns whether the bytes `offset..offset + len` of `window` are the tag, and fills `desc` if
+/// they are.
 ///
-/// They are if moving them from the sample of each variant to the one of another variant makes
-/// it that variant (without failing: a byte of a niche is moved from a variant to one where it is
-/// not a field), if nothing else tells a variant from the others, and if each variant but the
-/// dataful one has one value there, all of whose bytes are initialized (R4).
+/// The tag is in the fields of `dataful`, a niche, or in the fields of none if `dataful` is `V`,
+/// a direct tag. The last element of `window` is the values of the scalar of a niche, if they are
+/// known. The bytes are the tag if all of the following hold:
+///
+/// - Moving them from the sample of each variant to the sample of another variant makes it that
+///   variant. This does not fail the build, since a byte of a niche is moved from a variant to
+///   one where it is not a field.
+/// - Nothing else tells a variant from the others.
+/// - Each variant but the dataful one has one value there, all of whose bytes are initialized
+///   (R4).
+///
+/// # Panics
+///
+/// Panics if no variant that has values is not `dataful`, if two variants have the same tag, or
+/// if the tag of a variant is a valid value of the scalar of the niche.
 const fn try_tag<E, const V: usize>(
   desc: &mut Desc<V>,
   samples: &[MaybeUninit<E>; V],
@@ -610,12 +685,15 @@ const fn try_tag<E, const V: usize>(
   true
 }
 
-/// The scalars of a field that may hold a niche: those whose values the type of the field
-/// restricts (not a `valid(..)` that safe code can break), and tags of enums.
+/// The scalars of a field that may hold a niche.
 ///
-/// Each with its values, if they are known as a tag is read (in native byte order).
+/// These are the scalars whose values the type of the field restricts, and the tags of enums. A
+/// `valid(..)` that safe code can break is not one. Each comes with its values, if they are known
+/// as a tag is read, in native byte order.
 struct Candidates {
+  /// The candidates, of which the first `len` are used.
   list: [Candidate; 16],
+  /// The number of candidates.
   len: usize,
 }
 
@@ -623,8 +701,12 @@ struct Candidates {
 type Candidate = (usize, usize, Option<&'static [(u128, u128)]>);
 
 impl Candidates {
+  /// No candidate.
   const NEW: Self = Self { list: [(0, 0, None); 16], len: 0 };
 
+  /// Adds the scalar `spec` at `offset`, if there is room and it is 1 to 16 bytes.
+  ///
+  /// Its values are known as a tag is read if it is one byte, or of native byte order.
   const fn push(&mut self, offset: usize, spec: Spec) {
     if self.len < self.list.len() && spec.size > 0 && spec.size <= 16 {
       let native = spec.size == 1 || spec.endian.equals(Endian::NATIVE);
@@ -637,6 +719,10 @@ impl Candidates {
     }
   }
 
+  /// Adds the candidates of `layout`, at `base`.
+  ///
+  /// These are its scalars whose values are restricted, the first element of an array, the
+  /// fields of a struct that `valid(..)` does not restrict, and the tags of enums.
   const fn collect(&mut self, layout: &'static Layout, base: usize) {
     match layout.kind {
       Kind::Scalar(spec) => {

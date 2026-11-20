@@ -1,4 +1,4 @@
-//! Enums with fields.
+//! Tests enums with fields, whose layout a primitive representation, `repr(C)` or both specify.
 
 use puns::{
   Error, Pun,
@@ -13,7 +13,7 @@ enum Shape {
   Empty,
 }
 
-/// Fully initialized, whatever the variant.
+/// An enum whose bytes are all initialized in every variant.
 #[derive(Pun, Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 enum Bit {
@@ -69,7 +69,7 @@ enum Aligned<const N: usize> {
   Flags([bool; N]) = 2,
 }
 
-/// `Shape`, and more.
+/// An enum whose values include every value of `Shape`, and more.
 #[derive(Pun, Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 enum Drawing {

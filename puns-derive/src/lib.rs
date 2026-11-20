@@ -1,4 +1,4 @@
-//! `#[derive(Pun)]`, see the documentation of the `puns` crate.
+//! The derive macro `#[derive(Pun)]` of the `puns` crate, which documents it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -15,155 +15,7 @@ use syn::{
   visit_mut::{self, VisitMut},
 };
 
-/// Derive `Pun`: tell the layout and the valid values of a type, so that it can be punned.
-///
-/// # Structs
-///
-/// Every field must be `Pun`. Any `repr` will do, but a struct whose last field is unsized must
-/// be `repr(C)` or `repr(transparent)`. The types of the fields must be at least as visible as
-/// the struct (`pub` types for a `pub` struct, wherever they are declared).
-///
-/// Without `repr`, Rust lets the compiler choose the order of the fields: without the `unstable`
-/// feature of `puns`, the struct is what every order has (all of it if every order is the same
-/// bytes, as of `(u8, [u8; 3])` or `(bool, bool)`; else that its bytes are initialized, if they
-/// are in every order, and itself). See `puns::layout::UNSTABLE`.
-///
-/// Options of the struct:
-/// - `#[pun(size = EXPR)]`: the size in bytes of a value is `EXPR`;
-/// - `#[pun(assert(EXPR))]`: `EXPR` is true;
-/// - `#[pun(get(name: Type = EXPR, ..))]`: a `const fn` method `name` that returns
-///   `(EXPR) as Type`, for bit fields and the like. Here `EXPR` is any Rust expression, in which
-///   an unsigned integer field, wherever it is named (by name or as `self.name`, but for a name
-///   that a `let` or a closure declares), is its value as a `u128`; a field of another type is
-///   refused. It is read by reference, but in a packed struct, where it is copied;
-/// - `#[pun(tag(Key = Type, ..))]`: when the struct is carried by something that tells what it
-///   carries with a `Key`, that `Key` is a `Type` (see the `Tag` trait);
-/// - `#[pun(crate = path)]`: path of the `puns` crate;
-/// - `#[pun(bound(T: Trait, ..))]`, also of an enum with fields: what the implementation of `Pun`
-///   is bounded by, on top of the bounds of the type, instead of what the derive finds (the type
-///   of each field that depends on a parameter is `Pun`, unless it names the type itself). For
-///   generic types that hold each other behind pointers, whose bounds would be found in a
-///   circle: `#[pun(bound())]` when the bounds of the type are enough.
-///
-/// The byte order of a field is the one of its type: `u32be`, `i16le`, `f64be`... of
-/// `puns::num`. A byte order that a value tells (ELF, TIFF) is a choice between two types, which
-/// an enum of references makes.
-///
-/// Options of a field:
-/// - `#[pun(valid(0x45..=0x4f, 0x60))]`: the field, an integer, only takes these values, which
-///   are unsigned integers (literals or constants, as in an `EXPR` below);
-/// - `#[pun(len = EXPR)]`, on the last field: its slice has `EXPR` elements;
-/// - `#[pun(regions(first = EXPR, second = EXPR, last))]`, on the last field: it is made of
-///   consecutive regions of `EXPR` bytes, the last one may take what remains. A method that
-///   returns the bytes of the region is generated for each name. With a type
-///   (`first: Type = EXPR`, `last: Type`), the method returns the region as a `&Type`, if it is
-///   one. A type parameter that only a region names is one that no field uses, which Rust refuses
-///   (E0392) before the derive is run: a field `PhantomData<P>`, which has no byte, uses it.
-///
-/// An `EXPR` is an expression over the unsigned integer fields of the struct (`u8`, `u16be`,
-/// `NonZero<u32>`, ..., by name, or `self.0` for tuple structs; a signed or floating-point
-/// number, a `bool` or an enum is refused, since its bits are not its value),
-/// `size_of_val(self)`, integer constants and the operators
-/// `+ - * / % & | ^ << >> == != < <= > >= && || !`. It is compiled to a constant: it can be
-/// evaluated in `const fn`s, and costs what the arithmetic costs.
-///
-/// It means what the same Rust expression means where every integer is a `u128`, and is typed as
-/// Rust types it: arithmetic is on integers, `&&`, `||` and the condition of an `if` are `bool`s,
-/// an `assert` is a `bool`, and a `size`, a `len` or a region is an integer. Rust has no
-/// truthiness: `flags & 1` is not an assertion, `flags & 1 != 0` is. So:
-/// - `!` is a bitwise not on an integer (`!3` is `0xffff..fffc`), a logical one on a `bool`;
-/// - `as u8` (or `u16`, `u32`, `u64`, `usize`) keeps the low bits, `as u128` keeps everything,
-///   `true as u8` is `1`, and a cast to any other type is refused;
-/// - an integer literal has no suffix or the one of an unsigned type (`1u8`), `b'a'` is one; a
-///   constant (`MAX_LEN`, `u16::MAX`, a const parameter `N`, `size_of::<Header>()`,
-///   `offset_of!(Self, field)`, `self::f(3)` for a `const fn f`) is computed by Rust, and must be
-///   of an unsigned integer type. Floating-point numbers, negative numbers, signed integers and
-///   `char`s are refused, since they would mean something else.
-///
-/// Where Rust would panic, the rule fails (does not hold): an overflow of `+`, `-` or `*`, a
-/// division or a remainder by zero, a shift by 128 or more (which Rust also panics on, with debug
-/// assertions), and a read out of the value. `<<` drops the bits that it shifts out, as in Rust:
-/// `(1 << 127) << 1` is `0`. As in Rust, the right side of `&&` and `||` is only computed if the
-/// left one does not decide, and the branch of an `if` that is not taken is not computed: what is
-/// not computed cannot fail and costs nothing, so `kind != 7 || be(40, 2) == 0` holds for a value
-/// that is not of kind 7, however short, without reading it.
-///
-/// A rule names the integer fields of its struct, not the fields of a field or the elements of
-/// an array, which `le` and `be` read; it calls no method and no function but the ones below.
-///
-/// It can name what it computes, and choose: `{ let name = EXPR; .. EXPR }` (at most 8 names at
-/// once, `let name: u128` or `let name: bool` if the type is written), `if EXPR { EXPR } else {
-/// EXPR }`. As in Rust, what a `let` binds is computed whether it is used or not: a block fails if
-/// one of its `let`s does. Its evaluator has a stack of 16 values: `a + (b + (c + ..))` needs
-/// one more for each level, which a `let` or another order saves (the derive tells).
-///
-/// It can also read the value beyond its fields, where `start`, `end` and `offset` are
-/// expressions that count bytes from the start of the value. A `size` or a `len` can too (but for
-/// `size_of_val(self)`, which it defines): when `from_head` takes a value, it reads in the bytes
-/// that there are, so `size = 2 + if length == 126 { 2 + be(2, 2) } else { length }` takes
-/// WebSocket frames from a stream.
-/// - `le(offset, N)`, `be(offset, N)`: the integer of `N` bytes at `offset`;
-/// - `leb128(offset)`, `quic(offset)`, `vlq(offset)`: the variable-length integer at `offset`, of
-///   LEB128 (7 bits a byte, least significant first: Protocol Buffers, WebAssembly, MQTT), of
-///   QUIC (RFC 9000: 1, 2, 4 or 8 bytes, told by the two high bits) or of big-endian base 128
-///   (ASN.1 tag numbers and object identifiers); `leb128_len(offset)`, `quic_len(offset)`,
-///   `vlq_len(offset)`: its number of bytes. They fail if the integer is not over within the
-///   value, or does not fit in a `u128`; a longer encoding than needed is read as it is (a rule
-///   can refuse it: `leb128_len(1) <= 4`);
-/// - `crc32(start, end)`: the CRC-32 (of Ethernet) of the bytes from `start` to `end`;
-/// - `sum16(start, end)`: the ones' complement sum of the 16 bits words from `start` to `end`
-///   (`0xffff` over data that holds its own IP checksum);
-/// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of up to 64 bits, by the
-///   parameters of the catalogue of CRCs (`crc::<16, 0x8005, 0xffff, true, 0>` is the one of
-///   Modbus, `crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>` CRC-32C, see
-///   `puns::layout::Crc`); with two more offsets, `crc32(start, end, from, to)` or
-///   `crc::<..>(start, end, from, to)`, the bytes from `from` to `to` are taken as zeros (a CRC
-///   over the header that holds it, as in GPT);
-/// - `fletcher16(start, end)`, `adler32(start, end)`: Fletcher-16 (`0` over data that holds its
-///   ISO 8473 checksum, as OSPF and IS-IS do) and Adler-32; `sum(start, end)`: the sum of the
-///   bytes (tar);
-/// - `matches(DFA, start, end)`: whatever the bytes from `start` to `end` are accepted by an
-///   automaton, a `&'static puns::layout::Dfa` (`Dfa::ASCII`, `Dfa::DIGITS`, `Dfa::OCTAL`,
-///   `Dfa::HEX`, `Dfa::UTF8`, `Dfa::UTF8_NO_NUL`, or one of yours): a pattern that the struct
-///   requires of its bytes. As any rule, it proves nothing of them: a type that guarantees a
-///   pattern, as `str` does, cannot be derived, since its field can be written by safe code;
-/// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for
-///   as long as `COND` is true of it. This is how what is at an offset that depends on what is
-///   before is reached: after options, at the end of a chain of headers
-///   (`walk(0, |at| be(at, 1) != 0, |at| at + 2 + be(at + 1, 1))` is the offset of the first
-///   "type, length, value" whose type is 0), or at the end of a string
-///   (`size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1`). A walk can be anywhere: in any
-///   rule, in another walk, several in an expression. It takes at most
-///   `8 * size_of_val(self) + 128` steps (a step for each bit of the value, or of a `u128`), and
-///   fails beyond.
-///
-/// # Enums
-///
-/// Enums without fields, of any `repr`: their valid values are read from the compiler. Without
-/// `repr`, Rust does not specify them: without the `unstable` feature of `puns`, such an enum only
-/// proves itself.
-///
-/// Enums with fields, of a layout that is specified (`repr(C)`, `repr(u8)` or any other integer,
-/// or both) or of none: without `repr`, the layout that `rustc` chose is found by experiments in
-/// const evaluation on a value of each variant, which the layouts of the fields make (no field may
-/// hold a self-relative pointer). Every field must be `Pun`, and can have the `valid` option.
-/// What is known of such an enum is its tag; making one out of anything but itself checks the
-/// tag, then what the fields of the variant require. Without `repr`, what is found is what the
-/// compiler chose, which Rust does not keep: without the `unstable` feature of `puns`, the enum
-/// only proves itself.
-///
-/// An enum without variants has no value: nothing is made of one.
-///
-/// Enums whose variants each hold a reference, such as
-/// `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`, are not data but *views* of
-/// data that is one thing or another. For them, two functions are generated, which answer as
-/// trying the variants in order would: `from_head(bytes)` takes the first variant that `bytes`
-/// start with, and returns it with what remains; `from_bytes(bytes)` returns the first variant
-/// that `bytes` are, whole. Each variant is checked once at most, and only for what is not known
-/// of it already: a variant whose first constrained scalar (an EtherType) the bytes do not have
-/// is passed over on that scalar alone, and one whose values are all values of a later variant
-/// (`Frame<Ipv4<Udp>>` of `Frame<Ipv4>`) is decided after that one, from it: it fails with it,
-/// or is checked for what that one does not prove of it (the protocol, not the checksums again).
+/// Implements `Pun` as [`puns::Pun`](https://docs.rs/puns/latest/puns/derive.Pun.html) documents.
 #[proc_macro_derive(Pun, attributes(pun))]
 pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let tokens = TokenStream::from(input.clone());
@@ -213,8 +65,8 @@ pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     .into()
 }
 
-/// The types of the variants of a view, as a balanced tree (`puns::view::List`): the first half,
-/// then the second.
+/// Returns the types of the variants of a view as a balanced tree (`puns::view::List`): the first
+/// half, then the second.
 fn view_tree(types: &[&Type], root: &TokenStream) -> TokenStream {
   if let [ty] = types {
     return quote!(#root::view::Leaf<#ty>);
@@ -224,7 +76,7 @@ fn view_tree(types: &[&Type], root: &TokenStream) -> TokenStream {
   quote!(#root::view::Pair<#first, #second>)
 }
 
-/// The place of the variant `index` of `count` in the tree of [`view_tree`], as a type.
+/// Returns the place of the variant `index` of `count` in the tree of [`view_tree`], as a type.
 fn view_place(index: usize, count: usize, root: &TokenStream) -> TokenStream {
   if count == 1 {
     return quote!(#root::view::Here);
@@ -239,8 +91,10 @@ fn view_place(index: usize, count: usize, root: &TokenStream) -> TokenStream {
   }
 }
 
-/// What stands for the implementations of the derive when it fails, so that its error is the only
-/// one, rather than one at each use of the type. Never used: the crate does not compile.
+/// Returns what stands for the implementations of the derive when it fails.
+///
+/// The error of the derive is then the only one, rather than one at each use of the type. The
+/// fallback is never used, since the crate does not compile.
 fn fallback(input: &DeriveInput) -> TokenStream {
   let Ok(options) = parse_options(&input.attrs, "the type", &ALL_OPTIONS) else {
     return TokenStream::new();
@@ -278,7 +132,7 @@ fn fallback(input: &DeriveInput) -> TokenStream {
   }
 }
 
-/// The first identifier of `tokens` that starts with `__Pun`, if any.
+/// Returns the first identifier of `tokens` that starts with `__Pun`, if any.
 fn find_reserved(tokens: TokenStream) -> Option<Ident> {
   tokens.into_iter().find_map(|token| match token {
     proc_macro2::TokenTree::Ident(ident) if ident.to_string().starts_with("__Pun") => Some(ident),
@@ -287,7 +141,7 @@ fn find_reserved(tokens: TokenStream) -> Option<Ident> {
   })
 }
 
-/// `tokens`, with `Self` replaced by `this`.
+/// Returns `tokens`, with `Self` replaced by `this`.
 fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
   tokens
     .into_iter()
@@ -307,9 +161,12 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 // -------------------------------------------------------------------------------------------------
 // Attributes
 
-/// The identity of the type of `input` (`puns::layout::Id`): where it is declared, and its name.
-/// A generic type has none: two of its instances are other types, which `rustc` may arrange
-/// otherwise, and what makes one is not all `Pun` (`PhantomData<T>`).
+/// Returns the identity of the type of `input` (`puns::layout::Id`): where it is declared, and
+/// its name.
+///
+/// A generic type has none (`Id::NONE`). Two of its instances are other types, which `rustc` may
+/// arrange otherwise, and what makes one is not all `Pun` (`PhantomData<T>`). Lifetime parameters
+/// do not count.
 fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
   // One crate is expanded by one process, in which each derive takes the next number.
   static DERIVES: AtomicUsize = AtomicUsize::new(0);
@@ -327,16 +184,26 @@ fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
   })
 }
 
+/// The `repr` of a type, as far as the derive reads it.
 #[derive(Default)]
 struct Repr {
+  /// Whether it has `repr(C)`.
   c: bool,
+  /// Whether it has `repr(transparent)`.
   transparent: bool,
-  /// `N` of `packed(N)`.
+  /// The `N` of `packed(N)`, which is 1 for `packed`.
   packed: Option<TokenStream>,
-  /// `u8`, `i32`...
+  /// The integer of `repr(u8)`, `repr(i32)` and the like.
   int: Option<Ident>,
 }
 
+/// Returns the `repr` of the type of `attrs`.
+///
+/// `align(N)` is read and ignored.
+///
+/// # Errors
+///
+/// Returns an error if a `repr` attribute does not parse.
 fn parse_repr(attrs: &[Attribute]) -> Result<Repr> {
   let mut repr = Repr::default();
   for attr in attrs.iter().filter(|attr| attr.path().is_ident("repr")) {
@@ -371,7 +238,8 @@ fn parse_repr(attrs: &[Attribute]) -> Result<Repr> {
   Ok(repr)
 }
 
-/// `name`, `name: Type`, `name = EXPR` or `name: Type = EXPR`
+/// A region of `#[pun(regions(..))]`: `name`, `name: Type`, `name = EXPR` or
+/// `name: Type = EXPR`.
 struct Region {
   name: Ident,
   ty: Option<Type>,
@@ -397,7 +265,7 @@ impl Parse for Region {
   }
 }
 
-/// `Key = Type`
+/// A tag of `#[pun(tag(..))]`: `Key = Type`.
 struct TagOption {
   key: Type,
   tag: Type,
@@ -411,7 +279,7 @@ impl Parse for TagOption {
   }
 }
 
-/// `name: Type = EXPR`
+/// A getter of `#[pun(get(..))]`: `name: Type = EXPR`.
 struct Getter {
   name: Ident,
   ty: Type,
@@ -428,6 +296,7 @@ impl Parse for Getter {
   }
 }
 
+/// The options of `#[pun(..)]` of a type, a variant or a field.
 #[derive(Default)]
 struct Options {
   root: Option<TokenStream>,
@@ -442,8 +311,14 @@ struct Options {
   bounds: Option<Punctuated<syn::WherePredicate, Token![,]>>,
 }
 
-/// The options of `attrs`, which are those of `place`: only the options in `allowed` mean
-/// something there, the others are refused rather than ignored.
+/// Returns the options of `attrs`, which are those of `place`.
+///
+/// Only the options in `allowed` mean something there.
+///
+/// # Errors
+///
+/// Returns an error if an option is not in `allowed`, rather than ignore it, or if an option is
+/// unknown or does not parse.
 fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<Options> {
   let mut options = Options::default();
   for attr in attrs.iter().filter(|attr| attr.path().is_ident("pun")) {
@@ -511,6 +386,7 @@ const ALL_OPTIONS: [&str; 9] =
 // -------------------------------------------------------------------------------------------------
 // Expressions
 
+/// A field of a struct, as the derive compiles it.
 struct FieldInfo<'a> {
   member: Member,
   ty: &'a Type,
@@ -520,17 +396,22 @@ struct FieldInfo<'a> {
   offset: TokenStream,
 }
 
-/// The limits of the evaluator, which `layout::check_rules` checks again: the depth of its stack,
-/// and the number of variables of an expression. The validation applies each operation in an
-/// instance of a function of its own, down a tree of the operations: an expression has at most
-/// `MAX_OPS` of them, and nests at most `MAX_WALKS` walks.
+/// The depth of the stack of the evaluator, which `layout::check_ops` checks again.
+///
+/// The validation applies each operation in an instance of a function of its own, down a tree of
+/// the operations. So an expression also has at most [`MAX_OPS`] operations, and nests at most
+/// [`MAX_WALKS`] walks. It has at most [`VARIABLES`] variables.
 const STACK: usize = 16;
+/// The number of variables of an expression.
 const VARIABLES: usize = 8;
+/// The number of operations of an expression.
 const MAX_OPS: usize = 256;
+/// The depth of walks within walks of an expression.
 const MAX_WALKS: usize = 4;
 
-/// `tokens`, located at `span`: so that an error in what they compute is reported there. What
-/// their names resolve to does not change.
+/// Returns `tokens` located at `span`, so that an error in what they compute is reported there.
+///
+/// What their names resolve to does not change.
 fn located(tokens: TokenStream, span: Span) -> TokenStream {
   tokens
     .into_iter()
@@ -547,7 +428,7 @@ fn located(tokens: TokenStream, span: Span) -> TokenStream {
     .collect()
 }
 
-/// The name of an operation: the first after `Op::`.
+/// Returns the name of an operation: the first identifier after `Op::`.
 fn op_name(op: &TokenStream) -> Option<String> {
   let tokens = op.clone().into_iter().collect::<Vec<_>>();
   tokens.windows(4).find_map(|window| match window {
@@ -561,7 +442,8 @@ fn op_name(op: &TokenStream) -> Option<String> {
   })
 }
 
-/// What an operation takes off the stack of the evaluator, and what it puts on it.
+/// Returns how many values an operation takes off the stack of the evaluator, and how many it
+/// puts on it.
 fn effect(op: &TokenStream) -> (usize, usize) {
   match op_name(op).as_deref() {
     Some("Lit" | "load" | "Size" | "Get") => (0, 1),
@@ -575,8 +457,13 @@ fn effect(op: &TokenStream) -> (usize, usize) {
   }
 }
 
-/// Check that `ops`, the operations of what `spanned` is, fit the stack of the evaluator, and are
-/// not too many.
+/// Checks that `ops`, the operations of what `spanned` is, fit the stack of the evaluator, and
+/// are not too many.
+///
+/// # Errors
+///
+/// Returns an error at `spanned`, with the numbers, if there are more than [`MAX_OPS`]
+/// operations or they need more than [`STACK`] values.
 fn limits(ops: &[TokenStream], spanned: &impl ToTokens) -> Result<()> {
   if ops.len() > MAX_OPS {
     return Err(Error::new_spanned(
@@ -611,11 +498,14 @@ fn limits(ops: &[TokenStream], spanned: &impl ToTokens) -> Result<()> {
 /// The type of a value of an expression, as Rust types it, where every integer is a `u128`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ty {
+  /// An integer.
   Int,
+  /// A `bool`.
   Bool,
 }
 
 impl Ty {
+  /// Returns the name of the type in a message.
   const fn name(self) -> &'static str {
     match self {
       Ty::Int => "an integer",
@@ -624,7 +514,11 @@ impl Ty {
   }
 }
 
-/// `Ok` if `found` is `expected`, else an error at what `spanned` is.
+/// Checks that `found` is `expected`.
+///
+/// # Errors
+///
+/// Returns an error at `spanned`, with a hint, if `found` is not `expected`.
 fn expect(found: Ty, expected: Ty, spanned: &impl ToTokens) -> Result<()> {
   if found == expected {
     return Ok(());
@@ -642,17 +536,24 @@ fn expect(found: Ty, expected: Ty, spanned: &impl ToTokens) -> Result<()> {
 /// The variables of an expression: its `let`s, and the parameters of the closures of a `walk`.
 #[derive(Default)]
 struct Scope {
+  /// Each variable in scope: its name, its index and its type.
   names: Vec<(Ident, u8, Ty)>,
   /// How many closures of `walk`s the expression is in.
   walking: usize,
   /// For each `walk` of the expression that is being compiled, in order (not those in another
   /// `walk`): its two expressions, as types.
   walks: Vec<(TokenStream, TokenStream)>,
-  /// In a `size` or a `len`, which cannot be computed from `size_of_val(self)`.
+  /// Whether the expression is a `size` or a `len`, which cannot be computed from
+  /// `size_of_val(self)`.
   sizing: bool,
 }
 
 impl Scope {
+  /// Declares the variable `name` of type `ty`, and returns its index.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the expression already has [`VARIABLES`] variables in scope.
   fn declare(&mut self, name: &Ident, ty: Ty) -> Result<u8> {
     let index = self.names.len() as u8;
     if usize::from(index) >= VARIABLES {
@@ -668,6 +569,7 @@ impl Scope {
     Ok(index)
   }
 
+  /// Returns the index and the type of the variable `name` in scope, the last one declared.
   fn get(&self, name: &Ident) -> Option<(u8, Ty)> {
     self
       .names
@@ -678,7 +580,12 @@ impl Scope {
   }
 }
 
-/// `{ let name = EXPR; .. EXPR }`
+/// Compiles the block `{ let name = EXPR; .. EXPR }` to operations, and returns its type.
+///
+/// # Errors
+///
+/// Returns an error if a statement is not `let name = EXPR;` or `let name: TYPE = EXPR;`, if the
+/// block does not end with its value, or if an expression does not compile.
 fn compile_block(
   block: &syn::Block,
   fields: &[FieldInfo],
@@ -735,13 +642,21 @@ fn compile_block(
   Ok(ty)
 }
 
-/// The number of operations of a part of an expression that may not be computed (see
-/// `layout::Op::Shortcut`), as an operation holds it.
+/// Returns the number of operations of a part of an expression that may not be computed, as an
+/// operation holds it (`layout::Op::Shortcut`).
+///
+/// # Errors
+///
+/// Returns an error if the number does not fit a `u16`.
 fn part(len: usize) -> Result<u16> {
   u16::try_from(len).map_err(|_| Error::new(Span::call_site(), "this expression is too long"))
 }
 
-/// Compile `expr` to the operations of a postfix expression: returns its type.
+/// Compiles `expr` to the operations of a postfix expression, and returns its type.
+///
+/// # Errors
+///
+/// Returns an error at what Rust would not compile, or at what a rule does not compute.
 fn compile(
   expr: &Expr,
   fields: &[FieldInfo],
@@ -996,7 +911,7 @@ fn compile(
   })
 }
 
-/// The functions that a rule can call.
+/// The functions that a rule can call, as messages name them.
 const FUNCTIONS: &str = "`size_of_val(self)`, `le`, `be`, `leb128`, `leb128_len`, `quic`, \
                          `quic_len`, `vlq`, `vlq_len`, `crc32`, `crc::<..>`, `sum16`, `sum`, \
                          `fletcher16`, `adler32`, `matches` and `walk`";
@@ -1021,7 +936,12 @@ const ARITIES: [(&str, usize); 16] = [
   ("walk", 3),
 ];
 
-/// The operation of the checksum that `call` is, if it is one with the right number of arguments.
+/// Returns the operation of the checksum that `call` is, if it is one with the right number of
+/// arguments.
+///
+/// # Errors
+///
+/// Returns `Some` of an error if a call of `crc` lacks its 5 parameters.
 fn checksum(
   call: &syn::ExprCall,
   op: &TokenStream,
@@ -1082,7 +1002,8 @@ fn checksum(
   None
 }
 
-/// The form of the variable-length integer that `call` reads, and whatever it is its length.
+/// Returns the form of the variable-length integer that `call` reads, and whether `call` reads
+/// its length.
 fn varint(call: &syn::ExprCall) -> Option<(&'static str, bool)> {
   [
     ("leb128", "Leb128", false),
@@ -1097,8 +1018,15 @@ fn varint(call: &syn::ExprCall) -> Option<(&'static str, bool)> {
   .map(|(_, form, length)| (form, length))
 }
 
-/// The value of an integer literal, as a `u128`. Its type is the one of a suffix, if any, which
-/// must be an unsigned integer type.
+/// Returns the value of a literal as a `u128`.
+///
+/// The literal is an integer or a byte. The suffix of an integer, if any, must be an unsigned
+/// integer type.
+///
+/// # Errors
+///
+/// Returns an error if the literal is not an integer or a byte, or if its suffix is not an
+/// unsigned integer type.
 fn literal(lit: &Lit) -> Result<TokenStream> {
   let unsigned = "`#[pun(..)]` computes on unsigned integers";
   match lit {
@@ -1123,8 +1051,8 @@ fn literal(lit: &Lit) -> Result<TokenStream> {
   }
 }
 
-/// Whatever `tokens` name a field or a variable of the expression, or `self`: what a constant
-/// cannot name.
+/// Returns whether `tokens` name a field or a variable of the expression, or `self`, which a
+/// constant cannot name.
 fn mentions(tokens: TokenStream, fields: &[FieldInfo], scope: &Scope) -> bool {
   // After `.` or `::`, a name is a field or an item of something else.
   let mut qualified = false;
@@ -1154,8 +1082,16 @@ fn mentions(tokens: TokenStream, fields: &[FieldInfo], scope: &Scope) -> bool {
   false
 }
 
-/// Check that `expr`, which is not something that a rule computes, is a constant: Rust
-/// computes it, and it must be an unsigned integer. A macro (`offset_of!(Self, field)`) is one.
+/// Checks that `expr`, which is not something that a rule computes, is a constant.
+///
+/// Rust computes a constant, which must be an unsigned integer. A macro (`offset_of!(Self,
+/// field)`) is one.
+///
+/// # Errors
+///
+/// Returns an error, which says what a rule computes, if `expr` names a field, a variable or
+/// `self`, or if it calls a function by its name alone: a function of rules with the wrong number
+/// of arguments, or another function.
 fn constant(expr: &Expr, fields: &[FieldInfo], scope: &Scope) -> Result<()> {
   let error = |message: String| Err(Error::new_spanned(expr, message));
   let bytes = "read its bytes with `le(offset, size)` or `be(offset, size)`";
@@ -1200,8 +1136,12 @@ fn constant(expr: &Expr, fields: &[FieldInfo], scope: &Scope) -> Result<()> {
   }
 }
 
-/// What `as TYPE` keeps of a `u128`: `None` for `u128`, the mask of the bits of another unsigned
-/// integer type. Rules compute on unsigned integers: other types are refused.
+/// Returns what `as TYPE` keeps of a `u128`: `None` for `u128`, else the mask of the bits of
+/// another unsigned integer type.
+///
+/// # Errors
+///
+/// Returns an error if `ty` is not an unsigned integer type, since rules compute on those only.
 fn cast_mask(ty: &Type, op: &TokenStream) -> Result<Option<TokenStream>> {
   let name = match ty {
     Type::Path(path) if path.qself.is_none() => path.path.get_ident().map(ToString::to_string),
@@ -1224,19 +1164,19 @@ fn cast_mask(ty: &Type, op: &TokenStream) -> Result<Option<TokenStream>> {
   })
 }
 
-/// Whatever `call` is a call of `crc::<..>`.
+/// Returns whether `call` is a call of `crc::<..>`.
 fn is_crc(call: &syn::ExprCall) -> bool {
   matches!(&*call.func, Expr::Path(path) if path.qself.is_none()
     && path.path.segments.len() == 1 && path.path.segments[0].ident == "crc")
 }
 
-/// Whatever `call` is a call of the function `name`.
+/// Returns whether `call` is a call of the function `name`.
 fn is_call(call: &syn::ExprCall, name: &str) -> bool {
   matches!(&*call.func, Expr::Path(path) if path.path.is_ident(name))
 }
 
-/// Turn the expression of a getter into Rust, where an integer field, wherever it is named (by
-/// name, or as `self.name`), is its value as a `u128`.
+/// Returns the expression of a getter as Rust, in which an integer field is its value as a
+/// `u128`, wherever it is named, by its name or as `self.name`.
 fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream, packed: bool) -> TokenStream {
   let mut expr = expr.clone();
   Fielder { fields, root, packed, shadowed: vec![] }.visit_expr_mut(&mut expr);
@@ -1245,7 +1185,9 @@ fn rust(expr: &Expr, fields: &[FieldInfo], root: &TokenStream, packed: bool) -> 
 
 /// What replaces the fields of the expression of a getter.
 struct Fielder<'a> {
+  /// The fields of the struct.
   fields: &'a [FieldInfo<'a>],
+  /// The path of the `puns` crate.
   root: &'a TokenStream,
   /// The fields of a packed struct cannot be borrowed: they are copied.
   packed: bool,
@@ -1254,7 +1196,7 @@ struct Fielder<'a> {
 }
 
 impl Fielder<'_> {
-  /// The value of `member` as a `u128`, if it is a field, read where `span` is.
+  /// Returns the value of `member` as a `u128`, read where `span` is, if it is a field.
   fn value(&self, member: &Member, span: Span) -> Option<Expr> {
     self.fields.iter().any(|field| &field.member == member).then(|| {
       let root = self.root;
@@ -1269,7 +1211,7 @@ impl Fielder<'_> {
   }
 }
 
-/// The names that `pat` declares.
+/// Appends to `names` the names that `pat` declares.
 fn declared(pat: &syn::Pat, names: &mut Vec<Ident>) {
   match pat {
     syn::Pat::Ident(pat) => {
@@ -1341,15 +1283,22 @@ impl VisitMut for Fielder<'_> {
   }
 }
 
-/// An expression, as operations: `&[Op, ...]`.
+/// A compiled expression.
 struct Expression {
+  /// The operations, as `&[Op, ...]`.
   ops: TokenStream,
   /// The same, as a type (`puns::Steps`).
   steps: TokenStream,
 }
 
-/// Compile an expression whose value is a `ty`; with `sizing`, a size or a length, which
-/// `size_of_val(self)` cannot be in.
+/// Compiles an expression whose value is a `ty`.
+///
+/// With `sizing`, the expression is a size or a length, which `size_of_val(self)` cannot be in.
+///
+/// # Errors
+///
+/// Returns an error if the expression does not compile, is not of type `ty`, or exceeds the
+/// limits of the evaluator.
 fn expression(
   expr: &Expr,
   ty: Ty,
@@ -1365,11 +1314,17 @@ fn expression(
   Ok(Expression { ops: quote!(&[#(#ops),*]), steps })
 }
 
-/// The operations `ops` as a type: a tree (`puns::steps::Two`) whose leaves are the operations,
-/// each `One<INDEX>` or, for a walk, `Walk<INDEX, COND, NEXT>`, where `COND` and `NEXT` are its
-/// expressions as types: `walks`, in the order of the walks of `ops`. The validation applies each
-/// operation in an instance of its own, down this tree: it is balanced, so that the recursion is
-/// as deep as its logarithm.
+/// Returns the operations `ops` as a type: a balanced tree (`puns::steps::Two`) whose leaves are
+/// the operations.
+///
+/// Each leaf is `One<INDEX>`, or `Walk<INDEX, COND, NEXT>` for a walk, where `COND` and `NEXT` are
+/// its expressions as types. `walks` holds them, in the order of the walks of `ops`. The
+/// validation applies each operation in an instance of its own, down this tree. The tree is
+/// balanced, so the recursion is as deep as its logarithm.
+///
+/// # Panics
+///
+/// Panics if `walks` has fewer entries than `ops` has walks.
 fn steps(
   ops: &[TokenStream],
   walks: Vec<(TokenStream, TokenStream)>,
@@ -1402,7 +1357,12 @@ fn steps(
   tree(&leaves, root)
 }
 
-/// The ranges of `#[pun(valid(..))]`, as `&'static [(u128, u128)]`.
+/// Returns the ranges of `#[pun(valid(..))]`, as an expression of type
+/// `&'static [(u128, u128)]`.
+///
+/// # Errors
+///
+/// Returns an error if a bound is negative, or a literal that is not an unsigned integer.
 fn valid_ranges(
   ranges: &Punctuated<Expr, Token![,]>,
   ty: &Type,
@@ -1450,8 +1410,10 @@ fn valid_ranges(
   }))
 }
 
-/// Require `ty: Pun` of `generics`, unless they do already: a bound written twice is one that
-/// clippy sees twice, at the span of the one that the user wrote.
+/// Adds `ty: Pun` to the bounds of `generics`, unless they hold it already.
+///
+/// A bound written twice is one that clippy sees twice, at the span of the one that the user
+/// wrote.
 fn bound(generics: &mut syn::Generics, ty: &Type, root: &TokenStream) {
   let pun = |bounds: &Punctuated<syn::TypeParamBound, Token![+]>| {
     bounds.iter().any(|bound| {
@@ -1905,14 +1867,19 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
       impl #impl_generics #ident #ty_generics #where_clause {
         #(#deciders)*
 
-        /// Take the first of the variants that `bytes` start with: returns it and what remains.
+        /// Returns the first variant, in order, whose type `bytes` start with a valid value of,
+        /// and the bytes after that value.
+        ///
+        /// Returns `Err(Error::Validity)` if `bytes` start with a value of no variant's type.
         #vis const fn from_head(bytes: #bytes) -> #result<(Self, #bytes), #root::Error> {
           let mut known = #root::view::Known::<Self, #count, true>::new(bytes);
           #(#from_heads)*
           #result::Err(#root::Error::Validity)
         }
 
-        /// The first of the variants that `bytes` are, whole.
+        /// Returns the first variant, in order, whose type all of `bytes` are a valid value of.
+        ///
+        /// Returns `Err(Error::Validity)` if `bytes` are a value of no variant's type.
         #vis const fn from_bytes(bytes: #bytes) -> #result<Self, #root::Error> {
           let mut known = #root::view::Known::<Self, #count, false>::new(bytes);
           #(#wholes)*
@@ -1950,14 +1917,14 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   })
 }
 
-/// Whatever the implementation of `Pun` for the type of `input` is to be bounded by "the type
-/// `ty` of a field is `Pun`".
+/// Returns whether the implementation of `Pun` for the type of `input` needs the bound `ty: Pun`,
+/// for the type `ty` of a field.
 ///
-/// Only a type that depends on a parameter needs the bound: any other is `Pun` or is not,
-/// whatever the parameters are. And a type that names the type of `input` itself must not have
-/// it: a type that holds itself behind a pointer (`next: Option<Near<Self>>`) would be `Pun` if
-/// its field is, which is `Pun` if the type is, and the compiler does not go round such a cycle.
-/// What such a field needs of the parameters is then told by their own bounds.
+/// Only a type that names a type parameter needs the bound: any other is `Pun` or is not,
+/// whatever the parameters are. A type that names the type of `input` itself must not have it. A
+/// type that holds itself behind a pointer (`next: Option<Near<Self>>`) would be `Pun` if its
+/// field is, which is `Pun` if the type is, and the compiler does not resolve such a cycle. What
+/// such a field needs of the parameters is then said by their own bounds.
 fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
   fn names(tokens: TokenStream, idents: &[String]) -> bool {
     tokens.into_iter().any(|token| match token {
@@ -1972,8 +1939,9 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
   names(ty.to_token_stream(), &parameters) && !names(ty.to_token_stream(), &this)
 }
 
-/// An enum with fields, of a specified layout (RFC 2195): the offsets of the fields are the ones
-/// of `repr(C)` structs, which the compiler is asked for.
+/// Derives `Pun` for an enum with fields of a layout that Rust specifies (RFC 2195).
+///
+/// The offsets of the fields are those of `repr(C)` structs, which the compiler is asked for.
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   if !repr.c && repr.int.is_none() {
@@ -2177,13 +2145,14 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   })
 }
 
-/// An enum with fields whose layout is not specified (no `repr`): `rustc` chose it, and it is
-/// found by experiments in const evaluation on a sample of each variant (`Layout::discover`).
+/// Derives `Pun` for an enum with fields and without `repr`, whose layout Rust leaves to the
+/// compiler.
 ///
-/// The samples are made by the layouts of the fields (`Layout::sample`), the offsets of the
-/// fields are those of the fields of the sample, by a `match` on it. Every function that is
-/// called is an associated function of a type that `Layout::PIN` fixes, or a method of a value
-/// that one of them makes, as in the rest of the derive.
+/// The layout is found by experiments in const evaluation on a sample of each variant
+/// (`Layout::discover`). The layouts of the fields make the samples (`Layout::sample`). The
+/// offsets of the fields are found by a `match` on the sample. Every function that the generated
+/// code calls is an associated function of a type that `Layout::PIN` fixes, or a method of a
+/// value that one of them makes, as in the rest of the derive.
 fn derive_discovered(
   input: &DeriveInput,
   data: &DataEnum,
@@ -2416,8 +2385,15 @@ fn derive_discovered(
   })
 }
 
-/// A `repr(C)` union: each field is a variant of one field, at offset 0, and a value is valid if
-/// it is one of them (see `Layout::union`).
+/// Derives `Pun` for a `repr(C)` union.
+///
+/// Each field is a variant of one field, at offset 0. A value is valid if it is a valid value of
+/// one of them (`Layout::union`).
+///
+/// # Errors
+///
+/// Returns an error if the union is not `repr(C)`, if it is packed, or if an option does not
+/// parse or does not belong there.
 fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   if !repr.c || repr.packed.is_some() {

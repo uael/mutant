@@ -1,5 +1,5 @@
-//! Uninitialized bytes: `MaybeUninit<T>`, and scalars that a target requires while a source knows
-//! nothing of them (`Spec::maybe_uninit`).
+//! Tests uninitialized bytes: `MaybeUninit<T>`, scalars that a source may hold uninitialized but
+//! that a target requires to hold given values (`Spec::maybe_uninit`), and unions.
 
 use core::mem::MaybeUninit;
 
@@ -8,8 +8,8 @@ use puns::{
   layout::{Endian, Spec},
 };
 
-/// A byte that a target requires to be 0, and that a source may hold uninitialized: what a byte
-/// of a tag that may be padding is.
+/// A byte that a target requires to be 0, and that a source may hold uninitialized. A byte of a
+/// tag that may be padding is such a byte.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 struct Zero(MaybeUninit<u8>);
@@ -62,7 +62,7 @@ fn maybe_uninit_scalar() {
   let _: MaybeUninit<u8> = puns::pun(Zero(MaybeUninit::uninit()));
 }
 
-/// Four bytes, or a word.
+/// A union of four bytes and a word.
 #[derive(puns::Pun, Clone, Copy)]
 #[repr(C)]
 union Word {
@@ -70,7 +70,7 @@ union Word {
   word: u32,
 }
 
-/// A `bool`, or a number up to 3: a byte up to 3.
+/// A union of a `bool` and a number up to 3, which is a byte up to 3.
 #[derive(puns::Pun, Clone, Copy)]
 #[repr(C)]
 union Choice {
@@ -78,7 +78,8 @@ union Choice {
   small: puns::num::u8in<0, 3>,
 }
 
-/// A byte, or a byte and a `u16`: the first byte, then three of which nothing is required.
+/// A union of a byte and of a pair of a byte and a `u16`. It requires its first byte to be
+/// initialized, and nothing of its three other bytes.
 #[derive(puns::Pun, Clone, Copy)]
 #[repr(C)]
 union Padded {
