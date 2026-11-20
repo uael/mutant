@@ -2579,6 +2579,31 @@ impl Layout {
     stable
   }
 
+  /// Of a struct: whatever the size of every field is a multiple of the greatest alignment of a
+  /// field (as the struct lowers it, if it is `packed(N)`), so that the fields of a size are one
+  /// right after the other in every order, without padding between them.
+  pub(crate) const fn tiled(&self) -> bool {
+    let Kind::Struct(fields, _) = self.kind else { panic!("not a struct") };
+    let (mut align, mut i) = (1, 0);
+    while i < fields.len() {
+      // The alignment of the struct is at most `N`: the one of a field, lowered to it.
+      let field = fields[i].layout.align;
+      let field = if field < self.align { field } else { self.align };
+      if field > align {
+        align = field;
+      }
+      i += 1;
+    }
+    let mut i = 0;
+    while i < fields.len() {
+      if !fields[i].layout.size.is_multiple_of(align) {
+        return false;
+      }
+      i += 1;
+    }
+    true
+  }
+
   /// The same layout, of a struct or a tuple of the `Rust` representation, packed to `pack`
   /// (`usize::MAX`: not packed).
   ///
@@ -2611,15 +2636,11 @@ impl Layout {
       return Self { stable: Stable::opaque(false, false), ..self };
     }
     // The fields that matter to the order: of a size, or aligned to more than 1.
-    let (mut align, mut sized, mut sum, mut init, mut i) = (1, 0, 0, true, 0);
+    let (mut sized, mut sum, mut init, mut i) = (0, 0, true, 0);
     let (mut all_any, mut all_same) = (true, true);
     let mut first: Option<&Layout> = None;
     while i < fields.len() {
       let field = fields[i].layout;
-      let field_align = if field.align < pack { field.align } else { pack };
-      if field_align > align {
-        align = field_align;
-      }
       if field.size > 0 {
         sized += 1;
         sum += field.size;
@@ -2637,13 +2658,7 @@ impl Layout {
       }
       i += 1;
     }
-    // Every field of a size is a multiple of every alignment: no padding between fields.
-    let mut tiled = true;
-    let mut i = 0;
-    while i < fields.len() {
-      tiled &= fields[i].layout.size % align == 0;
-      i += 1;
-    }
+    let tiled = self.tiled();
     let Some(tiled_size) = round_up(sum, self.align) else { panic!("struct is too large") };
     let same_bytes = !self.rules_read_bytes()
       && match sized {

@@ -1083,25 +1083,16 @@ const fn relate_fields(a: &Cursor, b: &Cursor, target: &'static Layout, pos: usi
   if !target.stable.size || target.has_rules || target.has_pointers() {
     return false;
   }
-  // The greatest alignment of a field in the struct (`packed(N)` lowers it to the one of the
-  // struct), and the greatest common divisor of the sizes.
-  let (mut align, mut step, mut tiled, mut i) = (1, 0, true, 0);
+  // The greatest common divisor of the sizes.
+  let (mut step, mut i) = (0, 0);
   while i < fields.len() {
     let field = fields[i].layout;
-    let field_align = min(field.align, target.align);
-    if field_align > align {
-      align = field_align;
-    }
     if field.size > 0 {
       step = if step == 0 { field.size } else { gcd(step, field.size) };
     }
     i += 1;
   }
-  let mut i = 0;
-  while i < fields.len() {
-    tiled &= fields[i].layout.size.is_multiple_of(align);
-    i += 1;
-  }
+  let tiled = target.tiled();
   let (mut places, mut proven, mut i) = (0, true, 0);
   while i < fields.len() {
     let field = fields[i].layout;
