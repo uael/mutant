@@ -3646,10 +3646,10 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `layout` is not a union ([`Enum::union`] makes one). Panics if the layout of a
-  /// variant does not have the size of `T`, has more than one field, or holds a self-relative
-  /// pointer. Panics if a field is not at offset 0, is larger than `T`, or is unsized. In const
-  /// evaluation, the panic is a compile error.
+  /// Panics if `layout` is not the layout of a union, as `#[derive(Pun)]` makes it. Panics if the
+  /// layout of a variant does not have the size of `T`, has more than one field, or holds a
+  /// self-relative pointer. Panics if a field is not at offset 0, is larger than `T`, or is
+  /// unsized. In const evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
