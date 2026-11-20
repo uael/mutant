@@ -533,7 +533,8 @@ let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
 
 With `features = ["unstable"]`, `puns` uses the layout that `rustc` chose for this build. Every pun
 that compiles without the feature compiles with it and behaves the same, and more puns compile.
-[`puns/DESIGN.md`][design] lists the layouts that Rust specifies, with their sources.
+[What Rust documents](https://docs.rs/puns/latest/puns/#what-rust-documents) lists the layouts that
+Rust specifies, with their sources.
 
 With the `unstable` feature, enums without `repr`, `Option` included, are supported too. Their
 layout is found by experiments when the program is built, rather than declared.
