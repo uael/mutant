@@ -722,3 +722,34 @@ fn a_check_reads_what_every_layout_has_there() {
     );
   }
 }
+
+/// Declares a struct in each of two functions, at one place: the place of the outermost macro
+/// call, which `line!()` and `column!()` give of both.
+macro_rules! one_in_each {
+  () => {
+    fn first() -> &'static crate::layout::Layout {
+      #[derive(Pun)]
+      #[pun(crate)]
+      struct Pair(u8, u16);
+      &Pair::LAYOUT
+    }
+    fn second() -> &'static crate::layout::Layout {
+      #[derive(Pun)]
+      #[pun(crate)]
+      struct Pair(u8, u16);
+      &Pair::LAYOUT
+    }
+  };
+}
+
+one_in_each!();
+
+/// Two types declared at one place are two types: what `rustc` makes of one is not what it makes
+/// of the other, and they prove nothing of each other.
+#[test]
+fn two_types_at_one_place_are_two() {
+  assert!(!first().id.equals(&second().id));
+  if !crate::layout::UNSTABLE {
+    assert!(!analyze(first(), second()).relation.infallible());
+  }
+}

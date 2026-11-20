@@ -151,12 +151,14 @@ pub use visit::{
   Invalid, Pointee, Visit, copy_in, pointers_elems_in, pointers_in, validate_elems_in, validate_in,
 };
 
-/// Where the type `$name` is declared, and its name: its identity (`layout::Id`), for
-/// `#[derive(Pun)]`, which names `core` through this crate (a crate may have another `core`).
+/// Where the type `$name` is declared, its name, and `$n`, the number of the derive in its crate:
+/// its identity (`layout::Id`), for `#[derive(Pun)]`, which names `core` through this crate (a
+/// crate may have another `core`). The place is the outermost macro call that declares the type,
+/// which may declare two (one in each of two functions): the number tells them apart.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __site {
-  ($name:ident) => {
+  ($name:ident, $n:literal) => {
     $crate::__core::concat!(
       $crate::__core::module_path!(),
       "::",
@@ -166,7 +168,9 @@ macro_rules! __site {
       ":",
       $crate::__core::line!(),
       ":",
-      $crate::__core::column!()
+      $crate::__core::column!(),
+      "#",
+      $n
     )
   };
 }

@@ -1,5 +1,7 @@
 //! `#[derive(Pun)]`, see the documentation of the `puns` crate.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{
@@ -309,15 +311,18 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 /// A generic type has none: two of its instances are other types, which `rustc` may arrange
 /// otherwise, and what makes one is not all `Pun` (`PhantomData<T>`).
 fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
+  // One crate is expanded by one process, in which each derive takes the next number.
+  static DERIVES: AtomicUsize = AtomicUsize::new(0);
   let generic =
     input.generics.params.iter().any(|param| !matches!(param, GenericParam::Lifetime(_)));
   if generic {
     return quote!(#root::layout::Id::NONE);
   }
   let ident = &input.ident;
+  let n = proc_macro2::Literal::usize_unsuffixed(DERIVES.fetch_add(1, Ordering::Relaxed));
   // Of the type that the traits name, whatever the path leads to (see `Layout::PIN`).
   quote!({
-    let id: #root::layout::Id = #root::layout::Id::new(#root::__site!(#ident), &[]);
+    let id: #root::layout::Id = #root::layout::Id::new(#root::__site!(#ident, #n), &[]);
     id
   })
 }
