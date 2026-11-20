@@ -14,7 +14,8 @@ env:
 jobs:
   # `cargo test --workspace --exclude puns-model`, in three jobs: what it builds (every test file
   # is a binary, eleven of which hold an example) is most of its minute. With the two jobs of the
-  # model check below, this is `cargo test --all`.
+  # model check below, this is `cargo test --all`. With the `unstable` feature, which some targets
+  # need (`required-features`): what `puns` does without it is the job "Kept layouts".
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -25,18 +26,18 @@ jobs:
           # The unit tests, the compile-fail tests (trybuild), the doc tests (README included).
           - name: library, compile-fail, docs
             run: |
-              cargo test -p puns --lib --test compile_fail
+              cargo test -p puns --features unstable --lib --test compile_fail
               cargo test --workspace --exclude puns-model --doc
           # The other test files, every other one each. Each example is run through its test
           # (`tests/ethernet.rs`...), which asserts its results; `codegen` has none, and is built.
           - name: integration, 1 of 2
             part: 1
-            run: cargo test -p puns $TESTS
+            run: cargo test -p puns --features unstable $TESTS
           - name: integration, 2 of 2
             part: 2
             run: |
-              cargo test -p puns $TESTS
-              cargo build -p puns --example codegen
+              cargo test -p puns --features unstable $TESTS
+              cargo build -p puns --features unstable --example codegen
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -49,7 +50,7 @@ jobs:
       - name: Select the test files of the job
         if: matrix.part
         run: |
-          tests=$(ls puns/tests/*.rs | grep -v '/compile_fail\.rs$' | sed 's|.*/|--test |; s|\.rs$||')
+          tests=$(ls puns/tests/*.rs | grep -v '/compile_fail\.rs$\|/seeds\.rs$' | sed 's|.*/|--test |; s|\.rs$||')
           tests=$(echo "$tests" | awk -v part="${{ matrix.part }}" 'NR % 2 == part % 2')
           echo "TESTS=$(echo $tests)" >> "$GITHUB_ENV"
       - run: ${{ matrix.run }}
@@ -80,6 +81,54 @@ jobs:
           key: model
       - run: cargo test -p puns-model ${{ matrix.tests }}
 
+  # Without the `unstable` feature, nothing that `puns` does depends on what Rust lets `rustc`
+  # lay out otherwise (`puns/DESIGN.md`, "What Rust keeps of a layout"). `tests/seeds.rs` records
+  # the verdict of every function on pairs of types, and which bytes each accepts: the record must
+  # be `tests/seeds.txt` without `-Zrandomize-layout`, and with it, of each seed (one job each: a
+  # seed is other flags, which build everything again). The cases of `compile-fail-kept` hold the
+  # refusals and their messages (trybuild takes them without the feature).
+  stable:
+    name: Kept layouts (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    env:
+      # Every `cargo` of the job is the one of the matrix (see the Miri jobs).
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: refusals, record
+            id: stable
+            toolchain: 1.100.0
+            run: cargo test -p puns --features verdict --test seeds --test compile_fail
+          - name: seed 1
+            id: seed-1
+            toolchain: nightly-2026-11-17
+            flags: -Zrandomize-layout -Zlayout-seed=1
+            run: cargo test -p puns --features verdict --test seeds
+          - name: seed 2
+            id: seed-2
+            toolchain: nightly-2026-11-17
+            flags: -Zrandomize-layout -Zlayout-seed=2
+            run: cargo test -p puns --features verdict --test seeds
+          - name: seed 3
+            id: seed-3
+            toolchain: nightly-2026-11-17
+            flags: -Zrandomize-layout -Zlayout-seed=3
+            run: cargo test -p puns --features verdict --test seeds
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Not the name: a key of a cache has no comma.
+          key: ${{ matrix.id }}
+      - run: ${{ matrix.run }}
+        env:
+          RUSTFLAGS: ${{ matrix.flags }}
+
   clippy:
     name: Clippy, documentation
     runs-on: ubuntu-latest
@@ -91,6 +140,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
+      # The workspace turns the `unstable` feature of `puns` on: what is compiled without it.
+      - run: cargo clippy -p puns --features verdict --tests -- -D warnings
       # The documentation, in the same job: the same toolchain, a few seconds more.
       - run: cargo doc --no-deps --all
         env:
@@ -177,19 +228,19 @@ jobs:
           # three jobs for each run: every third test file each.
           - name: tree borrows, 1 of 3
             id: tree
-            args: -p puns
+            args: -p puns --features unstable
             select: true
             part: 1
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           - name: tree borrows, 2 of 3
             id: tree
-            args: -p puns
+            args: -p puns --features unstable
             select: true
             part: 2
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
           - name: tree borrows, 3 of 3
             id: tree
-            args: -p puns
+            args: -p puns --features unstable
             select: true
             part: 3
             flags: -Zmiri-tree-borrows -Zmiri-strict-provenance
@@ -198,21 +249,21 @@ jobs:
           # stacked borrows do not depend on the target (x86-64 has the three jobs above).
           - name: stacked borrows, big-endian, 1 of 3
             id: stacked-s390x
-            args: -p puns
+            args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
             select: true
             part: 1
             flags: -Zmiri-strict-provenance
           - name: stacked borrows, big-endian, 2 of 3
             id: stacked-s390x
-            args: -p puns
+            args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
             select: true
             part: 2
             flags: -Zmiri-strict-provenance
           - name: stacked borrows, big-endian, 3 of 3
             id: stacked-s390x
-            args: -p puns
+            args: -p puns --features unstable
             target: s390x-unknown-linux-gnu
             select: true
             part: 3
@@ -220,21 +271,21 @@ jobs:
           # 32 bits: a smaller `usize`, a `u64` aligned to 4.
           - name: 32 bits, 1 of 3
             id: i686
-            args: -p puns
+            args: -p puns --features unstable
             target: i686-unknown-linux-gnu
             select: true
             part: 1
             flags: -Zmiri-strict-provenance
           - name: 32 bits, 2 of 3
             id: i686
-            args: -p puns
+            args: -p puns --features unstable
             target: i686-unknown-linux-gnu
             select: true
             part: 2
             flags: -Zmiri-strict-provenance
           - name: 32 bits, 3 of 3
             id: i686
-            args: -p puns
+            args: -p puns --features unstable
             target: i686-unknown-linux-gnu
             select: true
             part: 3
