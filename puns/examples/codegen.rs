@@ -405,7 +405,7 @@ pub fn try_view_owned(maybe: &Maybe) -> Option<&Owned> {
   puns::try_view_ref(maybe).ok()
 }
 
-/// A packet whose payload is a typed region of its bytes, like `Ipv4` in the README.
+/// A packet whose payload is a typed region of its bytes, like `Ipv4` in `ethernet.rs`.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = 4 + length)]

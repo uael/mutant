@@ -7,7 +7,7 @@
 //! holds:
 //!
 //! - The pun is **proven** if every value of the source is a [valid] value of the target. It
-//!   compiles to no code.
+//!   compiles to no check, and at most to the arithmetic of an address or a length.
 //! - The pun is **checked** if it is valid for some values of the source. A `try_` or `from_`
 //!   function then tests at run time what the analysis could not prove, and nothing else.
 //! - The pun is **refused** if it is never valid, or if what it needs can be neither proven nor
@@ -29,6 +29,8 @@
 //!
 //! - The functions of the first row are proven, except [`try_pun`], [`try_pun_ref`] and
 //!   [`try_pun_mut`], which are checked.
+//! - The functions that take a value, [`pun`], [`try_pun`], [`head`] and [`tail`], require both
+//!   types to be `Copy`.
 //! - A part is the first or the last `size_of::<D>()` bytes. If the target of [`head`],
 //!   [`head_ref`] or [`head_mut`] is a slice, the part is as many elements as fit. [`tail`],
 //!   [`tail_ref`] and [`tail_mut`] require a sized source.
@@ -57,6 +59,98 @@
 //! [`macro@Pun`]. What a layout is made of, and the checksums, are in [`layout`]. The tests and the
 //! examples of the repository are the reference for what works. Each example says what it does not
 //! cover, and why.
+//!
+//! ## Using the functions
+//!
+//! The following examples use the functions of the table on several kinds of values.
+//!
+//! ```
+//! use puns::{
+//!   Pun,
+//!   num::{u8in, u16be, u32be, u32le},
+//! };
+//!
+//! // Read an `f32` as its bits. A `u32` is a `char` only if it is a Unicode scalar value.
+//! assert_eq!(puns::pun::<f32, u32>(1.0), 0x3f80_0000);
+//! assert_eq!(puns::try_pun::<u32, char>(0xe9), Ok('é'));
+//! assert_eq!(puns::try_pun::<u32, char>(0xd800), Err(puns::Error::Validity));
+//!
+//! // The low half of a big-endian number is its last two bytes.
+//! assert_eq!(puns::tail::<u32be, u16be>(0x1234_5678.into()).get(), 0x5678);
+//! assert_eq!(puns::head::<u32le, u8>(0x1234_5678.into()), 0x78);
+//!
+//! /// A pixel. Its first three bytes are its color.
+//! #[derive(Pun, Debug, PartialEq)]
+//! #[repr(C)]
+//! struct Rgba {
+//!   red: u8,
+//!   green: u8,
+//!   blue: u8,
+//!   alpha: u8,
+//! }
+//!
+//! // Turn RGBA into BGRA in place, through a `&mut` to the color alone.
+//! let mut pixel = Rgba { red: 255, green: 128, blue: 0, alpha: 200 };
+//! puns::head_mut::<_, [u8; 3]>(&mut pixel).reverse();
+//! assert_eq!(pixel, Rgba { red: 0, green: 128, blue: 255, alpha: 200 });
+//!
+//! /// A string of UTF-8, after its length in one byte.
+//! #[derive(Pun)]
+//! #[repr(C)]
+//! #[pun(size = 1 + length)]
+//! struct Text {
+//!   length: u8,
+//!   text: str,
+//! }
+//!
+//! // Read strings from the front of a stream. `from_head` returns each one and the bytes after it.
+//! let mut stream: &[u8] = b"\x05hello\x00\x05world\xff";
+//! let mut words = vec![];
+//! while let Ok((word, rest)) = puns::from_head::<Text>(stream) {
+//!   words.push(&word.text);
+//!   stream = rest;
+//! }
+//! assert_eq!((words, stream), (vec!["hello", "", "world"], &[0xff][..]));
+//!
+//! // Read a checksum from the back of a file.
+//! let file = [b'd', b'a', b't', b'a', 0x78, 0x56, 0x34, 0x12];
+//! let (data, checksum) = puns::from_tail::<u32le>(&file).unwrap();
+//! assert_eq!((data, checksum.get()), (&b"data"[..], 0x1234_5678));
+//!
+//! // Reading bytes as ASCII is checked. Reading ASCII as a `str` is proven.
+//! let ascii: &[u8in<0, 0x7f>] = puns::from_bytes(b"hello").unwrap();
+//! let text: &str = puns::pun_ref(ascii);
+//! assert_eq!(text, "hello");
+//! ```
+//!
+//! The functions of the table are `const fn`, so bytes in a constant are checked when the program
+//! is compiled.
+//!
+//! ```
+//! use puns::{
+//!   Pun,
+//!   num::{u16le, u32bec},
+//! };
+//!
+//! #[derive(Pun)]
+//! #[repr(C)]
+//! #[pun(assert(hp <= level * 10))]
+//! struct Save {
+//!   magic: u32bec<0x5341_5645>,
+//!   version: u8,
+//!   #[pun(valid(1..=99))]
+//!   level: u8,
+//!   hp: u16le,
+//!   bag: [u8],
+//! }
+//!
+//! // A new game starts from a save in the binary. With 11 hp at level 1, the build fails.
+//! const NEW_GAME: &Save = match puns::from_bytes(b"SAVE\x02\x01\x0a\x00") {
+//!   Ok(save) => save,
+//!   Err(_) => panic!("the built-in save is invalid"),
+//! };
+//! assert_eq!((NEW_GAME.level, NEW_GAME.hp.get()), (1, 10));
+//! ```
 //!
 //! # Soundness
 //!
@@ -220,7 +314,7 @@
 //! assert_eq!(odd.get(), 3);
 //! ```
 //!
-//! ## Compile-time errors
+//! # Compile-time errors
 //!
 //! Most refusals are panics in `const` blocks of the generic functions of `puns` (error E0080).
 //! Such a block depends on the type parameters, so `rustc` evaluates it only when it generates the
@@ -230,11 +324,94 @@
 //! Each function lists its conditions under "Compile-time errors". Rust has no const traits on
 //! stable, which would let these conditions be trait bounds.
 //!
-//! ### Messages
+//! ## Reading an error
+//!
+//! A common mistake with `transmute` is to read a struct with padding as bytes. `puns` refuses it,
+//! and the first lines of the error say why.
+//!
+//! ```compile_fail,E0080
+//! #[derive(puns::Pun)]
+//! #[repr(C)]
+//! struct Header {
+//!   kind: u8,
+//!   length: u32,
+//! }
+//!
+//! let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, length: 2 });
+//! ```
+//!
+//! ```text
+//! error[E0080]: evaluation panicked:
+//!               cannot pun: a byte that the target requires to be initialized is padding in the source.
+//!               This is at byte 1 of the target.
+//! ...
+//! note: the above error was encountered while instantiating `fn pun_ref::<Header, [u8; 8]>`
+//!  --> src/main.rs:9:25
+//!   |
+//! 9 |   let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, length: 2 });
+//!   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//! ```
+//!
+//! Byte 1 is the first of the three bytes of padding after `kind`. Here the last note says where
+//! the call is in your code. Between the first lines and the last note, `rustc` prints about thirty
+//! lines that locate the failed constant inside `puns`, which you can skip. A refusal through
+//! another function, such as `from_bytes`, may end with a note that names an inner function of
+//! `puns` and two types, without the place of the call. The two types then tell which call it is.
+//!
+//! To fix this pun, declare the padding as a field, so that it is initialized.
+//!
+//! ```
+//! #[derive(puns::Pun)]
+//! #[repr(C)]
+//! struct Header {
+//!   kind: u8,
+//!   reserved: [u8; 3],
+//!   length: u32,
+//! }
+//!
+//! let bytes: &[u8; 8] = puns::pun_ref(&Header { kind: 1, reserved: [0; 3], length: 2 });
+//! assert_eq!(bytes[..4], [1, 0, 0, 0]);
+//! ```
+//!
+//! ## Messages
 //!
 //! Each refusal prints a message that says why the pun is refused. When the reason is at a byte of
 //! the target, the message names that byte. The most common messages follow, each with code that
-//! compiles.
+//! compiles where the pun can be fixed.
+//!
+//! **The pun depends on a layout that Rust leaves to the compiler.** The fields of a struct without
+//! `repr` may be in any order, so `puns` cannot tell which byte is the `bool`.
+//!
+#![cfg_attr(not(feature = "unstable"), doc = "```compile_fail,E0080")]
+#![cfg_attr(feature = "unstable", doc = "```")]
+//! #[derive(puns::Pun)]
+//! struct Flagged {
+//!   value: u8,
+//!   flag: bool,
+//! }
+//!
+//! let flagged: &Flagged = puns::from_bytes(&[1u8, 1]).unwrap();
+//! ```
+//!
+//! ```text
+//! cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+//! Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
+//! This is at byte 0 of the target.
+//! ```
+//!
+//! With `#[repr(C)]`, the fields are in the order of their declarations.
+//!
+//! ```
+//! #[derive(puns::Pun)]
+//! #[repr(C)]
+//! struct Flagged {
+//!   value: u8,
+//!   flag: bool,
+//! }
+//!
+//! let flagged: &Flagged = puns::from_bytes(&[7u8, 1]).unwrap();
+//! assert!(flagged.flag);
+//! ```
 //!
 //! **The sizes differ.**
 //!
@@ -304,8 +481,7 @@
 //! ```
 //!
 //! ```text
-//! cannot pun: some values of the target are not valid for the source (or are padding where the
-//! source is not), and could be written through the `&mut`.
+//! cannot pun: some values of the target are not valid for the source (or are padding where the source is not), and could be written through the `&mut`.
 //! ```
 //!
 //! Nothing is written through a shared reference, and every `str` is bytes.
@@ -329,9 +505,10 @@
 //! ```
 //!
 //! A byte that is padding in the source, and that the target requires to be initialized, is refused
-//! as well. [Enums: what is refused](#enums-what-is-refused) shows it for an enum.
+//! as well. [Reading an error](#reading-an-error) shows its message, and
+//! [Enums: what is refused](#enums-what-is-refused) shows it for an enum.
 //!
-//! # Enums: what is refused
+//! ## Enums: what is refused
 //!
 //! A `Shape` is not 4 bytes. The byte after the tag of a `Circle` is padding, and nothing tells a
 //! `Circle` from a `Rect` at compile time.

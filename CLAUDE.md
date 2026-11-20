@@ -94,6 +94,8 @@ evaluator or the validators. It takes minutes to build (release, LTO), and is no
 With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or `hand`) it runs a case that many times
 instead, for `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`: a count of instructions
 per check, which a loaded machine does not change.
+The times published in `docs/performance.md` name the machine, the revision and the load, and
+the output of their runs is in `docs/checks-<date>.txt`: new times come with a new record.
 
 ## Architecture
 
