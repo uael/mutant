@@ -251,20 +251,21 @@ case, and how they were measured.
 
 ## History
 
-I started `puns` in November 2023, on nightly, under the name `mutant`. Part of the reason was to
-see how far the compiler could be pushed. The other part was my work: I was doing Bluetooth then,
-so a lot of packing and unpacking of protocol structures.
+I started `puns` in November 2023, on nightly, under the name `mutant`. I was working on
+Bluetooth at the time, which meant packing and unpacking a lot of protocol structures, and
+[`typic`][typic] had amazed me with how much it got out of the type system. I wanted to see how
+far the same idea could go with compile-time evaluation instead. Rust was stabilizing more of it:
+inline `const` blocks were on their way, and a `const` block in a generic function can refuse to
+compile for some types.
 
-Inline `const` blocks and more of `const fn` were on their way to stable Rust, and a `const` block
-in a generic function can refuse to compile for some types: the first commit already checked the
-alignment of a type that way. [`typic`][typic] had shown what to check: accept a transmute only
-when every value of the source is a valid value of the target.
+Compile-time evaluation had too many limits then. From October 2024 to March 2025 I tried types
+instead, as `typic` does, and ran into even more. After many prototypes that mixed both
+approaches, I put the project aside.
 
-In December 2023 each type got a `LAYOUT` constant. From October 2024 to March 2025 I tried
-`typic`'s way instead, with layouts as types and the trait solver comparing them. In November
-2026 I went back to constants, wrote the whole comparison as `const fn` code, and renamed the
-crate. Rust 1.99 brought the last thing it needed on stable: the size and alignment of an unsized
-type in a `const`.
+New stabilizations, and how far AI models had come, brought me back to it in November 2026. Rust
+1.99 brought the last piece that stable Rust lacked: the size and alignment of an unsized type in
+a `const`. Layouts became `const` values, compared by ordinary `const fn` code, and since the name
+`mutant` was taken, the crate became `puns`.
 
 ## Documentation
 
