@@ -60,8 +60,9 @@ fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
   cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
-  // The workspace turns the `unstable` feature of `puns` on (`puns-model` needs it): what is
-  // compiled without it (`tests/seeds.rs`) is linted alone.
-  cmd!(sh, "cargo clippy -p puns --features verdict --tests {args...}").run_echo()?;
+  // With the `unstable` feature: the targets that require it, the code under it.
+  let unstable = "puns/unstable,puns-model/unstable";
+  cmd!(sh, "cargo clippy --workspace --tests --examples --benches --features {unstable} {args...}")
+    .run_echo()?;
   fmt(sh, !fix)
 }

@@ -18,7 +18,7 @@ cargo bench -p puns --features unstable --bench checks -- ipv6  # Only the cases
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target s390x-unknown-linux-gnu  # Miri, stacked borrows, on a big-endian target
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
-cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml); `cargo test` runs a sample
+cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml, also with `full,unstable`); `cargo test` runs a sample
 cargo test -p puns --features verdict  # Without the `unstable` feature, the default: every test that builds without it, the record of verdicts included
 cargo test -p puns --features unstable  # With it: the targets that need it too (`required-features`), the cases of `compile-fail-unstable`
 PUNS_BLESS=1 cargo test -p puns --features verdict --test seeds  # Write the record of verdicts again (`puns/tests/seeds.txt`)
@@ -27,7 +27,7 @@ MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
-cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings) + format check
+cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings), without `unstable` then with it, + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
@@ -54,12 +54,12 @@ third from one run to the next, so aim at 45 seconds and read the times of the j
 of the workflow (the first run after a change of a cache key has nothing cached). With the caches,
 what comes before the work is 15 to 20 seconds, so the work of a job is at most about 20 seconds:
 the build of the tests of `miri_sample` or of `parts` of the model is that alone. This is why `cargo
-test --all` is nine jobs there (the tests of `puns` in six, four without the `unstable` feature and
-two with it; the sample of the model check in three), and why each Miri run of the tests of `puns`
-is five jobs (without the feature, three parts of about the same time, two named and every other
-file; with it, the files about it in two: split a job again rather than let it pass 45 seconds),
-with a cache of the standard library that Miri builds and of the sources it builds it from (Miri
-builds it again when the modification time of a source changes, which a fresh install of the
+test --all` is twelve jobs there (the tests of `puns` in six, four without the `unstable` feature
+and two with it; the sample of the model check in six, three each way), and why each Miri run of the
+tests of `puns` is five jobs (without the feature, three parts of about the same time, two named and
+every other file; with it, the files about it in two: split a job again rather than let it pass 45
+seconds), with a cache of the standard library that Miri builds and of the sources it builds it from
+(Miri builds it again when the modification time of a source changes, which a fresh install of the
 toolchain does). Balance the parts by the time that passes for each test binary in the log of the
 job: the time that Miri reports for a test is not that one. Under Miri, a test that loops is a
 fraction of its size (`cfg!(miri)`): what Miri is there for is each unsafe path, not each value.
@@ -106,10 +106,11 @@ the feature runs without it (`tests/seeds.rs` needs `verdict`), the cases of `co
 included. With it run only what is about it: the targets of `required-features = ["unstable"]` and
 the files with tests under `#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the
 cases of `compile-fail-unstable`. A test that does not compile without the feature is one of these,
-or relies on what Rust does not keep. With the rest of the workspace (`cargo test --all`), `puns`
-has the feature (`puns-model` turns it on): what is kept is tested by `-p puns` alone. A change of
-the analysis that changes a verdict of `puns/tests/seeds.txt` is written again with `PUNS_BLESS=1`,
-and read: the record must be the same under every seed (CI runs three).
+or relies on what Rust does not keep. The model check runs both ways too (`puns-model` has an
+`unstable` feature, which turns on the one of `puns`); a refusal for what Rust does not keep is
+counted there as imprecise, by design (`hook::Verdict::unspecified`). A change of the analysis that
+changes a verdict of `puns/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read: the
+record must be the same under every seed (CI runs three).
 
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
 `const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it

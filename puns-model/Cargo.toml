@@ -7,13 +7,15 @@ publish = false
 description = "Model check of the analysis of puns against an independent oracle"
 
 [dependencies]
-# The model check covers every layout, those of the `unstable` feature included.
-puns = { path = "../puns", features = ["verdict", "unstable"] }
+puns = { path = "../puns", features = ["verdict"] }
 
 [dev-dependencies]
 fakecore = { path = "fakecore" }
 
 [features]
+# The model check of `puns` with its `unstable` feature, which takes the layout that `rustc` chose:
+# CI runs the sample both ways, `model.yml` the exhaustive check both ways.
+unstable = ["puns/unstable"]
 # The exhaustive model check (`tests/size*.rs` and `tests/parts2.rs`...): thousands of pairs, which
 # take minutes to build, so not built by `cargo test`. `model.yml` runs it every night:
 # `cargo test --profile model -p puns-model --features full`.

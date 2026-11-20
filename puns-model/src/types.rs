@@ -559,7 +559,7 @@ impl Oracle for Zero {
   }
 }
 
-impl<T: Copy + 'static> Oracle for core::mem::MaybeUninit<T> {
+impl<T: Pun + Copy + 'static> Oracle for core::mem::MaybeUninit<T> {
   fn check(_: &Bytes, _: usize, _: &mut [bool], _: bool) -> Valid {
     Ok(true)
   }
