@@ -7,8 +7,8 @@
 
 Type punning without `unsafe`: read bytes as a struct, a struct as bytes, or one type as another,
 in place. Unlike crates that describe each type on its own, `puns` compares the two types of a
-pun at compile time. It proves what holds for every value, checks the rest at run time, and
-refuses to compile what it can do neither for.
+pun at compile time. What holds for every value costs nothing, what holds for some values is
+checked at run time, and the rest doesn't compile.
 
 ```toml
 [dependencies]
@@ -52,65 +52,105 @@ assert_eq!(puns::as_bytes(lamps), bytes);
 ```
 
 `lamps` and `on` are references into `bytes` and into the switch: nothing is copied. A `u16le` is
-a little-endian `u16` with an alignment of 1, so a `Lamp` can start at any address. `bytemuck`
-and `zerocopy` would check the switch before reading it as a `bool`, since they know what a
-`bool` accepts but don't relate it to `Switch`.
+a little-endian `u16` with an alignment of 1, so a `Lamp` can start at any address, and has no
+padding. A struct with padding can still be read from bytes, but `as_bytes` refuses it, since
+padding may be uninitialized. In `bytemuck` and `zerocopy`, reading a `Switch` as a `bool` is a
+conversion that can fail, since they know what a `bool` accepts but don't relate it to `Switch`.
+Here it is one that can't.
 
 The `#[repr(C)]` keeps the fields in their declared order. Without it Rust may reorder them, so
 `puns` refuses any pun whose validity depends on the order. With the `unstable` feature, `puns`
 uses the order that `rustc` chose for this build instead. The feature works on stable Rust, but a
-pun that compiles with one compiler may not with another; see [the `unstable` feature][unstable].
+pun that compiles with one compiler may not with another, and bytes written by one build may read
+as other values in the next; see [the `unstable` feature][unstable].
 
 Deriving `Pun` lets any code read and write every field of the type through bytes, so don't
 derive it on a type whose fields keep a private invariant. See [what deriving `Pun`
 means][deriving].
 
-## Reading a binary format
+## A save file in two versions
 
-A format often stores its own size, a magic number or a checksum. The derive can check those as
-it reads the bytes. This reads the messages of a small protocol one after the other:
+This loads the save file of a game in both versions of its format. Version 2 adds keys to the
+items, and reads the files of version 1 as they are.
 
 ```rust
+use core::num::NonZero;
+
 use puns::{
   Pun,
-  num::{u16be, u32bec},
+  num::{u8c, u16le, u32bec},
 };
-
-#[derive(Pun)]
-#[repr(C)]
-#[pun(size = 8 + length)]
-struct Message {
-  magic: u32bec<0x5055_4e53>, // "PUNS"
-  kind: Kind,
-  flags: u8,
-  length: u16be,
-  body: [u8],
-}
 
 #[derive(Pun, Debug, PartialEq)]
 #[repr(u8)]
-enum Kind {
-  Ping = 1,
-  Data = 2,
+enum OldItem {
+  Sword { damage: u16le } = 0,
+  Potion { heal: u8, cursed: bool } = 1,
 }
 
-let bytes = b"PUNS\x01\x00\x00\x00PUNS\x02\x00\x00\x05hello";
-let (ping, rest) = puns::from_head::<Message>(bytes).unwrap();
-let (data, rest) = puns::from_head::<Message>(rest).unwrap();
-assert_eq!(ping.kind, Kind::Ping);
-assert_eq!(&data.body, b"hello");
-assert!(rest.is_empty());
+/// Version 2 of the game adds keys.
+#[derive(Pun, Debug, PartialEq)]
+#[repr(u8)]
+enum Item {
+  Sword { damage: u16le } = 0,
+  Potion { heal: u8, cursed: bool } = 1,
+  Key { floor: NonZero<u8>, door: Option<NonZero<u8>> } = 2,
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(hp <= level * 10))]
+struct Save<V = u8, B: ?Sized = [Item]> {
+  magic: u32bec<0x5341_5645>, // "SAVE"
+  version: V,
+  #[pun(valid(1..=99))]
+  level: u8,
+  hp: u16le,
+  bag: B, // to the end of the file
+}
+
+/// A save file of either version.
+#[derive(Pun)]
+enum SaveFile<'a> {
+  V1(&'a Save<u8c<1>, [OldItem]>),
+  V2(&'a Save<u8c<2>>),
+}
+
+fn load(file: &[u8]) -> Result<&Save, puns::Error> {
+  Ok(match SaveFile::from_bytes(file)? {
+    // Every old item is an item, so neither arm checks anything.
+    SaveFile::V1(old) => puns::pun_ref(old),
+    SaveFile::V2(new) => puns::pun_ref(new),
+  })
+}
+
+// Version 1, level 7, 42 hp, a sword of 300 damage and a potion that heals 25.
+let mut file = b"SAVE\x01\x07\x2a\x00\x00\x2c\x01\x01\x19\x00".to_vec();
+assert_eq!(load(&file).unwrap().bag[0], Item::Sword { damage: 300.into() });
+
+// Upgrade the file to version 2, and pick up a key to floor 3.
+file[4] = 2;
+file.extend_from_slice(&[2, 3, 0]);
+let key = Item::Key { floor: NonZero::new(3).unwrap(), door: None };
+assert_eq!(load(&file).unwrap().bag[2], key);
+
+// A cheater gives the hero 999 hp, which breaks the rule.
+puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
+assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-`from_head` reads one message from the front of the bytes, and returns the bytes after it. The
-`size` rule tells it where a message ends. A `u32bec<N>` is a big-endian `u32` that always holds
-`N`, which is how the magic number is checked.
+`SaveFile` is a view enum: an enum of references, whose `from_bytes` returns the first variant
+that the bytes match. Its variants tell the versions apart by their `version` field, a `u8c<1>`
+or a `u8c<2>`, which is a `u8` that always holds 1 or 2. Reading either version as a `Save`
+checks nothing more, since every old item is an item and every version is a `u8`.
 
-Rules can also restrict values (`valid`), state any condition (`assert`), and compute checksums.
-A rule is an expression over the unsigned integer fields of the struct, with a few functions that
-read its bytes; the [derive's documentation][derive] lists them. Rules are checked when bytes are
-read as the type, not afterwards. Safe code can assign a field that breaks a rule, and only the
-next read of those bytes will notice.
+Rules like `valid` and `assert` are checked when bytes are read as the type, not afterwards. Safe
+code can still assign a field that breaks one, as the cheater does, and only the next read
+notices. A rule is an expression over the unsigned integer fields of the struct, with a few
+functions to read its bytes. The derive also reads sizes stored in the bytes, so that
+`from_head` can read one value after another, and checks checksums and tags. The
+[examples](#examples) use them on real formats, and the [derive's documentation][derive] lists
+them.
 
 ## How it works
 
@@ -150,14 +190,10 @@ generation, so `cargo check` doesn't report them, and `cargo build` does. For th
 generic function can't say in its bounds that its types pun: a caller that instantiates it with
 the wrong types gets the error in its own build.
 
-The analysis costs build time for each pair of types. The most expensive is a view enum, an enum
-of references that reads whichever of several formats matches: its build time grows with the
-square of its variants.
+The analysis costs build time for each pair of types. The most expensive is a view enum, whose
+build time grows with the square of its variants.
 
 ## Examples
-
-[`docs/save-file.md`][save-file] is the best next step. It reads the save file of a game in two
-versions, with enums that gain a variant, rules on fields, and a loader for both.
 
 The examples below each declare a family of formats with the derive alone, and read them in place.
 They cover the structures they name, not whole formats, and the shortest come first. From a clone
@@ -236,7 +272,6 @@ additional terms or conditions.
 [Compile-time errors]: https://docs.rs/puns/latest/puns/#compile-time-errors
 [unstable]: https://docs.rs/puns/latest/puns/#the-unstable-feature
 [Limitations]: https://docs.rs/puns/latest/puns/#limitations
-[save-file]: https://github.com/uael/puns/blob/main/docs/save-file.md
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
 [testing]: https://github.com/uael/puns/blob/main/docs/testing.md
 [changelog]: https://github.com/uael/puns/blob/main/CHANGELOG.md
