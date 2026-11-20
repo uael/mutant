@@ -2,28 +2,69 @@
 //! `#[derive(Pun)]` writes for them.
 //!
 //! Both functions return the first variant, in order, that the bytes are (or start with, for
-//! `from_head`). Each variant is decided at most once, and only for what is not already known of
-//! it. Where the type of a later variant accepts every value of the type of an earlier one
-//! (`Frame<Ipv4>` accepts every `Frame<Ipv4<Udp>>`), the later one is the *base* of the earlier
-//! one. The base is decided first. If the bytes are not a value of the base, the earlier variant
-//! fails with it. Otherwise the earlier variant is checked only for what its base does not prove
-//! of it: the protocol of the packet, not its checksums again. [`Known`] records what is decided,
-//! so that a variant that is the base of several, or that is tried in its turn after it was a
-//! base, is checked once. Before any of this, a variant is rejected if the bytes do not have a
-//! value that its first constrained scalar accepts, such as an EtherType ([`crate::rejects`]).
+//! `from_head`). The order of the variants is the order of preference. They answer what trying each
+//! variant in turn would answer, but each variant is decided at most once, and only for what is not
+//! already known of it.
 //!
-//! The result is the one of trying each variant in turn. The base of a variant is a type of which
-//! every value of the variant is a value, over the same bytes. The analysis proves it, as it
-//! proves `pun_ref`. What a variant is checked for from its base is what `try_pun_ref` from the
-//! base checks, which is exact for bytes that are a valid base.
+//! - A variant is passed over on its first constrained scalar alone, before anything else of it is
+//!   computed, if the bytes do not have a value that this scalar accepts ([`crate::rejects`]).
+//!   Examples of such scalars are an EtherType and a version. These comparisons of the same bytes,
+//!   one for each variant, become one decision of the optimizer. A VLAN frame meets the EtherTypes
+//!   of IPv4 and of ARP as in a `match`.
+//! - A variant has a *base*. It is the first later variant whose type takes every value of the type
+//!   of the variant, over the same bytes. The analysis decides it at compile time, as it decides
+//!   that `pun_ref` is proven. `Frame<Ipv4>` takes every `Frame<Ipv4<Udp>>`, and `Frame` takes
+//!   both. The base is decided first. Bytes that are not a value of the base are not a value of the
+//!   variant either. For bytes that are, the variant is checked only for what its base does not
+//!   prove of it, which is the marks of `try_pun_ref` from the base. For a packet, that is its
+//!   protocol, and not its checksums again.
+//! - What is decided is recorded in [`Known`], a state for each variant. A base that several
+//!   variants share is decided once, as `Frame<Ipv4>` is for UDP, TCP and ICMP. So is a base that
+//!   is tried in its own turn after it was a base. Each variant is a function that the derive
+//!   writes. It decides the base of the variant before the variant, by calling the function of the
+//!   base, chosen by a `match` on a constant. Once inlined, the states are constants on each path,
+//!   and no state remains at run time.
+//! - For `from_head`, a base must also take the same bytes as the variant (`same_extent`). Both
+//!   must tell their extent (a size, or a `size` or `len` rule, which a valid value meets). Or
+//!   neither does, and both take as many elements as fit in the same way: the same alignment and
+//!   element, and a head of the same remainder. The variant then takes the extent of its base,
+//!   without trailing padding, which each adds on its own.
 //!
-//! Soundness does not rest on the code that the derive writes. The types of the variants are a
-//! [`List`], from which both their layouts and their types are taken, by a place in it
-//! ([`Index`]) that only this module defines. Only [`decide`] writes what a variant is known to
-//! be, for the type of its index. The base of a variant is used only where [`Known`] says that
-//! the bytes were found to be one. The derive chooses the order in which variants are decided. It
-//! decides the base of a variant before the variant, or else the variant is not found, which the
-//! model check would see. It returns the first variant found, in order.
+//! # Why the answer is the one of trying each variant in turn
+//!
+//! This follows from what the analysis proves and checks. Bytes that are not a value of the base
+//! are not a value of the variant, since every value of the variant is a value of the base. Bytes
+//! that are a value of the base meet everything that the base requires. From such a value,
+//! `try_pun_ref` checks exactly what the variant requires beyond it. What it leaves unchecked is
+//! implied by the requirements of the source, which the model check checks of every pair. A base is
+//! a later variant. It is decided before its turn only as a step of an earlier variant, and it is
+//! returned only in its turn. The error is `Error::Validity`. A view does not tell why no variant
+//! fits.
+//!
+//! # Soundness
+//!
+//! Soundness does not rest on the code that the derive writes. The types of the variants form a
+//! tree at the type level ([`List`]). The tree is balanced, so that what proves a type of it is as
+//! deep as the logarithm of the number of variants. Both the layouts and the types are taken from
+//! it, by a place in it that is a type ([`First`]`<`[`Here`]`>`, an [`Index`]) and is sealed. A
+//! state is written only by [`decide`], for the type of its place. A variant is decided from its
+//! base only where the state of the base says that the bytes are a value of the base, of the extent
+//! recorded with it. The derive chooses the order in which variants are decided. A variant whose
+//! base was not decided first is not found. That is never unsound, and the model check would see
+//! it.
+//!
+//! # Cost
+//!
+//! The bases are found by the analysis of pairs of variants, at compile time. For each variant, the
+//! analysis tries the later variants until one takes it. It skips those that a scalar at the same
+//! place tells apart, such as another EtherType or another protocol (`apart`, a walk of the
+//! layouts). It then analyzes what is left of the variant from the base found. The base of
+//! `from_head` is the one of `from_bytes` if it takes the same bytes, which it does where both tell
+//! their extent. One instance of the validation serves a variant for both functions. It checks what
+//! the two bases do not prove, which is the same marks where the base is the same, or everything
+//! that bytes do not prove where there is no base. The function of each variant names the functions
+//! of all the variants after it, and the `match` on a constant keeps one. So what is compiled grows
+//! as the square of the number of variants. `benches/checks.rs` counts the instructions of a view.
 
 use core::marker::PhantomData;
 
@@ -175,7 +216,7 @@ where
 
   /// The index of the base for `from_head`, or `NONE`, and what is left to check of `I` from it.
   ///
-  /// The base must also take the same bytes as `I` ([`same_extent`]). It is the base for
+  /// The base must also take the same bytes as `I` (`same_extent`). It is the base for
   /// `from_bytes` if that base does, since no variant before it is a base of `I` for
   /// `from_bytes`. Otherwise it is a later one.
   const HEAD: (usize, Marks) = {

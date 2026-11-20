@@ -39,6 +39,114 @@
 //! requirement that the library leaves unchecked and that the requirements of the source do not
 //! imply.
 //!
+//! # Verdicts
+//!
+//! The model goes through the test-only `verdict` feature of `puns` (`puns::hook`), which says
+//! what each function would do without failing to compile. It runs without the `unstable` feature
+//! of `puns` and with it, through a feature `unstable` of its own. Without it, a refusal for what
+//! Rust does not specify counts as imprecise, by design (`hook::Verdict::unspecified`). The model
+//! reports three kinds of verdicts:
+//!
+//! - A verdict is **unsound** if it lets through a value that the type system does not allow, or
+//!   reads a byte of padding.
+//! - A verdict is **incorrect** if it rejects a valid value at run time, or leaves unchecked a
+//!   requirement of the target that the source does not imply.
+//! - A verdict is **imprecise** otherwise, where it refuses or checks what it could prove. These
+//!   are counted.
+//!
+//! # Types
+//!
+//! The model has about 140 types of 1 to 8 bytes ([`types`]). It checks every ordered pair of
+//! types of the same size, and every value of the source over an alphabet, which is every value up
+//! to 2 bytes. It checks slices and structs that end with a slice on every pattern of up to 6
+//! bytes.
+//!
+//! Nothing of the test of the library (the same rules, the same extent) is in the oracle. So a rule
+//! of the target wrongly taken as proven by another rule is reported. The types include the same
+//! rules over other fields, another rule, and another extent. They put these rules in a struct, an
+//! enum with and without `repr`, an array, a union, and a struct with a byte that may be
+//! uninitialized. The model reports a rule proven by another (a `same_rules` that compares
+//! nothing) and a `&mut` part over a rule that the target does not have (a `cut` without its
+//! test). Both faults were tried.
+//!
+//! The types include enums without `repr`: a niche in a `bool`, in a `NonZero` and in a `char`, a
+//! niche shared by two variants next to a field of a third, a direct tag of one byte and one that
+//! `rustc` widened, one variant, and a variant without values that `rustc` gives a tag. Their
+//! oracles are written from how `rustc` lays out enums. They are checked against the bytes of
+//! values natively, and by Miri on the values that the oracle makes. The offsets of the fields are
+//! taken from values, never from the library. The types also include unions, whose oracle is "one
+//! of its fields", a variant without values, `MaybeUninit`, and a scalar that may be uninitialized
+//! (`Zero`). Against `Zero`, reading such a scalar as initialized is found unsound.
+//!
+//! # Parts
+//!
+//! Parts are checked over the same types, for about four thousand pairs whose target is not larger
+//! than the source ([`check_part`]). The checks catch a wrong shift, in the analysis or in the
+//! pointer, and a `mutable_part` without its test that nothing outside the part depends on it. A
+//! rule of the source over the part, or a part of an enum, would break the requirements of the
+//! source.
+//!
+//! # Views
+//!
+//! View enums are checked against what they mean ([`views`]). Every ordered pair of the types of 1
+//! and of 2 bytes is a view of two variants (`Two<A, B>`, a generic view enum, in which `A` is
+//! decided from `B` where `B` takes every `A`). It is compared on every pattern of bytes up to one
+//! more than its size, at an aligned and a misaligned address. A sample runs on a push
+//! (`tests/views.rs`). It has views of three variants, a chain of bases, a base shared by two
+//! variants, and views of unsized types, whose extents `from_head` takes from a rule or as many
+//! elements as fit. Under Miri, a view runs for each unsafe path of `view.rs`. Every pair runs with
+//! the `full` feature. The checks report each of the following faults, which were tried: a variant
+//! checked for nothing from its base, a base chosen without the test that it takes the variant, a
+//! base for `from_head` that takes other bytes, extents compared with their trailing padding, and a
+//! variant rebuilt from its state with another length.
+//!
+//! # Self-relative pointers
+//!
+//! Self-relative pointers have a model of their own ([`pointers`]), on the pointers of the tests of
+//! `puns` ([`relative`]). These pointers aim at one value, a sequence, or text, and may be
+//! nullable. They are declared through the public API only, built in a buffer, and followed through
+//! it. Sixteen types that hold pointers are each described by hand: recursive structs, through a
+//! nullable pointer and through a sequence, enums, a pointer to a `bool`, to a `u8`, to two bytes,
+//! to a sequence and to text, another byte order, and bytes. What the oracle alone says of pairs
+//! whose answer is known is asserted, so that the oracle cannot accept everything. The builder
+//! leaves a byte that nothing writes after every value, so that a target read past its end is seen.
+//! `hook::views` answers with the `const` code that decides the pairing (`deep::local`, pointers
+//! followed a bounded number of times). The functions themselves are called for the pairs that it
+//! accepts, and the compile-fail tests of `puns` are the pairs that they refuse. The model counts
+//! as imprecise what is refused by design: a target of another size, a sequence or text read as
+//! something else, and a check that would be behind a pointer.
+//!
+//! The model holds `puns::validate_in`, `puns::pointers_in` and `puns::copy_in` to the oracle of
+//! pointers. Its visitor follows the pointers of the tests through their buffer.
+//!
+//! - `validate_in` accepts exactly what the oracle accepts, on the corpus and on every copy with
+//!   one byte changed, padding and gaps included ([`pointers::check_validate`]).
+//! - On every image that `validate_in` accepts, `pointers_in`, following the pointers in turn,
+//!   hands over the same pointers, at the same positions and with the same types, in the same order
+//!   ([`pointers::check_pointers_in`]).
+//! - `copy_in` writes the bytes that the oracle says the value holds, and only those, into bytes of
+//!   two fills ([`pointers::check_copy_in`]). Those bytes are its scalars, the tag and the fields
+//!   of its variant, and a null pointer, but not the bytes of the other pointers.
+//!
+//! The model checks `pointers_in` and `copy_in` only on images that `validate_in` accepts, so on
+//! none whose rules do not hold. That they need not hold rests on the fact that neither reads a
+//! rule, and on a test of `puns` (`rules_need_not_hold_for_pointers_in_and_copy_in`).
+//!
+//! # What runs where
+//!
+//! Every check that CI runs on a push takes at most a minute. So `cargo test` runs a sample of the
+//! model check, and Miri runs a selection of pairs chosen for the unsafe paths that they reach, not
+//! for the verdicts (`tests/miri_sample.rs` lists what each pair is for). Miri is there to find
+//! undefined behavior. The examples of `puns` other than `ethernet` do not run under Miri. They are
+//! declarations, and the unsafe code that they reach is that of the library, which its own tests
+//! and `ethernet` run there.
+//!
+//! The exhaustive run, every pair and every part of every type, every pointer pair and every mask
+//! of one bit, is behind the `full` feature, which `cargo test` does not build. It runs with
+//! `cargo test --profile model -p puns-model --features full`, optimized and without LTO. It takes
+//! minutes to build and a few minutes to run. The workflow `model.yml` runs it without and with the
+//! `unstable` feature, every night and on demand.
+//!
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 
 pub mod pointers;

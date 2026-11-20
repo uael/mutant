@@ -11,9 +11,45 @@
 //! cargo rustc --release --features unstable --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel
 //! ```
 //!
-//! The functions are in `target/release/**/codegen*.s`, under their names. `puns/DESIGN.md`
-//! records the machine code of each one on x86-64, as instructions or as their count. A change of
-//! the library must not make any of them longer, so compare the assembly before and after it.
+//! The functions are in `target/release/**/codegen*.s`, under their names. The table below records
+//! the machine code of each one. A change of the library must not make any of them longer, so
+//! compare the assembly before and after it, and update the table.
+//!
+//! The table was measured on `x86_64-unknown-linux-gnu` with `rustc` 1.100.0, the release profile
+//! of the workspace (`opt-level = 3`, LTO, one codegen unit) and the `unstable` feature, with the
+//! command above. A count of instructions excludes labels and directives.
+//!
+//! | Function                                           | Machine code                                  |
+//! |----------------------------------------------------|-----------------------------------------------|
+//! | `&Position -> &[u8; 2]`                            | `mov rax, rdi; ret`                           |
+//! | `[bool; 4] -> u32`                                 | `mov eax, edi; ret`                           |
+//! | `&Frame<Ipv4<[u8]>> -> &[u8]`                      | `lea rdx, [rsi + 34]` (the length)            |
+//! | `&Packet<Datagram> -> &Packet` (the same rules)    | `mov rdx, rsi; mov rax, rdi; ret`             |
+//! | `&[u8; 2] -> Option<&Position>` (a `u8`, a `bool`) | one `cmp byte ptr [rdi + 1], 2`               |
+//! | `&[u8] -> Option<&Header>`                         | the size, a 4-byte compare, `bt`, `cmp`       |
+//! | `from_head::<Frame<Ipv4>>(&[u8])`                  | 29 instructions, no loop, no call             |
+//! | `Ipv4::options()` (a region)                       | 10 instructions, no branch                    |
+//! | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block, 46 instructions |
+//! | `&[Shape] -> &[Drawing]` (enums with fields)       | `mov rdx, rsi; mov rax, rdi; ret`             |
+//! | `&Drawing -> Option<&Shape>`                       | the tag, then one `cmp` for a `bool`, 12 instructions |
+//! | `[u8; 4] -> Option<Shape>`                         | 14 instructions, no loop, no call             |
+//! | `Ticket <-> u32` (no `repr`, a niche in `NonZero`) | `mov eax, edi; ret`, both ways                |
+//! | `[u8; 4] -> Option<Small>` (no `repr`, direct tag) | the tag, one `cmp` for the `bool`, 13 instructions |
+//! | `u8 -> Option<Choice>` (a union of `bool`, `u8in`) | one `cmp cl, 4`, 7 instructions               |
+//! | `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 207 instructions, no call                     |
+//! | `head_ref::<Ipv6, [u8; 40]>`                       | `mov rax, rdi; ret`                           |
+//! | `tail_ref::<[u32; 4], u32>`                        | `lea rax, [rdi + 12]; ret`                    |
+//! | `from_head::<Position>(&[u8])`                     | the size, one `cmp` for the `bool`, 7 instructions |
+//! | `from_head::<Udp>(&[u8])` (a size in the value)    | 15 instructions                               |
+//! | `from_tail::<Trailer>(&[u8])` (an enum, a magic)   | the size, `bt`, one `cmp`, 18 instructions, no loop |
+//! | `view_ref::<Old, New>` (recursive, with pointers)  | `mov rax, rdi; ret`                           |
+//! | `view_ref::<[Old], [New]>`                         | `mov rdx, rsi; mov rax, rdi; ret`             |
+//! | `try_view_ref::<Maybe, Owned>` (checks a pointer)  | one `cmp dword ptr [rdi + 4], 0`, 4 instructions |
+//!
+//! A count is not a time. The check of a slice of `bool`s takes 64 bytes at a time with no branch
+//! inside a block. It has more instructions than a loop of one `cmp` per byte that stops at the
+//! first invalid byte, and takes a fraction of its time on a long slice. `benches/checks.rs` times
+//! the checks next to the same checks written by hand.
 //!
 //! The example requires the `unstable` feature, since some of its types have a layout that Rust
 //! leaves to the compiler (`Ticket`, `Small` and a tuple). `main` is empty, because the example is

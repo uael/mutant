@@ -1,54 +1,136 @@
 //! The layout of an enum without `repr`, found by experiments in const evaluation on a sample of
 //! each variant.
 //!
-//! Stable Rust names neither the place of the tag of such an enum nor its values. But const
-//! evaluation runs code on its values: it finds the offsets of the fields of a sample (with a
-//! `match`), its variant (with `mem::discriminant`), and its bytes. Every conclusion is either
-//! observed, or a hypothesis that an experiment verifies. When a hypothesis is wrong, the
-//! experiment gives another answer, and the enum is refused with a message, or it is an error of
-//! const evaluation, and the build fails. It never finds a wrong layout.
+//! Rust does not specify the layout of an enum with fields and no `repr`. Stable Rust names neither
+//! where its tag is nor its values. `offset_of!` on variants, [`mem::variant_count`] and
+//! [`discriminant_value`] are unstable, and nothing tells a niche. But const evaluation runs code
+//! on values of the enum. `#[derive(Pun)]` makes a *sample* of each variant ([`sample`]), with
+//! every scalar of each field at the least of its values and the padding uninitialized. It finds
+//! the offsets of the fields by matching on the sample. [`discover`] finds the rest by experiments
+//! on copies of the samples, which read the variant with [`mem::discriminant`] and read bytes.
+//! Every conclusion is either observed, or a hypothesis that an experiment verifies. When a
+//! hypothesis is wrong, the experiment gives another answer, and the enum is refused with a message
+//! ("no tag found", "unsupported layout", and so on), or it is an error of const evaluation, and
+//! the build fails. It never finds a wrong layout. Every experiment copies a sample and reads a
+//! variant. There are about four experiments for each variant, and none for each byte of a field.
 //!
-//! The experiments rest on these facts of the compiler:
+//! # Cases
 //!
-//! - **R0.** The layout of a type is the same in const evaluation and at run time, for a target.
-//!   Const evaluation computes it for that target, with the same code.
-//! - **R1.** The variant of a value is told by one scalar at a fixed place, its *tag*. This is
-//!   either a direct tag, before the fields of every variant, of one value per variant, or a
-//!   *niche*. A niche is a scalar in the fields of one variant, the *dataful* one, that no field
-//!   of another variant covers. Its values that are valid for that field are that variant, and
-//!   each of its other values is one other variant, or no value. This is how `rustc` lays out
-//!   enums: since 2017 for one variant with fields, and since 1.64 for several.
-//! - **R2.** Const evaluation reports an error when it reads an uninitialized byte, or the variant
-//!   of a value whose tag is not the tag of a variant that has values.
-//! - **R3.** `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, the index of
-//!   the variant, as an `isize`.
-//! - **R4.** A value made in const evaluation (`E::A(x)`) has its padding uninitialized. Making a
-//!   variant writes its fields and its tag, and nothing else. So a byte of a fresh sample outside
-//!   its fields that can be read is a byte of the tag.
+//! - **No variant has values.** The enum has no tag and no value.
+//! - **One variant has values**, and either no other variant is laid out, or the fields of that
+//!   variant start at 0. `rustc` lays out a variant without values only if one of its fields has a
+//!   size. Fields at 0 mean a niche in its own fields, or none. The enum is then a struct of the
+//!   fields of that variant. Its gaps are filled with zeros, then with ones, and it must stay that
+//!   variant.
+//! - **A direct tag** is used when the fields of no variant start at 0. `rustc` puts the tag before
+//!   the fields, widened to all the bytes before the first field of any variant. For example, `enum
+//!   { A(u16), B(u32) }` has a tag of 2 bytes, in which the high byte of each value is 0. Those
+//!   bytes are *read* in every sample. A byte that is not part of the tag would be padding,
+//!   uninitialized, and reading it fails the build ([Const evaluation fails on what is not a
+//!   value][fails], [A fresh value has uninitialized padding][fresh]). So the tag is exact on
+//!   either byte order. No claim is made of a byte that may be padding, and the tag is an integer
+//!   of native byte order wherever its low byte is.
+//! - **A niche** is used when some field starts at 0. The candidates are the scalars of the fields
+//!   of each variant that the type restricts, and that the fields of no other variant cover. The
+//!   scalars that the type restricts are `bool`, `char`, `NonZero`, enums without fields, and tags
+//!   of enums, but not a `valid(..)`, which safe code can break. They are tried for the largest
+//!   variant first, the *dataful* one. The bytes of the scalar are moved from the sample of each
+//!   variant to the sample of a variant that does not hold them, which must become that variant. A
+//!   wrong scalar changes nothing there, and is dropped without failing. Then the tag of each other
+//!   variant is read there. It is initialized, so it is the tag ([fresh]). The dataful variant has
+//!   the values of that scalar, which the tags of the other variants must not be.
 //!
-//! Compile-fail tests hold R2 and R4 (`discover_reads_padding`, `discover_invalid_tag`). The
-//! experiments hold R1: a layout that is not of that shape is refused. An assertion of its size,
-//! and a check of every sample, hold R3. Each experiment holds the following:
+//! In both cases, the gaps of each variant that has one tag, outside the tag, are filled with zeros
+//! and then with ones. This must leave it that variant, since a byte of a tag outside would give
+//! two values to one variant. All the gaps of the dataful variant of a niche are filled the same
+//! way. Its scalar must tell it alone. A layout in which another place takes part, such as an
+//! encoding in two levels, is refused. The tags must differ. What is found is checked against the
+//! size and the alignment of the enum (`Layout::enumeration`).
 //!
-//! - Every sample reads as its own variant. This holds R3, and that the samples are values.
+//! Such an enum is then what an enum of a specified layout is. It is proven variant by variant, and
+//! checked by its tag and its variant, with the same precision. A variant whose fields have no
+//! value is in the layout, with no tag. The lists of fields and variants are the declared ones. A
+//! field of a variant without values is not in the layout, and its entry in the list says so (its
+//! `FIELD` is `None`). No field may hold a self-relative pointer, because a sample of a pointer
+//! cannot be made from nothing. `Option<T>` and `Result<T, E>` are found the same way
+//! (`std_enums.rs`).
+//!
+//! # What the experiments rest on
+//!
+//! The experiments rest on these facts of the compiler, and on one fact of this crate.
+//!
+//! ## The layout is the one of the target
+//!
+//! The layout of a type is the same in const evaluation as at run time, for a given target. Const
+//! evaluation computes it for that target, with the same code. This is a property of how `rustc` is
+//! built.
+//!
+//! ## One scalar tells the variant
+//!
+//! The variant of a value is told by one scalar at a fixed place, its *tag*. Either it is a direct
+//! tag before the fields of every variant, with one value for each variant. Or it is a *niche*, a
+//! scalar in the fields of one variant, the dataful one, that no field of another variant covers.
+//! The values of the niche that are valid for its field are that variant, and each other value is
+//! one other variant, or no value. This is how `rustc` lays out enums, since 2017 for one variant
+//! with fields and since 1.64 for several. It is not a promise of the language. The experiments
+//! verify what they rely on of it. The tag decides, and nothing outside the tag does. A layout of
+//! another shape is refused.
+//!
+//! ## Const evaluation fails on what is not a value
+//!
+//! Const evaluation reports an error when it reads an uninitialized byte, and when it reads the
+//! variant of a value whose tag is not the tag of a variant that has values. This is a behavior of
+//! the compiler, which the Reference does not promise for undefined behavior in `const`. The
+//! compile-fail tests `discover_reads_padding` and `discover_invalid_tag` hold the compiler to it.
+//!
+//! ## The discriminant is the index
+//!
+//! `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, which is the index of
+//! the variant, as an `isize`. No explicit discriminant is allowed on such an enum with fields. The
+//! size of `Discriminant<E>` is asserted, and every sample is checked to read as its own index.
+//!
+//! ## A fresh value has uninitialized padding
+//!
+//! A value made in const evaluation (`E::A(x)`) has its padding uninitialized. Making a variant
+//! writes its fields and its tag, and nothing else. So a byte of a fresh sample outside its fields
+//! that can be read is a byte of the tag. The compile-fail test `discover_reads_padding` holds
+//! this.
+//!
+//! ## The valid values of a layout are valid for `rustc`
+//!
+//! The valid values of a type, as `Pun::LAYOUT` gives them, are valid for `rustc`, as `Pun`
+//! promises. So the values that `rustc` gives to the other variants of a niche, which are invalid
+//! for the field that holds the niche, are not values of that field in its layout. "Each other
+//! value" is then the dataful variant once its fields are valid.
+//!
+//! # What each experiment holds
+//!
+//! - Every sample reads as its own variant. This holds [The discriminant is the index][index], and
+//!   that the samples are values.
 //! - The bytes of the tag, moved from the sample of each variant to the sample of another
-//!   ([`try_tag`]), make it that variant. This holds R1: the tag is there. A wrong candidate
-//!   changes nothing, and is dropped. A byte that is moved and is padding stays padding.
+//!   ([`try_tag`]), make it that variant. This holds [One scalar tells the variant][one]: the tag
+//!   is there. A wrong candidate changes nothing, and is dropped. A byte that is moved and is
+//!   padding stays padding.
 //! - The gaps of each variant that has one tag, outside the tag, filled with zeros and then with
-//!   ones, leave it that variant ([`decided_by`]). This holds R1: nothing else tells the variant,
-//!   since a byte of a tag outside would take two values for one variant. The same holds of every
-//!   gap of the dataful variant of a niche, and of the only variant of an enum laid out as a
-//!   struct: its fields alone tell it.
+//!   ones, leave it that variant ([`decided_by`]). This holds [one]: nothing else tells the
+//!   variant, since a byte of a tag outside would take two values for one variant. The same holds
+//!   of every gap of the dataful variant of a niche, and of the only variant of an enum laid out as
+//!   a struct: its fields alone tell it.
 //! - The tag of each variant but the dataful one is read in its sample, and must be initialized.
-//!   R4 makes it a byte of the tag, and R2 fails the build if it is padding. For a direct tag,
-//!   every byte before the first field of any variant is read so, since `rustc` widens the tag to
-//!   these bytes.
-//! - The tags differ, and are not values of the scalar of a niche. This holds R1.
+//!   [fresh] makes it a byte of the tag, and [fails] fails the build if it is padding. For a direct
+//!   tag, every byte before the first field of any variant is read so, since `rustc` widens the tag
+//!   to these bytes.
+//! - The tags differ, and are not values of the scalar of a niche. This holds [one].
+//! - A layout that is not of the shape of [one] is refused. An assertion of the size of
+//!   `mem::Discriminant<E>`, and the check of every sample, hold [index].
 //!
-//! The valid values of a type in its layout are a subset of those of `rustc`, as `Pun::LAYOUT`
-//! promises. So the values that `rustc` gives to the other variants of a niche are invalid for
-//! the field that holds it. "Every other value" is then the dataful variant once its fields are
-//! valid.
+//! [one]: #one-scalar-tells-the-variant
+//! [fails]: #const-evaluation-fails-on-what-is-not-a-value
+//! [index]: #the-discriminant-is-the-index
+//! [fresh]: #a-fresh-value-has-uninitialized-padding
+//! [`mem::variant_count`]: https://doc.rust-lang.org/core/mem/fn.variant_count.html
+//! [`discriminant_value`]: https://doc.rust-lang.org/core/intrinsics/fn.discriminant_value.html
+//! [`mem::discriminant`]: https://doc.rust-lang.org/core/mem/fn.discriminant.html
 
 use core::mem::{self, MaybeUninit};
 
@@ -167,12 +249,14 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 
 /// Returns the index of the variant of the `E` at `ptr`.
 ///
-/// In const evaluation, it fails the build if the tag is not the tag of a variant that has
-/// values (R2).
+/// In const evaluation, it fails the build if the tag is not the tag of a variant that has values
+/// ([const evaluation fails on what is not a
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 ///
 /// # Panics
 ///
-/// Panics if `mem::Discriminant<E>` is not the size of an `isize` (R3).
+/// Panics if `mem::Discriminant<E>` is not the size of an `isize` ([the discriminant is the
+/// index](crate::discover#the-discriminant-is-the-index)).
 ///
 /// # Safety
 ///
@@ -200,7 +284,8 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
   //     An enum must have a valid discriminant, and all fields of the variant indicated by that
   //     discriminant must be valid at their respective type.
   let discriminant = mem::discriminant(unsafe { &*ptr });
-  // R3: an `isize`, the index of the variant. Its size here, its value on every sample.
+  // "The discriminant is the index", above: an `isize`, the index of the variant. Its size here,
+  // its value on every sample.
   assert!(
     size_of::<mem::Discriminant<E>>() == size_of::<isize>(),
     "the discriminant of an enum without `repr` is not an `isize`"
@@ -265,7 +350,8 @@ impl<E> Buf<E> {
 
   /// Returns the index of the variant of the value.
   ///
-  /// In const evaluation, it fails the build if the tag is not valid (R2).
+  /// In const evaluation, it fails the build if the tag is not valid ([const evaluation fails on
+  /// what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
   const fn variant(&self) -> usize {
     // SAFETY: The experiments write only over what is not a field of the variant of the sample,
     // or over a tag that they copy whole. So the fields of that variant are valid. The tag may
@@ -297,8 +383,9 @@ pub struct Desc<const V: usize> {
   /// are known as a tag is read.
   ///
   /// These are the tags of the dataful variant, more exactly than `dataful_tags`. The tags of the
-  /// other variants are none of them, by R1, and because the valid values of a layout are a
-  /// subset of those of `rustc`.
+  /// other variants are none of them, by [one scalar tells the
+  /// variant](crate::discover#one-scalar-tells-the-variant), and because the valid values of a
+  /// layout are a subset of those of `rustc`.
   dataful_known: Option<&'static [(u128, u128)]>,
   /// The valid values of the tag, sorted, and their number.
   valid: ([(u128, u128); V], usize),
@@ -436,7 +523,8 @@ const fn fill_gaps<E>(buf: &mut Buf<E>, fields: &[Field], skip: usize, len: usiz
 ///
 /// It is so if the gaps of `v` outside these bytes, filled with zeros and then with ones, leave it
 /// the same variant. A byte of a tag that tells `v` has one value in `v`, not two. In const
-/// evaluation, it fails the build if a fill makes the tag invalid (R2).
+/// evaluation, it fails the build if a fill makes the tag invalid ([const evaluation fails on what
+/// is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 const fn decided_by<E>(
   sample: &MaybeUninit<E>,
   fields: &[Field],
@@ -452,8 +540,11 @@ const fn decided_by<E>(
 
 /// Returns the integer of `len` bytes at `offset` of `sample`, in native byte order.
 ///
-/// In const evaluation, it fails the build if one of the bytes is not initialized (R2). So a byte
-/// that is read outside the fields of the variant of the sample is a byte of the tag (R4).
+/// In const evaluation, it fails the build if one of the bytes is not initialized ([const
+/// evaluation fails on what is not a
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)). So a byte that is read
+/// outside the fields of the variant of the sample is a byte of the tag ([a fresh value has
+/// uninitialized padding](crate::discover#a-fresh-value-has-uninitialized-padding)).
 ///
 /// # Panics
 ///
@@ -475,9 +566,12 @@ const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
 ///
 /// # Panics
 ///
-/// Panics, with the reason, if the layout is not of a shape that `rustc` gives (R1), if a field
-/// holds a self-relative pointer, or if a sample is not its own variant (R3). In const
-/// evaluation, it also fails the build if an experiment reads what it must not (R2).
+/// Panics, with the reason, if the layout is not of a shape that `rustc` gives ([one scalar tells
+/// the variant](crate::discover#one-scalar-tells-the-variant)), if a field holds a self-relative
+/// pointer, or if a sample is not its own variant ([the discriminant is the
+/// index](crate::discover#the-discriminant-is-the-index)). In const evaluation, it also fails the
+/// build if an experiment reads what it must not ([const evaluation fails on what is not a
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 #[expect(
   clippy::many_single_char_names,
   reason = "`v`, `u` and `d` are variants, `i` and `c` fields and candidates, by their index"
@@ -487,7 +581,8 @@ pub const fn discover<E, const V: usize>(
   fields: &[&[Field]; V],
 ) -> Desc<V> {
   let (size, mut desc) = (size_of::<E>(), Desc::none());
-  // Field: what has values, where the fields are; each sample is its own variant (R3).
+  // Field: what has values, where the fields are; each sample is its own variant ("The discriminant
+  // is the index", above).
   let (mut count, mut first, mut sized, mut start, mut v) = (0, V, false, size, 0);
   while v < V {
     let (these, mut i) = (fields[v], 0);
@@ -554,7 +649,8 @@ pub const fn discover<E, const V: usize>(
   if start > 0 {
     // A direct tag: before the fields of every variant. `rustc` widens it to all the bytes before
     // the first field, which are then read in every sample: a byte that is not of the tag is
-    // padding, uninitialized, and fails the build (R2, R4).
+    // padding, uninitialized, and fails the build ("Const evaluation fails on what is not a value"
+    // and "A fresh value has uninitialized padding", above).
     assert!(
       matches!(start, 1 | 2 | 4 | 8 | 16),
       "the bytes before the fields of an enum without `repr` are not an integer: unsupported layout"
@@ -623,8 +719,9 @@ pub const fn discover<E, const V: usize>(
 ///   variant. This does not fail the build, since a byte of a niche is moved from a variant to
 ///   one where it is not a field.
 /// - Nothing else tells a variant from the others.
-/// - Each variant but the dataful one has one value there, all of whose bytes are initialized
-///   (R4).
+/// - Each variant but the dataful one has one value there, all of whose bytes are initialized ([a
+///   fresh value has uninitialized
+///   padding](crate::discover#a-fresh-value-has-uninitialized-padding)).
 ///
 /// # Panics
 ///
@@ -667,12 +764,14 @@ const fn try_tag<E, const V: usize>(
     v += 1;
   }
   // Nor anything outside its fields the dataful variant: its gaps filled with zeros, then with
-  // ones, leave it that variant (R1 says that a niche is told by its scalar alone; a layout in
-  // which another place takes part, a two-level encoding say, is refused here).
+  // ones, leave it that variant ("One scalar tells the variant", above, says that a niche is told
+  // by its scalar alone; a layout in which another place takes part, a two-level encoding say, is
+  // refused here).
   if dataful < V && !decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) {
     return false;
   }
-  // Their tags: initialized, so bytes of the tag (R4), and different.
+  // Their tags: initialized, so bytes of the tag ("A fresh value has uninitialized padding",
+  // above), and different.
   let (mut values, mut single, mut v) = ([0; V], [false; V], 0);
   while v < V {
     if desc.inhabited[v] && v != dataful {

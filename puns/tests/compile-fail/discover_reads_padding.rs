@@ -1,7 +1,7 @@
-// What the discovery of the layout of an enum without `repr` rests on (`puns/src/discover.rs`, R2
-// and R4): a value made in const evaluation has its padding uninitialized, and reading it is an
-// error. Here the bytes 1 to 3 of `E::B`, between its one-byte tag and its `u32`. If this ever
-// compiles, a byte of padding would be taken for a byte of a tag.
+// What the layout of an enum without `repr` rests on (`puns/src/discover.rs`, "Const evaluation
+// fails on what is not a value" and "A fresh value has uninitialized padding"). The padding of a
+// value made in const evaluation is uninitialized, and reading it is an error. Here, bytes 1 to 3
+// of `E::B`, between its tag and its `u32`. If this ever compiles, padding would pass for a tag.
 use core::mem::MaybeUninit;
 
 #[expect(dead_code, reason = "only its layout matters")]

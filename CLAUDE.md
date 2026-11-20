@@ -12,7 +12,7 @@ cargo test --test api                # Run only one integration test file (also:
 cargo test --test api TESTNAME       # Run a single test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example ethernet         # The Ethernet example; it asserts its results and prints `ok`
-cargo rustc --release --features unstable --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see DESIGN.md
+cargo rustc --release --features unstable --example codegen -- --emit asm -C llvm-args=-x86-asm-syntax=intel  # Machine code, see examples/codegen.rs
 cargo bench -p puns --features unstable --bench checks   # Time of the run-time checks, next to the same checks by hand (not in CI)
 cargo bench -p puns --features unstable --bench checks -- ipv6  # Only the cases whose name has `ipv6`
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
@@ -35,7 +35,7 @@ cargo deny check                     # License/advisory/ban auditing
 
 The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is
 1.99, the first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the
-layout of unsized types needs (`puns/DESIGN.md`, "What stable Rust gives us"); the CI job "Minimum
+layout of unsized types needs ("Minimum Rust version" in the crate docs); the CI job "Minimum
 Rust version" builds on it, and a feature newer than 1.99 raises `rust-version` with its reason
 written there. CI also builds for `thumbv7em-none-eabihf`, a target without `std`. A pinned nightly
 (`nightly-2026-11-17`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by
@@ -85,7 +85,8 @@ with the test that stresses it (an over-aligned type, an integer wider than `isi
 order).
 
 Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
-functions are in `puns/DESIGN.md`; compare before and after a change of the library. A count is not a time:
+functions are in its module documentation; compare before and after a change of the library. A
+count is not a time:
 `puns/benches/checks.rs` times what is checked at run time (IPv4, IPv6 behind extension headers,
 a view enum, slices, CRCs, `sum16`) next to the same check written by hand, the best of 7
 samples, on an idle machine; run it on both trees, back to back, before and after a change of the
@@ -99,9 +100,10 @@ per check, which a loaded machine does not change.
 **The `unstable` feature.** Without it, nothing that `puns` does depends on what Rust lets `rustc`
 lay out otherwise (the order of the fields of a struct or a tuple without `repr`, the tag of an enum
 without `repr`, niches): `-Zrandomize-layout` must change no verdict and no check (the message of a
-refusal may differ). With it, `puns` takes the layout that `rustc` chose. `puns/DESIGN.md`, "What
-Rust keeps of a layout", is the design and the list of what Rust documents, with where. The default
-is without it, and so is most of what the tests and CI run: every test of `puns` that builds without
+refusal may differ). With it, `puns` takes the layout that `rustc` chose. "The `unstable` feature"
+in the crate docs (`puns/src/lib.rs`) is the design and the list of what Rust documents, with
+where. The default is without it, and so is most of what the tests and CI run: every test of `puns`
+that builds without
 the feature runs without it (`tests/seeds.rs` needs `verdict`), the cases of `compile-fail-kept`
 included. With it run only what is about it: the targets of `required-features = ["unstable"]` and
 the files with tests under `#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the
@@ -115,9 +117,12 @@ record must be the same under every seed (CI runs three).
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
 `const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it
 compiles to nothing), **checked** (only what could not be proven is checked at run time) or
-**refused** (it does not compile). **`puns/DESIGN.md` is the design** (goal, what stable Rust
-gives, architecture, soundness, what is not done yet): read it before changing
-the library, and keep it, the crate docs and `README.md` in step with the code.
+**refused** (it does not compile). **The design is in the rustdoc**: the crate docs (goal,
+soundness, the `unstable` feature, minimum Rust version, portability, limitations) and the module
+docs of each part, private modules included (`cargo doc --document-private-items`).
+**`puns/CLAUDE.md` summarizes it**, with a link to where each part is written, and holds what is not
+done yet: read it, and the module docs of what you change, before changing the library, and keep
+them, the crate docs and `README.md` in step with the code.
 
 - **`puns/`** — the library (`#![no_std]`, no dependency but the derive). Self-relative
   pointers are a kind of its own (`layout::Pointer`, `deep.rs`), which a crate declares for its

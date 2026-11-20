@@ -30,7 +30,6 @@
 !.cargo/config.toml
 !puns/
 !puns/Cargo.toml
-!puns/DESIGN.md
 !puns/benches/
 !puns/examples/
 !puns/src/

@@ -56,20 +56,23 @@ use crate::{Pun, layout::Pointer};
 ///    to what it aims at, nor makes a `&mut` to any of it. It is borrowed with the pointer, and
 ///    read through what `view_ref` makes of it.
 /// 5. **Null.** If `POINTER` is made with [`Pointer::or_null`], a value whose bytes are all zero
-///    aims at nothing, and is not followed. Any other value is a pointer as items 2 to 4 say, as a
-///    pointer of the same scheme that may not be null would be.
+///    aims at nothing, and is not followed. Any other value is a pointer as a pointer of the same
+///    scheme that may not be null would be: the way to it, what is there, and that it is its own
+///    are as the three requirements above say.
 /// 6. **The target is the type.** `Target` is the type of the value aimed at, of an element for a
 ///    sequence, and `()` for text. `POINTER` is made for it, by `Pointer::one::<Target>`,
 ///    `Pointer::sequence::<Target>` or `Pointer::text`. `self_relative!` asserts the size and the
 ///    alignment.
 /// 7. **The declaring crate relies on this, and on nothing more.** Its code that follows a
-///    pointer relies on nothing of the pointer, of its buffer, or of what it aims at, except
-///    items 1 to 6.
+///    pointer relies on nothing of the pointer, of its buffer, or of what it aims at, except the
+///    requirements above.
 ///
-/// If `P: SelfRelative`, then unsafe code may assume items 1 to 6 of `P`. `puns` relies on item
-/// 2 when it reads a pointer as another of the same scheme, on items 3 and 4 when it proves what
-/// pointers aim at, and on item 5 when [`try_view_ref`](crate::try_view_ref) checks a pointer
-/// that may be null.
+/// If `P: SelfRelative`, then unsafe code may assume these requirements of `P`, but for "The
+/// declaring crate relies on this, and on nothing more", which binds the declaring crate. `puns`
+/// relies on "The scheme is the way to the target" when it reads a pointer as another of the same
+/// scheme, on "What it aims at is there, and valid" and "What it aims at is its own" when it
+/// proves what pointers aim at, and on "Null" when [`try_view_ref`](crate::try_view_ref) checks a
+/// pointer that may be null.
 ///
 /// In return, `puns` guarantees the declaring crate the following. It makes a value that holds a
 /// pointer of `Self` only by [`view_ref`](crate::view_ref) and
@@ -186,7 +189,22 @@ pub unsafe trait SelfRelative: Sized {
 /// implementation of `SelfRelative`. The macro is safe to call. It writes the implementation of
 /// `Pun` from what `SelfRelative` says of the type, and nothing that the trait does not say. It
 /// requires `Type: SelfRelative`, whose `unsafe impl` carries the promise. Do not implement `Pun`
-/// for a pointer type by hand. The items of `Pun` belong to `puns`, and may change.
+/// for a pointer type by hand. The items of `Pun` belong to `puns`, and may change. The macro is
+/// expanded with the version of `puns` that defines them.
+///
+/// The macro is not a blanket implementation of `Pun` for every `SelfRelative` type. That
+/// implementation would overlap the one for every [`Scalar`](crate::Scalar), because coherence
+/// cannot tell that no type is both.
+///
+/// `Option<Type>` is found as follows. `Pun` has a hidden associated constant, the layout of
+/// `Option<Self>` if `Self` gives it, which is `None` by default. The layout of `Option` of another
+/// type is then found by experiment, as for any enum without `repr`. This macro gives it as the
+/// same pointer, which may be null, after a check made where `Option` of the pointer is used. The
+/// check is that `Option<Type>` has the size of `Type`, and that `None` is all zero bytes, read in
+/// const evaluation. Then `rustc` has put `None` in a niche of the bytes of the pointer, which are
+/// all of its offset and initialized ("The type is its offset" in [`SelfRelative`]), and that
+/// niche is zeros. `Some(p)` is the bytes of `p`, which are not all zero. So "Null" holds of
+/// `Option<Type>`.
 ///
 /// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
 /// zero bytes is `None`. This requires `None` to be all zero bytes, which holds if the offset has

@@ -1,9 +1,62 @@
 //! Run-time checks of what the analysis could not prove.
 //!
-//! The functions of this module recurse over types, not over values. Each call is an instance of
-//! its own, in which the layout of the type and the marks of the analysis are constants. A check
-//! that is not marked is not compiled. A check that is marked comes down to a load and a
-//! comparison.
+//! The `try_` and `from_` functions recurse over types, not over values, in `const fn`s, through
+//! associated types: the element of an array, the list of the fields of a struct. Each call is an
+//! instance of its own, in which the layout of the type and the marks of the analysis are
+//! constants. Each check sits behind an `if const { .. }` on the marks. A check that is not marked
+//! is not compiled, so what the analysis proved never reaches code generation. A check that is
+//! marked comes down to a load and a comparison. `examples/codegen.rs` records the machine code
+//! that this gives.
+//!
+//! `from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`.
+//! There, the optimizer knows that the value of a field fits a `usize`.
+//!
+//! # No interpreter
+//!
+//! Every operation of every rule is applied by an instance of a function of its own ([`steps`]), in
+//! which the operation is a constant. What is compiled is the arithmetic of the expression and the
+//! loop of each walk, never a `match` on operations at run time.
+//!
+//! The derive writes the rules of a struct that have an expression as a list at the type level
+//! (`Pun::Rules`, `RuleAt<RULE, STEPS, NEXT>`). It writes the operations of each rule as a balanced
+//! tree (`steps::One<I>`, `steps::Two<A, B>`), and a walk as `steps::Walk<I, COND, NEXT>`, whose
+//! two expressions are trees of their own at any depth. The recursions down a tree are as deep as
+//! its logarithm. Because the list is a type, a struct without rules costs nothing more to compile.
+//!
+//! Nothing that a list says is trusted. Where a list is used, it is checked against the layout
+//! ([`listed`], [`covers`]). Every rule with an expression must be listed once and in order, with
+//! every operation of each, and a walk where there is one and only there. The functions name every
+//! part of the tree whatever its kind. Where a part is not a walk, they name the expression that it
+//! is in again, which adds nothing new. [`Machine::apply`](layout::Machine::apply) never sees a
+//! walk. `from_head` also finds a `size` rule of the last field through the types (`Fields::Last`),
+//! and checks that it is the one of the layout.
+//!
+//! # The machine
+//!
+//! The machine that applies the operations ([`Machine`]) has a stack of 16 values and 8 variables.
+//! Each is a variable of the machine, not an element of an array, reached by a `match` whose cases
+//! are all values. The last case is the default case, because a `match` with one more case costs
+//! instructions. Once inlined, each slot of the stack is a local variable. An expression has at
+//! most 256 operations, and nests at most 4 walks. The derive says where an expression goes beyond
+//! a limit, and by how much, and [`check_ops`](layout::check_ops) checks the limits again. In a
+//! debug build, where nothing is inlined, each operation is a call.
+//!
+//! The derive puts an [`Op::Shortcut`] after the left side of a `&&` or a `||`, and an [`Op::Then`]
+//! and an [`Op::Else`] before the branches of an `if`. They skip what follows when Rust would not
+//! compute it. `check_ops` checks that what they skip is exactly a right side or a branch, so that
+//! the stack has the same depth after it either way. So `protocol != 17 || be(..) == 0` holds for a
+//! packet that is not UDP, however short, and costs nothing more for it.
+//!
+//! What is not computed is told by an index (the `skip` of [`Machine`]). The operations before it
+//! are not applied. A `Shortcut` that decides sets the index past the right side, and a failure
+//! sets it to the end. Where the operations are constants, so is the index on each path through
+//! the code, and the optimizer makes jumps of it. No test is left where nothing is skipped. The
+//! alternative, a flag on each value of the stack that tells whether it failed, makes every
+//! operation carry failures along, and computes the side of a `||` that is not needed.
+//!
+//! Nothing that is computed can be left out of the value of an expression. So its first failure is
+//! its failure, and the evaluator stops there. What follows is compiled knowing that nothing
+//! failed.
 
 use crate::{
   Fields, Path, Pun, Root, Rules, Steps, Variants,

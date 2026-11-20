@@ -1,0 +1,112 @@
+# The design of `puns`
+
+The design is in the rustdoc. This file says where each part is written, and states the
+invariants that cross modules. Read the module documentation of what you change before you change
+it, and keep it true. `cargo doc --no-deps -p puns --document-private-items` renders the private
+modules. The module `view` is `#[doc(hidden)]`, so read its documentation in the source.
+
+## What `puns` promises
+
+- The crate documentation ([`src/lib.rs`](src/lib.rs), after the README) is the public design:
+  the table of functions ("Reference"), what a valid value is and what the analysis relies on
+  ("Soundness"), the `unstable` feature, the minimum Rust version, portability, and
+  "Limitations".
+- The documentation of `#[derive(Pun)]` (on `pub use puns_derive::Pun` in
+  [`src/lib.rs`](src/lib.rs)) says what a rule means, what it reads, and what the derive trusts
+  ("What the derive trusts").
+- [`SelfRelative`](src/relative.rs) states the contract of a crate that declares self-relative
+  pointers, and what `puns` guarantees it in return.
+
+## How it works
+
+- **A layout is a value.** [`layout`](src/layout.rs) ("Nodes") describes a type as a `const` tree
+  of scalars, structs, enums, unions, arrays, patterns and pointers.
+- **The analysis compares two layouts at compile time.** [`analysis`](src/analysis.rs) decides
+  fit, validity, marks and mutability, with its cost, shifted relations, mutable parts, how rules
+  are proven, and the layouts that Rust leaves to the compiler.
+- **Validation checks only the marks.** [`validate`](src/validate.rs) recurses over types, with
+  no interpreter. The evaluator of rules is `layout::Machine`.
+- **Narrowing.** [`narrow`](src/narrow.rs) computes the range of every value of a rule, so that
+  each operation runs in a register where it fits.
+- **Views.** [`view`](src/view.rs) decides each variant of a view enum once, from its base.
+- **Enums without `repr`.** [`discover`](src/discover.rs) finds their layouts by experiments, and
+  names the facts of the compiler that they rest on. [`std_enums`](src/std_enums.rs) applies it to
+  `Option` and `Result`.
+- **Pointers to unsized types.** [`ptr`](src/ptr.rs) splits and builds wide pointers in `const`,
+  verified for each type.
+- **Self-relative pointers.** [`deep`](src/deep.rs) proves what pointers aim at, by instances of
+  functions. [`visit`](src/visit.rs) validates, walks and copies a value in a buffer for the crate
+  that has the pointers.
+- **Measurements.** [`examples/codegen.rs`](examples/codegen.rs) records the machine code of each
+  function. [`benches/checks.rs`](benches/checks.rs) records the instructions of each check.
+- **The model check.** [`puns-model`](../puns-model/src/lib.rs) compares every verdict with
+  oracles that do not use the analysis.
+
+## Invariants that cross modules
+
+- A pun gives a value only from bytes that are valid for it, proven by `analysis` or checked by
+  `validate`. A check reads only what the marks of the analysis name.
+- Without the `unstable` feature, nothing depends on a layout that Rust leaves to the compiler.
+  `analysis` does not look into such a node, and nothing in it is checked. `layout::Stable` says
+  what every layout that Rust allows has.
+- A requirement (`valid(..)`, a rule) never proves a guarantee of another type. Two layouts are
+  equal only if they require and guarantee the same values.
+- Only `view_ref` and `try_view_ref` make a value that holds a self-relative pointer, and no
+  function gives a `&mut` to one. The three rules and the eight invariants are named headings of
+  [`deep`](src/deep.rs) ("Rules that every function keeps", "Invariants").
+- What the derive or a hand-written `Pun` lists (fields, variants, elements, rules, pointer
+  targets) is checked against the layout wherever it is used: `validate::listed`,
+  `deep::listed`, `visit::listed`.
+- The derive names nothing through a path that the deriving crate can redefine.
+- Pointers are declared through the public API only, as another crate would declare them: in
+  the doc test of `SelfRelative` (doc tests are outside the crate), in the tests
+  ([`tests/support/relative.rs`](tests/support/relative.rs)), in the model check and in
+  `examples/codegen.rs`.
+
+## Not done yet
+
+What users meet is in "Limitations" of the crate documentation. The following are the ideas and
+their costs, for whoever takes one up.
+
+- **One walk to copy a value and hand over its pointers.** A deep copy is `copy_in` then
+  `pointers_in` on the same value. The tag of an enum is then read, and its variant chosen,
+  twice. One walk could hand the pointers to the visitor during the copy. But the visitor of a
+  deep copy allocates the targets, which can move the buffer under the copy. The walk would have
+  to keep the pointers aside until it ends. A prototype that kept them on a stack of its own was
+  twice as slow, with an indirect call, a push and a pop for each pointer.
+- **Checks behind pointers.** Checking behind pointers is a walk of the buffer with the marks of
+  each pair of types. Only the crate that has the pointers can make that walk, since it knows the
+  way to the targets. The version of `validate_in` for a pair would be a function of its own,
+  `validate_pair_in::<S, D, V>`. It would check what the marks of the analysis of `S` as `D` leave,
+  and hand over pairs of pointers through a method added to `Visit` with a default body,
+  `pointer_pair::<PS, PD>(at)`. By default, that method would validate the target of `PD` alone.
+  Adding either breaks nothing of `validate_in`.
+- **Precise mutable parts.** The operations of a rule tell which fields and bytes it reads, so
+  `head_mut` and `tail_mut` could allow a rule over other fields only. They could allow an enum
+  all of whose variants accept what is written. A `pun_mut` of a whole value does not require
+  this of rules, and the two could be made the same, either way.
+- **Ranges from conditions.** A value is narrowed by what it is made of and by the reads that
+  succeeded, not by a comparison that held. The condition of a walk does not narrow its step, nor
+  does the condition of an `if` narrow its branches. The examples have neither case, since their
+  walks move offsets.
+- **Rules implied by other rules.** The model check counts as nothing what the source implies and
+  the library checks all the same. It is not wrong.
+- **A rule that two variants of a view share, where neither takes the other.** The later variants
+  that have a rule that failed, over the same extent at the same place (`Layout::same_rules`),
+  could be ended at once. The validation would then report which rule failed. Every check would
+  carry that report, where it is now a `bool` that the optimizer folds.
+- **Precise checks of an enum made from something else.** Only what was not proven could be
+  checked, rather than the whole enum.
+- **An enum checked into what is not an enum.** Relating the target to each variant of the source
+  whose tag it may accept would make the pun checked rather than refused.
+- **Checking some fields of a union.** Checking only the fields that read no padding would be
+  sound, but the marks of the analysis cannot tell the validation which fields to skip.
+- **The identity of an enum whose bytes may be uninitialized.** A scalar made by
+  `Spec::maybe_uninit` equals no scalar. So a struct or an enum that holds one does not prove
+  itself by `Layout::equals`. The library makes no such enum today, since the tags that it
+  discovers are exact.
+- **Fields of fields in rules.** Loading `header.length` or `magic[0]` would be sound if the
+  offset were checked against the layout of the field, as a scalar of that size there, as it is
+  for the fields of the struct.
+- **Patterns other than `str` as types.** Automata are compared by their states and edges, not by
+  their `id`, which a user can choose (`Op::Matches`).

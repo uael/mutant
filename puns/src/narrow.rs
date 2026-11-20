@@ -1,20 +1,88 @@
 //! The ranges of the values of the expressions of rules, computed at compile time.
 //!
-//! An expression means what it means on `u128`. This module finds, for each operation, a width
-//! in which it can be computed with the same result and the same failure: a register (64 bits,
-//! or 32 on a 32-bit target) where the values fit it, or 128 bits otherwise.
+//! An expression means what it means on `u128`, but most of its values are known to be much
+//! smaller. Examples are a field of two bytes, a sum of two such fields, a checksum of 16 bits, or
+//! an offset in the value. On a 64-bit target a `u128` is two registers. Its addition carries from
+//! one into the other (`adc`), its product is three multiplications, and its division is a call. In
+//! a loop, the optimizer does not know that the high half of a state is zero. So this module finds
+//! the range of every value of an expression at compile time. Each operation is then computed as
+//! narrowly as its range allows, with the same result and the same failure as on `u128`: in a
+//! register (64 bits, or 32 where `usize` is narrower) where the values fit it, or in 128 bits
+//! otherwise.
 //!
-//! Each value of an expression lies in a [`Range`], which follows from the widths of what it
-//! reads and from the operations that make it. For each operation, a [`How`] says four things:
+//! # Ranges
 //!
-//! - The width in which the operation is computed.
-//! - Whether it may fail. An addition that cannot overflow is not tested.
-//! - Whether the halves of a `u128` are computed apart, because the low halves do not carry.
-//! - The width that its result fits. The evaluator (`layout::Machine`) truncates every value to
-//!   that width. This changes nothing of the value, and tells the optimizer what it is where it
-//!   could not know, as in the loop of a walk.
+//! A value is known as two intervals, one for each half of a `u128` ([`Range`]). For example,
+//! `(kind << 64) + start` is a kind of `0..=255` in the high half and an offset in the low half. A
+//! field, a read of `n` bytes and a checksum are as wide as they are. A literal is itself, and a
+//! comparison is `0..=1`. `size_of_val(self)` is at most `isize::MAX` ([`SIZE_MAX`]). A QUIC
+//! integer is 62 bits, and the other integers of variable length may be anything. Each operation
+//! makes the range of its result from those of its operands, and tells whether it may fail. A sum
+//! whose bounds do not overflow cannot fail. Nor can a difference whose left side is never less
+//! than its right side.
 //!
-//! The state of a walk is the fixed point of what its steps make of it.
+//! A read that succeeds tells that its offsets are in the value. Examples are `be(at, 1)` and a
+//! checksum over `start..end`. After the read, a variable that was read at is at most `isize::MAX`
+//! for the rest of the expression. This does not hold after a part that may not have been computed,
+//! such as the right side of a `&&` or a branch of an `if`. There the variables are what they were
+//! before the part or after it. It does not hold in the `else` branch either, which starts from
+//! what was before the first branch. This is what bounds the offset of a walk, whatever the number
+//! of its steps. The step of IPv6 reads at `start` before it adds to it, so `start + 8 + length *
+//! 8` is less than `2^64` and does not carry.
+//!
+//! The state of a walk is a fixed point. It is what the walk starts as, joined twice with what a
+//! step makes of it. Then each bound that still moves goes as far as it can, in at most four more
+//! steps. The number of steps of a walk, at most `8 * size + 128`, bounds nothing. On 64 bits it is
+//! more than `2^64` for a value of `isize::MAX` bytes. The state of a walk nested two deep or more
+//! may be anything, so that the analysis stays a few times the length of the expression.
+//!
+//! # How an operation is computed
+//!
+//! How each operation is computed is a [`How`]. It is a constant of the instance of the function
+//! that applies the operation, as the operation is (see "No interpreter" in the documentation of
+//! [`validate`](mod@crate::validate#no-interpreter)). It says four things:
+//!
+//! - The width in which the operation is computed, a register or 128 bits ([`REGISTER`]).
+//! - Whether it may fail. An addition, a product or a shift that cannot overflow is not tested.
+//! - Whether an addition or a difference of 128 bits is computed on each half alone, which is done
+//!   where the low halves cannot carry or borrow.
+//! - The width that its result fits. The evaluator ([`Machine`](crate::layout::Machine)) truncates
+//!   every value to that width. This changes nothing of the value, and tells the optimizer what it
+//!   is where it could not know otherwise. This is the case of the state of a walk at each step,
+//!   and of the variables read in its expressions.
+//!
+//! The plan of an expression is a constant of its type ([`Planned::PLAN`]). Where the expressions
+//! of a walk start (the variables, the state) is a constant of theirs (`Ops::ENTRY`). Both are made
+//! once at compile time, for each expression.
+//!
+//! The computation is never narrower than a register. On 64 bits, computing everything in 32 bits
+//! where it fits gave as many instructions in all, with one cost. `40 + payload_length` in 32 bits
+//! is not known to be the size that the `size` rule compared in 64 bits, so the bounds of what it
+//! reads were tested again. For the UDP packet behind 3 headers, that was 217 instructions against
+//! 209. A remainder in 32 bits after a sum in 64 bits was worse than either, 243 instructions
+//! against 241 for IPv4. These counts are of `valgrind --tool=callgrind` on `benches/checks.rs`.
+//! The bounds of a read are one comparison of the offset with `size - n`, which does not change in
+//! a walk.
+//!
+//! # Tests
+//!
+//! `narrow_tests.rs` tests that the narrowed evaluation is the one on `u128`, apart from the rest
+//! of the analysis:
+//!
+//! - Every binary operation, for every pair of ranges at the limits of 32, 64 and 128 bits and of
+//!   the halves, over values at their bounds and others, as on a target of 64 bits and of 32 bits.
+//!   Each is compared with the operation on `u128`. The result must be in the range that the
+//!   analysis gives, and what the analysis says cannot fail must not fail.
+//! - Random expressions, with variables, parts, reads and walks. The walks are random, move an
+//!   offset by what they read, or carry two numbers in the halves of the state. Each expression is
+//!   evaluated over random and boundary bytes, narrowed and not. Both must have the same value or
+//!   fail alike.
+//!
+//! `tests/rules_are_rust.rs` compares rules at the limits of the widths, and walks, with Rust. The
+//! tests catch an analysis that does not test a carry, that takes no fixed point, or that does not
+//! join what follows a part. They also catch an analysis that is wrong about the range of a
+//! product, a remainder or a shift. Each of these faults was tried. The tests cannot catch a bound
+//! of `isize::MAX` taken too small, because no value of the tests is large enough to tell.
 
 use crate::{
   layout::{self, MAX_OPS, Op, STACK, VARIABLES, Varint},

@@ -51,7 +51,7 @@ required-features = ["unstable"]
 name = "seeds"
 required-features = ["verdict"]
 
-# Its counts of instructions (`DESIGN.md`) are of enums without `repr` too.
+# Its table of machine code (its module documentation) covers enums without `repr` too.
 [[example]]
 name = "codegen"
 required-features = ["unstable"]

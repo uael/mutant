@@ -18,6 +18,41 @@
 //!
 //! This is not a test, and `cargo test` does not run it. It needs the `unstable` feature, because
 //! its view enums read enums without `repr`.
+//!
+//! # Instructions
+//!
+//! The tables give the instructions of each check, counted with `valgrind --tool=callgrind` as
+//! above, next to the same check written by hand.
+//!
+//! | Check                                  | `puns` | by hand |
+//! |----------------------------------------|-------:|--------:|
+//! | IPv4, UDP, 64 bytes                    |    241 |     217 |
+//! | IPv4, protocol 253                     |    120 |     106 |
+//! | IPv6, TCP behind 3 extension headers   |     75 |     106 |
+//! | IPv6, TCP behind 12 extension headers  |    210 |     322 |
+//! | IPv6, UDP behind 3, 64 bytes           |    209 |     229 |
+//! | IPv6, UDP, 1400 bytes                  |    803 |     798 |
+//! | a frame of 6 things, UDP over IPv4     |    267 |     244 |
+//!
+//! The IPv6 packet packs the state of its walk at bit 64 (see [`Ipv6`]). Behind 12 extension
+//! headers, its check is then 210 instructions against 322 for the same check by hand.
+//!
+//! The second table is of the checks of the `AnyFrame` view enum (6 variants). The column "a call"
+//! is `from_bytes` behind a function that is not inlined, as the check by hand is. Where the bench
+//! calls the view directly, the optimizer inlines it, and its checksums stay calls.
+//!
+//! | `AnyFrame` of the bench (6 variants)   | `puns` | `puns`, a call | by hand (a call) |
+//! |----------------------------------------|-------:|---------------:|-----------------:|
+//! | UDP over IPv4 (the first variant)      |    283 |            273 |              244 |
+//! | TCP over IPv4                          |    302 |            290 |              286 |
+//! | UDP over IPv4, a wrong checksum        |    266 |            255 |              246 |
+//! | ARP                                    |     25 |             41 |               46 |
+//! | VLAN                                   |     25 |             41 |               45 |
+//! | another EtherType (the last variant)   |     21 |             36 |               40 |
+//!
+//! A wrong checksum is computed once, for `Frame<Ipv4>`, the base of the first three variants. The
+//! UDP variant is then its protocol alone. The EtherType is one decision, a `cmp` of its 16 bits
+//! for each value, then the variant.
 
 use std::{hint::black_box, time::Instant};
 
@@ -145,7 +180,8 @@ pub enum AnyFrame<'a> {
 /// walk.
 ///
 /// The state of the walk holds the kind of a header in its high 64 bits, and where the header
-/// starts in its low 64 bits. The two halves are two registers (see "Walks" in `DESIGN.md`).
+/// starts in its low 64 bits. The two halves are two registers (see the documentation of `walk`
+/// in `#[derive(Pun)]`).
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = payload_length + 40)]

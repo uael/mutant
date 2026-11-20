@@ -1,14 +1,27 @@
 //! The implementations of `Pun` for `Option<T>` and `Result<T, E>`, for any `T` and `E`.
 //!
 //! Both are enums without `repr`. Their layouts are found as the layout of an enum without `repr`
-//! that derives `Pun` is found (`discover.rs`). Where `core` documents the layout, as for an
-//! `Option` of a `NonZero` (`Pun::NULL_OPTIMIZED`), it is a layout that Rust specifies.
-//! Otherwise it is a layout that Rust leaves to the compiler.
+//! that derives `Pun` is found ([`discover`](crate::discover)), for any `T` and `E` whose layout
+//! is known. Where `core` documents the layout, as for an `Option` of a `NonZero`
+//! (`Pun::NULL_OPTIMIZED`), it is a layout that Rust specifies. Otherwise it is a layout that Rust
+//! leaves to the compiler.
+//!
+//! `Option<NonZero<u32>>` is a niche at 0, so every `u32` is one, proven both ways.
+//! `Option<bool>` is the niche 2. `Option<Option<bool>>` has two niches, and `rustc` puts `None`
+//! at 255 today, below the valid values rather than after them. This is found, not assumed.
+//! `Option<u16>` has a tag of two bytes. `Result<u32, Infallible>` is a struct of its `u32`.
 //!
 //! If `T::OPTION` gives the layout of `Option<T>`, `Option<T>` has that layout. This is the case
 //! of a self-relative pointer, whose `Option` [`self_relative!`](crate::self_relative) makes the
 //! same pointer, which may be null. Nothing is found then, and the lists of the variants of
-//! `Option<T>` are empty, since a pointer is not looked into.
+//! `Option<T>` are empty, since a pointer is not looked into. [`deep`](crate::deep) does not look
+//! into the pointer either, except for what it aims at, its `Pointee`, which is `T::Pointee`. The
+//! rules of `deep` apply to it as to any pointer. A crate that declares a pointer gets this from
+//! the macro alone. The tests show it with an offset whose zero is a niche (`Nz32le`). They read
+//! `Option<One<T, Nz32le>>` as `Opt<T, i32le>` and back, through values of a buffer. An offset
+//! that has no niche at zero, such as a byte array, makes `Option` of the pointer larger, with a
+//! tag of its own. That fails to build where it is used, with a message (compile-fail test
+//! `option_of_pointer_without_niche`).
 
 use core::{marker::PhantomData, mem::MaybeUninit};
 
@@ -215,7 +228,7 @@ unsafe impl<T: Pun> Pun for Option<T> {
       .identified(Id::new("Option", &[T::LAYOUT.id]));
     // Where `core` documents it (a `NonZero`, a `repr(transparent)` struct around one), what is
     // found is what it documents: a niche at zero, which is `None`. Else Rust specifies nothing
-    // of it (section 12 of the design).
+    // of it (see "The `unstable` feature" in the crate documentation).
     if T::NULL_OPTIMIZED { layout } else { layout.unspecified() }
   };
 }

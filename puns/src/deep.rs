@@ -1,49 +1,231 @@
 //! Proofs of what the self-relative pointers of a target aim at.
 //!
-//! A [`Layout`](crate::layout::Layout) does not hold what a pointer aims at. The layout of a
-//! recursive type would have no end. Const evaluation has no identity of a type or of a static by
-//! which an analysis could tell that it has been somewhere before: `TypeId` cannot be compared in
-//! `const`, and neither can pointers. An instance of a generic function has such an identity: it
-//! exists once, however often it is named. So the proof that a `D` can be read where an `S` is,
-//! pointers followed, is a set of instances:
+//! A self-relative pointer ([`Pointer`](crate::layout::Pointer)) guarantees that its target is
+//! where it says, valid, and its own. This is not a property of its bytes. As a *source*, a pointer
+//! is initialized bytes of which nothing more is known, so every function that reads (`as_bytes`,
+//! `head_ref`, and so on) reads a value that holds pointers as plain data. As a *target*, a pointer
+//! is made only as this module and the [three rules](#rules-that-every-function-keeps) say.
+//!
+//! A [`Layout`](crate::layout::Layout) does not hold what a pointer aims at. The layout of `struct
+//! Node { next: Opt<Node> }` would have no end. Const evaluation has no identity of a type or of a
+//! static by which an analysis could tell that it has been somewhere before: `TypeId` cannot be
+//! compared in `const`, nor can pointers, and a static reached through an associated constant is a
+//! cycle. So what a pointer aims at is a type, `Pun::Pointee`. It is the element for a sequence,
+//! and `()` for text. The layout keeps the size and the alignment of the target, which the compiler
+//! gives without looking into the target.
+//!
+//! # The proof behind pointers
+//!
+//! [`view_ref`](crate::view_ref) runs the plan of `pun_ref` with pointers allowed. It then proves,
+//! for every pointer of `D`, that the `X` that its source pointer aims at can be read as the `Y`
+//! that it aims at itself. `Y` must be the first bytes of `X`, every `X` must be valid for them,
+//! and nothing may be left to check, since nothing can be checked behind a pointer. The pointers of
+//! `Y` are then pointers of `X`, and so on. For a recursive type, this never ends as an analysis.
+//! An instance of a generic function has an identity: it exists once, however often it is named. So
+//! the proof is a set of instances, and it ends:
 //!
 //! - [`target::<X, Y>`](target) exists once for each pair of a type `X` that a pointer of the
 //!   source aims at and a type `Y` that the pointer of the target at the same place aims at. Its
-//!   `const` block is the whole proof of that pair up to the next pointers ([`behind`]). It
-//!   requires that every `X` is a valid `Y` over the bytes of `Y`, with nothing left to check,
-//!   and that every pointer of `Y` is, in `X`, a pointer whose target it can read ([`local`]).
+//!   `const` block is the whole proof of that pair up to the next pointers ([`behind`], the
+//!   analysis of `X` as `Y`). It requires that every `X` is a valid `Y` over the bytes of `Y`, with
+//!   nothing left to check, and that every pointer of `Y` is, in `X`, a pointer whose target it can
+//!   read ([`local`]).
 //! - [`pair::<A, B>`](pair) names `target` for the pointers that `A` and `B` hold at the same
 //!   place, through their fields, variants and elements. It names `target` as a function pointer
 //!   that nothing calls. A recursive type thus closes a cycle of instances, which the compiler
 //!   makes once. The proof is an induction over the pairs of types that can be met from `S` and
 //!   `D`.
 //!
-//! [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref) call [`proof`], whose
-//! `const` blocks are evaluated up to the first pointers, as in any function that runs. Behind a
-//! pointer, the `const` block of `target` is evaluated because the compiler makes every function
-//! that the code it compiles names, whether that code runs or not. Building a function pointer
-//! needs the function, and `rustc` makes it whatever the optimizations. The Reference does not
-//! promise this of a `const` block that is not executed. Compile-fail tests hold the compiler to
-//! it.
+//! [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref) call [`proof`], and
+//! through it `pair` over everything up to the first pointers. These are `const` blocks of code
+//! that runs, which the language evaluates ([`r-expr.block.const.evaluation`][const evaluated]).
+//! Behind a pointer, `target` is named and never called, since calling it would not end. Its
+//! `const` block is evaluated because the compiler makes every function that the code it compiles
+//! names. It does so whether that code runs or not, and whatever the optimizations. It has to build
+//! the function pointer, and `rustc` collects what a function mentions before it optimizes, so that
+//! errors of const evaluation do not depend on the optimization level.
 //!
-//! `pair` cannot choose what it names, because the compiler also makes the instances that a
-//! branch names when a constant rules the branch out. So `pair` pairs by position: the fields of
-//! two structs and the variants of two enums in the order of their declarations, and elements
-//! with elements. This names more pairs than matter. Where the source has nothing, its side is
-//! `()`. `target` has nothing to prove of a type without size, since no pointer aims at one
-//! ([`Pointer::one`], [`Pointer::sequence`]), and the type that text aims at is `()`.
+//! This is a behavior of the compiler. The Reference says that a `const` block that is not executed
+//! may or may not be evaluated ([`r-expr.block.const.not-executed`][const not executed]). The
+//! compile-fail test `view_behind_pointers` (a `u8` read as a `bool` behind the pointers of a
+//! recursive type) holds the compiler to it in a debug build. The workflow `model.yml` builds the
+//! same program optimized, with LTO, every night, and it must be refused there too. Run that check
+//! when `rust-toolchain` changes. The program declares its own pointer and needs no other crate.
 //!
-//! `local` decides exactly which pairs matter, in `const` code. Every pointer of the target must
-//! be, in the source, a pointer at the same offset that `pair` pairs it with, or the build fails.
-//! This sets limits, each of which is a refusal:
+//! For the same reason, `view_ref` is not a `const fn`. A call in a constant would make no
+//! instance. An interpreter that evaluates only the constants of the functions that it runs, as
+//! Miri does, would not refuse such a view. The refusal is one of a build.
+//!
+//! # Pairing by position
+//!
+//! The compiler also makes the instances that a branch names when a constant rules the branch out.
+//! So `pair` cannot choose what it names. It pairs by position: the fields of two structs and the
+//! variants of two enums in the order of their declarations, and elements with elements. This names
+//! more pairs than matter. Where the source has nothing, its side is `()`. `target` has nothing to
+//! prove of a type without size, since no pointer aims at one ([`Pointer::one`],
+//! [`Pointer::sequence`]), and the type that text aims at is `()`.
+//!
+//! `local`, which is `const` code, decides exactly which pairs matter. Every pointer of the target
+//! must be, in the source, a pointer at the same offset that `pair` pairs it with, or the build
+//! fails. So what `local` accepts, `pair` names, by the same walk of the same lists. A pair that is
+//! named without mattering has one side without pointers.
+//!
+//! Those lists (`Fields`, `Variants`, `Elem`, `Pointee`) are types, written next to the layout that
+//! the analysis reads. On its way, `local` checks that they are what the layouts hold ([`listed`]):
+//! the same fields in the order of their declarations, the same variants, the same elements, and a
+//! target of the size and the alignment that the pointer says. So an implementation of `Pun` whose
+//! lists and layout differ cannot make a pointer be missed, or taken for another (compile-fail test
+//! `lists_not_the_layout`). Hence the limits, each of which is a refusal:
 //!
 //! - A field that holds a pointer keeps its position among the fields of its struct.
 //! - A variant that holds a pointer keeps its position among the variants of its enum. New
-//!   variants go last.
+//!   variants go last. A variant found by its tag at another position is refused (compile-fail test
+//!   `view_variant_moved`).
 //! - A struct that only holds a pointer is not that pointer.
 //!
+//! [`try_view_ref`](crate::try_view_ref) checks what is not proven of the value itself, with the
+//! marks of the analysis. That may be a variant that the target does not have, a restricted scalar,
+//! or a nullable pointer read as one that is not nullable, whose bytes must not be all zero. It
+//! requires of what the value points to what `view_ref` requires.
+//!
+//! # Rules that every function keeps
+//!
+//! What a pointer guarantees is not a property of its bytes. Three rules follow, which every
+//! function keeps.
+//!
+//! ## No bytes prove a pointer
+//!
+//! A pointer of the target is proven only by a pointer of the source at the same place whose target
+//! it can read ([`Pointer::reads_as`](crate::layout::Pointer::reads_as)). That pointer must have
+//! the same scheme, the same offset (width and byte order), and the same kind of aim. Its target
+//! must be no larger and need no more alignment. For one value, that is its size and alignment. For
+//! a sequence, the elements must have the same size, and the declared alignment of the target must
+//! not be greater than the one of the source. For text, nothing more is needed. The pointer of the
+//! source must not be nullable where the one of the target is not. Its type must not have an offset
+//! of zero where the type of the target has none (a `NonZero`), unless that is checked.
+//! `try_view_ref` checks that it is not zero, and `view_ref` refuses it. Anything else sets the
+//! `pointer` of the [`Relation`](crate::analysis::Relation), which no function accepts and no check
+//! makes up for. An enum that holds pointers is proven by an enum, variant by variant, or not at
+//! all.
+//!
+//! ## Only a proof of what pointers aim at makes a value that holds one
+//!
+//! `view_ref` and `try_view_ref` prove what pointers aim at. Every other function refuses a target
+//! that holds a pointer ([`Plan::gate`](crate::Plan::gate)). A crate that has pointers checks bytes
+//! from outside with a walk of its own ([`validate_in`](crate::validate_in)), as `nearest` does.
+//! `puns` does not load a buffer.
+//!
+//! ## No `&mut` to a pointer, nor next to one
+//!
+//! [`mutable`](crate::analysis::mutable) and [`mutable_part`](crate::analysis::mutable_part)
+//! refuse a source or a target that holds a pointer, wherever it is. Through a `&mut`, safe code
+//! could write over a pointer, swap two pointers, or move one to where it aims at something else.
+//!
+//! # Why each public function is safe with pointers
+//!
+//! - `pun`, `head`, `tail`, `try_pun` and `zeroed` take and make `Copy` values. The target is
+//!   gated ([Only a proof of what pointers aim at makes a value that holds one][only views]), and
+//!   `zeroed` asserts it. A source that holds a pointer is read as bytes.
+//! - `pun_ref`, `head_ref`, `tail_ref` and `try_pun_ref` refuse a target that holds a pointer
+//!   ([only views]). They read the bytes of a source that does, and make nothing of them.
+//! - `pun_mut`, `head_mut`, `tail_mut` and `try_pun_mut` refuse a pointer on either side
+//!   ([No `&mut` to a pointer, nor next to one][no mut]), after the target is gated ([only views]).
+//! - `as_bytes` is `pun_ref::<S, [u8]>`. It reads the bytes of a pointer.
+//! - `from_bytes`, `from_head` and `from_tail` are `try_pun_ref` from bytes (the plans `TRY_REF`
+//!   and `FROM_TAIL`). They refuse the target ([only views]).
+//! - `from_bytes_mut`, `from_head_mut` and `from_tail_mut` use the same plans, then `MUTABLE`.
+//!   They refuse it ([only views], [no mut]).
+//! - `from_bytes` and `from_head` of a view enum, which the derive writes, call `view::decide` for
+//!   the type of each variant. It requires of that type what `from_bytes` does (the plan
+//!   `TRY_REF`), so it refuses a pointer ([only views]).
+//! - The getters of `#[pun(get(..))]` and `int` read an integer field of a `&self`. A pointer is
+//!   not one (`Layout::as_integer`), so it fails to compile.
+//! - The accessors of regions and `region` need `pun_ref::<S, [u8]>`, and return bytes of the tail.
+//!   They read.
+//! - The accessors of typed regions (`regions(name: P)`) call `from_bytes::<P>` on the bytes of the
+//!   region. They refuse a pointer ([only views]).
+//! - The rules (`size`, `len`, `assert`, `regions`) read unsigned integer fields, which a pointer
+//!   is not (an error of the generated code), or bytes (`le`, `be`, `crc32`, and so on), which they
+//!   read.
+//! - `Tag`, `num::*`, `crc32` and `sum16` involve no pointer.
+//! - `view_ref` and `try_view_ref` require each pointer of the target to be a pointer of the source
+//!   ([No bytes prove a pointer](#no-bytes-prove-a-pointer)), prove what it aims at, and return a
+//!   `&`.
+//! - `SelfRelative` and `self_relative!` are a declaration, whose promise is the `unsafe impl`. The
+//!   macro writes `Pun` from it, and asserts what can be asserted
+//!   ([Pointer layouts come from `SelfRelative`](#pointer-layouts-come-from-selfrelative)).
+//! - `layout::*` holds values that describe layouts, for the code that the derive and
+//!   `self_relative!` write. They make no value of a type. A layout stands for a type only through
+//!   `Pun`, an `unsafe trait`. `Pointer` is public, and made only by its constructors, since its
+//!   fields are private.
+//! - `hook::*`, behind the test-only feature `verdict`, runs the same plans and answers instead of
+//!   enforcing. Its `view_ref` follows pointers a bounded number of times. It is for the model
+//!   check, whose types that bound covers.
+//!
+//! # Invariants
+//!
+//! Each invariant is kept where it is stated.
+//!
+//! ## Pointer layouts come from `SelfRelative`
+//!
+//! A layout of a pointer is made only by `Layout::pointer`, which `self_relative!` calls for a
+//! [`SelfRelative`](crate::SelfRelative) type, an `unsafe trait`. The type is the offset and
+//! nothing else, which its size asserts. It aims at its `Target`, for which the description was
+//! made, which the size and the alignment assert. That target is a type with a size
+//! ([`Pointer::one`], [`Pointer::sequence`]), or `()` for text.
+//!
+//! ## Every unproven pointer is recorded
+//!
+//! The `pointer` of a [`Relation`](crate::analysis::Relation) is set for every pointer of a target
+//! that a pointer of the source does not prove. The two places that give up on proving set it
+//! (`relate_range`, `relate_enums`). Every plan refuses it,
+//! fallible or not (`check` in `lib.rs`).
+//!
+//! ## Only views make a value that holds a pointer
+//!
+//! Every plan but `VIEW` and `TRY_VIEW` refuses a target that holds a pointer
+//! ([`Plan::gate`](crate::Plan::gate)). `Plan::check` and `Plan::check_tail` call it, and every
+//! plan goes through one of them.
+//!
+//! ## No `&mut` with a pointer
+//!
+//! [`mutable`](crate::analysis::mutable) and [`mutable_part`](crate::analysis::mutable_part) are
+//! false with a pointer on either side.
+//!
+//! ## The views prove behind pointers
+//!
+//! `view_ref` and `try_view_ref` are the only functions with the plans that
+//! [Only views make a value that holds a pointer](#only-views-make-a-value-that-holds-a-pointer)
+//! exempts. Both call [`proof`] for the same pair of types. Neither is a `const fn`.
+//!
+//! ## What `local` accepts, `pair` names
+//!
+//! Both walk the fields, the variants and the elements of the two types by position. [`local`]
+//! refuses whatever is not at the position where [`pair`] looks for it, and a type whose lists are
+//! not what its layout holds ([`listed`]).
+//!
+//! ## `reads_as` compares whole descriptions
+//!
+//! [`Pointer::reads_as`](crate::layout::Pointer::reads_as) relates only pointers of the same
+//! scheme, width, byte order and kind of aim, with the numbers of their descriptions (sizes,
+//! alignments, the declared alignment of a sequence). It says when nullability, or an offset of
+//! zero read as a `NonZero`, is to be checked. `Pointer::same`, by which two layouts are equal,
+//! compares every field of the description.
+//!
+//! ## The contract of `SelfRelative`, and nothing more
+//!
+//! `puns` relies on the requirements of the `# Safety` section of
+//! [`SelfRelative`](crate::SelfRelative#safety), and on nothing more. It relies on "The scheme is
+//! the way to the target" when it reads a pointer as another of the same scheme, on "What it aims
+//! at is there, and valid" and "What it aims at is its own" for what this module proves of the
+//! targets, and on "Null" for the check of a nullable pointer by `try_view_ref`.
+//!
+//! [only views]: #only-a-proof-of-what-pointers-aim-at-makes-a-value-that-holds-one
+//! [no mut]: #no-mut-to-a-pointer-nor-next-to-one
 //! [`Pointer::one`]: crate::layout::Pointer::one
 //! [`Pointer::sequence`]: crate::layout::Pointer::sequence
+//! [const evaluated]: https://doc.rust-lang.org/reference/expressions/block-expr.html#r-expr.block.const.evaluation
+//! [const not executed]: https://doc.rust-lang.org/reference/expressions/block-expr.html#r-expr.block.const.not-executed
 
 use crate::{
   Fields, Message, Pun, Variants,

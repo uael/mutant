@@ -21,6 +21,50 @@
 //! The module also has what the rules of `#[derive(Pun)]` compute: the checksums [`crc32`],
 //! [`sum16`], [`Crc`] and [`Checksum`], and the variable-length integers of [`Varint`].
 //!
+//! # Nodes
+//!
+//! `const fn`s build a layout from what the compiler says of the type: `size_of`, the offsets of
+//! the fields, `size_of_val_raw`, and so on. A node is one of the following.
+//!
+//! - A **scalar** ([`Spec`]) is at most 16 bytes, in a byte order, with a sorted list of valid
+//!   ranges. A scalar that restricts its values is 1 to 16 bytes. `bool` is `0..=1`, `char` is two
+//!   ranges, and `NonZero` is `1..`. An enum without fields is the values of its variants, read
+//!   from the compiler whatever its `repr`. A scalar has two sets of values. What it *requires* is
+//!   the values that a value made of it must have. What it is *known* to be is what every value of
+//!   it is. The two are the same, with two exceptions. A field restricted by `#[pun(valid(..))]`
+//!   requires values that it is not known to hold
+//!   ([Guarantees and requirements](crate#guarantees-and-requirements)). A scalar made by
+//!   [`Spec::maybe_uninit`] requires some values, and is known to be anything, padding included.
+//! - A **struct** has its fields ([`Field`]) at their offsets, which come from the compiler for
+//!   any `repr`. The bytes that no field covers are padding. A struct may have rules ([`Rule`]).
+//! - An **enum** with fields ([`Enum`]) has a tag, which is a scalar at a fixed place. Each
+//!   [`Variant`] has its tags and a struct of its fields. The representations that Rust specifies
+//!   (`repr(C)`, `repr(u8)` and the other primitive representations, [RFC 2195]) are made of
+//!   `repr(C)` structs. The derive declares those structs and asks the compiler for their layouts.
+//!   The result is checked against the size and the alignment of the enum. For an enum without
+//!   `repr`, experiments in const evaluation find the layout that `rustc` chose. That layout has a
+//!   direct tag, or a *niche* in the fields of one variant. That variant then has several tags,
+//!   the values of the scalar that holds the niche, and holds the tag in its fields. A variant that
+//!   holds a type without values has no tag, since no value of it exists.
+//! - A **union** (`repr(C)`) is an enum without a tag, whose variants are its fields, each at
+//!   offset 0. A value of it must be one of its fields ([Unions](crate#unions)).
+//! - A type **without values** is an enum without variants ([`Layout::uninhabited`]). `Infallible`
+//!   and enums without variants are such types. No value has their layout
+//!   ([`Layout::is_inhabited`]), so as a source such a type proves any target.
+//! - `MaybeUninit<T>` is padding of the size of `T`.
+//! - An **array** or a **slice** is the layout of an element and a count. A slice has no count.
+//! - A **pattern** is a tail of bytes that an automaton ([`Dfa`]) accepts. `str` is the automaton
+//!   of UTF-8, of 8 states. An automaton is known by its states and its edges. Its `id`, a field
+//!   that safe code can write, only tells two automata apart. Two patterns are the same layout only
+//!   if their automata are the same, state by state. A value is checked with `str::from_utf8` only
+//!   where the automaton is the one of UTF-8, which is decided at compile time.
+//! - A **self-relative pointer** ([`Pointer`]) is an offset in a byte order. What it aims at is
+//!   not in the layout.
+//!
+//! A layout is an automaton in a compact, hierarchical form. A position in it is a state, and the
+//! analysis walks the layouts of the source and of the target in step.
+//!
+//! [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 
 use core::mem;
@@ -848,7 +892,8 @@ pub enum Aim {
   /// of the pointer says.
   Sequence {
     /// The alignment of the first element, which the crate that declares the pointer guarantees. It
-    /// is a power of two, at least the alignment of the element type.
+    /// is a power of two, at least the alignment of the element type. `nearest` declares the
+    /// larger of the alignment of the element and the width of the offset.
     align: usize,
   },
   /// Bytes that are UTF-8. The bytes of the buffer tell how many there are, as the scheme of the
@@ -865,8 +910,9 @@ pub enum Aim {
 /// description, of the following:
 ///
 /// - Its **scheme**, a name that the declaring crate chooses. The scheme stands for the way a
-///   pointer and the bytes of its buffer tell where its target is, and how long it is. A pointer is
-///   read only as a pointer of the same scheme.
+///   pointer and the bytes of its buffer tell where its target is, and how long it is. `puns` does
+///   not know the way, and does not need to. A pointer is read only as a pointer of the same
+///   scheme, which finds the same target from the same bytes.
 /// - Its **offset**, an integer of 1 to 16 bytes, which are all the bytes of the pointer, in a byte
 ///   order.
 /// - What it **aims** at ([`Aim`]), with the size and the alignment of the target type, or of an
@@ -1957,7 +2003,7 @@ const fn excludes_zero<P>() -> bool {
     // `none`, and the byte is valid for reads and aligned. A read of a `u8` also requires the byte
     // to be initialized, which nothing here ensures. `rustc` reports an error when const
     // evaluation reads an uninitialized byte, as the module documentation of `discover` explains
-    // ("The experiments rest on these facts of the compiler"), and the Reference does not promise
+    // ("Const evaluation fails on what is not a value"), and the Reference does not promise
     // it. So this is sound only in const evaluation, where `self_relative!` evaluates it. A call
     // at run time with such a `P` would be undefined behavior (see `# Panics`).
     let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
@@ -1990,8 +2036,8 @@ fn pin<T>(_: T) {}
 ///
 /// With the `unstable` feature, `puns` uses the layout that `rustc` chose for the build, as it is.
 /// A pun is still sound for the build that compiles it. Everything that compiles without the
-/// feature compiles with it, and does the same. More compiles. "What Rust keeps of a layout, and
-/// the `unstable` feature" in `puns/DESIGN.md` is the design.
+/// feature compiles with it, and does the same. More compiles. See
+/// [The `unstable` feature](crate#the-unstable-feature).
 pub const UNSTABLE: bool = cfg!(feature = "unstable");
 
 /// The message of the compile error of a function of [`Visit`](crate::Visit), for a type that has
@@ -3112,7 +3158,7 @@ impl Layout {
   }
 
   // -----------------------------------------------------------------------------------------------
-  // What every layout that Rust allows has (section 12 of the design)
+  // What every layout that Rust allows has (see "The `unstable` feature" in the crate docs)
 
   /// Returns the same layout, of the type whose identity is `id`.
   #[doc(hidden)]

@@ -9,6 +9,60 @@
 //! constant, and code for what cannot be invalid is not compiled. A part of a value that holds no
 //! pointer is validated by `validate`, the code of `try_pun_ref`. It is walked again only where
 //! that validation fails, to find the position of the error.
+//!
+//! # The walk
+//!
+//! What holds no pointer is validated by `validate`, at the speed of `try_pun_ref`. Its answer is
+//! the verdict. Only where it fails is the value walked again, by the walk by position
+//! ([`value`], [`fields`], [`enumeration`]), to tell where. If that walk finds nothing, the error
+//! is at the value itself, which is less precise and never wrong. The same holds of the elements
+//! of [`validate_elems_in`]. The test `the_verdict_is_the_one_of_try_pun_ref` holds the two to the
+//! same answers.
+//!
+//! The walk goes by the lists of types that the derive writes (`Fields`, `Variants`, `Elem`,
+//! `Pointee`). It checks them against the layout for every type that it goes through
+//! ([`listed`]), as [`deep`](crate::deep) does for `view_ref`. It checks every field by its index
+//! of declaration, offset, layout and type, every variant by its tag, its tags of a niche and its
+//! fields, the element, and the target of a pointer. A list that left a field out would leave it
+//! unchecked (compile-fail test `validate_lists_not_the_layout`). A struct that holds pointers is
+//! walked field by field, so that its pointers are handed over in order with the checks of the
+//! rest. A visitor whose queue is full stops the walk where it is, with its error. The functions
+//! recurse over types only, never through pointers. They read nothing outside the bytes: a `get`,
+//! checked arithmetic, then reads at positions in bounds.
+//!
+//! The bytes are initialized, since they are a `&[u8]`, so `MaybeUninit` and padding hold what
+//! they hold. A `MaybeUninit` of a pointer is nothing, and nothing of it is handed over. A union
+//! that holds a pointer does not compile, because which field it holds cannot be told, and so
+//! neither can the pointer.
+//!
+//! [`pointers_in`] makes the calls that [`validate_in`] makes on the same bytes, in the same
+//! order. It reads the tags of enums, niches included, as `validate_in` does: [`variants`] and
+//! [`follow_variants`] choose the variant by the same test. It reads the offsets of nullable
+//! pointers, and nothing else, and evaluates no rule. The rules of a value and the `valid(..)` of
+//! its fields need not hold. Safe code can break them in a value that it makes, such as
+//! `Span { lo: 2, hi: 1 }` of `assert(lo <= hi)`, and `nearest` walks and copies such a value all
+//! the same. A type without pointers is not walked at all.
+//!
+//! [`copy_in`] walks by the same lists of types as `validate_in`, choosing the variant by the same
+//! test, so that it compiles to a few moves for each type. Copying the bytes of the pointers first
+//! would write them twice. A union does not compile there (compile-fail test `copy_in_union`). The
+//! source of `copy_in` is what `pointers_in` reads, as its types say, whatever its rules say. No
+//! rule is read, and a restricted field is copied as the scalar of its type.
+//!
+//! # Tests
+//!
+//! `tests/validate_in.rs` gives each kind of type its answer and the positions of errors. It runs
+//! random bytes, positions and counts, some of which overflow, under Miri on every target of CI.
+//! On what `validate_in` accepts there, it checks that `pointers_in` and `pointers_elems_in` hand
+//! over the same pointers, at any alignment, with the bytes that they need not read left
+//! uninitialized. It checks that `copy_in` of a value on the stack, with its padding and its other
+//! variant uninitialized, into memory that is then read whole as a `&[u8]`, copies its value and
+//! nothing else. It checks that `copy_in` of random accepted bytes gives a value that
+//! `validate_in` accepts again. Last, a value with pointers breaks its `assert` and the `valid(..)`
+//! of a field, in a buffer, and `validate_in` refuses it. The test checks that `pointers_in` hands
+//! over its pointers, and that `copy_in` copies its scalars and its null pointer, as for a value
+//! that meets them (`rules_need_not_hold_for_pointers_in_and_copy_in`). The model check holds these
+//! functions to an oracle of pointers (`puns-model`, "Self-relative pointers").
 
 use core::fmt;
 
@@ -134,30 +188,32 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// each of its self-relative pointers to `visit`.
 ///
 /// The function is safe for any bytes and any `at`. It reads nothing outside `bytes` and does not
-/// panic. It does not follow pointers. The visitor follows them, or does not. The bytes may be at any
-/// address.
+/// panic. It does not follow pointers. The visitor follows them, or does not. The bytes may be at
+/// any address.
 ///
 /// After `Ok(())`, unsafe code may rely on the following, and on nothing more:
 ///
-/// 1. `at + size_of::<T>()` is at most `bytes.len()`.
-/// 2. The `size_of::<T>()` bytes from `at` are a [valid] `T`, provided that every pointer handed
-///    to `visit` is a valid pointer of its type (items 1 to 7 of [`SelfRelative`]). Every scalar
-///    is one of its valid values: `bool`, `char`, `NonZero`, enums without fields, and the
-///    `valid(..)` restriction of a field. The tag of every enum, or its niche, selects a variant
-///    whose fields are valid. Every union is one of its fields. Every rule of every struct holds
-///    (`assert`, `size`, and the others), evaluated on the bytes of that struct only.
-/// 3. Each self-relative pointer of the value was handed to `visit` once, with its type and its
-///    position, and `visit` returned `Ok`. The exception is a pointer that may be null and whose
-///    bytes are all zero. It is no pointer, and is not handed over. All zero bytes are not valid
-///    for a pointer whose type has no such value (its offset is a `NonZero`, see item 1 of
-///    [`SelfRelative`]). For any other pointer they are a pointer, handed over.
+/// 1. **In bounds.** `at + size_of::<T>()` is at most `bytes.len()`.
+/// 2. **Valid.** The `size_of::<T>()` bytes from `at` are a [valid] `T`, provided that every
+///    pointer handed to `visit` is a valid pointer of its type, as the `# Safety` section of
+///    [`SelfRelative`](crate::SelfRelative#safety) requires. Every scalar is one of its valid
+///    values: `bool`, `char`, `NonZero`, enums without fields, and the `valid(..)` restriction of a
+///    field. The tag of every enum, or its niche, selects a variant whose fields are valid. Every
+///    union is one of its fields. Every rule of every struct holds (`assert`, `size`, and the
+///    others), evaluated on the bytes of that struct only.
+/// 3. **Pointers handed over.** Each self-relative pointer of the value was handed to `visit` once,
+///    with its type and its position, and `visit` returned `Ok`. The exception is a pointer that
+///    may be null and whose bytes are all zero. It is no pointer, and is not handed over. All zero
+///    bytes are not valid for a pointer whose type has no such value (its offset is a `NonZero`,
+///    see "The type is its offset" in [`SelfRelative`](crate::SelfRelative#safety)). For any other
+///    pointer they are a pointer, handed over.
 ///
 /// Nothing is promised of what the pointers aim at: whether they aim inside `bytes`, at what, or
-/// whether two aim at the same place. That is the business of the visitor, as is the scheme of
-/// the pointers. Nothing is promised of addresses either, only of positions in `bytes`. To make a
-/// `&T` at `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`. The
-/// buffer must then be at an address aligned to `align_of::<T>()`, and `at` a multiple of it. The same holds
-/// for what the pointers aim at, which their scheme places.
+/// whether two aim at the same place. That is the business of the visitor, as is the scheme of the
+/// pointers. Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T`
+/// at `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`. The
+/// buffer must then be at an address aligned to `align_of::<T>()`, and `at` a multiple of it. The
+/// same holds for what the pointers aim at, which their scheme places.
 ///
 /// A `T` without size has no bytes to check: it is valid if it has a value. `T` is `Sized`: a
 /// value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of pointers
@@ -187,8 +243,8 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///   elements, rules and pointer targets that its layout describes. This holds for every type
 ///   that derives `Pun` and every type for which `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `validate_in` compiles until it is
+/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
+/// but `cargo build` does. A generic function that calls `validate_in` compiles until it is
 /// instantiated with types that violate them.
 ///
 /// # Examples
@@ -277,7 +333,7 @@ pub fn validate_in<T: Pun, V: Visit>(
 /// read.
 ///
 /// After `Ok(())`, unsafe code may rely on what [`validate_in`] promises, for each of the `count`
-/// values. Item 1 becomes: `at + count * size_of::<T>()` does not overflow and is at most
+/// values. **In bounds** becomes: `at + count * size_of::<T>()` does not overflow and is at most
 /// `bytes.len()`.
 ///
 /// # Errors
@@ -300,8 +356,8 @@ pub fn validate_in<T: Pun, V: Visit>(
 ///   elements, rules and pointer targets that its layout describes. This holds for every type
 ///   that derives `Pun` and every type for which `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `validate_elems_in` compiles until it is
+/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
+/// but `cargo build` does. A generic function that calls `validate_elems_in` compiles until it is
 /// instantiated with types that violate them.
 ///
 /// # Examples
@@ -400,8 +456,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///   elements, rules and pointer targets that its layout describes. This holds for every type
 ///   that derives `Pun` and every type for which `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `pointers_in` compiles until it is
+/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
+/// but `cargo build` does. A generic function that calls `pointers_in` compiles until it is
 /// instantiated with types that violate them.
 ///
 /// # Safety
@@ -513,8 +569,8 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///   elements, rules and pointer targets that its layout describes. This holds for every type
 ///   that derives `Pun` and every type for which `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `pointers_elems_in` compiles until it is
+/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
+/// but `cargo build` does. A generic function that calls `pointers_elems_in` compiles until it is
 /// instantiated with types that violate them.
 ///
 /// # Safety
