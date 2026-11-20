@@ -5,10 +5,11 @@
 [![crates.io](https://img.shields.io/crates/v/puns)](https://crates.io/crates/puns)
 [![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#license)
 
-Type punning without `unsafe`: read bytes as a struct, a struct as bytes, or one type as another,
-in place. Unlike crates that describe each type on its own, `puns` compares the two types of a
-pun at compile time. What holds for every value costs nothing, what holds for some values is
-checked at run time, and the rest doesn't compile.
+`puns` reads a value of one type as a value of another, in place and without `unsafe`: bytes as
+a struct, a struct as bytes, an enum as a `bool`, or the save file of an old version as the new
+one. It compares the two types of each such pun at compile time. A pun that it proves for every
+value compiles to no check, a pun that it proves for some values is checked at run time, and any
+other pun is a compile error.
 
 ```toml
 [dependencies]
@@ -51,31 +52,40 @@ assert_eq!(puns::from_bytes::<[Lamp]>(&[2, 0, 0, 0]).err(), Some(puns::Error::Va
 assert_eq!(puns::as_bytes(lamps), bytes);
 ```
 
-`lamps` and `on` are references into `bytes` and into the switch: nothing is copied. A `u16le` is
-a little-endian `u16` with an alignment of 1, so a `Lamp` can start at any address, and has no
-padding. A struct with padding can still be read from bytes, but `as_bytes` refuses it, since
-padding may be uninitialized. In `bytemuck` and `zerocopy`, reading a `Switch` as a `bool` is a
-conversion that can fail, since they know what a `bool` accepts but don't relate it to `Switch`.
-Here it is one that can't.
+`lamps` and `on` point into `bytes` and into the switch: nothing is copied. A `u16le` is a
+little-endian `u16` with an alignment of 1, so a `Lamp` can start at any address and has no
+padding. A struct with padding can be read from bytes, but `as_bytes` refuses it, since padding
+may be uninitialized.
 
-The `#[repr(C)]` keeps the fields in their declared order. Without it Rust may reorder them, so
-`puns` refuses any pun whose validity depends on the order. With the `unstable` feature, `puns`
-uses the order that `rustc` chose for this build instead. The feature works on stable Rust, but a
-pun that compiles with one compiler may not with another, and bytes written by one build may read
-as other values in the next; see [the `unstable` feature][unstable].
+`#[repr(C)]` keeps the fields in their declared order. Without it, Rust may reorder them, and
+`puns` refuses any pun whose validity depends on that order.
 
 Deriving `Pun` lets any code read and write every field of the type through bytes, so don't
-derive it on a type whose fields keep a private invariant. See [what deriving `Pun`
-means][deriving].
+derive it on a type whose fields keep a private invariant ([what deriving `Pun`
+means][deriving]).
 
-## A save file in two versions
+## Comparison
 
-This loads the save file of a game in both versions of its format. Version 2 adds keys to the
-items, and reads the files of version 1 as they are.
+`bytemuck` and `zerocopy` describe each type on its own, so neither can say that every `Switch`
+is a `bool`. Both read a `&Switch` as a `&bool` only with a function that returns a `Result`
+(`checked::try_cast_ref` and `try_transmute_ref!`). `puns` compares the pair, so `pun_ref` returns
+the `&bool` itself, as it reads an enum as a newer version of itself in the [save
+file](#reading-two-versions-of-a-file) below.
+
+Use `zerocopy` or `bytemuck` if you need a Rust older than 1.99, errors that `cargo check` and
+your editor report, or a crate with years of use. Rust's [safe transmute] project compares two
+types too, in the compiler, but only on nightly.
+
+Use a parser such as `binrw`, `deku` or `nom` to build values of a different shape than the
+bytes, or to get errors that say where a read failed. A [`puns::Error`][`Error`] only says whether
+the size, the alignment or a value was wrong.
+
+## Reading two versions of a file
+
+Version 2 of a game adds keys to the items of its save file, and still loads the files of version
+1, without copying or checking them again.
 
 ```rust
-use core::num::NonZero;
-
 use puns::{
   Pun,
   num::{u8c, u16le, u32bec},
@@ -94,7 +104,7 @@ enum OldItem {
 enum Item {
   Sword { damage: u16le } = 0,
   Potion { heal: u8, cursed: bool } = 1,
-  Key { floor: NonZero<u8>, door: Option<NonZero<u8>> } = 2,
+  Key { floor: u8, door: u8 } = 2,
 }
 
 #[derive(Pun)]
@@ -103,13 +113,12 @@ enum Item {
 struct Save<V = u8, B: ?Sized = [Item]> {
   magic: u32bec<0x5341_5645>, // "SAVE"
   version: V,
-  #[pun(valid(1..=99))]
   level: u8,
   hp: u16le,
   bag: B, // to the end of the file
 }
 
-/// A save file of either version.
+/// A save of either version.
 #[derive(Pun)]
 enum SaveFile<'a> {
   V1(&'a Save<u8c<1>, [OldItem]>),
@@ -118,8 +127,7 @@ enum SaveFile<'a> {
 
 fn load(file: &[u8]) -> Result<&Save, puns::Error> {
   Ok(match SaveFile::from_bytes(file)? {
-    // Every old item is an item, so neither arm checks anything.
-    SaveFile::V1(old) => puns::pun_ref(old),
+    SaveFile::V1(old) => puns::pun_ref(old), // no check
     SaveFile::V2(new) => puns::pun_ref(new),
   })
 }
@@ -131,26 +139,28 @@ assert_eq!(load(&file).unwrap().bag[0], Item::Sword { damage: 300.into() });
 // Upgrade the file to version 2, and pick up a key to floor 3.
 file[4] = 2;
 file.extend_from_slice(&[2, 3, 0]);
-let key = Item::Key { floor: NonZero::new(3).unwrap(), door: None };
-assert_eq!(load(&file).unwrap().bag[2], key);
+assert_eq!(load(&file).unwrap().bag[2], Item::Key { floor: 3, door: 0 });
 
 // A cheater gives the hero 999 hp, which breaks the rule.
 puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
 assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-`SaveFile` is a view enum: an enum of references, whose `from_bytes` returns the first variant
-that the bytes match. Its variants tell the versions apart by their `version` field, a `u8c<1>`
-or a `u8c<2>`, which is a `u8` that always holds 1 or 2. Reading either version as a `Save`
-checks nothing more, since every old item is an item and every version is a `u8`.
+`Save` is generic so that one declaration serves both versions. A `u32bec<N>` and a `u8c<N>` are a
+big-endian `u32` and a `u8` that always hold `N`. So `SaveFile`, a view enum, tells the versions
+apart by their `version` byte: its `from_bytes` returns the first variant that the bytes match.
 
-Rules like `valid` and `assert` are checked when bytes are read as the type, not afterwards. Safe
-code can still assign a field that breaks one, as the cheater does, and only the next read
-notices. A rule is an expression over the unsigned integer fields of the struct, with a few
-functions to read its bytes. The derive also reads sizes stored in the bytes, so that
-`from_head` can read one value after another, and checks checksums and tags. The
-[examples](#examples) use them on real formats, and the [derive's documentation][derive] lists
-them.
+Reading version 1 as version 2 needs no check, and `puns` proves it from the two types. Each old
+item keeps its tag and its fields in `Item`, and a key takes no more than 3 bytes, like a sword,
+so a bag of old items is a bag of items. Both versions have the same rule, so it still holds. If
+`Item` numbered its potions 3, `pun_ref` would no longer compile, and `try_pun_ref` would check
+each item.
+
+The rule is checked when bytes are read as a `Save`. Writing a field doesn't check it, so the
+cheater's write succeeds, and `load` refuses the file the next time it reads it. A rule is an
+expression over the unsigned integer fields of its struct. The derive also takes ranges of valid
+values, sizes stored in the bytes, checksums and tags: the [examples](#examples) use them on real
+formats, and the [derive's documentation][derive] describes them.
 
 ## How it works
 
@@ -159,10 +169,9 @@ which bytes are padding, and which values each field may hold. Each function of 
 the constants of its two types in a `const` block, which the compiler evaluates when it generates
 the function for those types.
 
-The function decides what may happen. `pun`, `pun_ref` and `as_bytes` take only puns that hold
-for every value. The `try_` and `from_` functions also take puns that hold for some values, and
-check the rest at run time. Anything else does not compile. So reading a `u8` as a `bool` is a
-`try_pun`, and `pun` refuses it:
+Which puns compile depends on the function. `pun`, `pun_ref` and `as_bytes` accept only puns
+proven for every value. The `try_` and `from_` functions also accept puns proven for some values,
+and check the others at run time. So `try_pun` reads a `u8` as a `bool`, and `pun` refuses to:
 
 ```rust
 assert_eq!(puns::try_pun::<u8, bool>(2), Err(puns::Error::Validity));
@@ -191,13 +200,19 @@ generic function can't say in its bounds that its types pun: a caller that insta
 the wrong types gets the error in its own build.
 
 The analysis costs build time for each pair of types. The most expensive is a view enum, whose
-build time grows with the square of its variants.
+build time grows with the square of the number of its variants. [Limitations] lists what the
+analysis can't prove yet, such as a rule from another rule that implies it.
+
+The `unstable` feature, which works on stable Rust, makes `puns` use the layout that `rustc`
+chose where Rust leaves it to the compiler, such as the order of the fields of a struct without
+`repr`. A pun may then compile with one compiler and not with the next, and bytes written by one
+build may read as other values in the next. See [the `unstable` feature][unstable].
 
 ## Examples
 
-The examples below each declare a family of formats with the derive alone, and read them in place.
-They cover the structures they name, not whole formats, and the shortest come first. From a clone
-of the repository, run one with `cargo run --example media`.
+Each example declares a family of formats with the derive alone, and reads them in place. They
+cover the structures they name, not whole formats, and the shortest come first. From a clone of
+the repository, run one with `cargo run --example media`.
 
 | Example | Formats | Shows |
 |---|---|---|
@@ -215,20 +230,24 @@ of the repository, run one with `cargo run --example media`.
 
 ## Testing
 
-`puns` has `unsafe` code inside, and its analysis decides when that code runs. A test compares
-the analysis with oracles written by hand, on every pair of a set of types, every night. The
-tests also run under [Miri] on x86-64, on 32-bit `i686` and on big-endian `s390x`, and more than
-a hundred programs must fail to compile with the expected message. See
+`puns` has `unsafe` code inside, and its analysis decides when that code runs. Every night, a
+test compares the analysis with oracles written by hand, on every pair of types from a fixed set.
+The tests also run under [Miri] on x86-64, on 32-bit `i686` and on big-endian `s390x`, and more
+than a hundred programs must fail to compile with the expected message. See
 [`docs/testing.md`][testing], and [Soundness] for what `puns` relies on.
 
 ## Performance
 
-A pun that holds for every value compiles to no check: on x86-64, `pun::<[bool; 4], u32>` is
-`mov eax, edi; ret`. A check never allocates and never panics. 33 checks were timed against the
-same checks written by hand, on an Apple M4 Max under load. 14 took within 15% of the time by
-hand, 17 took less, several because the hand-written check uses a simpler algorithm, and 2 took
-more, by 16% and 52%. Measure in release builds, since the checks rely on inlining.
-[`docs/performance.md`][performance] has every case, and how they were measured.
+A pun proven for every value compiles to no check. On x86-64, in a release build,
+`pun::<[bool; 4], u32>` compiles to `mov eax, edi; ret`. A check never allocates or panics, and
+mostly takes as long as the same check written by hand. On an Apple M4 Max under load, checking
+an IPv4 packet and the checksum of its 1,472-byte UDP datagram took 25.1 ns, against 25.3 ns by
+hand. Walking 12 IPv6 extension headers took 6.8 ns, against 12.4 ns. The worst case reads 64 KiB
+as an enum without `repr` whose tag is a niche in a `bool`: 28.9 µs, against 19.0 µs.
+
+A checksum or a walk inside another walk takes time that grows with the square of the size, so
+mind it before you give such a type untrusted bytes. [`docs/performance.md`][performance] has every
+case, and how they were measured.
 
 ## History
 
@@ -243,22 +262,6 @@ In December 2023 each type got a `LAYOUT` constant. From October 2024 to March 2
 2026 I went back to constants, and wrote the whole comparison as `const fn` code. Rust 1.99
 brought the last thing it needed on stable: the size and alignment of an unsized type in a
 `const`.
-
-## Comparison
-
-Use `puns` to read one type as another when neither is plain bytes, such as an enum as a `bool`
-or the items of an old version as those of a new one. Use it for `&mut` puns between types that
-restrict their values, such as `&mut [bool; 4]` as `&mut [[bool; 2]; 2]`, and to check the sizes
-and checksums of a format as part of its type.
-
-Use `zerocopy` or `bytemuck` if you need a Rust older than 1.99, errors that `cargo check` and
-your editor report, or a crate with years of use. They check a value of a restricted type when
-they read it, where `puns` can prove from the pair of types that no check is needed. Rust's [safe
-transmute] project compares two types too, in the compiler, but only on nightly.
-
-Use a parser such as `binrw`, `deku` or `nom` to build values of another shape than the bytes, or
-to get errors that say where a read failed. A [`puns::Error`][`Error`] only says whether the size,
-the alignment or a value was wrong.
 
 ## Documentation
 
