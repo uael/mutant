@@ -5,182 +5,128 @@
 [![crates.io](https://img.shields.io/crates/v/puns)](https://crates.io/crates/puns)
 [![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)][mit]
 
-**Type punning proven at compile time. A safe alternative to `transmute` and to hand-written
-parsing of bytes.**
+**Type punning, proven at compile time.** `puns` reads a value of one type as a value of another
+type, in place, without `unsafe`. When the program is built, it compares the two types byte by
+byte. Each pun is then **proven** and compiles to nothing, **checked** at run time for what could
+not be proven, or **refused** with a compile error that says why.
 
-`puns` reads a value of one type as a value of another type, in place. A struct can be read as
-bytes, bytes as a network packet, a `[bool; 4]` as a `u32`. When the program is built, `puns`
-compares the two types: their sizes, their alignments, their padding, and the values that each
-byte can hold. Each pun then falls into one of three cases.
+## A tour in one example
 
-- **Proven.** Every value of the source is a [valid] value of the target. The pun compiles to no
-  instruction.
-- **Checked.** Only some values of the source are valid targets. A `try_` or `from_` function
-  checks at run time what could not be proven, and nothing else.
-- **Refused.** The pun can never succeed, would read padding, or would let safe code write an
-  invalid value through a `&mut`. It does not compile.
-
-Using `puns` requires no `unsafe` code and no hand-written trait implementation. `#[derive(Pun)]`
-is enough. The crate builds on stable Rust, without `std`, and supports dynamically sized types.
-
-[valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
-
-```rust
-use puns::Pun;
-
-#[derive(Pun, Debug, PartialEq)]
-#[repr(C)]
-struct Position {
-  x: u8,
-  visible: bool,
-}
-
-// Proven: every `Position` is two initialized bytes. No instruction.
-let bytes: &[u8; 2] = puns::pun_ref(&Position { x: 7, visible: true });
-assert_eq!(bytes, &[7, 1]);
-
-// Checked: not every pair of bytes is a `Position`. Only the `bool` is looked at: one `cmp`.
-assert_eq!(puns::try_pun_ref(&[7u8, 1]), Ok(&Position { x: 7, visible: true }));
-assert_eq!(puns::try_pun_ref::<_, Position>(&[7u8, 2]), Err(puns::Error::Validity));
-```
-
-```rust,compile_fail,E0080
-let mut visible = true;
-// Refused: through a `&mut u8`, safe code could write a 2 where a `bool` is.
-let byte: &mut u8 = puns::pun_mut(&mut visible);
-*byte = 2;
-```
-
-```text
-error[E0080]: evaluation panicked:
-              cannot pun: some values of the target are not valid for the source (or are
-              padding where the source is not), and could be written through the `&mut`.
-...
-note: the above error was encountered while instantiating `fn pun_mut::<bool, u8>`
- --> src/main.rs:4:23
-  |
-4 |   let byte: &mut u8 = puns::pun_mut(&mut visible);
-  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-```
-
-[What is refused](#what-is-refused) shows a complete message and what to write instead.
-
-## Types that look nothing alike
-
-Two types do not need similar declarations to hold the same bytes. `puns` compares what each byte
-can be, through structs, arrays, tuples, enums and slices.
+A dungeon game saves its hero to a file. Version 2 of the game adds keys, and must still load the
+saves of version 1. Every type below is declared once, and `#[derive(Pun)]` is all it needs.
 
 ```rust
 use core::num::NonZero;
 
-use puns::{
-  Pun,
-  num::{u16be, u32le},
-};
+use puns::{Pun, num::{u8c, u16le, u32bec}};
 
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+/// An item, as version 1 of a dungeon game saves it: a tag, then two bytes.
+#[derive(Pun, Debug, PartialEq)]
 #[repr(u8)]
-enum Kind {
-  Text = 1,
-  Image = 2,
+enum OldItem {
+  Sword { damage: u16le } = 0, // little-endian, at any address
+  Potion { heal: u8, cursed: bool } = 1,
 }
 
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+/// Version 2 adds keys. A key without a door opens every door of its floor.
+#[derive(Pun, Debug, PartialEq)]
 #[repr(u8)]
-enum Shape {
-  Circle { radius: u16 },
-  Rect(u8, bool),
+enum Item {
+  Sword { damage: u16le } = 0,
+  Potion { heal: u8, cursed: bool } = 1,
+  Key { floor: NonZero<u8>, door: Option<NonZero<u8>> } = 2,
 }
 
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-#[repr(u8)]
-enum Drawing {
-  Circle { radius: u16 },
-  Rect(u8, u8),
-  Nothing,
-}
+// Proven: an item is its three bytes. Reading them compiles to no instruction.
+assert_eq!(puns::as_bytes(&OldItem::Sword { damage: 300.into() }), [0, 0x2c, 0x01]);
+// Checked: three bytes are an item if the tag is one, and here if the floor is not 0.
+let key: &Item = puns::from_bytes(&[2, 1, 0]).unwrap();
+// Proven: the constant 1 is not 0, so it is a `NonZero`, without `unwrap`. And door 0 is `None`.
+assert_eq!(key, &Item::Key { floor: puns::pun(u8c::<1>::new()), door: None });
+// A mimic: there is no floor 0.
+assert_eq!(puns::from_bytes::<Item>(&[2, 0, 0]), Err(puns::Error::Validity));
 
-/// An entry, as the program that writes it knows it.
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-#[repr(C)]
-struct Entry {
-  kind: Kind,            // 1 or 2
-  visible: bool,         // 0 or 1
-  port: u16be,           // two bytes, of any alignment
-  id: NonZero<u32>,      // not 0
-  name: [char; 2],       // Unicode scalar values
-  range: (u32le, u32le), // eight bytes
-  shape: Shape,          // a tag, then a `u16`, or a `u8` and a `bool`
-}
-
-/// The same 28 bytes, as a program that knows less declares them.
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-#[repr(C)]
-struct Raw {
-  kind: u8,
-  flags: u8,
-  port: [u8; 2],
-  id: u32,
-  name: [u32; 2],
-  range: [[u8; 4]; 2],
-  shape: Drawing, // more variants, and a `u8` where the `bool` is
-}
-
-/// A table of them: a header, then entries to the end.
+/// A save file of version `V`, whose bag is a `B`. The declaration is the parser.
 #[derive(Pun)]
 #[repr(C)]
-struct Table<E: ?Sized> {
-  count: u32le,
-  entries: E,
+#[pun(assert(hp <= level * 10))] // 10 hp per level, no more
+struct Save<V = u8, B: ?Sized = [Item]> {
+  magic: u32bec<0x5341_5645>, // "SAVE"
+  version: V,
+  #[pun(valid(1..=99))]
+  level: u8,
+  hp: u16le,
+  bag: B, // to the end of the file
 }
 
-let entry = Entry {
-  kind: Kind::Image,
-  visible: true,
-  port: u16be::new(443),
-  id: NonZero::new(7).unwrap(),
-  name: ['p', 'n'],
-  range: (u32le::new(1), u32le::new(2)),
-  shape: Shape::Rect(3, true),
-};
+// Version 1 saves the game. Proven: a save is its bytes, so writing it is copying them.
+let bag = [OldItem::Sword { damage: 9.into() }, OldItem::Potion { heal: 25, cursed: false }];
+let old = Save { magic: u32bec::new(), version: u8c::<1>::new(), level: 7, hp: 42.into(), bag };
+let mut file = puns::as_bytes(&old).to_vec();
+// Proven: a save starts with four bytes. The magic number is their big-endian value.
+assert_eq!(puns::head_ref::<_, [u8; 4]>(&old), b"SAVE");
+// The hero gains a level, right in the file, through a typed `&mut` to its bytes.
+puns::from_bytes_mut::<Save<u8c<1>, [OldItem]>>(&mut file).unwrap().level += 1;
 
-// Proven, field by field and byte by byte: 1 or 2 is a `u8`, a `bool` is a `u8`, a `NonZero` is a
-// `u32`, a `char` is a `u32`, two `u32le` are two arrays of four bytes, a `Shape` is a `Drawing`.
-let raw: Raw = puns::pun(entry);
-assert_eq!((raw.kind, raw.flags, raw.port, raw.id), (2, 1, [1, 187], 7));
-assert_eq!((raw.name, raw.shape), ([112, 110], Drawing::Rect(3, 1)));
+/// A save file is one version or the other: the first that its bytes are.
+#[derive(Pun)]
+enum SaveFile<'a> {
+  V1(&'a Save<u8c<1>, [OldItem]>),
+  V2(&'a Save<u8c<2>>),
+}
 
-// So is a slice of them, and a struct that ends with one: the same pointer, the same length.
-let table = Table { count: u32le::new(2), entries: [entry; 2] };
-let typed: &Table<[Entry]> = &table;
-let loose: &Table<[Raw]> = puns::pun_ref(typed);
-assert_eq!((loose.entries.len(), loose.entries[1]), (2, raw));
+/// Loads a save of either version as a save of today.
+fn load(file: &[u8]) -> Result<&Save, puns::Error> {
+  // Checked, once: the magic, the version, the level, the rule, each item.
+  Ok(match SaveFile::from_bytes(file)? {
+    SaveFile::V1(old) => puns::pun_ref(old), // Proven: an old item is an item. No instruction.
+    SaveFile::V2(new) => puns::pun_ref(new), // Proven: a 2 is a `u8`.
+  })
+}
 
-// The other way is checked, and only what a `Raw` does not prove: the kind, the flags, the
-// identifier, the two characters and the shape. The port and the range are not looked at.
-assert_eq!(puns::try_pun_ref::<Raw, Entry>(&raw), Ok(&entry));
-let surrogate = Raw { name: [0xd800, 110], ..raw };
-assert_eq!(puns::try_pun_ref::<Raw, Entry>(&surrogate), Err(puns::Error::Validity));
-let nothing = Raw { shape: Drawing::Nothing, ..raw };
-assert!(puns::try_pun_ref::<Raw, Entry>(&nothing).is_err());
-
-// By `&mut`, both must accept what the other holds: a `(u32le, u32le)` and a `[[u8; 4]; 2]` do.
-let mut range = (u32le::new(1), u32le::new(2));
-puns::pun_mut::<_, [[u8; 4]; 2]>(&mut range)[1] = [9, 0, 0, 0];
-assert_eq!(range.1.get(), 9);
+// Version 2 of the game loads the old save, with the level gained in the file.
+assert_eq!(load(&file).unwrap().level, 8);
+// The hero takes the key: three more bytes. Version 1 has no keys: this is not a save any more.
+file.extend_from_slice(puns::as_bytes(key));
+assert_eq!(load(&file).err(), Some(puns::Error::Validity));
+// Upgrading it is writing one byte, since every old item is an item.
+puns::from_bytes_mut::<Save>(&mut file).unwrap().version = 2;
+let save = load(&file).unwrap();
+let upgraded = [Item::Sword { damage: 9.into() }, Item::Potion { heal: 25, cursed: false }];
+assert_eq!((&save.bag[..2], &save.bag[2]), (&upgraded[..], key));
+// Checked: the bag goes back to version 1 only without a key. This one has one.
+assert_eq!(puns::try_pun_ref::<_, [OldItem]>(&save.bag).err(), Some(puns::Error::Validity));
+// Refused: `puns::pun_mut::<[OldItem], [Item]>(..)` does not compile, a key could be put in.
+// A cheater gives the hero 999 hp. The edit compiles: the rule is checked when bytes become
+// a `Save`, so the save does not load any more.
+puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
+assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-Incompatibilities are located just as precisely. Reading these entries as bytes is refused "at
-byte 25 of the target". That byte is the one byte of padding among the 28, after the tag of a
-`Shape::Circle`. Reading a `&mut Entry` as a `&mut Raw` is refused too, because safe code could
-then write a kind of 9.
+In this example, `puns` never parses anything. The declarations are the file format, and every
+read happens where the bytes lie.
 
-## A format is a type
+## Proven, checked, refused
 
-Some facts about a format cannot be expressed by the type of a field: a size stored in a header,
-a checksum, or a value that says what follows. These facts are given to the derive as
-attributes. The example below reads UDP over IPv4 over Ethernet. It contains no parsing code,
-and none is hidden. The declarations are the format.
+`puns` decides what each pun costs when the program is built.
+
+- **Proven.** Every value of the source is a [valid] value of the target. The pun compiles to no
+  instruction: `as_bytes`, `head_ref` and `pun_ref` in the tour.
+- **Checked.** Only some values of the source are valid targets. A `try_` or `from_` function
+  checks at run time what the types could not prove, and nothing else. It returns an error for
+  bytes that are not a valid target, and never panics.
+- **Refused.** The pun can never succeed, would read [padding], or would let safe code write an
+  invalid value through a `&mut`. It does not compile.
+
+A refusal is raised when a generic function is monomorphized, so `cargo build` reports it and
+`cargo check` does not. [Compile-time errors](https://docs.rs/puns/latest/puns/#compile-time-errors)
+explains why.
+
+## A network packet, as its declaration
+
+A format often says more than the types of its fields: a size stored in a header, a checksum, a
+value that tells what follows. These facts are attributes of the derive. The example below reads
+UDP over IPv4 over Ethernet with no parsing code: the declarations are the format.
 
 ```rust
 use puns::{
@@ -302,7 +248,7 @@ and TCP, IPv6 behind any chain of extension headers, VLAN tags, and the frame ch
 
 ## What the derive is told
 
-| Option                                     | What it tells                                              |
+| Attribute or type                          | Meaning                                                    |
 |--------------------------------------------|------------------------------------------------------------|
 | `u16be`, `u32le`, `i64be`, `f32le`...      | the byte order of a field (types of `puns::num`)           |
 | `u8c<17>`, `u32bec<0x89504e47>`...         | a field that has one value: a magic number, a tag          |
@@ -370,129 +316,24 @@ assert_eq!(puns::from_bytes::<str>(b"caf\xc3\xa9"), Ok("café"));
 
 All of these functions are `const fn`.
 
-## What it knows
+## Through `&mut`, both ways
 
-- **Scalars.** Integers, floating-point numbers, `bool`, `char`, `NonZero`, and enums without
-  fields of any `repr`. Each has a set of valid values, and so does each of its bytes.
-- **Structs and arrays.** Structs of any `repr` (`C`, `transparent`, `packed`, `align`, or none),
-  tuples, arrays, slices, and structs that end with a slice. `puns` knows their padding and what
-  each byte can be. For a struct or tuple without `repr`, it knows what every order of the fields
-  has in common (see below).
-- **Enums with fields,** of any `repr` or none. `puns` knows their tag and the layout of each
-  variant. Without `repr`, the layout that `rustc` chose (a tag, or a niche in a field) is found
-  while the program is built, by experiments on a value of each variant. An experiment that goes
-  wrong is a compile error, never a wrong layout. `Option<T>` and `Result<T, E>` are such enums.
-  The layout found is used only with the `unstable` feature. Without it, such an enum proves only
-  itself, except `Option` and `Result` where `core` documents their layout.
-- **Unions** with `repr(C)`. As a target, a union is valid if it is one of its fields. As a
-  source, nothing is known about it.
-- **`MaybeUninit<T>`** holds bytes of which nothing is known, so it accepts anything.
-  **`Infallible`** and enums without variants have no value.
-- **`str`** is bytes that are UTF-8.
-- **Attributes** of the derive, described above.
-
-### Layouts that Rust leaves to the compiler, and the `unstable` feature
-
-Rust leaves some layouts to the compiler: the order of the fields of a struct or tuple without
-`repr`, and the place and values of the tag of an enum without `repr`. The next version of `rustc`
-may choose differently, and `-Zrandomize-layout` chooses at random. A pun is always correct for
-the build that compiles it. Without the `unstable` feature, `puns` also guarantees that
-**`-Zrandomize-layout` changes nothing that `puns` does**. A pun compiles only if what it
-compiles to, what it checks and which values it accepts are the same under every layout that Rust
-allows. Only the message of a refusal may differ.
-
-This depends on the pun, not only on the type. The bytes of a `(bool, u8)` are initialized
-whichever byte holds the `bool`. But bytes read as a `(bool, u8)` would need a check of one byte
-or the other, and which one is not known.
+A `&mut` lets safe code write any value of the target, which the source then holds. So a pun by
+`&mut` needs more than a pun by `&`: each type must accept every value of the other.
 
 ```rust
-// Bytes of any value, or both `bool`s, in either order.
-assert_eq!(puns::pun::<[u8; 2], (u8, u8)>([7, 7]), (7, 7));
-assert!(puns::try_pun::<[u8; 2], (bool, bool)>([1, 2]).is_err());
-// Initialized bytes, wherever the `bool` is.
-let _: &[u8] = puns::as_bytes(&(true, 1u8));
-// The `bool` may be either byte: two `bool`s prove it wherever it is.
-let _: (bool, u8) = puns::pun([true, false]);
-// A value that `core` documents: `None` is zeros.
-assert_eq!(puns::pun::<u32, Option<core::num::NonZero<u32>>>(0), None);
+// Two pairs of `bool`s are four `bool`s, and the other way: proven both ways.
+let mut flags = [true, false, true, true];
+let pairs: &mut [[bool; 2]; 2] = puns::pun_mut(&mut flags);
+pairs[1] = [false, false];
+assert_eq!(flags, [true, false, false, false]);
 ```
 
-```rust,ignore
-// Without `unstable`, this does not compile: the byte that must be 0 or 1 is one or the other.
-let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
+```rust,compile_fail,E0080
+// Refused: every `bool` is a `u8`, but a `u8` written through the `&mut` could be 2.
+let mut flag = true;
+let byte: &mut u8 = puns::pun_mut(&mut flag);
 ```
-
-With `features = ["unstable"]`, `puns` uses the layout that `rustc` chose for this build. Every pun
-that compiles without the feature compiles with it and behaves the same, and more puns compile.
-[`puns/DESIGN.md`][design] lists the layouts that Rust specifies, with their sources.
-
-An enum is known by its tag. A variant proves the variant of the target that has the same tag.
-
-```rust
-use puns::Pun;
-
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-#[repr(u8)]
-enum Shape {
-  Circle { radius: u16 },
-  Rect(u8, bool),
-}
-
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-#[repr(u8)]
-enum Drawing {
-  Circle { radius: u16 },
-  Rect(u8, u8),
-  Nothing,
-}
-
-// Proven: every `Shape` is a `Drawing`, variant by variant. So is a slice of them.
-let shapes = [Shape::Rect(3, true), Shape::Circle { radius: 9 }];
-let drawings: &[Drawing] = puns::pun_ref(&shapes[..]);
-assert_eq!(drawings, [Drawing::Rect(3, 1), Drawing::Circle { radius: 9 }]);
-
-// Checked: the tag, then the `bool` of a `Rect`.
-assert_eq!(puns::try_pun(Drawing::Rect(3, 1)), Ok(Shape::Rect(3, true)));
-assert_eq!(puns::try_pun::<_, Shape>(Drawing::Rect(3, 2)), Err(puns::Error::Validity));
-assert_eq!(puns::try_pun::<_, Shape>(Drawing::Nothing), Err(puns::Error::Validity));
-```
-
-With the `unstable` feature, the same holds for enums without `repr`, `Option` included. Their
-layout is found by experiment rather than declared.
-
-```rust
-# #[cfg(feature = "unstable")]
-# fn main() {
-use core::num::NonZero;
-
-use puns::Pun;
-
-#[derive(Pun, Debug, PartialEq, Clone, Copy)]
-enum Ticket {
-  Free,
-  Paid(NonZero<u32>),
-}
-
-// A niche: `Free` is the 0 that no `NonZero` is. Every `u32` is a `Ticket`, both ways proven.
-assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
-assert_eq!(puns::pun::<u32, Ticket>(7), Ticket::Paid(NonZero::new(7).unwrap()));
-assert_eq!(puns::pun::<u32, Option<NonZero<u32>>>(7), NonZero::new(7));
-
-// Not every byte is an `Option<bool>`: 0 and 1 are `Some`, `None` is where `rustc` put it.
-let none: u8 = puns::pun(None::<bool>);
-assert_eq!(puns::try_pun::<u8, Option<bool>>(none), Ok(None));
-assert_eq!(puns::try_pun::<u8, Option<bool>>(1), Ok(Some(true)));
-assert!(puns::try_pun::<u8, Option<bool>>(none + 1).is_err());
-# }
-# #[cfg(not(feature = "unstable"))]
-# fn main() {}
-```
-
-`puns` knows a type only by its bytes. Two consequences follow, by design. Types that differ only
-by a `PhantomData` or a lifetime convert to each other freely. Deriving `Pun` makes every field as
-accessible as a public one. A type whose parameter is a brand, or whose private fields keep an
-invariant that the derive is not told about, must not derive `Pun`. See
-[What deriving `Pun` means](https://docs.rs/puns/latest/puns/#what-deriving-pun-means).
 
 ## What is refused
 
@@ -659,17 +500,90 @@ A refusal is raised when a generic function is monomorphized. **`cargo build` re
 `cargo check` does not.** [Compile-time errors](https://docs.rs/puns/latest/puns/#compile-time-errors)
 explains why.
 
+## Layouts that Rust leaves to the compiler, and the `unstable` feature
+
+Rust leaves some layouts to the compiler: the order of the fields of a struct or tuple without
+`repr`, and the place and values of the tag of an enum without `repr`. The next version of `rustc`
+may choose differently, and `-Zrandomize-layout` chooses at random. A pun is always correct for
+the build that compiles it. Without the `unstable` feature, `puns` also guarantees that
+**`-Zrandomize-layout` changes nothing that `puns` does**. A pun compiles only if what it
+compiles to, what it checks and which values it accepts are the same under every layout that Rust
+allows. Only the message of a refusal may differ.
+
+This depends on the pun, not only on the type. The bytes of a `(bool, u8)` are initialized
+whichever byte holds the `bool`. But bytes read as a `(bool, u8)` would need a check of one byte
+or the other, and which one is not known.
+
+```rust
+// Bytes of any value, or both `bool`s, in either order.
+assert_eq!(puns::pun::<[u8; 2], (u8, u8)>([7, 7]), (7, 7));
+assert!(puns::try_pun::<[u8; 2], (bool, bool)>([1, 2]).is_err());
+// Initialized bytes, wherever the `bool` is.
+let _: &[u8] = puns::as_bytes(&(true, 1u8));
+// The `bool` may be either byte: two `bool`s prove it wherever it is.
+let _: (bool, u8) = puns::pun([true, false]);
+// A value that `core` documents: `None` is zeros.
+assert_eq!(puns::pun::<u32, Option<core::num::NonZero<u32>>>(0), None);
+```
+
+```rust,ignore
+// Without `unstable`, this does not compile: the byte that must be 0 or 1 is one or the other.
+let _ = puns::try_pun::<[u8; 2], (bool, u8)>([1, 1]);
+```
+
+With `features = ["unstable"]`, `puns` uses the layout that `rustc` chose for this build. Every pun
+that compiles without the feature compiles with it and behaves the same, and more puns compile.
+[`puns/DESIGN.md`][design] lists the layouts that Rust specifies, with their sources.
+
+With the `unstable` feature, enums without `repr`, `Option` included, are supported too. Their
+layout is found by experiments when the program is built, rather than declared.
+
+```rust
+# #[cfg(feature = "unstable")]
+# fn main() {
+use core::num::NonZero;
+
+use puns::Pun;
+
+#[derive(Pun, Debug, PartialEq, Clone, Copy)]
+enum Ticket {
+  Free,
+  Paid(NonZero<u32>),
+}
+
+// A niche: `Free` is the 0 that no `NonZero` is. Every `u32` is a `Ticket`, both ways proven.
+assert_eq!(puns::pun::<Ticket, u32>(Ticket::Free), 0);
+assert_eq!(puns::pun::<u32, Ticket>(7), Ticket::Paid(NonZero::new(7).unwrap()));
+assert_eq!(puns::pun::<u32, Option<NonZero<u32>>>(7), NonZero::new(7));
+
+// Not every byte is an `Option<bool>`: 0 and 1 are `Some`, `None` is where `rustc` put it.
+let none: u8 = puns::pun(None::<bool>);
+assert_eq!(puns::try_pun::<u8, Option<bool>>(none), Ok(None));
+assert_eq!(puns::try_pun::<u8, Option<bool>>(1), Ok(Some(true)));
+assert!(puns::try_pun::<u8, Option<bool>>(none + 1).is_err());
+# }
+# #[cfg(not(feature = "unstable"))]
+# fn main() {}
+```
+
+`puns` knows a type only by its bytes. Two consequences follow, by design. Types that differ only
+by a `PhantomData` or a lifetime convert to each other freely. Deriving `Pun` makes every field as
+accessible as a public one. A type whose parameter is a brand, or whose private fields keep an
+invariant that the derive is not told about, must not derive `Pun`. See
+[What deriving `Pun` means](https://docs.rs/puns/latest/puns/#what-deriving-pun-means).
+
 ## Performance
 
 The cost of a pun is decided when the program is built. A proven pun compiles to no instruction,
 because the analysis ran in the compiler. A checked pun runs only the checks that the pair of
-types requires. Reading a `[u8; 2]` as a `Position` looks at one byte. Reading a `Raw` as an
-`Entry` looks at the fields that can be invalid, and not at its port or its range.
+types requires. Reading three bytes as an `Item` of the tour checks its tag, then the `bool` of a
+potion or the floor of a key, and nothing else.
 
 ### Machine code
 
-On x86-64 with `opt-level = 3`. The functions are in [`puns/examples/codegen.rs`][codegen], and
-the complete table is in [`puns/DESIGN.md`][design].
+On x86-64 with `opt-level = 3`. The functions and the complete table are in
+[`puns/examples/codegen.rs`][codegen]. There, `Position` is a struct of a `u8` and a `bool`, and
+`Shape` and `Drawing` are two enums like `OldItem` and `Item` of the tour.
 
 | Function                                           | Machine code                         |
 |----------------------------------------------------|--------------------------------------|
@@ -723,8 +637,8 @@ whose values are all values of a later variant, such as `Frame<Ipv4<Udp>>` of `F
 decided after that variant, and then checked only for what it adds: the protocol. So a UDP
 packet with a wrong checksum computes that checksum once, for `Frame<Ipv4>`. The optimizer
 inlines the view where it is called, while its checksums stay calls. It does not inline the
-hand-written check, which is why some frames take less time than by hand. See "Views" in
-[the design][design].
+hand-written check, which is why some frames take less time than by hand. The documentation of
+[`puns/src/view.rs`][view] explains how a view enum decides its variants.
 
 ### What to keep in mind
 
@@ -741,9 +655,9 @@ hand-written check, which is why some frames take less time than by hand. See "V
   the fields and of what the rule reads. A sum of two 16-bit fields is one register addition,
   without an overflow test. A `walk` whose state holds two things, such as the kind of a header
   and where it starts, keeps each in one half: `(kind << 64) + start`. An addition to the low
-  half is computed there alone when it cannot carry into the high half. See "Walks" and
-  "Narrowing" in [the design][design]. A counter that only a comparison bounds is computed on
-  128 bits.
+  half is computed there alone when it cannot carry into the high half. A counter that only a
+  comparison bounds is computed on 128 bits. The documentation of [`puns/src/narrow.rs`][narrow]
+  explains how.
 - **Each checked pun is code** specialized for its pair of types. A proven pun adds nothing to
   the binary. A checked pun adds its checks, inlined where it is called.
 - **Measure in release.** A debug build inlines nothing, so each operation of a rule is a call.
@@ -763,8 +677,8 @@ bytes", "any bytes make one", and "bytes can be checked to make one". A conversi
 the source has one trait and the target another. `puns` instead compares the two types with each
 other, byte by byte. This has four consequences.
 
-- **What the source proves is not checked again.** A `[bool; 2]` is a `Position`, a `Shape` is a
-  `Drawing`, and a UDP frame is a frame. Each of these is proven and costs no instruction, where a
+- **What the source proves is not checked again.** An old item is an item, a version 1 save is a
+  save, and a UDP frame is a frame. Each of these is proven and costs no instruction, where a
   trait of the target alone would require a check of its bytes.
 - **Types with invalid values convert to each other,** by `&mut` too. A `&mut [bool; 4]` can be
   read as a `&mut [[bool; 2]; 2]`, and one enum as another when each accepts what the other holds.
@@ -796,8 +710,8 @@ build time, a fraction of a second for each new pair of types.
   `offset_of!` that swaps fields. The generated code never trusts a name that safe code can
   redefine.
 
-[`puns/DESIGN.md`][design] explains how `puns` works, what its soundness rests on, and what is not
-done yet.
+The [crate documentation](https://docs.rs/puns/latest/puns/#soundness) states what the soundness of
+`puns` rests on.
 
 ## Self-relative pointers
 
@@ -845,8 +759,8 @@ By default, nothing that `puns` does depends on a layout that Rust leaves to the
 `features = ["unstable"]`, `puns` uses the layout that `rustc` chose. See
 [Layouts that Rust leaves to the compiler](#layouts-that-rust-leaves-to-the-compiler-and-the-unstable-feature).
 
-The version is `0.1`, so the API may change before `1.0`. "Not done yet", in
-[`puns/DESIGN.md`][design], lists what is missing.
+The version is `0.1`, so the API may change before `1.0`.
+[Limitations](https://docs.rs/puns/latest/puns/#limitations) lists what is not supported yet.
 
 ## License
 
@@ -857,6 +771,9 @@ option.
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
 [examples]: https://github.com/uael/puns/tree/main/puns/examples
-[design]: https://github.com/uael/puns/blob/main/puns/DESIGN.md
+[view]: https://github.com/uael/puns/blob/main/puns/src/view.rs
+[narrow]: https://github.com/uael/puns/blob/main/puns/src/narrow.rs
 [apache]: https://github.com/uael/puns/blob/main/LICENSE-APACHE
 [mit]: https://github.com/uael/puns/blob/main/LICENSE-MIT
+[valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
+[padding]: https://doc.rust-lang.org/reference/glossary.html#padding
