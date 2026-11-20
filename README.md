@@ -5,30 +5,109 @@
 [![crates.io](https://img.shields.io/crates/v/puns)](https://crates.io/crates/puns)
 [![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#license)
 
-`puns` reinterprets a value of one type as a value of another type, such as bytes as a struct or
-one enum as another, without `unsafe` in your code. A struct can also declare what a binary
-format stores in its bytes, such as a size, a checksum or the type of what follows, and `puns`
-checks it when it reads the bytes.
-
-Each function of `puns` compares the layouts of its two types at compile time. A pun that the
-types prove [valid] costs no check at run time. The `try_` and `from_` functions check at run
-time only what the types do not prove. A pun that can be neither proven nor checked does not
-compile, and the error says why. The analysis adds to the build time, and most of its errors
-come from `cargo build` rather than from `cargo check`.
+Type punning without `unsafe`: read bytes as a struct, a struct as bytes, or one type as another.
+`puns` checks each pun at compile time, and checks at run time only what it could not prove there.
 
 ```toml
 [dependencies]
 puns = "0.1"
 ```
 
-`puns` requires Rust 1.99 or later. It is `no_std`, and depends on nothing but its derive macro.
-The version is `0.1`, so the API may change before `1.0`. See [Limitations] for what is not
-supported yet.
+Rust 1.99 or later, `no_std`. The API may change before 1.0.
 
-## Usage
+## Example
 
-This example writes the save file of a dungeon game, then loads it in the next version of the
-game, which adds keys to the items. It has no `unsafe` and no `impl`.
+This reads messages of a small binary protocol from a stream. Each message starts with a magic
+number, a kind and a length, and the length says where the message ends.
+
+```rust
+use puns::{
+  Pun,
+  num::{u16be, u32bec},
+};
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(size = 8 + length)]
+struct Message {
+  magic: u32bec<0x5055_4e53>, // "PUNS"
+  kind: Kind,
+  flags: u8,
+  length: u16be,
+  body: [u8],
+}
+
+#[derive(Pun, Debug, PartialEq)]
+#[repr(u8)]
+enum Kind {
+  Ping = 1,
+  Data = 2,
+}
+
+let stream = b"PUNS\x01\x00\x00\x00PUNS\x02\x00\x00\x05hello";
+let (ping, rest) = puns::from_head::<Message>(stream).unwrap();
+let (data, rest) = puns::from_head::<Message>(rest).unwrap();
+assert_eq!(ping.kind, Kind::Ping);
+assert_eq!((&data.body, rest), (&b"hello"[..], &b""[..]));
+
+// There is no kind 3.
+let unknown = puns::from_head::<Message>(b"PUNS\x03\x00\x00\x00");
+assert_eq!(unknown.err(), Some(puns::Error::Validity));
+```
+
+`ping` and `data` point into `stream`, and nothing was copied. The derive also takes checksums,
+tags that say what follows, and conditions on fields. The [examples](#examples) use them on real
+formats.
+
+## How it works
+
+`#[derive(Pun)]` gives each type a constant that describes its layout: its size, its alignment,
+its fields, and the values that each byte may hold. A function such as `pun::<S, D>` compares the
+constants of `S` and `D` in a `const` block, which the compiler evaluates when it generates the
+function for these two types. There are three outcomes:
+
+- **Proven.** Every value of `S` is a [valid] `D`. `pun`, `pun_ref` and `as_bytes` accept only
+  these puns, and check nothing at run time.
+- **Checked.** Only some values are. The `try_` and `from_` functions check what was not proven,
+  and return an [`Error`] if it fails.
+- **Refused.** The `const` block panics, and the build fails with a message that says why.
+
+```rust
+assert_eq!(puns::pun::<[bool; 2], [u8; 2]>([true, false]), [1, 0]);
+assert_eq!(puns::try_pun::<u8, bool>(2), Err(puns::Error::Validity));
+```
+
+```rust,compile_fail,E0080
+let flag: bool = puns::pun(2u8);
+```
+
+```text
+error[E0080]: evaluation panicked:
+              cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
+              Use a `try_*` function to check them at run time.
+              This is at byte 0 of the target.
+...
+note: the above error was encountered while instantiating `fn pun::<u8, bool>`
+```
+
+Since refusals happen when code is generated, `cargo check` does not report them. Use `cargo
+build`. The analysis also adds to the build time of each pair of types that you pun.
+
+Deriving `Pun` lets any code read and write every field of the type through bytes, as if the
+fields were public. Don't derive it on a type with a private invariant that the derive doesn't
+know about. See [What deriving `Pun` means].
+
+By default, no pun depends on a layout that Rust leaves to the compiler, such as the order of
+fields in a struct without `repr`. The `unstable` feature, which works on stable Rust, lets `puns`
+use the layout that `rustc` chose instead. See [The `unstable` feature][unstable].
+
+## A longer example
+
+The save file of a dungeon game, read by two versions of the game. The second version adds keys
+to the items. The example reads enums with fields and `NonZero` fields, writes through a `&mut`
+into the file, picks a version with an enum of references, and rejects a save edited by a
+cheater. `#[pun(valid(..))]` and `#[pun(assert(..))]` are checked when bytes are read as a
+`Save`, not when a field is assigned.
 
 ```rust
 use core::num::NonZero;
@@ -121,108 +200,11 @@ puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
 assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-`load` copies nothing. The `&Save` that it returns points into `file`.
-
-`bool`, `NonZero`, enums and the types of [`puns::num`][num] guarantee the values that they hold,
-and `puns` relies on it. `#[pun(valid(..))]` and the rules of a struct are requirements instead.
-A safe assignment can break them, as the last edit of `hp` does, and a pun checks them only when
-it reads the value. See [Guarantees and requirements].
-
-## How it works
-
-`#[derive(Pun)]` gives a type a constant that describes its layout: its size, its alignment, its
-fields, and the values that each byte may hold. A function of `puns` compares the layouts of its
-two types at compile time, and the function decides what may happen at run time.
-
-- A pun is *proven* if the analysis shows that every value of the source is a valid value of the
-  target. `pun`, `pun_ref`, `as_bytes` and the functions that read a part of a value compile only
-  for proven puns, and check nothing.
-- A pun is *checked* if only some values of the source are valid. The `try_` and `from_`
-  functions check at run time what is not proven, and return an [`Error`] if it does not hold.
-  They never panic.
-- A pun is *refused* if the function cannot make it. It does not compile. This is the case when
-  no value of the source is valid for the target, when the target would read [padding], and when
-  the pun needs a check of a value, a size or an address that the function does not make.
-
-The analysis does not prove everything that is true. For example, a rule `v % 6 == 0` does not
-prove a rule `v % 3 == 0`, so a pun that relies on it must be checked.
-
-```rust
-// Every `bool` is a byte.
-assert_eq!(puns::pun::<[bool; 4], [u8; 4]>([true, false, true, true]), [1, 0, 1, 1]);
-// A byte is a `bool` only if it is 0 or 1.
-assert_eq!(puns::try_pun::<u8, bool>(1), Ok(true));
-assert_eq!(puns::try_pun::<u8, bool>(2), Err(puns::Error::Validity));
-```
-
-```rust,compile_fail,E0080
-// This does not compile. A `u8` may be 2, and `pun` checks nothing.
-let flag: bool = puns::pun(2u8);
-```
-
-Most refusals are errors of constant evaluation in generic code, so `cargo build` reports them
-and `cargo check` does not. See [Compile-time errors] for why, and for how to read them.
-
-A `&mut` lets you write any value of the target, which the source then holds. So `pun_mut`
-requires each type to accept every value of the other. `try_pun_mut` checks the value that the
-source holds now, but every value of the target must still be a valid source.
-
-```rust
-// Read four `bool`s as two pairs, and write one of the pairs.
-let mut flags = [true, false, true, true];
-let pairs: &mut [[bool; 2]; 2] = puns::pun_mut(&mut flags);
-pairs[1] = [false, false];
-assert_eq!(flags, [true, false, false, false]);
-
-// The byte holds a `bool` now, and any `bool` written through `flag` is a valid byte.
-let mut byte = 1u8;
-let flag: &mut bool = puns::try_pun_mut(&mut byte).unwrap();
-*flag = false;
-assert_eq!(byte, 0);
-```
-
-By default, no pun depends on a layout that Rust leaves to the compiler, such as the order of the
-fields of a struct without `repr`. Such a pun is refused, and `-Zrandomize-layout` changes no
-outcome. With the `unstable` feature, `puns` uses the layout that `rustc` chose for this build.
-See [The `unstable` feature][unstable] for the puns that this allows.
-
-```toml
-[dependencies]
-puns = { version = "0.1", features = ["unstable"] }
-```
-
-Deriving `Pun` lets anyone read and write every field of the type through bytes, as if it were
-public. Do not derive it on a type whose fields hold an invariant that the derive is not told of.
-See [What deriving `Pun` means].
-
-## Comparison with `transmute`, `bytemuck` and `zerocopy`
-
-`transmute` checks that the two sizes are equal. Everything else is a condition of the `unsafe`
-block that calls it.
-
-`bytemuck` and `zerocopy` describe each type on its own with marker traits, such as "any bytes
-are a value of this type". A conversion is allowed when the source has one trait and the target
-another. `puns` compares the two types with each other instead.
-
-- A conversion between two types that are not plain bytes can be free. `&[OldItem]` as `&[Item]`
-  checks nothing, because every old item is an item. `zerocopy::try_transmute_ref` checks the
-  bytes against the target, because the traits do not relate the two types.
-- A `&mut` conversion works between types that have invalid values, such as `&mut [bool; 4]` and
-  `&mut [[bool; 2]; 2]`.
-- Sizes, tags and checksums stored in the data are part of the type, so `from_bytes` checks a
-  whole packet and finds where it ends. With `zerocopy`, you read the header, compute the length
-  of the rest, and check the checksums yourself.
-
-Use `zerocopy` or `bytemuck` if you need a Rust older than 1.99, helpers that allocate, refusals
-that `cargo check` and your editor report as unmet trait bounds, or a crate with years of use and
-review.
-
-
 ## Examples
 
 Each example declares a family of formats with the derive alone, without `impl` or `unsafe`, and
-reads them in place from bytes. It also checks that corrupted bytes are rejected, and says what it
-does not cover. Run one with `cargo run --example ethernet`.
+reads them in place from bytes. It also checks that corrupted bytes are rejected. Start with
+`ethernet.rs`, and run one with `cargo run --example ethernet`.
 
 | Example | Formats, and what they need |
 |---|---|
@@ -239,30 +221,60 @@ does not cover. Run one with `cargo run --example ethernet`.
 | [`encodings.rs`][encodings] | ASN.1 DER, Protocol Buffers, MessagePack, CBOR, text. Shortest forms, ZigZag, C strings, UTF-8 of a counted length. |
 | [`codegen.rs`][codegen] | No format. Functions whose machine code shows what is checked at run time. |
 
+## Testing
+
+`puns` is `unsafe` code that decides what it may do from its own analysis, so both are tested. A
+model check compares the analysis with oracles written by hand, on every pair of a set of types
+of the same size, every night. The tests run under [Miri] on x86-64, on a 32-bit target and on a
+big-endian one. More than a hundred programs must fail to compile with the expected message.
+[`docs/testing.md`][testing] has the details, and [Soundness] states what `puns` relies on.
+
+## Performance
+
+A proven pun compiles to no check, and at most to the arithmetic of an address or a length.
+Reading a `[bool; 4]` as a `u32` is `mov eax, edi; ret`. On an Apple M4 Max, checking 64 KiB of
+bytes as `[bool]` takes 731 ns, against 18,820 ns for `bytes.iter().all(|&b| b <= 1)`. [`docs/performance.md`][performance] has the
+machine code and the times of the other checks, and how they were measured.
+
+## Comparison
+
+`bytemuck` and `zerocopy` give each type marker traits, such as "any bytes are a valid value",
+and allow a conversion when the source has one trait and the target another. `puns` compares the
+two types with each other. So `&[OldItem]` reads as `&[Item]` with no check, `&mut [bool; 4]`
+reads as `&mut [[bool; 2]; 2]`, and the size and checksums that a format stores are part of its
+type. Rust's [safe transmute] project compares two types in the compiler too, but it is
+available on nightly only.
+
+`binrw` and `deku` derive parsers that build values you own, and `nom` combines parsers that you
+write. `puns` reads the bytes in place, and gives you a reference into them.
+
+Use `zerocopy` or `bytemuck` if you need a Rust older than 1.99, refusals that `cargo check` and
+your editor report, or a crate with years of use and review.
+
 ## Documentation
 
-- The [API documentation][docs] describes each function and the compile-time conditions of each,
-  the [attributes of the derive][derive], and the types of [`puns::num`][num].
-- [Soundness] states what a pun guarantees, and what `puns` assumes to guarantee it.
-- [Compile-time errors] explains the errors of refused puns and what to do about them.
-- [The `unstable` feature][unstable] lists the puns that need a layout chosen by `rustc`.
-- [Limitations] lists what is not supported yet.
-- [`docs/performance.md`][performance] gives the machine code and the time of the checks, next to
-  the same checks written by hand.
-- [`docs/testing.md`][testing] describes how `puns` is tested.
+- [API documentation][docs]: the functions, the [attributes of the derive][derive], and the types
+  of [`puns::num`][num].
+- [Compile-time errors]: each message, and what to do about it.
+- [Limitations]: what is not supported yet.
+- [`CHANGELOG.md`][changelog].
 
 ## License
 
 Licensed under either of [Apache License, Version 2.0][apache] or [MIT license][mit] at your
 option.
 
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+`puns` by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
+
 [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
-[padding]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity.undef
+[Miri]: https://github.com/rust-lang/miri
+[safe transmute]: https://rust-lang.github.io/rfcs/2835-project-safe-transmute.html
 [docs]: https://docs.rs/puns
 [`Error`]: https://docs.rs/puns/latest/puns/enum.Error.html
 [num]: https://docs.rs/puns/latest/puns/num/index.html
 [derive]: https://docs.rs/puns/latest/puns/derive.Pun.html
-[Guarantees and requirements]: https://docs.rs/puns/latest/puns/#guarantees-and-requirements
 [What deriving `Pun` means]: https://docs.rs/puns/latest/puns/#what-deriving-pun-means
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
 [Compile-time errors]: https://docs.rs/puns/latest/puns/#compile-time-errors
@@ -270,6 +282,7 @@ option.
 [Limitations]: https://docs.rs/puns/latest/puns/#limitations
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
 [testing]: https://github.com/uael/puns/blob/main/docs/testing.md
+[changelog]: https://github.com/uael/puns/blob/main/CHANGELOG.md
 [ethernet]: https://github.com/uael/puns/blob/main/puns/examples/ethernet.rs
 [ip_services]: https://github.com/uael/puns/blob/main/puns/examples/ip_services.rs
 [transport]: https://github.com/uael/puns/blob/main/puns/examples/transport.rs
