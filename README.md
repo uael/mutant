@@ -251,17 +251,20 @@ case, and how they were measured.
 
 ## History
 
-I started `puns` in November 2023, on nightly. Inline `const` blocks and more of `const fn` were
-on their way to stable Rust, and a `const` block in a generic function can refuse to compile for
-some types: the first commit already checked the alignment of a type that way. [`typic`][typic]
-had shown what to check: accept a transmute only when every value of the source is a valid value
-of the target.
+I started `puns` in November 2023, on nightly, under the name `mutant`. Part of the reason was to
+see how far the compiler could be pushed. The other part was my work: I was doing Bluetooth then,
+so a lot of packing and unpacking of protocol structures.
+
+Inline `const` blocks and more of `const fn` were on their way to stable Rust, and a `const` block
+in a generic function can refuse to compile for some types: the first commit already checked the
+alignment of a type that way. [`typic`][typic] had shown what to check: accept a transmute only
+when every value of the source is a valid value of the target.
 
 In December 2023 each type got a `LAYOUT` constant. From October 2024 to March 2025 I tried
 `typic`'s way instead, with layouts as types and the trait solver comparing them. In November
-2026 I went back to constants, and wrote the whole comparison as `const fn` code. Rust 1.99
-brought the last thing it needed on stable: the size and alignment of an unsized type in a
-`const`.
+2026 I went back to constants, wrote the whole comparison as `const fn` code, and renamed the
+crate. Rust 1.99 brought the last thing it needed on stable: the size and alignment of an unsized
+type in a `const`.
 
 ## Documentation
 
