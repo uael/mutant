@@ -2325,10 +2325,8 @@ fn derive_discovered(
         #[allow(unreachable_code)]
         const SAMPLES: [::core::mem::MaybeUninit<Self>; #count] = [#(#samples),*];
         #(#offsets)*
-        // In a constant, which is what `discover` requires of its caller.
-        const DESC: #root::layout::Desc<#count> = unsafe {
-          #layout::discover::<Self, #count>(&<Self as __PunDiscover>::SAMPLES, &[#(#observed),*])
-        };
+        const DESC: #root::layout::Desc<#count> =
+          <Self as #root::layout::Discover<#count>>::DESC;
         const TAG: #root::layout::Layout = const { &<Self as __PunDiscover>::DESC }.tag();
         const VARIANTS: [#root::layout::Variant; #count] = [#(#variants),*];
         const ENUM: #root::layout::Enum = #root::layout::Enum::discovered(
@@ -2337,6 +2335,11 @@ fn derive_discovered(
           const { &<Self as __PunDiscover>::VARIANTS },
           #layout::size_align::<Self>(),
         );
+      }
+
+      impl #impl_generics #root::layout::Discover<#count> for #this #where_clause {
+        const SAMPLES: [::core::mem::MaybeUninit<Self>; #count] = <Self as __PunDiscover>::SAMPLES;
+        const FIELDS: [&'static [#root::layout::Field]; #count] = [#(#observed),*];
       }
 
       // SAFETY: the layout that `rustc` gave the enum, found by experiments that fail to compile

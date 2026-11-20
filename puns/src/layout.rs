@@ -1448,6 +1448,23 @@ const fn excludes_zero<P>() -> bool {
   true
 }
 
+/// An enum without `repr` whose layout `#[derive(Pun)]` finds by experiments on a sample of each
+/// of its `V` variants: see `discover.rs`.
+#[doc(hidden)]
+pub trait Discover<const V: usize>: Sized {
+  /// A sample of each variant, in the order of declarations: anything for a variant that has no
+  /// value.
+  const SAMPLES: [mem::MaybeUninit<Self>; V];
+  /// The fields of each variant, observed on its sample.
+  const FIELDS: [&'static [Field]; V];
+  /// The layout that the experiments find.
+  ///
+  /// A constant, so that the experiments run in const evaluation only: they read bytes of the
+  /// samples outside of their fields, which is undefined behavior at run time when a byte is not
+  /// initialized, and fails the build in const evaluation.
+  const DESC: Desc<V> = crate::discover::discover(&Self::SAMPLES, &Self::FIELDS);
+}
+
 /// What the bytes of `None::<P>` are.
 struct NoneOf<P>(PhantomData<P>);
 
@@ -1496,26 +1513,6 @@ impl Layout {
   #[must_use]
   pub const fn uninit<T>() -> mem::MaybeUninit<T> {
     mem::MaybeUninit::uninit()
-  }
-
-  /// The layout of the enum `E` without `repr`, found by experiments on a sample of each of its
-  /// `V` variants (anything for a variant that has no value) and its `fields`, observed on the
-  /// sample: see `discover.rs`. For `#[derive(Pun)]`.
-  ///
-  /// # Safety
-  ///
-  /// The caller must ensure that every byte of a sample that the experiments read is
-  /// initialized. They read the bytes outside of the fields of a variant, taking them for its
-  /// tag. Evaluating the call in a constant ensures it: there, reading a byte that is not
-  /// initialized fails the build instead.
-  #[doc(hidden)]
-  #[must_use]
-  pub const unsafe fn discover<E, const V: usize>(
-    samples: &[mem::MaybeUninit<E>; V],
-    fields: &[&[Field]; V],
-  ) -> Desc<V> {
-    // SAFETY: the caller ensures that the bytes read are initialized.
-    unsafe { crate::discover::discover(samples, fields) }
   }
 
   /// A valid `T`, made of nothing but its layout (every scalar the least of its values), for the
