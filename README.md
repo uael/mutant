@@ -230,6 +230,20 @@ hand, 17 took less, several because the hand-written check uses a simpler algori
 more, by 16% and 52%. Measure in release builds, since the checks rely on inlining.
 [`docs/performance.md`][performance] has every case, and how they were measured.
 
+## History
+
+I started `puns` in November 2023, on nightly. Inline `const` blocks and more of `const fn` were
+on their way to stable Rust, and a `const` block in a generic function can refuse to compile for
+some types: the first commit already checked the alignment of a type that way. [`typic`][typic]
+had shown what to check: accept a transmute only when every value of the source is a valid value
+of the target.
+
+In December 2023 each type got a `LAYOUT` constant. From October 2024 to March 2025 I tried
+`typic`'s way instead, with layouts as types and the trait solver comparing them. In November
+2026 I went back to constants, and wrote the whole comparison as `const fn` code. Rust 1.99
+brought the last thing it needed on stable: the size and alignment of an unsized type in a
+`const`.
+
 ## Comparison
 
 Use `puns` to read one type as another when neither is plain bytes, such as an enum as a `bool`
@@ -290,3 +304,4 @@ additional terms or conditions.
 [mit]: https://github.com/uael/puns/blob/main/LICENSE-MIT
 [deriving]: https://docs.rs/puns/latest/puns/#what-deriving-pun-means
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
+[typic]: https://github.com/jswrenn/typic
