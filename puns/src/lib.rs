@@ -983,6 +983,11 @@
 // Every public item has documentation, as docs.rs counts it; CI checks that each has an example.
 #![deny(missing_docs)]
 
+/// The walkthrough of `docs/save-file.md`, whose code runs as a doc test.
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/save-file.md")]
+struct SaveFile;
+
 mod analysis;
 mod deep;
 mod discover;
