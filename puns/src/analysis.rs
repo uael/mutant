@@ -841,10 +841,8 @@ pub const fn relate_at(
 /// reads. Within a variant of an enum, only the values of the source that have its `tag` are read
 /// ([`moves`]).
 ///
-/// Parts of one layout one after the other, each checked as the others, are an exception. These
-/// are the elements of an array, or the fields of a struct whose orders all make the same bytes.
-/// Where what may move in the source is whole such parts ([`whole_parts`]), an order only
-/// changes where each part is, and every part gets the same answer: `None` is returned.
+/// The rule is general. This function does not look for the puns where every order would give
+/// the same answer, such as `(u8, u8)` read as `[bool; 2]`, and reports their bytes too.
 #[expect(clippy::too_many_arguments, reason = "two layouts where they are, the bytes, the tag")]
 const fn reads_moved(
   source: &'static Layout,
@@ -859,23 +857,6 @@ const fn reads_moved(
 ) -> Option<usize> {
   let (lo, hi) = (max(start, base_b), min(end, extent_end(target, base_b)));
   if lo >= hi || !marks.any(leaf, target.leaves) {
-    return None;
-  }
-  // Parts one after the other, each checked as the others: the elements of an array, or the
-  // fields of a struct whose orders all make the same bytes, which are then of one layout. Where
-  // what may move in the source is whole parts, an order of it only changes where each is.
-  let part = match target.kind {
-    Kind::Array(elem, _) | Kind::Slice(elem) => elem.size,
-    Kind::Struct(fields, _) if target.stable.fixed && !target.stable.ordered => {
-      let mut i = 0;
-      while fields[i].layout.size == 0 {
-        i += 1;
-      }
-      fields[i].layout.size
-    }
-    _ => 0,
-  };
-  if part > 0 && whole_parts(source, base_a, lo, hi, base_b, part) {
     return None;
   }
   match target.kind {
@@ -1016,92 +997,6 @@ const fn moves(source: &Layout, base: usize, start: usize, end: usize, tag: Opti
     }
     _ => false,
   }
-}
-
-/// Returns whether every part of `source` in `start..end` that the compiler may move is whole
-/// parts of `size` bytes.
-///
-/// `source` is at `base`. Each part that may move must lie within `start..end`, at a multiple of
-/// `size` from `origin`, and be [made of](of_parts) parts of `size` bytes. In every order, it is
-/// then the same parts of `size` bytes from `origin`, at other places. With the `unstable`
-/// feature, nothing moves: the result is `true`.
-const fn whole_parts(
-  source: &Layout,
-  base: usize,
-  start: usize,
-  end: usize,
-  origin: usize,
-  size: usize,
-) -> bool {
-  let stop = extent_end(source, base);
-  if !STRICT || stop <= start || base >= end {
-    return true;
-  }
-  if !source.stable.ordered {
-    return base >= start
-      && stop <= end
-      && (base - origin).is_multiple_of(size)
-      && of_parts(source, size);
-  }
-  match source.kind {
-    Kind::Struct(fields, _) => {
-      let mut i = 0;
-      while i < fields.len() {
-        let at = base + fields[i].offset;
-        if !whole_parts(fields[i].layout, at, start, end, origin, size) {
-          return false;
-        }
-        i += 1;
-      }
-      true
-    }
-    Kind::Enum(layout) => {
-      let mut i = 0;
-      while i < layout.variants.len() {
-        if !whole_parts(layout.variants[i].layout, base, start, end, origin, size) {
-          return false;
-        }
-        i += 1;
-      }
-      true
-    }
-    // The first and the last element that the bytes overlap, and the ones between, each at the
-    // place of parts that the first is if the elements are of a multiple of `size`.
-    Kind::Array(elem, _) | Kind::Slice(elem) if elem.size > 0 => {
-      if !moves(elem, 0, 0, elem.size, None) {
-        return true;
-      }
-      let (lo, hi) = (max(start, base), min(end, stop));
-      let first = base + (lo - base) / elem.size * elem.size;
-      let last = base + (hi - 1 - base) / elem.size * elem.size;
-      whole_parts(elem, first, start, end, origin, size)
-        && whole_parts(elem, last, start, end, origin, size)
-        && (last <= first + elem.size || elem.size.is_multiple_of(size))
-    }
-    _ => true,
-  }
-}
-
-/// Returns whether `layout`, which the compiler may arrange otherwise, is parts of `size` bytes in
-/// every arrangement.
-///
-/// `layout` must be a struct whose fields follow one another without padding in any order. Each
-/// field must be a multiple of `size` bytes, and [whole parts](whole_parts) of `size` bytes where
-/// something within it may move.
-const fn of_parts(layout: &Layout, size: usize) -> bool {
-  let Kind::Struct(fields, _) = layout.kind else { return false };
-  if !layout.size.is_multiple_of(size) || !(layout.stable.fixed || layout.stable.init) {
-    return false;
-  }
-  let mut i = 0;
-  while i < fields.len() {
-    let field = fields[i].layout;
-    if !field.size.is_multiple_of(size) || !whole_parts(field, 0, 0, field.size, 0, size) {
-      return false;
-    }
-    i += 1;
-  }
-  true
 }
 
 /// Returns one past the last byte of `layout` at `base`, or `usize::MAX` if it is unsized.

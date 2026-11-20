@@ -689,13 +689,11 @@ fn a_check_reads_what_every_layout_has_there() {
   // What is checked is of a struct of the `C` representation, or of the target only.
   assert_eq!(verdict::<Pair<u8, (u8, u8)>, Pair<bool, [u8; 2]>>(), "fallible at 0, mutable");
   assert_eq!(verdict::<[u8; 2], (bool, bool)>(), "fallible at 0, mutable");
-  // Each element is checked as the others, and the fields that move are whole elements: in any
-  // order, the same elements.
-  assert_eq!(verdict::<(u8, u8), [bool; 2]>(), "fallible at 0, mutable");
-  assert_eq!(verdict::<(u8, u8), (bool, bool)>(), "fallible at 0, mutable");
-  assert_eq!(verdict::<(u16, u16), [NonZero<u16>; 2]>(), "fallible at 0, mutable");
-  // The check of the `bool`, or of the rule, would read one field or the other.
+  // The check of a `bool`, of a `NonZero` or of the rule would read one field or the other.
   let moved = [
+    verdict::<(u8, u8), [bool; 2]>(),
+    verdict::<(u8, u8), (bool, bool)>(),
+    verdict::<(u16, u16), [NonZero<u16>; 2]>(),
     verdict::<(u8, u8), Pair<bool, u8>>(),
     verdict::<(bool, u8), Pair<bool, u8>>(),
     verdict::<(u8, u8), Ruled>(),
@@ -708,6 +706,9 @@ fn a_check_reads_what_every_layout_has_there() {
       moved,
       [
         "fallible at 0, mutable",
+        "fallible at 0, mutable",
+        "fallible at 0, mutable",
+        "fallible at 0, mutable",
         "infallible, mutable",
         "fallible at 0, mutable",
         "fallible at 1, mutable",
@@ -718,6 +719,9 @@ fn a_check_reads_what_every_layout_has_there() {
     assert_eq!(
       moved,
       [
+        "unspecified at 0",
+        "unspecified at 0",
+        "unspecified at 0",
         "unspecified at 0",
         "unspecified at 0",
         "unspecified at 0",

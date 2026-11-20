@@ -634,10 +634,10 @@ impl Oracle for Never {
 
 // --- Enums without `repr` -------------------------------------------------------------------------
 //
-// Their oracles are written from how `rustc` lays enums out (a direct tag in the bytes before the
-// fields of every variant, or a niche: the values that follow the valid ones of a scalar of a
-// field), checked against the bytes of values of each (`tests/rust_layouts.rs` of the model), with
-// the offsets of the fields taken from values, never from the library.
+// Their oracles are written from how `rustc` lays enums out today (a direct tag in the bytes before
+// the fields of every variant, or a niche: the values that follow the valid ones of a scalar of a
+// field). The offsets of the fields are taken from values, never from the library. The values of
+// the tags are written here: if `rustc` chooses others, the model check reports a disagreement.
 
 /// Returns the offset of `field` in `value`.
 ///

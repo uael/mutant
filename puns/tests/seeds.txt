@@ -275,9 +275,9 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (core::num::nonzero::NonZero<u16>, u16) -> [u8; 2]: -+--+----++---
 (core::num::nonzero::NonZero<u16>, u16) -> [u8; 4]: ++++++---++-++
 (core::num::nonzero::NonZero<u16>, u16) -> [bool; 2]: --------------
-(core::num::nonzero::NonZero<u16>, u16) -> [bool; 4]: --+--+-------+
+(core::num::nonzero::NonZero<u16>, u16) -> [bool; 4]: --------------
 (core::num::nonzero::NonZero<u16>, u16) -> core::num::nonzero::NonZero<u16>: --------------
-(core::num::nonzero::NonZero<u16>, u16) -> [core::num::nonzero::NonZero<u16>; 2]: --+--+-+-----+
+(core::num::nonzero::NonZero<u16>, u16) -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 (core::num::nonzero::NonZero<u16>, u16) -> (core::num::nonzero::NonZero<u16>, u16): ++++++++++++++
 (core::num::nonzero::NonZero<u16>, u16) -> (bool, [u8; 3]): --------------
 (core::num::nonzero::NonZero<u16>, u16) -> (u8, u8): -+--+----++---
@@ -309,7 +309,7 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, [u8; 3]) -> [u8; 2]: -+--+----++---
 (bool, [u8; 3]) -> [u8; 4]: ++++++---++-++
 (bool, [u8; 3]) -> [bool; 2]: --------------
-(bool, [u8; 3]) -> [bool; 4]: --+--+-+-----+
+(bool, [u8; 3]) -> [bool; 4]: --------------
 (bool, [u8; 3]) -> core::num::nonzero::NonZero<u16>: --------------
 (bool, [u8; 3]) -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 (bool, [u8; 3]) -> (core::num::nonzero::NonZero<u16>, u16): --------------
@@ -342,20 +342,20 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (u8, u8) -> bool: --------------
 (u8, u8) -> [u8; 2]: ++++++++++++++
 (u8, u8) -> [u8; 4]: --------------
-(u8, u8) -> [bool; 2]: --+--+-+-----+
+(u8, u8) -> [bool; 2]: --------------
 (u8, u8) -> [bool; 4]: --------------
 (u8, u8) -> core::num::nonzero::NonZero<u16>: --------------
 (u8, u8) -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 (u8, u8) -> (core::num::nonzero::NonZero<u16>, u16): --------------
 (u8, u8) -> (bool, [u8; 3]): --------------
 (u8, u8) -> (u8, u8): ++++++++++++++
-(u8, u8) -> (bool, bool): --+--+-+-----+
+(u8, u8) -> (bool, bool): --------------
 (u8, u8) -> (bool, u8): --------------
 (u8, u8) -> (u8, u16): --------------
 (u8, u8) -> (u8, u16, u8): --------------
 (u8, u8) -> seeds::Mixed: --------------
 (u8, u8) -> seeds::Ordered: --------------
-(u8, u8) -> seeds::Twins: --+--+-+-----+
+(u8, u8) -> seeds::Twins: --------------
 (u8, u8) -> seeds::Holds: --------------
 (u8, u8) -> seeds::Ruled: --------------
 (u8, u8) -> seeds::Carries: --------------
@@ -410,20 +410,20 @@ core::num::nonzero::NonZero<u16> -> core::result::Result<core::num::nonzero::Non
 (bool, u8) -> bool: --------------
 (bool, u8) -> [u8; 2]: ++++++---++-++
 (bool, u8) -> [u8; 4]: --------------
-(bool, u8) -> [bool; 2]: --+--+-+-----+
+(bool, u8) -> [bool; 2]: --------------
 (bool, u8) -> [bool; 4]: --------------
 (bool, u8) -> core::num::nonzero::NonZero<u16>: --------------
 (bool, u8) -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 (bool, u8) -> (core::num::nonzero::NonZero<u16>, u16): --------------
 (bool, u8) -> (bool, [u8; 3]): --------------
 (bool, u8) -> (u8, u8): ++++++---++-++
-(bool, u8) -> (bool, bool): --+--+-+-----+
+(bool, u8) -> (bool, bool): --------------
 (bool, u8) -> (bool, u8): ++++++++++++++
 (bool, u8) -> (u8, u16): --------------
 (bool, u8) -> (u8, u16, u8): --------------
 (bool, u8) -> seeds::Mixed: --------------
 (bool, u8) -> seeds::Ordered: --------------
-(bool, u8) -> seeds::Twins: --+--+-+-----+
+(bool, u8) -> seeds::Twins: --------------
 (bool, u8) -> seeds::Holds: --------------
 (bool, u8) -> seeds::Ruled: --------------
 (bool, u8) -> seeds::Carries: --------------
@@ -512,20 +512,20 @@ seeds::Mixed -> u8: -+--+----++---
 seeds::Mixed -> bool: --------------
 seeds::Mixed -> [u8; 2]: ++++++---++-++
 seeds::Mixed -> [u8; 4]: --------------
-seeds::Mixed -> [bool; 2]: --+--+-+-----+
+seeds::Mixed -> [bool; 2]: --------------
 seeds::Mixed -> [bool; 4]: --------------
 seeds::Mixed -> core::num::nonzero::NonZero<u16>: --------------
 seeds::Mixed -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 seeds::Mixed -> (core::num::nonzero::NonZero<u16>, u16): --------------
 seeds::Mixed -> (bool, [u8; 3]): --------------
 seeds::Mixed -> (u8, u8): ++++++---++-++
-seeds::Mixed -> (bool, bool): --+--+-+-----+
+seeds::Mixed -> (bool, bool): --------------
 seeds::Mixed -> (bool, u8): --------------
 seeds::Mixed -> (u8, u16): --------------
 seeds::Mixed -> (u8, u16, u8): --------------
 seeds::Mixed -> seeds::Mixed: ++++++++++++++
 seeds::Mixed -> seeds::Ordered: --------------
-seeds::Mixed -> seeds::Twins: --+--+-+-----+
+seeds::Mixed -> seeds::Twins: --------------
 seeds::Mixed -> seeds::Holds: --------------
 seeds::Mixed -> seeds::Ruled: --------------
 seeds::Mixed -> seeds::Carries: --------------
@@ -546,20 +546,20 @@ seeds::Ordered -> u8: -+--+----++---
 seeds::Ordered -> bool: --------------
 seeds::Ordered -> [u8; 2]: ++++++---++-++
 seeds::Ordered -> [u8; 4]: --------------
-seeds::Ordered -> [bool; 2]: --+--+-------+
+seeds::Ordered -> [bool; 2]: --------------
 seeds::Ordered -> [bool; 4]: --------------
 seeds::Ordered -> core::num::nonzero::NonZero<u16>: --------------
 seeds::Ordered -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 seeds::Ordered -> (core::num::nonzero::NonZero<u16>, u16): --------------
 seeds::Ordered -> (bool, [u8; 3]): --------------
 seeds::Ordered -> (u8, u8): ++++++---++-++
-seeds::Ordered -> (bool, bool): --+--+-------+
+seeds::Ordered -> (bool, bool): --------------
 seeds::Ordered -> (bool, u8): --------------
 seeds::Ordered -> (u8, u16): --------------
 seeds::Ordered -> (u8, u16, u8): --------------
 seeds::Ordered -> seeds::Mixed: --------------
 seeds::Ordered -> seeds::Ordered: ++++++++++++++
-seeds::Ordered -> seeds::Twins: --+--+-------+
+seeds::Ordered -> seeds::Twins: --------------
 seeds::Ordered -> seeds::Holds: --------------
 seeds::Ordered -> seeds::Ruled: --------------
 seeds::Ordered -> seeds::Carries: --------------
@@ -615,7 +615,7 @@ seeds::Holds -> bool: --------------
 seeds::Holds -> [u8; 2]: -+--+----+++--
 seeds::Holds -> [u8; 4]: ++++++---++-++
 seeds::Holds -> [bool; 2]: --------------
-seeds::Holds -> [bool; 4]: --+--+-+-----+
+seeds::Holds -> [bool; 4]: --------------
 seeds::Holds -> core::num::nonzero::NonZero<u16>: --------------
 seeds::Holds -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 seeds::Holds -> (core::num::nonzero::NonZero<u16>, u16): --------------
@@ -819,7 +819,7 @@ seeds::Either -> core::result::Result<core::num::nonzero::NonZero<u8>, ()>: ----
 [seeds::Mixed; 2] -> [u8; 2]: -+--+----++---
 [seeds::Mixed; 2] -> [u8; 4]: ++++++---++-++
 [seeds::Mixed; 2] -> [bool; 2]: --------------
-[seeds::Mixed; 2] -> [bool; 4]: --+--+-+-----+
+[seeds::Mixed; 2] -> [bool; 4]: --------------
 [seeds::Mixed; 2] -> core::num::nonzero::NonZero<u16>: --------------
 [seeds::Mixed; 2] -> [core::num::nonzero::NonZero<u16>; 2]: --------------
 [seeds::Mixed; 2] -> (core::num::nonzero::NonZero<u16>, u16): --------------
