@@ -51,8 +51,10 @@ checks each element. `cargo build` reports such an error, but `cargo check` and 
 of them.
 
 `puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
-structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun`, `try_pun`,
-`head` and `tail` take values of `Copy` types; the other functions take references.
+structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun` and `try_pun`
+take values of `Copy` types; most other functions take references. A function that returns a
+`&mut` also needs every value of the target to be valid for the source, since you can write any of
+them through it.
 
 ```sh
 cargo add puns
@@ -65,7 +67,7 @@ was in November 2026, and the API may change before 1.0.
 
 Use `puns` to read data in place, such as network packets, file headers and records, or to read a
 value of one of your types as another. It pays off when the format stores its own lengths and
-checksums, and when the target type accepts every value of the source, as in the examples below.
+checksums, or when the target type accepts every value of the source, as in the examples below.
 It also goes the other way: `as_bytes` reads a value as its bytes, and `from_bytes_mut` gives a
 `&mut` to a valid header in a buffer, to change its fields in place.
 
@@ -121,9 +123,9 @@ assert_eq!(puns::from_head::<Packet>(&wrong).err(), Some(puns::Error::Validity))
 and can be read at any address. A rule is an expression over the unsigned integer fields, with
 operators, constants, and functions that the derive macro provides, like `crc32`, and `walk` to
 loop over a chain of headers. A rule cannot call your own functions on the values of fields, and
-`puns` does not prove a rule from a different rule that implies it. Other attributes give the
-valid values of a field, the length of a slice, regions whose sizes are in the data, and getters
-for bit fields. The [documentation of the derive][derive] lists them all.
+`puns` does not prove a rule from a different rule that implies it. The
+[documentation of the derive][derive] lists the functions, and the other attributes, such as bit
+fields and regions whose sizes are in the data.
 
 A rule is checked by the function that reads the bytes, and nothing keeps it true afterwards.
 Through a `&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
@@ -176,10 +178,10 @@ existing variants.
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
 accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and
-returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]).
-Comparing the two types also lets `puns` read one of your types as another, as in the version
-example, and the rules of a format, such as lengths and checksums, have no counterpart in their
-traits.
+returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). For a
+single value read by value, the optimizer removes the check of all three. Comparing the valid
+values of the two types is also what proves the version example, and the rules of a format, such
+as lengths and checksums, have no counterpart in their traits.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -191,9 +193,9 @@ available on nightly only.
 
 A proven pun adds no check. A checked pun checks only what `puns` could not prove.
 [`docs/performance.md`][performance] times those checks next to the same checks written by hand,
-on an Apple M4 Max. The checks of IPv4, IPv6, UDP and TCP packets take from about half as long to
-about 1.2 times as long as by hand. One case, which needs the `unstable` feature, takes 1.5 times
-as long.
+on an Apple M4 Max. Its packet checks (Ethernet, IPv4, IPv6 extension headers, UDP and TCP)
+take from about half as long to about 1.2 times as long as by hand. Its slowest case is a slice of
+an enum whose layout needs the `unstable` feature, at 1.5 times as long.
 
 Comparing the types takes build time: about 17 ms of a debug build for each struct read from
 bytes, on average over 100 of them. An enum of references that returns the first variant that
@@ -227,16 +229,18 @@ build.
 
 Code that uses `puns` can keep `#![forbid(unsafe_code)]`: the `unsafe` code is in `puns`, and the
 analysis of the types decides when it runs. The [Soundness] section of the documentation lists
-what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states. One,
-the representation of a pointer to an unsized type, is checked at compile time for each type. The
-other only matters to `view_ref` and `try_view_ref`, which read values that hold pointers, and
-tests check it in debug and optimized builds.
+what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states. One is
+the representation of a pointer to an unsized type, which `puns` checks at compile time for each
+type. The other is that the compiler evaluates the constants of every function that compiled code
+names, even one that is never called. Only `view_ref` and `try_view_ref`, which read values that
+hold pointers, rely on it, and tests check it in debug and optimized builds.
 
 [`docs/testing.md`][testing] describes the tests. One compares the analysis with answers written
 by hand, on every ordered pair of test types of the same size: for every value of the source up to
-2 bytes, and for chosen values beyond. The tests run under Miri, also on 32-bit and big-endian
-targets. More than 100 programs must fail to compile, each with its
-expected message. If you find a soundness bug, please [open an issue][issues].
+2 bytes, and for chosen values beyond. The tests of `puns`, and a selection of those pairs that
+reaches every `unsafe` path, run under Miri, also on 32-bit and big-endian targets. More than 100
+programs must fail to compile, each with its expected message. If you find a soundness bug, please
+[open an issue][issues].
 
 ## Learn more
 
