@@ -45,7 +45,8 @@ kinds:
 - **Refused**: the pun can never be valid, or it would read padding, or `puns` can neither prove
   nor check what it needs. No function accepts it.
 
-If `Switch` gained a variant with the value 2, the call to `pun_ref` above would stop compiling:
+If `Switch` gained a variant with the value 2, the call to `pun_ref` above would stop compiling,
+with an error that starts with:
 
 ```text
 cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
@@ -185,9 +186,13 @@ existing variants.
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
 accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and returns
 a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). For a single
-`Switch` passed by value, the optimizer removes the check in all three crates. Comparing the valid
-values of the two types is also what proves the version example, and the rules of a format, such as
-lengths and checksums, have no counterpart in their traits.
+`Switch` passed by value, the optimizer removes the check of `zerocopy` and `bytemuck`, and the
+three compile to the same code. Comparing the valid values of the two types is also what proves the
+version example.
+
+Neither crate proves a rule like the CRC of `Packet` at compile time. `zerocopy` can check one at
+run time through an experimental attribute, off by default, and `bytemuck` through an `unsafe`
+implementation of its `CheckedBitPattern` trait.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -245,10 +250,11 @@ type. The other is that the compiler evaluates the constants of every function t
 names, even one that is never called. Only `view_ref` and `try_view_ref`, which read values that
 hold pointers, rely on it, and tests check it in debug and optimized builds.
 
-[`docs/testing.md`][testing] describes the tests. One compares the analysis with answers written
-by hand, on every ordered pair of test types of the same size: for every value of the source up to
-2 bytes, and for chosen values beyond. Under Miri, also on 32-bit and big-endian targets, run the
-tests of `puns` and a few of those pairs for each `unsafe` path that they reach. More than 100
+[`docs/testing.md`][testing] describes the tests. A model check compares the analysis with
+oracles, code written by hand that does not use it, on every ordered pair of test types of the same
+size: for every value of the source up to 2 bytes, and for chosen values beyond. The tests of
+`puns` run under Miri, also on 32-bit and big-endian targets, and so do a few of those pairs for
+each `unsafe` path that they reach, on x86-64. More than 100
 programs must fail to compile, each with its expected message. If you find a soundness bug, please
 [open an issue][issues].
 
