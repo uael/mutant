@@ -22,6 +22,44 @@ of more functions, and gives the command that writes the assembly. The code was 
 | `&[u8] -> Option<&Ipv6>` (a walk, two checksums)   | 207 instructions, no call                     |
 | `&[u8] -> Option<&[bool]>`                         | 64 bytes at a time, no branch in a block      |
 
+### Compared with `zerocopy` and `bytemuck`
+
+`zerocopy` and `bytemuck` decide what a conversion needs from each type on its own. A `bool` does
+not accept every byte, so with them, reading a `&[Switch]` as a `&[bool]` is a checked conversion,
+even when every `Switch` is 0 or 1. `puns` proves it from the two types. The functions below were
+compiled with `zerocopy` 0.8.63, `bytemuck` 1.25.2 and `rustc` 1.100.0, on
+`aarch64-apple-darwin`, in a crate of their own built with `lto = true` and `codegen-units = 1`,
+by `cargo rustc --release --lib -- --emit asm`:
+
+```rust,ignore
+#[derive(puns::Pun, zerocopy::IntoBytes, zerocopy::Immutable, bytemuck::NoUninit, Clone, Copy)]
+#[repr(u8)]
+pub enum Switch {
+  Off = 0,
+  On = 1,
+}
+
+#[unsafe(no_mangle)]
+pub fn zc_slice(s: &[Switch]) -> Option<&[bool]> {
+  use zerocopy::{IntoBytes, TryFromBytes};
+  <[bool]>::try_ref_from_bytes(s.as_bytes()).ok()
+}
+
+#[unsafe(no_mangle)]
+pub fn bm_slice(s: &[Switch]) -> Option<&[bool]> {
+  bytemuck::checked::try_cast_slice(s).ok()
+}
+
+#[unsafe(no_mangle)]
+pub fn puns_slice(s: &[Switch]) -> &[bool] {
+  puns::pun_ref(s)
+}
+```
+
+`zc_slice` and `bm_slice` compile to a loop that compares each byte with 2, of 9 and 10
+instructions. `puns_slice` compiles to `ret`. For a single `Switch` read as a `bool`, by value, the
+three compile to `ret`: the optimizer knows that a `Switch` is 0 or 1, and removes the check.
+
 ## Time
 
 [`puns/benches/checks.rs`][checks] times each check made by `puns` next to the same check written
