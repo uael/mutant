@@ -218,10 +218,11 @@
 //! source.
 //!
 //! `MaybeUninit<T>` is padding of the size and the alignment of `T`, and is `Pun` only if `T` is,
-//! so that it never holds an `UnsafeCell`. As a target, it takes anything. As a source, it proves nothing but a target that takes anything. So a `&mut` to a
-//! `MaybeUninit<T>` is made only from a source that may hold anything there, because what is
-//! written through it may be uninitialized. A `&mut T` is never made from a `MaybeUninit<T>`,
-//! because a byte that `T` requires would be read from padding.
+//! so that it never holds an `UnsafeCell`. As a target, it takes anything. As a source, it proves
+//! nothing but a target that takes anything. So a `&mut` to a `MaybeUninit<T>` is made only from a
+//! source that may hold anything there, because what is written through it may be uninitialized. A
+//! `&mut T` is never made from a `MaybeUninit<T>`, because a byte that `T` requires would be read
+//! from padding.
 //!
 //! A rule that reads the bytes of its value (`le`, `be`, a checksum, and `walk` through its
 //! expressions) reads its padding as well. Such a rule is checked when the source does not prove

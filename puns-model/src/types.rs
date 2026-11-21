@@ -69,7 +69,7 @@ macro_rules! model_fieldless {
   };
 }
 
-// --- Size 1 ---------------------------------------------------------------------------------------
+// --- Size 1 --------------------------------------------------------------------------------------
 
 model_fieldless!(
   #[repr(u8)]
@@ -211,7 +211,7 @@ pub type Size1 = (
   core::mem::ManuallyDrop<bool>,
 );
 
-// --- Size 2 ---------------------------------------------------------------------------------------
+// --- Size 2 --------------------------------------------------------------------------------------
 
 model_fieldless!(
   #[repr(u16)]
@@ -404,7 +404,7 @@ pub type Size2 = (
   (u8c<1>, u8),
 );
 
-// --- Size 3 ---------------------------------------------------------------------------------------
+// --- Size 3 --------------------------------------------------------------------------------------
 
 model_struct!(
   #[repr(C, packed)]
@@ -451,7 +451,7 @@ pub type Size3 = (
   (u8, [u8in<0x80, 0xff>; 2]),
 );
 
-// --- Size 4 ---------------------------------------------------------------------------------------
+// --- Size 4 --------------------------------------------------------------------------------------
 
 model_struct!(
   #[repr(C)]
@@ -544,7 +544,7 @@ pub type Size4 = (
   [NonZero<u16>; 2],
 );
 
-// --- Size 8 ---------------------------------------------------------------------------------------
+// --- Size 8 --------------------------------------------------------------------------------------
 
 model_tagged!(#[repr(C)] enum CTaggedB: tag 4, implicit { A(bool = false) = 0, B(u8 = 0) = 1, C(u8in<0, 1> = u8in::new(0).unwrap()) = 2 });
 
@@ -562,7 +562,7 @@ pub type Size8 = (
   (u16, u8, bool, u32),
 );
 
-// --- Uninitialized bytes --------------------------------------------------------------------------
+// --- Uninitialized bytes -------------------------------------------------------------------------
 
 /// A byte that a target requires to be 0, and of which a source guarantees nothing.
 ///
@@ -608,7 +608,7 @@ model_struct!(
   }
 );
 
-// --- Types without values -------------------------------------------------------------------------
+// --- Types without values ------------------------------------------------------------------------
 
 /// An enum with a variant that holds a type without values.
 ///
@@ -632,7 +632,7 @@ impl Oracle for Never {
   }
 }
 
-// --- Enums without `repr` -------------------------------------------------------------------------
+// --- Enums without `repr` ------------------------------------------------------------------------
 //
 // Their oracles are written from how `rustc` lays enums out today (a direct tag in the bytes before
 // the fields of every variant, or a niche: the values that follow the valid ones of a scalar of a
@@ -837,7 +837,7 @@ impl Oracle for OneOfTwo {
   }
 }
 
-// --- Unions -----------------------------------------------------------------------------------------
+// --- Unions --------------------------------------------------------------------------------------
 //
 // The validity of unions is not settled by the language: the oracle takes the rule that every
 // proposal allows, valid if valid for one field. What the library knows of a union as a source is
@@ -920,7 +920,7 @@ impl Oracle for PaddedU {
   }
 }
 
-// --- Rules proven by the same rules ---------------------------------------------------------------
+// --- Rules proven by the same rules --------------------------------------------------------------
 //
 // A rule of the target is proven by the same rule of the source in a struct of the same extent at
 // the same place, whatever the fields: these are such structs, and ones that are not (another
@@ -1100,9 +1100,9 @@ impl Oracle for RustThirdSoft {
     let (a, b_) = (RustThirdSoft::A(ThirdSoft { v: 0 }), RustThirdSoft::B(0));
     let (RustThirdSoft::A(x), RustThirdSoft::B(y)) = (&a, &b_) else { unreachable!() };
     let samples = [(a, offset_in(&a, x)), (b_, offset_in(&b_, y))];
-    // SAFETY: Each sample is a tag and a field of 1 byte, a `ThirdSoft` or a `u8`, in 2 bytes. So both
-    // of its bytes are initialized, as `rust_variant` requires. If `rustc` gave the enum another
-    // layout, a byte could be padding, which Miri reports.
+    // SAFETY: Each sample is a tag and a field of 1 byte, a `ThirdSoft` or a `u8`, in 2 bytes. So
+    // both of its bytes are initialized, as `rust_variant` requires. If `rustc` gave the enum
+    // another layout, a byte could be padding, which Miri reports.
     match unsafe { rust_variant(samples, b, off, reads) }? {
       Some((0, at)) => ThirdSoft::check(b, off + at, reads, target),
       Some((_, at)) => int(b, off + at, 1, true, reads).map(|_| true),

@@ -264,9 +264,9 @@ pub fn valid_with(desc: &Desc, image: &Image, at: usize, fuel: &mut usize) -> Re
 ///
 /// The caller must ensure that:
 ///
-/// - The bytes of `image` hold a value at `at`, and `desc` describes its type: each byte that `desc`
-///   says the value holds is initialized, and so is each byte that it says what a pointer aims at
-///   holds. The `# Safety` of [`Model`] requires this of `Model::desc`.
+/// - The bytes of `image` hold a value at `at`, and `desc` describes its type: each byte that
+///   `desc` says the value holds is initialized, and so is each byte that it says what a pointer
+///   aims at holds. The `# Safety` of [`Model`] requires this of `Model::desc`.
 pub unsafe fn mark(desc: &Desc, image: &mut Image, at: usize) {
   match desc {
     // SAFETY: In each arm, `desc` describes the value at `at`, by contract on the caller. So the

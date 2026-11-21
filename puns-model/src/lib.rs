@@ -831,8 +831,9 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
     // (b) the run-time check accepts exactly the valid values.
     if v.try_pun && !any_uninit && !soft_uninit {
       for ((p, t), claim) in source.iter().zip(&truths).zip(&claims).take(limit) {
-        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
-        // on the oracles being right, which Miri checks. These are the requirements of `make`.
+        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check
+        // relies on the oracles being right, which Miri checks. These are the requirements of
+        // `make`.
         let value = unsafe { make::<S>(p) };
         let result = hook::try_pun::<S, D>(value).expect("try_pun compiles");
         // By reference, an address that is not aligned for the target is an error of its own
@@ -853,7 +854,8 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
         conversions += 1;
         let accepted = result.is_ok();
         if let Ok(d) = result {
-          // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+          // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of`
+          // requires.
           let got = unsafe { bytes_of(&d) };
           let want: Vec<Option<u8>> =
             (0..ds).map(|i| if got[i].is_some() { p[i] } else { None }).collect();
@@ -897,10 +899,12 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
     // Truncation: the first bytes of the source, unchanged.
     if ds < ss && v.head {
       for p in source.iter().take(limit) {
-        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
-        // on the oracles being right, which Miri checks. These are the requirements of `make`.
+        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check
+        // relies on the oracles being right, which Miri checks. These are the requirements of
+        // `make`.
         let d = hook::head::<S, D>(unsafe { make::<S>(p) }).expect("head compiles");
-        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of`
+        // requires.
         let got = unsafe { bytes_of(&d) };
         let want: Vec<Option<u8>> =
           (0..ds).map(|i| if got[i].is_some() { p[i] } else { None }).collect();
@@ -1060,13 +1064,15 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
       (0..ds).map(|i| if got[i].is_some() { p[off + i] } else { None }).collect()
     };
     for p in source.iter().take(limit) {
-      // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
-      // on the oracles being right, which Miri checks. These are the requirements of `make`.
+      // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check
+      // relies on the oracles being right, which Miri checks. These are the requirements of
+      // `make`.
       let value = unsafe { make::<S>(p) };
       let got = if part == "head" { hook::head::<S, D>(value) } else { hook::tail::<S, D>(value) };
       if let Some(d) = got {
         conversions += 1;
-        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of`
+        // requires.
         let got = unsafe { bytes_of(&d) };
         if got != want(p, &got) {
           unsound.push(format!("{pair}: {part} of {} is {}", show(p), show(&got)));

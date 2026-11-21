@@ -62,7 +62,8 @@ macro_rules! rules {
           bytes.extend((c as u32).to_be_bytes());
           bytes.extend((d as u64).to_le_bytes());
           let rule = puns::from_bytes::<$name::Rule>(&bytes).is_ok();
-          // A panic of Rust (an overflow, a division by zero, a shift too far) is a rule that fails.
+          // A panic of Rust (an overflow, a division by zero, a shift too far) is a rule that
+          // fails.
           let rust = std::panic::catch_unwind(|| $name::rust(a, b, c, d)).unwrap_or(false);
           assert_eq!(rule, rust, "{}: a = {a}, b = {b}, c = {c}, d = {d}", stringify!($name));
           if rust { holds += 1 } else { fails += 1 }

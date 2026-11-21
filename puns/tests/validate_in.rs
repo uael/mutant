@@ -676,8 +676,8 @@ fn rules_need_not_hold_for_pointers_in_and_copy_in() {
     let a = 0xaa;
     let mut dst = [a; size_of::<Ruled>()];
     // SAFETY: The `Ruled` at `root` meets the requirements of `copy_in`, for the reasons it meets
-    // those of `pointers_in`, and `add(root)` stays in the buffer. `dst` is the size of a `Ruled`, valid for writes, in another
-    // allocation.
+    // those of `pointers_in`, and `add(root)` stays in the buffer. `dst` is the size of a `Ruled`,
+    // valid for writes, in another allocation.
     unsafe { puns::copy_in::<Ruled>(base.add(root), dst.as_mut_ptr()) };
     assert_eq!(dst[..3], [2, 1, 12]);
     // A pointer is left to the caller; a null one is copied.

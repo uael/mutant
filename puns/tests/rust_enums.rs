@@ -49,7 +49,7 @@ fn uninhabited() {
   let _ = puns::pun::<(u8, Void), (u8, Void)>;
 }
 
-// --- Enums without `repr` -------------------------------------------------------------------------
+// --- Enums without `repr` ------------------------------------------------------------------------
 
 /// An enum with a direct tag of one byte. The first field of `A` follows the tag.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
@@ -533,7 +533,7 @@ fn generic_and_restricted() {
   assert_eq!(puns::try_pun::<[u8; 2], Restricted>([1, 10]), Ok(Restricted::Other(10)));
 }
 
-// --- Enums made of what is not an enum ------------------------------------------------------------
+// --- Enums made of what is not an enum -----------------------------------------------------------
 
 /// An enum whose layout Rust specifies. It is a tag of one byte, then the byte of `Some`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]
@@ -569,7 +569,7 @@ fn from_other_than_enums() {
   assert_eq!(puns::try_pun::<[u8; 2], Opt>([2, 0]), Err(Error::Validity));
 }
 
-// --- `Option` and `Result` ------------------------------------------------------------------------
+// --- `Option` and `Result` -----------------------------------------------------------------------
 
 #[test]
 fn option_and_result() {
