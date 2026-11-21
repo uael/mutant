@@ -33,19 +33,23 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 0]), Ok(&[Switch::On, Switch::Of
 assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity));
 ```
 
-`bools` borrows `switches`, and nothing is copied. `pun_ref` accepts only what `puns` proves: every
-`Switch` is a valid `bool`, and the array has the size and the alignment of the target.
-`from_bytes` checks at run time what it cannot prove, here that each byte is 0 or 1, and returns a
-`Result`. A conversion that can never be valid, or that would read padding, does not compile.
+`bools` borrows `switches`, and nothing is copied. Such a conversion is a *pun*, and this one is
+*proven*: every `Switch` is a valid `bool`, and the array has the size and the alignment of the
+target. `pun` and `pun_ref` accept only proven puns. The second is *checked*: `from_bytes`, like
+every function whose name starts with `try_` or `from_`, checks at run time what `puns` cannot
+prove, here that each byte is 0 or 1, and returns a `Result`. A pun that can never be valid, or
+that would read padding, is *refused*, and does not compile.
 
-If `Switch` gained a variant with the value 2, `pun_ref` would refuse the call above. The error
-starts with these lines, and `try_pun_ref`, which checks each element, is the fix:
+If `Switch` gained a variant with the value 2, `pun_ref` would refuse the call above, with an error
+that starts with these lines:
 
 ```text
 cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
 Use a `try_*` function to check them at run time.
 This is at byte 0 of the target.
 ```
+
+`try_pun_ref` would then check each element.
 
 The comparison runs when the compiler generates code. So `cargo build` reports this error, but
 `cargo check` and editors miss most errors of this kind.
@@ -100,26 +104,30 @@ assert_eq!(rest, [0xff]);
 // The same packet with a wrong CRC.
 let wrong = [1, 64, 0, 3, 0, 0, 0, 0, b'a', b'b', b'c'];
 assert_eq!(puns::from_head::<Packet>(&wrong).err(), Some(puns::Error::Validity));
+
+// A router lowers the TTL in place. The CRC covers only the payload, so it stays valid.
+let mut buffer = [1, 64, 0, 3, 0x35, 0x24, 0x41, 0xc2, b'a', b'b', b'c'];
+let packet = puns::from_bytes_mut::<Packet>(&mut buffer).unwrap();
+packet.ttl -= 1;
+assert_eq!(buffer[1], 63);
 ```
 
 `u16be` and `u32be` have an alignment of 1, so `Packet` has no padding, and can be read at any
-address. A rule is an expression over the unsigned integer fields and the bytes of the value.
-Besides `size` and `assert`, the derive can restrict a field to some values, give the length of the
-last slice, generate getters for bit fields, and split the last field into regions whose sizes are
-in the data. Rules can compute other checksums, read variable-length integers, and walk a chain of
-headers. The [documentation of the derive][derive] lists all of it, and the [reference][api] has a
-table of the functions.
+address. A rule is an expression over the unsigned integer fields and the bytes of the value. It
+can compute other checksums, read variable-length integers, and `walk` a chain of headers. Other
+attributes restrict a field to some values, give the length of the last slice, generate getters
+for bit fields, and split the last field into regions whose sizes are in the data. A rule cannot
+call your own functions on the fields. The [derive's documentation][derive] lists all of these.
 
-A rule is a condition of the format, not of Rust. `puns` checks it when it reads the bytes, and
-nothing keeps it true afterwards. Through a `&mut Packet`, code can set `length` to 10: the
-payload still has 3 bytes, and the `Packet` is still a valid Rust value.
+`from_bytes_mut` checks the bytes like `from_bytes`, so it gives a `&mut` to a packet that is
+already valid, not to an empty buffer. `as_bytes` gives the bytes of a value back. A rule is a
+condition of the format, not of Rust, and nothing keeps it true afterwards. Had the router set
+`length` to 10, the payload would still have 3 bytes, and the `Packet` would still be a valid Rust
+value.
 
-For a format whose data can be one of several types, an enum of references gets a `from_bytes` that
-returns the first variant that the bytes match. [`link.rs`][link] reads Bluetooth HCI packets this
-way.
-
-`puns` also writes in place. `as_bytes` reads a value as its bytes, and `from_bytes_mut` gives a
-`&mut` to a valid header in a buffer, whose fields you can then set.
+For a format whose data can be one of several types, an enum of references, a *view*, gets a
+`from_bytes` that returns the first variant that the bytes match. [`link.rs`][link] reads
+Bluetooth HCI packets this way.
 
 `from_bytes`, `from_head` and `from_tail` are `const fn`, so bytes in a `const` are checked when
 you build. Since `unwrap` is not `const`, [match on the result][const] there.
@@ -171,8 +179,9 @@ existing variants.
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
 accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and returns
 a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). `zerocopy` can
-check a rule like the CRC of `Packet` through an experimental attribute, and `bytemuck` through an
-`unsafe` implementation of a trait.
+check a rule like the CRC of `Packet` through an experimental attribute. `bytemuck` can check a
+condition on a type of fixed size through an `unsafe` implementation of a trait. Neither proves a
+rule of one type from the rules of another.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -184,10 +193,11 @@ available on nightly only.
 
 ## Caveats
 
-- In an optimized build, the error may not name the line of your code. A generic function that calls
-  `pun_ref` compiles on its own. Used with two types that do not pun, it fails to build, and the
-  error names the line of `pun_ref` in the generic function, not the caller. [Compile-time errors]
-  explains the messages.
+- In a release build, the error does not name the line of your code: build in debug to find it.
+  [Compile-time errors] explains the messages.
+- A generic function that calls `pun_ref` compiles on its own. Called with two types that
+  `pun_ref` does not accept, it fails to build, and the error names the line in the generic
+  function, not the caller.
 - Without a `repr`, the layout of a type may change with the compiler, and `puns` refuses what
   depends on it, unless you turn on the [`unstable` feature][unstable]. `repr(C)` fixes the order
   of the fields, not the byte order of a `u32` or the alignment of a `u64`, which differ between
@@ -196,27 +206,28 @@ available on nightly only.
 - Deriving `Pun` bypasses your constructors. Any code can then make a value of the type from bytes,
   and read or write its fields, private ones included. Do not derive `Pun` on a type with a private
   invariant ([details][deriving]).
-- A checksum inside a `walk` multiplies the time of a check by the size of the data, and each
-  level of nesting multiplies it again. Limit the size of untrusted bytes for such types
-  ([details][costs]).
+- A checksum inside a `walk`, a loop over headers, multiplies the time of a check by the size of the
+  data, and each level of nesting multiplies it again. Limit the size of untrusted bytes for such
+  types ([details][costs]).
 - An [`Error`][error-type] says whether the size, the alignment or a value was wrong, but not which
   field or rule.
 
 ## Performance
 
-In [`docs/performance.md`][performance], the checks of Ethernet, IPv4, IPv6, UDP and TCP take 0.55
-to 1.13 times as long as the same checks written by hand (medians of five runs). The comparison of
-the types adds to the build: in its measurements, about 17 ms to a debug build for each struct read
-from bytes. A view of 64 variants that overlap took 25 s to build in release.
+A proven pun compiles to no code. On an Apple M4 Max, the checks of Ethernet, IPv4, IPv6, UDP and
+TCP packets take 0.55 to 1.13 times as long as the same checks written by hand (medians of five
+runs). Comparing the types makes the build longer: about 17 ms more in debug for each struct read
+from bytes, and 25 s in release for a view of 64 variants that overlap.
+[`docs/performance.md`][performance] has the code, the other cases and the method.
 
 ## Safety and testing
 
-Code that uses `puns` needs no `unsafe`, and can keep `#![forbid(unsafe_code)]`, deriving `Pun`
-included. The [Soundness] section lists what `puns` relies on. Two of these are behaviors of
-`rustc` that no documentation states. One is the representation of a pointer to an unsized type,
-which `puns` checks at compile time. The other is that `rustc` evaluates the constants of a
-function that is named but never called. Only self-relative pointers rely on it, and a crate
-declares those with an `unsafe` trait.
+`puns` is built on `unsafe` code, so that yours needs none: code that uses it can keep
+`#![forbid(unsafe_code)]`, deriving `Pun` included. The [Soundness] section lists what that code
+relies on. Two of these are behaviors of `rustc` that no documentation states. One is the
+representation of a pointer to an unsized type, which `puns` checks at compile time. The other is
+that `rustc` evaluates the constants of a function that is named but never called. Only pointers
+stored as offsets rely on it, and a crate declares those with an `unsafe` trait.
 
 [`docs/testing.md`][testing] describes the tests: a model check of the analysis against oracles
 written by hand, Miri on 32-bit and big-endian targets, and more than 100 programs that must fail
@@ -224,9 +235,10 @@ to compile. If you find a soundness bug, please [open an issue][issues].
 
 ## Learn more
 
-[Limitations] lists what `puns` cannot do yet. The [examples] read parts of more than 40 formats,
-from TLS and DNS to ELF and SQLite. The shortest, [`media.rs`][media], reads WAVE files and MP4
-boxes, and `cargo run --example media` runs it from a clone of the repository.
+The [reference][api] has a table of the functions, and [Limitations] lists what `puns` cannot do
+yet. The [examples] read parts of more than 40 formats, from TLS and DNS to ELF and SQLite. The
+shortest, [`media.rs`][media], reads WAVE files and MP4 boxes, and `cargo run --example media` runs
+it from a clone of the repository.
 
 ## History
 
