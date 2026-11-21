@@ -8,7 +8,7 @@
 Type punning proven at compile time: a safe alternative to `transmute` and to hand-written parsing
 of bytes.
 
-`puns` reads a value as another type, or bytes as a typed value, in place and without `unsafe`.
+`puns` reads a value as another type, or bytes as a typed value, without `unsafe`.
 Each type describes its layout and its valid values, and `puns` compares the descriptions of the
 two types when your code is compiled. Where the comparison proves a conversion valid, no check is
 needed:
@@ -35,13 +35,13 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity))
 
 `bools` borrows `switches`, and nothing is copied. Such a conversion is a *pun*, and this one is
 *proven*: every `Switch` is a valid `bool`, and the array has the size and the alignment of the
-target. `pun` and `pun_ref` accept only proven puns. The second is *checked*: `from_bytes`, like
-every function whose name starts with `try_` or `from_`, checks at run time what `puns` cannot
-prove, here that each byte is 0 or 1, and returns a `Result`. A pun that can never be valid, or
-that would read padding, is *refused*, and does not compile.
+target. `pun` and `pun_ref` accept only proven puns. The calls to `from_bytes` are *checked*:
+`from_bytes`, like `try_pun_ref` and the other checked functions of the crate, checks at run time
+what `puns` cannot prove, here that each byte is 0 or 1, and returns a `Result`. A pun that can
+never be valid, or that would read padding, is *refused*: no function accepts it.
 
-If `Switch` gained a variant with the value 2, `pun_ref` would refuse the call above, with an error
-that starts with these lines:
+If `Switch` gained a variant with the value 2, the call to `pun_ref` above would no longer compile,
+with an error that starts with these lines:
 
 ```text
 cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
@@ -64,7 +64,9 @@ first release was in November 2026, and the API may change before 1.0.
 ## Reading a packet
 
 Many formats store the length of their data and a checksum of it. You write these relations on
-the struct as *rules*, and the `from_` functions check them with the fields:
+the struct as *rules*, which `from_bytes` and the other `from_` functions check with the fields.
+A rule is a condition of the format, not of Rust. It is checked when the bytes are read, and
+nothing keeps it true afterwards.
 
 ```rust
 use puns::{Pun, num::{u16be, u32be}};
@@ -120,10 +122,9 @@ for bit fields, and split the last field into regions whose sizes are in the dat
 call your own functions on the fields. The [derive's documentation][derive] lists all of these.
 
 `from_bytes_mut` checks the bytes like `from_bytes`, so it gives a `&mut` to a packet that is
-already valid, not to an empty buffer. `as_bytes` gives the bytes of a value back. A rule is a
-condition of the format, not of Rust, and nothing keeps it true afterwards. Had the router set
-`length` to 10, the payload would still have 3 bytes, and the `Packet` would still be a valid Rust
-value.
+already valid, not to an empty buffer. Had the router set `length` to 10, the payload would still
+have 3 bytes, and the `Packet` would still be a valid Rust value. `as_bytes` gives the bytes of a
+value back.
 
 For a format whose data can be one of several types, an enum of references, a *view*, gets a
 `from_bytes` that returns the first variant that the bytes match. [`link.rs`][link] reads
@@ -181,53 +182,57 @@ accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks eve
 a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). `zerocopy` can
 check a rule like the CRC of `Packet` through an experimental attribute. `bytemuck` can check a
 condition on a type of fixed size through an `unsafe` implementation of a trait. Neither proves a
-rule of one type from the rules of another.
+rule of one type from the rules of another. `puns` proves it from the same rule, not from a
+different rule that implies it: `v % 6 == 0` does not prove `v % 3 == 0`, and such a pun is checked.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
 an older version of Rust, or for a crate with years of use and review behind it. To decode data
 into owned values, or to transform it as you read it, consider [`binrw`][binrw], [`deku`][deku] or
-[`nom`][nom]. Rust's
-[Safe Transmute][safe transmute] project also compares the two types, in the compiler, and is
-available on nightly only.
+[`nom`][nom].
+
+Rust's [Safe Transmute][safe transmute] project also compares the two types, in the compiler, and
+is available on nightly only.
 
 ## Caveats
 
-- In a release build, the error does not name the line of your code: build in debug to find it.
-  [Compile-time errors] explains the messages.
-- A generic function that calls `pun_ref` compiles on its own. Called with two types that
-  `pun_ref` does not accept, it fails to build, and the error names the line in the generic
-  function, not the caller.
+- Deriving `Pun` bypasses your constructors. Any code can then make a value of the type from bytes,
+  and read or write its fields, private ones included. Do not derive `Pun` on a type with a private
+  invariant ([details][deriving]).
 - Without a `repr`, the layout of a type may change with the compiler, and `puns` refuses what
   depends on it, unless you turn on the [`unstable` feature][unstable]. `repr(C)` fixes the order
   of the fields, not the byte order of a `u32` or the alignment of a `u64`, which differ between
   targets: for data that leaves the program, use the integers of [`puns::num`][num], like
   `u32be`.
-- Deriving `Pun` bypasses your constructors. Any code can then make a value of the type from bytes,
-  and read or write its fields, private ones included. Do not derive `Pun` on a type with a private
-  invariant ([details][deriving]).
+- In a release build, the error does not name the line of your code: build in debug to find it.
+  [Compile-time errors] explains the messages.
+- A generic function that calls `pun_ref` compiles on its own. Called with two types that
+  `pun_ref` does not accept, it fails to build, and the error names the line in the generic
+  function, not the caller.
 - A checksum inside a `walk`, a loop over headers, multiplies the time of a check by the size of the
   data, and each level of nesting multiplies it again. Limit the size of untrusted bytes for such
   types ([details][costs]).
-- An [`Error`][error-type] says whether the size, the alignment or a value was wrong, but not which
-  field or rule.
+- An [`Error`][error-type] has three kinds, `Size`, `Alignment` and `Validity`, and does not say
+  which field or rule failed. `from_bytes` reports bytes of a length that a rule like `size`
+  forbids as `Validity`, not `Size`.
 
 ## Performance
 
-A proven pun compiles to no code. On an Apple M4 Max, the checks of Ethernet, IPv4, IPv6, UDP and
+A proven pun compiles to no check. On an Apple M4 Max, the checks of Ethernet, IPv4, IPv6, UDP and
 TCP packets take 0.55 to 1.13 times as long as the same checks written by hand (medians of five
 runs). Comparing the types makes the build longer: about 17 ms more in debug for each struct read
-from bytes, and 25 s in release for a view of 64 variants that overlap.
-[`docs/performance.md`][performance] has the code, the other cases and the method.
+from bytes. A view of 64 variants took 1.3 s in release when each starts with a different constant,
+and 25 s when the values of each are also values of the next. [`docs/performance.md`][performance]
+has the code, the other cases and the method.
 
 ## Safety and testing
 
 `puns` is built on `unsafe` code, so that yours needs none: code that uses it can keep
 `#![forbid(unsafe_code)]`, deriving `Pun` included. The [Soundness] section lists what that code
-relies on. Two of these are behaviors of `rustc` that no documentation states. One is the
-representation of a pointer to an unsized type, which `puns` checks at compile time. The other is
-that `rustc` evaluates the constants of a function that is named but never called. Only pointers
-stored as offsets rely on it, and a crate declares those with an `unsafe` trait.
+relies on, including two undocumented behaviors of `rustc`. One is the representation of a pointer
+to an unsized type, which `puns` checks at compile time. The other is that `rustc` evaluates the
+constants of a function that is named but never called. Only self-relative pointers rely on it, a
+feature for pointers stored as offsets, which a crate declares with an `unsafe` trait.
 
 [`docs/testing.md`][testing] describes the tests: a model check of the analysis against oracles
 written by hand, Miri on 32-bit and big-endian targets, and more than 100 programs that must fail
