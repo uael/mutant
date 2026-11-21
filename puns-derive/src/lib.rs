@@ -1442,6 +1442,18 @@ fn bound(generics: &mut syn::Generics, ty: &Type, root: &TokenStream) {
 // -------------------------------------------------------------------------------------------------
 // Structs
 
+/// Returns whether `ty` is unsized as written: a slice, `str` or a trait object, in parentheses or
+/// not.
+fn is_unsized(ty: &Type) -> bool {
+  match ty {
+    Type::Slice(_) | Type::TraitObject(_) => true,
+    Type::Paren(inner) => is_unsized(&inner.elem),
+    Type::Group(inner) => is_unsized(&inner.elem),
+    Type::Path(path) => path.qself.is_none() && path.path.is_ident("str"),
+    _ => false,
+  }
+}
+
 fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   let options =
@@ -1450,6 +1462,20 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   let ident = &input.ident;
   let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
   let this = quote!(#ident #ty_generics);
+  // The offsets of the fields of any other representation are found on a value, which an unsized
+  // struct cannot be. Without this, the build fails in the generated code, where the struct is
+  // required to be `Sized`. A tail that is unsized by a type of the user (another struct, a
+  // parameter that is `?Sized`) is not seen here, and still fails there.
+  if !(repr.c || repr.transparent)
+    && let Some(last) = data.fields.iter().next_back()
+    && is_unsized(&last.ty)
+  {
+    return Err(Error::new_spanned(
+      &last.ty,
+      "`Pun` is derived for a struct that ends with an unsized field only with `repr(C)` or \
+       `repr(transparent)`, which say where that field is",
+    ));
+  }
 
   let fields = match &data.fields {
     Fields::Named(fields) => Some(&fields.named),
