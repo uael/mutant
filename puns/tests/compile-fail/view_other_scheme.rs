@@ -1,5 +1,5 @@
-//! A pointer is read as a pointer of the same scheme: another crate may find its target another
-//! way, from the same bytes.
+//! A pointer is reinterpreted as a pointer of the same scheme: another crate may find its target
+//! another way, from the same bytes.
 #[path = "../support/relative.rs"]
 #[allow(dead_code)]
 mod relative;

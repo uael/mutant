@@ -841,7 +841,7 @@ pub const fn relate_at(
 /// ([`moves`]).
 ///
 /// The rule is general. This function does not look for the puns where every order would give
-/// the same answer, such as `(u8, u8)` read as `[bool; 2]`, and reports their bytes too.
+/// the same answer, such as `(u8, u8)` reinterpreted as `[bool; 2]`, and reports their bytes too.
 #[expect(clippy::too_many_arguments, reason = "two layouts where they are, the bytes, the tag")]
 const fn reads_moved(
   source: &'static Layout,
@@ -1231,8 +1231,8 @@ const fn relate_range(
         }
         pos = run_b.end;
       }
-      // Only a pointer proves a pointer: one at the same place, whose target can be read as the
-      // target of this one. Its bytes do not: whatever else the source has there is refused,
+      // Only a pointer proves a pointer: one at the same place, whose target can be reinterpreted
+      // as the target of this one. Its bytes do not: whatever else the source has there is refused,
       // and so is a part of a pointer.
       RunKind::Pointer(to) => {
         match run_a.kind {

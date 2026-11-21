@@ -527,11 +527,11 @@ impl<T> Region<T> {
     // SAFETY: `place` asserted that `pointer` is in the buffer of this region, and `aim` that its
     // target, `size_of::<U>()` bytes from `to`, is too. So `add(to)` stays in the blocks. The
     // pointer was made by the builder with its target, or is `One::here` of a target that its
-    // offset holds at any address, by the `# Safety` of `Region::new`, or was read as a `One<U, O>`
-    // by `puns::view_ref`, which proves that what it aims at is a valid `U`. So the bytes there are
-    // a valid `U`, aligned for it, by the requirement of `SelfRelative` that what it aims at is
-    // there and valid (`SelfRelative`, section Safety). The region never writes to its blocks, and
-    // the reference borrows `self`.
+    // offset holds at any address, by the `# Safety` of `Region::new`, or was reinterpreted as a
+    // `One<U, O>` by `puns::view_ref`, which proves that what it aims at is a valid `U`. So the
+    // bytes there are a valid `U`, aligned for it, by the requirement of `SelfRelative` that what
+    // it aims at is there and valid (`SelfRelative`, section Safety). The region never writes to
+    // its blocks, and the reference borrows `self`.
     unsafe { &*self.base().add(to).cast::<U>() }
   }
 

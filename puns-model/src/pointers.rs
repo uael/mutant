@@ -398,8 +398,8 @@ fn imprecise(cause: &'static str, pair: &str) {
   IMPRECISE.lock().unwrap().entry(cause).or_default().push(pair.to_owned());
 }
 
-/// Checks the verdicts of the library on reading an `S` as a `D` against the oracle, on every value
-/// of the corpus of `S`.
+/// Checks the verdicts of the library on reinterpreting an `S` as a `D` against the oracle, on
+/// every value of the corpus of `S`.
 ///
 /// A view that `view_ref` makes, or that `try_view_ref` accepts, is read through. The pair is
 /// recorded in [`IMPRECISE`] if `view_ref` is refused while every value of the corpus is a `D`. It

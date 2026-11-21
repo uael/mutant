@@ -10,7 +10,8 @@ use crate::{Pun, layout::Pointer};
 /// says what the pointer is ([`POINTER`](SelfRelative::POINTER)) and what it aims at
 /// ([`Target`](SelfRelative::Target)). Through `puns`, a value that holds such pointers is then:
 ///
-/// - read as plain data by every function that reads, since an offset is initialized bytes;
+/// - reinterpreted as plain data by every function that reads, since an offset is initialized
+///   bytes;
 /// - made only from another value that holds pointers where it does, by
 ///   [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref), which prove at
 ///   compile time what the pointers aim at, and never from bytes;
@@ -70,8 +71,8 @@ use crate::{Pun, layout::Pointer};
 ///
 /// If `P: SelfRelative`, then unsafe code may assume these requirements of `P`, except for "The
 /// declaring crate relies on this, and on nothing more", which binds the declaring crate. `puns`
-/// relies on "The scheme is the way to the target" when it reads a pointer as another of the same
-/// scheme, on "What it aims at is there, and valid" and "What it aims at is its own" when it
+/// relies on "The scheme is the way to the target" when it reinterprets a pointer as another of the
+/// same scheme, on "What it aims at is there, and valid" and "What it aims at is its own" when it
 /// proves what pointers aim at, and on "Null" when [`try_view_ref`](crate::try_view_ref) checks a
 /// pointer that may be null.
 ///
@@ -291,7 +292,7 @@ pub unsafe trait SelfRelative: Sized {
 /// let none = Maybe { next: None };
 /// assert_eq!(size_of::<Maybe>(), size_of::<i32>());
 /// assert_eq!(puns::try_view_ref::<Maybe, Sure>(&none).err(), Some(puns::Error::Validity));
-/// // Read as plain data, a pointer is the bytes of its offset.
+/// // Reinterpreted as plain data, a pointer is the bytes of its offset.
 /// assert_eq!(puns::as_bytes(&none), [0; 4]);
 /// ```
 #[macro_export]

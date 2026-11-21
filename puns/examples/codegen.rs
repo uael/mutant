@@ -228,7 +228,7 @@ pointers! {
 
 /// An expression of a schema, which `view_new` views as its next version, [`New`].
 ///
-/// [`New`] reads the `bool` of `Leaf` as a `u8`, and has one more variant, `Pair`.
+/// [`New`] reinterprets the `bool` of `Leaf` as a `u8`, and has one more variant, `Pair`.
 #[derive(Pun)]
 #[repr(u8)]
 pub enum Old {

@@ -1,8 +1,8 @@
 //! Tests reading values that hold self-relative pointers as other types.
 //!
-//! The tests read a value as the next version of its schema with `view_ref`, through recursive
-//! types, sequences, text and enums. They check at run time, with `try_view_ref`, what only some
-//! values are. They also read pointers as bytes.
+//! The tests reinterpret a value as the next version of its schema with `view_ref`, through
+//! recursive types, sequences, text and enums. They check at run time, with `try_view_ref`, what
+//! only some values are. They also reinterpret pointers as bytes.
 //!
 //! The pointers are those of `support/relative.rs`, which declares them through the public API
 //! only, as a crate of its own would. They are followed through their buffer, so Miri runs these
@@ -128,12 +128,12 @@ fn expression<O: Offset>() -> Region<Expr<O>> {
 }
 
 // -------------------------------------------------------------------------------------------------
-// A value read as another type
+// A value reinterpreted as another type
 
 /// The next version of the schema, which reads every value of the first version as it is.
 ///
-/// The changes are a variant added at the end of each enum, a `bool` read as a `u8`, a `char`
-/// read as a `u32`, and `[u16]` read as `[[u8; 2]]`.
+/// The changes are a variant added at the end of each enum, a `bool` reinterpreted as a `u8`, a
+/// `char` reinterpreted as a `u32`, and `[u16]` reinterpreted as `[[u8; 2]]`.
 mod v2 {
   use puns::Pun;
 
@@ -157,7 +157,7 @@ mod v2 {
     pub hidden: u8,
     pub kind: Kind,
     pub name: Text<O>,
-    /// A `[u16]` in the first version, read as bytes.
+    /// A `[u16]` in the first version, reinterpreted as bytes.
     pub tags: Seq<[u8; 2], O>,
     pub next: Opt<Item<O>, O>,
   }
@@ -200,7 +200,8 @@ mod v2 {
   }
 }
 
-/// Checks that an expression with offsets of the type `O` reads in place as its next version.
+/// Checks that an expression with offsets of the type `O` can be reinterpreted in place as its next
+/// version.
 fn an_expression_as_its_next_version<O: Offset>() {
   let r = expression::<O>();
   let new: &v2::Expr<O> = puns::view_ref(&*r);
@@ -218,9 +219,9 @@ fn an_expression_as_its_next_version<O: Offset>() {
   assert!(core::ptr::addr_eq(slice, args));
 }
 
-/// Checks that an expression reads as its next version with offsets of each width and of both
-/// byte orders. On a 32-bit target, an `i64le` holds more than an `isize` and is converted with a
-/// check.
+/// Checks that an expression can be reinterpreted as its next version with offsets of each width
+/// and of both byte orders. On a 32-bit target, an `i64le` holds more than an `isize` and is
+/// converted with a check.
 #[test]
 fn expressions_as_their_next_version() {
   an_expression_as_its_next_version::<i32le>();
@@ -266,8 +267,8 @@ fn a_directory_as_its_next_version() {
   assert_eq!((parent.size, r.seq(&parent.entries).len()), (3, 0));
 }
 
-/// Checks that `try_view_ref` reads a value as a type that only some values are, by a check at
-/// run time of the value itself.
+/// Checks that `try_view_ref` reinterprets a value as a type that only some values are, by a check
+/// at run time of the value itself.
 #[test]
 fn checked_at_run_time() {
   #[derive(Pun)]
@@ -444,8 +445,9 @@ unsafe impl Fix for Wide {
   fn fix(&mut self, _: usize) {}
 }
 
-/// Checks that a pointer reads as a pointer to a prefix of its target that is not more aligned,
-/// and that a sequence reads as a sequence of elements of the same size.
+/// Checks that a pointer can be reinterpreted as a pointer to a prefix of its target that is not
+/// more aligned, and that a sequence can be reinterpreted as a sequence of elements of the same
+/// size.
 ///
 /// The elements of a sequence are aligned as its declarer says. Here the declarer aligns them to
 /// the larger of their alignment and the width of the offset. A sequence of `[u8; 4]` behind an
@@ -483,8 +485,8 @@ unsafe impl<A: Fix, B: Fix, C: Fix> Fix for (A, B, C) {
 }
 
 /// Checks that a pointer that may be null reads as one that may be null, and as one that may not
-/// after a check at run time that it is not null. Checks that text reads as text.
-// Tuples of the `Rust` representation, read as other tuples: the `unstable` feature.
+/// after a check at run time that it is not null. Checks that text can be reinterpreted as text.
+// Tuples of the `Rust` representation, reinterpreted as other tuples: the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
 fn null_and_text() {
@@ -520,8 +522,8 @@ fn some_of_a_pointer_after_a_tag() {
   assert_eq!(*r.get(some), 0x1234);
 }
 
-/// Checks that a value that holds pointers reads as plain data, because an offset is initialized
-/// bytes.
+/// Checks that a value that holds pointers can be reinterpreted as plain data, because an offset is
+/// initialized bytes.
 #[test]
 fn pointers_are_read_as_bytes() {
   #[derive(Pun)]
@@ -560,8 +562,8 @@ fn pointers_are_read_as_bytes() {
 }
 
 /// Checks that an `Option` of a pointer whose offset has a niche at zero is a pointer that may be
-/// null, as `self_relative!` declares it. It reads as a pointer declared nullable (`Opt`) and
-/// back, and is followed as one.
+/// null, as `self_relative!` declares it. It can be reinterpreted as a pointer declared nullable
+/// (`Opt`) and back, and is followed as one.
 #[test]
 fn option_of_a_pointer_is_a_nullable_pointer() {
   use relative::Nz32le;
@@ -628,9 +630,9 @@ fn option_of_a_pointer_is_a_nullable_pointer() {
   assert_eq!(puns::try_view_ref::<_, One<u32>>(&r.second).err(), Some(puns::Error::Validity));
 }
 
-/// Checks that a pointer whose offset can be zero reads as a pointer of the same scheme whose
-/// offset is a `NonZero`, after a check at run time that the offset is not zero. An offset of zero
-/// aims at the address of the pointer itself.
+/// Checks that a pointer whose offset may be zero can be reinterpreted as a pointer of the same
+/// scheme whose offset is a `NonZero`, after a check at run time that the offset is not zero. An
+/// offset of zero aims at the address of the pointer itself.
 #[test]
 fn a_pointer_that_may_be_zero_read_as_one_that_cannot() {
   use relative::Nz32le;

@@ -1,7 +1,7 @@
 //! Pointers are followed through the lists of a type (`Fields`, `Variants`, `Elem`, `Pointee`),
 //! which must be what its layout holds: here an implementation of `Pun` whose layout has a field,
 //! a pointer, that its list of fields does not have. Were the list believed, nothing would look
-//! at what that pointer aims at: a `u8` read as a `bool`.
+//! at what that pointer aims at: a `u8` reinterpreted as a `bool`.
 #[path = "../support/relative.rs"]
 #[allow(dead_code)]
 mod relative;

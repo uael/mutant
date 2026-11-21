@@ -51,10 +51,10 @@
 //!   `from_bytes` and `from_head`, which return the first variant that the bytes match.
 //!
 //! None of these functions makes a value that holds self-relative pointers ([`SelfRelative`]), but
-//! they read such a value as plain data. [`view_ref`] and [`try_view_ref`] are the ones that make
-//! it. `view_ref` is proven and follows the pointers, while `try_view_ref` also checks at run time
-//! whatever is not proven about the value itself. Both work only by reference, and neither is a
-//! `const fn`.
+//! they reinterpret such a value as plain data. [`view_ref`] and [`try_view_ref`] are the ones that
+//! make it. `view_ref` is proven and follows the pointers, while `try_view_ref` also checks at run
+//! time whatever is not proven about the value itself. Both work only by reference, and neither is
+//! a `const fn`.
 //!
 //! Types with a fixed byte order or a fixed value live in [`num`], the options of the derive are
 //! documented on [`macro@Pun`], and the building blocks of layouts and checksums are in [`layout`].
@@ -71,7 +71,7 @@
 //!   num::{u8in, u16be, u32be, u32le},
 //! };
 //!
-//! // Read an `f32` as its bits. A `u32` is a `char` only if it is a Unicode scalar value.
+//! // Reinterpret an `f32` as its bits. A `u32` is a `char` only if it is a Unicode scalar value.
 //! assert_eq!(puns::pun::<f32, u32>(1.0), 0x3f80_0000);
 //! assert_eq!(puns::try_pun::<u32, char>(0xe9), Ok('é'));
 //! assert_eq!(puns::try_pun::<u32, char>(0xd800), Err(puns::Error::Validity));
@@ -118,7 +118,7 @@
 //! let (data, checksum) = puns::from_tail::<u32le>(&file).unwrap();
 //! assert_eq!((data, checksum.get()), (&b"data"[..], 0x1234_5678));
 //!
-//! // Reading bytes as ASCII is checked. Reading ASCII as a `str` is proven.
+//! // Reinterpreting bytes as ASCII is checked. Reinterpreting ASCII as a `str` is proven.
 //! let ascii: &[u8in<0, 0x7f>] = puns::from_bytes(b"hello").unwrap();
 //! let text: &str = puns::pun_ref(ascii);
 //! assert_eq!(text, "hello");
@@ -206,7 +206,7 @@
 //!   value. The experiments rely on it when they move the tag of one variant into a value of
 //!   another. The model check holds the layouts that they find to oracles that do not use them.
 //!
-//! To check the alignment of an address at run time, `puns` reads the address as an integer,
+//! To check the alignment of an address at run time, `puns` reinterprets the address as an integer,
 //! through a union, since no stable `const fn` gives it on Rust 1.99. At run time, `core` does not
 //! call this undefined behavior, but advises against it, because the rules of memory for it are not
 //! settled, and no documentation promises that the integer is the address. In const evaluation, it
@@ -236,10 +236,10 @@
 //! version: u8`. `puns` proves or checks a requirement whenever it makes a value of the type,
 //! though [`zeroed`] does not check rules. A requirement never proves what another type guarantees.
 //! For example, a slice of a struct whose only field has `#[pun(valid(..=0x7f))]` is checked when
-//! it is read as a `str`, while a `[u8in<0, 0x7f>]` is proven to be one. For the same reason, the
-//! accessors of regions cut a region short rather than trust the fields that give its size. Two
-//! types have the same layout only if they require and guarantee the same values, so a field
-//! `#[pun(valid(0..=1))] u8` is not a `bool`.
+//! it is reinterpreted as a `str`, while a `[u8in<0, 0x7f>]` is proven to be one. For the same
+//! reason, the accessors of regions cut a region short rather than trust the fields that give its
+//! size. Two types have the same layout only if they require and guarantee the same values, so a
+//! field `#[pun(valid(0..=1))] u8` is not a `bool`.
 //!
 //! ## Padding and `MaybeUninit`
 //!
@@ -315,10 +315,10 @@
 //! ```
 //!
 //! Deriving `Pun` also makes every field as accessible as if it were public. A value can be made
-//! from anything whose bytes are valid for its fields and rules, read as anything its bytes are,
-//! and written through a `&mut` to another type. The functions check what the derive was told, and
-//! nothing that a constructor checks, so a type whose private fields keep an invariant the derive
-//! does not know about must not derive `Pun`.
+//! from anything whose bytes are valid for its fields and rules, reinterpreted as anything its
+//! bytes are, and written through a `&mut` to another type. The functions check what the derive was
+//! told, and nothing that a constructor checks, so a type whose private fields keep an invariant
+//! the derive does not know about must not derive `Pun`.
 //!
 //! ```
 //! mod even {
@@ -356,8 +356,8 @@
 //!
 //! ## Reading an error
 //!
-//! A common mistake with `transmute` is reading a struct with padding as bytes. `puns` refuses it,
-//! and the first lines of the error say why:
+//! A common mistake with `transmute` is reinterpreting a struct with padding as bytes. `puns`
+//! refuses it, and the first lines of the error say why:
 //!
 //! ```compile_fail,E0080
 //! #[derive(puns::Pun)]
@@ -569,9 +569,9 @@
 //!
 //! A self-relative pointer is an offset from its own address to a target in the same buffer, like
 //! the ones in the regions of [`nearest`](https://docs.rs/nearest). A crate declares its pointers
-//! with [`SelfRelative`], and [`view_ref`] then reads a value that holds them as another type, with
-//! everything they aim at proven at compile time. The crate that owns the pointers also uses these
-//! functions:
+//! with [`SelfRelative`], and [`view_ref`] then reinterprets a value that holds them as another
+//! type, with everything they aim at proven at compile time. The crate that owns the pointers also
+//! uses these functions:
 //!
 //! - [`validate_in`] checks a buffer. It checks each value against its layout, and hands the
 //!   value's pointers to the crate's [`Visit`], which follows them as their scheme says.
@@ -610,7 +610,7 @@
 //!
 //! Without the `unstable` feature, a pun compiles only if `-Zrandomize-layout` cannot change what
 //! it does (whether it compiles, what it checks, and which values a check accepts). The message of
-//! a refusal is not part of this, and may name what the compiler chose. For example, reading
+//! a refusal is not part of this, and may name what the compiler chose. For example, reinterpreting
 //! `(u8, u16, u8)` as `[u8; 4]` is refused because of its layout, or because of its size when it is
 //! 6 bytes.
 //!
@@ -618,9 +618,9 @@
 //! can with it. Within one build, the feature only adds, so a pun that compiles without it also
 //! compiles with it, and does the same thing.
 //!
-//! The rule applies to a pun, not to a type. Reading `(bool, u8)` as bytes is proven whichever byte
-//! holds the `bool`, but reading bytes as `(bool, u8)` would need a check of one byte or the other,
-//! so that pun is refused.
+//! The rule applies to a pun, not to a type. Reinterpreting `(bool, u8)` as bytes is proven
+//! whichever byte holds the `bool`, but reinterpreting bytes as `(bool, u8)` would need a check of
+//! one byte or the other, so that pun is refused.
 //!
 //! ### What a check may read
 //!
@@ -854,7 +854,7 @@
 //!
 //! ## Limits
 //!
-//! - Pointers are matched by position. Reading a value that holds pointers as another type
+//! - Pointers are matched by position. Reinterpreting a value that holds pointers as another type
 //!   ([`view_ref`]) requires the fields that hold pointers to be at the same position in both
 //!   structs, and the variants that hold pointers to be at the same position in both enums, so new
 //!   variants go last. `view_ref` does not look through a struct that only holds a pointer.
@@ -2479,7 +2479,7 @@ impl_signed_non_zero!(i8 i16 i32 i64 i128 isize);
 // -------------------------------------------------------------------------------------------------
 // `Error`
 
-/// The reason a value cannot be read as another type.
+/// The reason a value cannot be reinterpreted as another type.
 ///
 /// The functions that check at run time return it: the `try_` functions, the `from_` functions,
 /// and [`try_view_ref`].
@@ -3153,7 +3153,7 @@ pub const fn try_pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Result<D, Error>
   Ok(unsafe { pun_unchecked(value) })
 }
 
-/// Reads the first `size_of::<D>()` bytes of `value` as a `D`.
+/// Reinterprets the first `size_of::<D>()` bytes of `value` as a `D`.
 ///
 /// # Safety
 ///
@@ -3519,7 +3519,7 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// assert_eq!(puns::try_view_ref::<Loose, Strict>(two).err(), Some(puns::Error::Validity));
 /// ```
 ///
-/// What a pointer aims at is not checked, so a `u8` there is never read as a `bool`.
+/// What a pointer aims at is not checked, so a `u8` there is never reinterpreted as a `bool`.
 ///
 /// ```compile_fail,E0080
 /// # use core::marker::PhantomData;

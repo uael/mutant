@@ -3,8 +3,8 @@
 //! A self-relative pointer ([`Pointer`](crate::layout::Pointer)) guarantees that its target is
 //! where it says, valid, and its own. This is not a property of its bytes. As a *source*, a pointer
 //! is initialized bytes of which nothing more is known, so every function that reads (`as_bytes`,
-//! `head_ref`, and so on) reads a value that holds pointers as plain data. As a *target*, a pointer
-//! is made only as this module and the [three rules](#rules-that-every-function-keeps) say.
+//! `head_ref`, and so on) reinterprets a value that holds pointers as plain data. As a *target*, a
+//! pointer is made only as this module and the [three rules](#rules-that-every-function-keeps) say.
 //!
 //! A [`Layout`](crate::layout::Layout) does not hold what a pointer aims at. The layout of `struct
 //! Node { next: Opt<Node> }` would have no end. Const evaluation has no identity of a type or of a
@@ -17,12 +17,12 @@
 //! # The proof behind pointers
 //!
 //! [`view_ref`](crate::view_ref) runs the plan of `pun_ref` with pointers allowed. It then proves,
-//! for every pointer of `D`, that the `X` that its source pointer aims at can be read as the `Y`
-//! that it aims at itself. `Y` must be the first bytes of `X`, every `X` must be valid for them,
-//! and nothing may be left to check, since nothing can be checked behind a pointer. The pointers of
-//! `Y` are then pointers of `X`, and so on. For a recursive type, this never ends as an analysis.
-//! An instance of a generic function has an identity: it exists once, however often it is named. So
-//! the proof is a set of instances, and it ends:
+//! for every pointer of `D`, that the `X` that its source pointer aims at can be reinterpreted as
+//! the `Y` that it aims at itself. `Y` must be the first bytes of `X`, every `X` must be valid for
+//! them, and nothing may be left to check, since nothing can be checked behind a pointer. The
+//! pointers of `Y` are then pointers of `X`, and so on. For a recursive type, this never ends as an
+//! analysis. An instance of a generic function has an identity: it exists once, however often it is
+//! named. So the proof is a set of instances, and it ends:
 //!
 //! - [`target::<X, Y>`](target) exists once for each pair of a type `X` that a pointer of the
 //!   source aims at and a type `Y` that the pointer of the target at the same place aims at. Its
@@ -47,10 +47,11 @@
 //!
 //! This is a behavior of the compiler. The Reference says that a `const` block that is not executed
 //! may or may not be evaluated ([`r-expr.block.const.not-executed`][const not executed]). The
-//! compile-fail test `view_behind_pointers` (a `u8` read as a `bool` behind the pointers of a
-//! recursive type) holds the compiler to it in a debug build. The workflow `model.yml` builds the
-//! same program optimized, with LTO, every night, and it must be refused there too. Run that check
-//! when `rust-toolchain` changes. The program declares its own pointer and needs no other crate.
+//! compile-fail test `view_behind_pointers` (a `u8` reinterpreted as a `bool` behind the pointers
+//! of a recursive type) holds the compiler to it in a debug build. The workflow `model.yml` builds
+//! the same program optimized, with LTO, every night, and it must be refused there too. Run that
+//! check when `rust-toolchain` changes. The program declares its own pointer and needs no other
+//! crate.
 //!
 //! For the same reason, `view_ref` is not a `const fn`: a call in a constant would make no
 //! instance, and an interpreter that evaluates only the constants of the functions that it runs, as
@@ -128,7 +129,7 @@
 //!
 //! - `pun`, `head`, `tail`, `try_pun` and `zeroed` take and make `Copy` values. The target is
 //!   gated ([Only a proof of what pointers aim at makes a value that holds one][only views]), and
-//!   `zeroed` asserts it. A source that holds a pointer is read as bytes.
+//!   `zeroed` asserts it. A source that holds a pointer is reinterpreted as bytes.
 //! - `pun_ref`, `head_ref`, `tail_ref` and `try_pun_ref` refuse a target that holds a pointer
 //!   ([only views]). They read the bytes of a source that does, and make nothing of them.
 //! - `pun_mut`, `head_mut`, `tail_mut` and `try_pun_mut` refuse a pointer on either side
@@ -213,15 +214,15 @@
 //! [`Pointer::reads_as`](crate::layout::Pointer::reads_as) relates only pointers of the same
 //! scheme, width, byte order and kind of aim, with the numbers of their descriptions (sizes,
 //! alignments, the declared alignment of a sequence). It says when nullability, or an offset of
-//! zero read as a `NonZero`, is to be checked. `Pointer::same`, by which two layouts are equal,
-//! compares every field of the description.
+//! zero reinterpreted as a `NonZero`, is to be checked. `Pointer::same`, by which two layouts are
+//! equal, compares every field of the description.
 //!
 //! ## The contract of `SelfRelative`, and nothing more
 //!
 //! `puns` relies on the requirements of the `# Safety` section of
 //! [`SelfRelative`](crate::SelfRelative#safety), and on nothing more. It relies on "The scheme is
-//! the way to the target" when it reads a pointer as another of the same scheme, on "What it aims
-//! at is there, and valid" and "What it aims at is its own" for what this module proves of the
+//! the way to the target" when it reinterprets a pointer as another of the same scheme, on "What it
+//! aims at is there, and valid" and "What it aims at is its own" for what this module proves of the
 //! targets, and on "Null" for the check of a nullable pointer by `try_view_ref`.
 //!
 //! [only views]: #only-a-proof-of-what-pointers-aim-at-makes-a-value-that-holds-one
@@ -302,15 +303,16 @@ pub fn proof<S: ?Sized + Pun, D: ?Sized + Pun>() {
   pair::<S, D>();
 }
 
-/// Holds the proof that an `X` that a pointer of the source aims at can be read as the `Y` that
-/// the pointer of the target at the same place aims at.
+/// Holds the proof that an `X` that a pointer of the source aims at can be reinterpreted as the `Y`
+/// that the pointer of the target at the same place aims at.
 ///
 /// It is never called, only named by [`pair`]. Its `const` block is evaluated because the
 /// compiler makes every function that compiled code names.
 ///
 /// # Compile-time errors
 ///
-/// An instance compiles only if [`behind`] finds that an `X` can be read as a `Y`, with no fuel.
+/// An instance compiles only if [`behind`] finds that an `X` can be reinterpreted as a `Y`, with no
+/// fuel.
 fn target<X: Pun, Y: Pun>() {
   const { require(behind::<X, Y>(0)) };
   pair::<X, Y>();
@@ -359,7 +361,7 @@ fn variants<VA: Variants, VB: Variants>() {
 // check asks what `view_ref` would do without failing to compile (`hook::view_ref`). The proof
 // itself asks with none, the instances being what follows pointers there.
 
-/// Returns why an `X` that a pointer aims at cannot be read as a `Y`, or `None` if it can.
+/// Returns why an `X` that a pointer aims at cannot be reinterpreted as a `Y`, or `None` if it can.
 ///
 /// A `Y` is read from the first bytes of an `X`. The pointers already showed that `Y` needs no
 /// more alignment than `X`, and that the elements of two sequences have the same size. Every

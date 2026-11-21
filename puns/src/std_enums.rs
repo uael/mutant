@@ -11,16 +11,16 @@
 //! at 255 today, below the valid values rather than after them. This is found, not assumed.
 //! `Option<u16>` has a tag of two bytes. `Result<u32, Infallible>` is a struct of its `u32`.
 //!
-//! If `T::OPTION` gives the layout of `Option<T>`, `Option<T>` has that layout. This is the case
-//! of a self-relative pointer, whose `Option` [`self_relative!`](crate::self_relative) makes the
-//! same pointer, which may be null. Nothing is found then, and the lists of the variants of
-//! `Option<T>` are empty, since a pointer is not looked into. [`deep`](crate::deep) does not look
-//! into the pointer either, except for what it aims at, its `Pointee`, which is `T::Pointee`. The
-//! rules of `deep` apply to it as to any pointer. A crate that declares a pointer gets this from
-//! the macro alone. The tests show it with an offset whose zero is a niche (`Nz32le`). They read
-//! `Option<One<T, Nz32le>>` as `Opt<T, i32le>` and back, through values of a buffer. An offset
-//! that has no niche at zero, such as a byte array, makes `Option` of the pointer larger, with a
-//! tag of its own. That fails to build where it is used, with a message (compile-fail test
+//! If `T::OPTION` gives the layout of `Option<T>`, `Option<T>` has that layout. This is the case of
+//! a self-relative pointer, whose `Option` [`self_relative!`](crate::self_relative) makes the same
+//! pointer, which may be null. Nothing is found then, and the lists of the variants of `Option<T>`
+//! are empty, since a pointer is not looked into. [`deep`](crate::deep) does not look into the
+//! pointer either, except for what it aims at, its `Pointee`, which is `T::Pointee`. The rules of
+//! `deep` apply to it as to any pointer. A crate that declares a pointer gets this from the macro
+//! alone. The tests show it with an offset whose zero is a niche (`Nz32le`). They reinterpret
+//! `Option<One<T, Nz32le>>` as `Opt<T, i32le>` and back, through values of a buffer. An offset that
+//! has no niche at zero, such as a byte array, makes `Option` of the pointer larger, with a tag of
+//! its own. That fails to build where it is used, with a message (compile-fail test
 //! `option_of_pointer_without_niche`).
 
 use core::{marker::PhantomData, mem::MaybeUninit};

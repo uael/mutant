@@ -18,8 +18,8 @@
 //! has a 32-bit `usize` and a `u64` aligned to 4. The s390x target is big-endian. The selection of
 //! the model check for Miri runs on x86-64 only, with tree borrows.
 //!
-//! `-Zmiri-symbolic-alignment-check` reports a misaligned reference where `try_pun_ref` checked
-//! the address of bytes that happened to be aligned. The check reads the address as an integer
+//! `-Zmiri-symbolic-alignment-check` reports a misaligned reference where `try_pun_ref` checked the
+//! address of bytes that happened to be aligned. The check reinterprets the address as an integer
 //! ([`is_aligned`]), which the symbolic alignment of Miri cannot follow. The stable `align_offset`
 //! is not a `const fn`, so it cannot replace that check. CI does not use that flag.
 
@@ -29,10 +29,10 @@ use crate::Pun;
 #[doc(hidden)]
 pub const PROBE_LEN: usize = 3;
 
-// Reads the bits of an `A` as a `B`. The union is `repr(C)`, so both fields are at offset 0 [1],
-// and reading `to` reads the first `size_of::<B>()` bytes of `from` as a `B` [2]. Each use reads a
-// `B` of the size of `A`. A `B` is a raw pointer or a `usize`, which is valid if its bytes are
-// initialized [3].
+// Reinterprets the bits of an `A` as a `B`. The union is `repr(C)`, so both fields are at offset 0
+// [1], and reading `to` reads the first `size_of::<B>()` bytes of `from` as a `B` [2]. Each use
+// reads a `B` of the size of `A`. A `B` is a raw pointer or a `usize`, which is valid if its bytes
+// are initialized [3].
 //
 // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.union.size-align:
 //
@@ -191,7 +191,7 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 
 /// Returns whether `addr` is a multiple of `align`.
 ///
-/// `align` must be a power of two, or the result is meaningless. The address is read as an
+/// `align` must be a power of two, or the result is meaningless. The address is reinterpreted as an
 /// integer, which const evaluation cannot do for a pointer to memory: such a call evaluated at
 /// compile time does not compile. A pointer made from an integer is read as that integer.
 ///
@@ -201,12 +201,12 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
   // SAFETY: A pointer to a sized type has the size of a `usize` (see `from_raw_parts`). So the
   // bytes of `addr`, which are initialized, are a `usize` of the same size (see `Cast`). This
-  // reads a pointer as an integer, which `core` says to avoid at run time [1], since the rules of
-  // memory for it are not settled. The quoted text does not make it undefined behavior there, but
-  // no documentation promises that it reads the address either, so `puns` relies on it, as its
-  // section Soundness discloses. The integer is never made into a pointer again. In const evaluation, it is undefined behavior for a pointer that
-  // was not made from an integer, and `rustc` stops the evaluation [1]: such a call evaluated at
-  // compile time does not compile.
+  // reinterprets a pointer as an integer, which `core` says to avoid at run time [1], since the
+  // rules of memory for it are not settled. The quoted text does not make it undefined behavior
+  // there, but no documentation promises that it reads the address either, so `puns` relies on it,
+  // as its section Soundness discloses. The integer is never made into a pointer again. In const
+  // evaluation, it is undefined behavior for a pointer that was not made from an integer, and
+  // `rustc` stops the evaluation [1]: such a call evaluated at compile time does not compile.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.transmute.html#transmutation-between-pointers-and-integers:
   //

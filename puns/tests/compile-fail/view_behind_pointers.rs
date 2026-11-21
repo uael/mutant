@@ -1,5 +1,5 @@
-//! The two types are the same except for what is two pointers down: a `u8` read as a `bool`. Only
-//! the proof that follows the pointers, through the types, sees it.
+//! The two types are the same except for what is two pointers down: a `u8` reinterpreted as a
+//! `bool`. Only the proof that follows the pointers, through the types, sees it.
 //!
 //! It declares its own pointer, and needs nothing else: `model.yml` builds it as an example, in
 //! an optimized build, which must refuse it too.

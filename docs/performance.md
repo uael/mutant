@@ -25,11 +25,11 @@ of more functions, and gives the command that writes the assembly. The code was 
 ### Compared with `zerocopy` and `bytemuck`
 
 `zerocopy` and `bytemuck` decide what a conversion needs from each type on its own. A `bool` does
-not accept every byte, so with them, reading a `&[Switch]` as a `&[bool]` is a checked conversion,
-even when every `Switch` is 0 or 1. `puns` proves it from the two types. The functions below were
-compiled with `zerocopy` 0.8.63, `bytemuck` 1.25.2 and `rustc` 1.100.0, on
-`aarch64-apple-darwin`, in a crate of their own built with `lto = true` and `codegen-units = 1`,
-by `cargo rustc --release --lib -- --emit asm`:
+not accept every byte, so with them, reinterpreting a `&[Switch]` as a `&[bool]` is a checked
+conversion, even when every `Switch` is 0 or 1. `puns` proves it from the two types. The functions
+below were compiled with `zerocopy` 0.8.63, `bytemuck` 1.25.2 and `rustc` 1.100.0, on
+`aarch64-apple-darwin`, in a crate of their own built with `lto = true` and `codegen-units = 1`, by
+`cargo rustc --release --lib -- --emit asm`:
 
 ```rust,ignore
 #[derive(puns::Pun, zerocopy::IntoBytes, zerocopy::Immutable, bytemuck::NoUninit, Clone, Copy)]
@@ -57,8 +57,9 @@ pub fn puns_slice(s: &[Switch]) -> &[bool] {
 ```
 
 `zc_slice` and `bm_slice` compile to a loop that compares each byte with 2, of 9 and 10
-instructions. `puns_slice` compiles to `ret`. For a single `Switch` read as a `bool`, by value, the
-three compile to `ret`: the optimizer knows that a `Switch` is 0 or 1, and removes the check.
+instructions. `puns_slice` compiles to `ret`. For a single `Switch` reinterpreted as a `bool`, by
+value, the three compile to `ret`: the optimizer knows that a `Switch` is 0 or 1, and removes the
+check.
 
 ## Time
 

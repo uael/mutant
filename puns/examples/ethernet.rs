@@ -44,8 +44,8 @@
 //!   fragments back together is not a view of the bytes.
 //! - What is encrypted cannot be read, so the checksums of IPv6 are not checked behind it.
 //!
-//! `main` reads frames of each kind from bytes and asserts their fields, regions and getters.
-//! Some conversions are proven, and use [`pun_ref`], such as an ARP frame read as bytes. `main`
+//! `main` reads frames of each kind from bytes and asserts their fields, regions and getters. Some
+//! conversions are proven, and use [`pun_ref`], such as an ARP frame reinterpreted as bytes. `main`
 //! also changes bytes, such as an EtherType, a size or a checksum, and asserts the [`Error`] that
 //! the read then returns. Last, it tells frames apart with [`AnyFrame`], and prints `ok`.
 #![forbid(unsafe_code)]
@@ -536,7 +536,7 @@ pub struct Tlv {
 
 /// A frame, by what it carries.
 ///
-/// Bytes read as an `AnyFrame` are the first variant whose type they are.
+/// Bytes reinterpreted as an `AnyFrame` are the first variant whose type they are.
 #[derive(Pun)]
 pub enum AnyFrame<'a> {
   Udp(&'a Frame<Ipv4<Udp>>),

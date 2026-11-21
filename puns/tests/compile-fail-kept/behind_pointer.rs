@@ -1,4 +1,4 @@
-//! What a pointer aims at is proven, never checked: bytes read as a `(bool, u8)` behind a
+//! What a pointer aims at is proven, never checked: bytes reinterpreted as a `(bool, u8)` behind a
 //! pointer are not a `bool` wherever `rustc` puts it.
 use core::marker::PhantomData;
 

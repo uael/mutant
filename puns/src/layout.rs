@@ -936,8 +936,8 @@ pub enum Aim {
 ///
 /// - Its **scheme**, a name that the declaring crate chooses. The scheme stands for the way a
 ///   pointer and the bytes of its buffer tell where its target is and how long it is. `puns`
-///   neither knows nor needs to know that way, because a pointer is only read as a pointer of the
-///   same scheme, which finds the same target from the same bytes.
+///   neither knows nor needs to know that way, because a pointer is only reinterpreted as a pointer
+///   of the same scheme, which finds the same target from the same bytes.
 /// - Its **offset**, an integer of 1 to 16 bytes in a byte order, which makes up all the bytes of
 ///   the pointer.
 /// - What it **aims** at ([`Aim`]), with the size and alignment of the target type, or of an
@@ -951,8 +951,8 @@ pub enum Aim {
 ///
 /// A pointer guarantees that its target is where it says, valid, and its own. This is not a
 /// property of its bytes, so no bytes prove a pointer. Only a pointer at the same place proves one,
-/// if its target can be read as the target of the other. No check at run time makes up for a
-/// pointer that is not proven, and `puns` gives no `&mut` to a value that holds a pointer.
+/// if its target can be reinterpreted as the target of the other. No check at run time makes up for
+/// a pointer that is not proven, and `puns` gives no `&mut` to a value that holds a pointer.
 ///
 /// # Examples
 ///
@@ -1235,8 +1235,8 @@ impl Pointer {
     self.align
   }
 
-  /// Returns whether a pointer described by `self` can be read as a pointer described by `to`, as
-  /// far as the pointers themselves go.
+  /// Returns whether a pointer described by `self` can be reinterpreted as a pointer described by
+  /// `to`, as far as the pointers themselves go.
   ///
   /// Returns `None` if it never can, `Some(true)` if it always can, and `Some(false)` if it can
   /// only when the bytes of the offset are not all zero, which must then be checked at run time.
@@ -1247,9 +1247,10 @@ impl Pointer {
   ///
   /// Both pointers must have the same scheme, and offsets of the same width and byte order, so that
   /// they find the same target in the same buffer. They must also aim at the same kind of target.
-  /// One value is read as a value that is no larger and needs no more alignment. A sequence is read
-  /// as a sequence of elements of the same size, since its length is a number of elements, with a
-  /// declared alignment that is no greater. Text is read as text.
+  /// One value is reinterpreted as a value that is no larger and needs no more alignment. A
+  /// sequence is reinterpreted as a sequence of elements of the same size, since its length is a
+  /// number of elements, with a declared alignment that is no greater. Text is reinterpreted as
+  /// text.
   pub(crate) const fn reads_as(&self, to: &Pointer) -> Option<bool> {
     let fits = str_equals(self.scheme, to.scheme)
       && self.width == to.width
