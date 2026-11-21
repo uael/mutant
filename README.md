@@ -17,7 +17,7 @@ compile).
 puns = "0.1"
 ```
 
-Requires Rust 1.99 or later. Works without `std`. The API may change before 1.0.
+`puns` is a `no_std` crate. It requires Rust 1.99 or later. The API may change before 1.0.
 
 ## Usage
 
