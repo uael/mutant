@@ -46,11 +46,11 @@ macro_rules! model_fieldless {
         Ok([$($name::$variant),+].iter().any(|variant| {
           let mut bits = 0u128;
           let bytes: &[u8] =
-            // SAFETY: `variant` is a reference to a value of `$name`, valid for reads of its
-            // `size` bytes, of alignment 1 as `u8`s. A value of a fieldless enum is its
-            // discriminant. With `repr(C)` or a primitive representation, it has the size of
-            // that integer [1], so every byte is initialized. `Erust`, without `repr`, rests on
-            // the layout that `rustc` gives it, a one-byte tag. These are the requirements of
+            // SAFETY: `variant` is a reference to a value of `$name`, valid for reads of its `size`
+            // bytes, of alignment 1 as `u8`s. A value of a fieldless enum is its discriminant. With
+            // `repr(C)` or a primitive representation, it has the size of that integer [1], so
+            // every byte is initialized. `Erust`, of the `Rust` representation, rests on the layout
+            // that `rustc` gives it, a one-byte tag. These are the requirements of
             // `slice::from_raw_parts`.
             //
             // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.primitive.enum:
@@ -632,7 +632,7 @@ impl Oracle for Never {
   }
 }
 
-// --- Enums without `repr` ------------------------------------------------------------------------
+// --- Enums of the `Rust` representation ----------------------------------------------------------
 //
 // Their oracles are written from how `rustc` lays enums out today (a direct tag in the bytes before
 // the fields of every variant, or a niche: the values that follow the valid ones of a scalar of a
@@ -648,7 +648,7 @@ fn offset_in<T, F>(value: &T, field: &F) -> usize {
   core::ptr::from_ref(field).addr() - core::ptr::from_ref(value).addr()
 }
 
-/// An enum without `repr` with a niche in a `bool`, where `Nothing` is 2.
+/// An enum of the `Rust` representation with a niche in a `bool`, where `Nothing` is 2.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaybeFlag {
   Nothing,
@@ -661,7 +661,7 @@ impl Oracle for MaybeFlag {
   }
 }
 
-/// An enum without `repr` with a niche in a `NonZero`, where `No` is 0.
+/// An enum of the `Rust` representation with a niche in a `NonZero`, where `No` is 0.
 ///
 /// Every byte is a value.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -677,7 +677,7 @@ impl Oracle for NzOpt {
   }
 }
 
-/// An enum without `repr` with a direct tag of one byte, and a byte in each variant.
+/// An enum of the `Rust` representation with a direct tag of one byte, and a byte in each variant.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pair {
   A(u8),
@@ -696,7 +696,8 @@ impl Oracle for Pair {
   }
 }
 
-/// An enum without `repr` with a niche in the tag of another enum without `repr`.
+/// An enum of the `Rust` representation with a niche in the tag of another enum of that
+/// representation.
 ///
 /// `Other` is 2, the first value that is not a tag of `Pair`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -719,7 +720,7 @@ impl Oracle for NestPair {
   }
 }
 
-/// An enum without `repr` with a niche in the `bool` of `Both`.
+/// An enum of the `Rust` representation with a niche in the `bool` of `Both`.
 ///
 /// In that byte, `Byte` is 2 and `Nothing` is 3. The field of `Byte` is in another byte.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,7 +743,8 @@ impl Oracle for Mixed {
   }
 }
 
-/// An enum without `repr` with one variant, laid out as a struct whose fields `rustc` may reorder.
+/// An enum of the `Rust` representation with one variant, laid out as a struct whose fields `rustc`
+/// may reorder.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Single {
   Only(u8, bool),
@@ -760,7 +762,7 @@ impl Oracle for Single {
   }
 }
 
-/// An enum without `repr` with a variant of two `bool`s.
+/// An enum of the `Rust` representation with a variant of two `bool`s.
 ///
 /// The first `bool` holds the niche of `B`, which is 2.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -781,7 +783,7 @@ impl Oracle for Flags2 {
   }
 }
 
-/// An enum without `repr` with a niche in a `char`.
+/// An enum of the `Rust` representation with a niche in a `char`.
 ///
 /// `End` and `Error` are the two values after the last `char`.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -798,8 +800,8 @@ impl Oracle for Letter {
   }
 }
 
-/// An enum without `repr` with a direct tag that `rustc` widens to two bytes, the alignment of the
-/// fields that follow it.
+/// An enum of the `Rust` representation with a direct tag that `rustc` widens to two bytes, the
+/// alignment of the fields that follow it.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wid {
   A(u16),
@@ -817,7 +819,7 @@ impl Oracle for Wid {
   }
 }
 
-/// An enum without `repr` with a variant that has values and a variant that has none.
+/// An enum of the `Rust` representation with a variant that has values and a variant that has none.
 ///
 /// The second variant holds a field with a size, so `rustc` gives the enum a tag.
 #[derive(Pun, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1027,10 +1029,10 @@ model_tagged!(#[repr(u8)] enum ThirdSoftIn: tag 1 { A(ThirdSoft = ThirdSoft { v:
 
 /// Returns the index of the variant of the enum `E` at `off`, and the offset of its field.
 ///
-/// `E` has no `repr`, and two variants of one byte each. `samples` holds a value of each variant
-/// and the offset of its field. `E` must have a direct tag of one byte at offset 0, whose value is
-/// the index of the variant, as the bytes of the samples show. Returns `None` if the tag is not the
-/// tag of a variant.
+/// `E` is of the `Rust` representation, and two variants of one byte each. `samples` holds a value
+/// of each variant and the offset of its field. `E` must have a direct tag of one byte at offset 0,
+/// whose value is the index of the variant, as the bytes of the samples show. Returns `None` if the
+/// tag is not the tag of a variant.
 ///
 /// # Errors
 ///
@@ -1063,7 +1065,7 @@ unsafe fn rust_variant<E: Copy>(
   Ok(samples.get(tag).map(|(_, field)| (tag, *field)))
 }
 
-/// An enum without `repr` whose first variant holds a struct with a rule.
+/// An enum of the `Rust` representation whose first variant holds a struct with a rule.
 ///
 /// `rustc` gives it a direct tag.
 #[derive(Pun, Clone, Copy)]

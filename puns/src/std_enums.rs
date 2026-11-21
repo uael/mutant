@@ -1,8 +1,8 @@
 //! The implementations of `Pun` for `Option<T>` and `Result<T, E>`, for any `T` and `E`.
 //!
-//! Both are enums without `repr`. Their layouts are found as the layout of an enum without `repr`
-//! that derives `Pun` is found ([`discover`](crate::discover)), for any `T` and `E` whose layout
-//! is known. Where `core` documents the layout, as for an `Option` of a `NonZero`
+//! Both are enums of the `Rust` representation. Their layouts are found as the layout of an enum of
+//! that representation that derives `Pun` is found ([`discover`](crate::discover)), for any `T` and
+//! `E` whose layout is known. Where `core` documents the layout, as for an `Option` of a `NonZero`
 //! (`Pun::NULL_OPTIMIZED`), it is a layout that Rust specifies. Otherwise it is a layout that Rust
 //! leaves to the compiler.
 //!
@@ -54,7 +54,7 @@ const unsafe fn offset<F, E>(field: &F, whole: &MaybeUninit<E>) -> usize {
 
 /// What the layout of `Option` and `Result` is found from, and what is found.
 ///
-/// The constants are those that the derive writes for an enum without `repr`.
+/// The constants are those that the derive writes for an enum of the `Rust` representation.
 trait Found: Sized {
   /// Whether the layout is given by `Pun::OPTION` rather than found.
   const GIVEN: bool;

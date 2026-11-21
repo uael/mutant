@@ -12,7 +12,8 @@ use puns::{
   pun, pun_mut, pun_ref, try_pun, try_pun_mut, try_pun_ref,
 };
 
-/// An enum without `repr`. The compiler chooses its size and the values of its discriminants.
+/// An enum of the `Rust` representation. The compiler chooses its size and the values of its
+/// discriminants.
 #[cfg(feature = "unstable")]
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
 enum Level {
@@ -36,7 +37,7 @@ enum Wide {
   B = 0xfffe,
 }
 
-/// A struct without `repr`. The compiler chooses the order of its fields.
+/// A struct of the `Rust` representation. The compiler chooses the order of its fields.
 #[cfg(feature = "unstable")]
 #[derive(Pun, Debug, Copy, Clone, PartialEq)]
 struct Rust {
@@ -175,7 +176,7 @@ fn rules() {
   assert_eq!(pun_ref::<Checked, Checked>(checked), checked);
 }
 
-// `Level` has no `repr`: what its values are is the `unstable` feature.
+// `Level` is of the `Rust` representation: what its values are is the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
 fn in_const() {

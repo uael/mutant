@@ -83,10 +83,10 @@ By hand, a CRC is computed 16 bytes at a time, unless the name says a byte at a 
 is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`.
 
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
-without a branch inside a block. A slice of `MaybeFlag`, an enum without `repr` whose tag is a niche
-in a `bool`, is not checked this way, and is slower than by hand. In a view enum, a variant whose
-values are all values of a later variant is checked from that variant. So a wrong checksum of UDP
-over IPv4 is computed once, for the IPv4 variant.
+without a branch inside a block. A slice of `MaybeFlag`, an enum of the `Rust` representation whose
+tag is a niche in a `bool`, is not checked this way, and is slower than by hand. In a view enum, a
+variant whose values are all values of a later variant is checked from that variant. So a wrong
+checksum of UDP over IPv4 is computed once, for the IPv4 variant.
 
 ## Costs
 

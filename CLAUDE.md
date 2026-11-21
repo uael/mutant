@@ -100,21 +100,21 @@ the output of their runs is in `docs/checks-<date>.txt`: new times come with a n
 ## Architecture
 
 **The `unstable` feature.** Without it, nothing that `puns` does depends on what Rust lets `rustc`
-lay out otherwise (the order of the fields of a struct or a tuple without `repr`, the tag of an enum
-without `repr`, niches): `-Zrandomize-layout` must change no verdict and no check (the message of a
-refusal may differ). With it, `puns` takes the layout that `rustc` chose. "The `unstable` feature"
-in the crate docs (`puns/src/lib.rs`) is the design and the list of what Rust documents, with
-where. The default is without it, and so is most of what the tests and CI run: every test of `puns`
-that builds without
-the feature runs without it (`tests/seeds.rs` needs `verdict`), the cases of `compile-fail-kept`
-included. With it run only what is about it: the targets of `required-features = ["unstable"]` and
-the files with tests under `#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the
-cases of `compile-fail-unstable`. A test that does not compile without the feature is one of these,
-or relies on what Rust does not keep. The model check runs both ways too (`puns-model` has an
-`unstable` feature, which turns on the one of `puns`); a refusal for what Rust does not keep is
-counted there as imprecise, by design (`hook::Verdict::unspecified`). A change of the analysis that
-changes a verdict of `puns/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read: the
-record must be the same under every seed (CI runs three).
+lay out otherwise (the order of the fields of a struct or a tuple of the `Rust` representation, the
+tag of an enum of that representation, niches): `-Zrandomize-layout` must change no verdict and no
+check (the message of a refusal may differ). With it, `puns` takes the layout that `rustc` chose.
+"The `unstable` feature" in the crate docs (`puns/src/lib.rs`) is the design and the list of what
+Rust documents, with where. The default is without it, and so is most of what the tests and CI run:
+every test of `puns` that builds without the feature runs without it (`tests/seeds.rs` needs
+`verdict`), the cases of `compile-fail-kept` included. With it run only what is about it: the
+targets of `required-features = ["unstable"]` and the files with tests under
+`#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the cases of
+`compile-fail-unstable`. A test that does not compile without the feature is one of these, or relies
+on what Rust does not keep. The model check runs both ways too (`puns-model` has an `unstable`
+feature, which turns on the one of `puns`); a refusal for what Rust does not keep is counted there
+as imprecise, by design (`hook::Verdict::unspecified`). A change of the analysis that changes a
+verdict of `puns/tests/seeds.txt` is written again with `PUNS_BLESS=1`, and read: the record must be
+the same under every seed (CI runs three).
 
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
 `const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it

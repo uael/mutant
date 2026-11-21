@@ -2270,8 +2270,8 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   })
 }
 
-/// Derives `Pun` for an enum with fields and without `repr`, whose layout Rust leaves to the
-/// compiler.
+/// Derives `Pun` for an enum with fields, of the `Rust` representation, whose layout Rust leaves to
+/// the compiler.
 ///
 /// The layout is found by experiments in const evaluation on a sample of each variant
 /// (`Layout::discover`). The layouts of the fields make the samples (`Layout::sample`). The

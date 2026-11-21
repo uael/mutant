@@ -29,9 +29,9 @@ modules. The module `view` is `#[doc(hidden)]`, so read its documentation in the
 - **Narrowing.** [`narrow`](src/narrow.rs) computes the range of every value of a rule, so that
   each operation runs in a register where it fits.
 - **Views.** [`view`](src/view.rs) decides each variant of a view enum once, from its base.
-- **Enums without `repr`.** [`discover`](src/discover.rs) finds their layouts by experiments, and
-  names the facts of the compiler that they rest on. [`std_enums`](src/std_enums.rs) applies it to
-  `Option` and `Result`.
+- **Enums of the `Rust` representation.** [`discover`](src/discover.rs) finds their layouts by
+  experiments, and names the facts of the compiler that they rest on.
+  [`std_enums`](src/std_enums.rs) applies it to `Option` and `Result`.
 - **Pointers to unsized types.** [`ptr`](src/ptr.rs) splits and builds wide pointers in `const`,
   verified for each type.
 - **Self-relative pointers.** [`deep`](src/deep.rs) proves what pointers aim at, by instances of

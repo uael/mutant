@@ -64,19 +64,19 @@
 //! Nothing of the test of the library (the same rules, the same extent) is in the oracle. So a rule
 //! of the target wrongly taken as proven by another rule is reported. The types include the same
 //! rules over other fields, another rule, and another extent. They put these rules in a struct, an
-//! enum with and without `repr`, an array, a union, and a struct with a byte that may be
-//! uninitialized. The model reports a rule proven by another (a `same_rules` that compares
-//! nothing) and a `&mut` part over a rule that the target does not have (a `cut` without its
-//! test). Both faults were tried.
+//! enum of a primitive representation and of the `Rust` representation, an array, a union, and a
+//! struct with a byte that may be uninitialized. The model reports a rule proven by another (a
+//! `same_rules` that compares nothing) and a `&mut` part over a rule that the target does not have
+//! (a `cut` without its test). Both faults were tried.
 //!
-//! The types include enums without `repr`: a niche in a `bool`, in a `NonZero` and in a `char`, a
-//! niche shared by two variants next to a field of a third, a direct tag of one byte and one that
-//! `rustc` widened, one variant, and a variant without values that `rustc` gives a tag. Their
-//! oracles are written from how `rustc` lays out enums. They are checked against the bytes of
-//! values natively, and by Miri on the values that the oracle makes. The offsets of the fields are
-//! taken from values, never from the library. The types also include unions, whose oracle is "one
-//! of its fields", a variant without values, `MaybeUninit`, and a scalar that may be uninitialized
-//! (`Zero`). Against `Zero`, reading such a scalar as initialized is found unsound.
+//! The types include enums of the `Rust` representation: a niche in a `bool`, in a `NonZero` and in
+//! a `char`, a niche shared by two variants next to a field of a third, a direct tag of one byte
+//! and one that `rustc` widened, one variant, and a variant without values that `rustc` gives a
+//! tag. Their oracles are written from how `rustc` lays out enums. They are checked against the
+//! bytes of values natively, and by Miri on the values that the oracle makes. The offsets of the
+//! fields are taken from values, never from the library. The types also include unions, whose
+//! oracle is "one of its fields", a variant without values, `MaybeUninit`, and a scalar that may be
+//! uninitialized (`Zero`). Against `Zero`, reading such a scalar as initialized is found unsound.
 //!
 //! # Parts
 //!

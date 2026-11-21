@@ -41,11 +41,11 @@
 //!   [`Variant`] has its tags and a struct of its fields. The representations that Rust specifies
 //!   (`repr(C)`, `repr(u8)` and the other primitive representations, [RFC 2195]) are made of
 //!   `repr(C)` structs. The derive declares those structs and asks the compiler for their layouts.
-//!   The result is checked against the size and the alignment of the enum. For an enum without
-//!   `repr`, experiments in const evaluation find the layout that `rustc` chose. That layout has a
-//!   direct tag, or a *niche* in the fields of one variant. That variant then has several tags,
-//!   the values of the scalar that holds the niche, and holds the tag in its fields. A variant that
-//!   holds a type without values has no tag, since no value of it exists.
+//!   The result is checked against the size and the alignment of the enum. For an enum of the
+//!   `Rust` representation, experiments in const evaluation find the layout that `rustc` chose.
+//!   That layout has a direct tag, or a *niche* in the fields of one variant. That variant then has
+//!   several tags, the values of the scalar that holds the niche, and holds the tag in its fields.
+//!   A variant that holds a type without values has no tag, since no value of it exists.
 //! - A **union** (`repr(C)`) is an enum without a tag, whose variants are its fields, each at
 //!   offset 0. A value of it must be one of its fields ([Unions](crate#unions)).
 //! - A type **without values** is an enum without variants ([`Layout::uninhabited`]). `Infallible`
@@ -208,8 +208,8 @@ impl Spec {
   /// Returns the scalar of `size` bytes, in the byte order of the target, that accepts any
   /// initialized bytes.
   ///
-  /// This is the tag of an enum without `repr` that `discover.rs` found, which has no type of its
-  /// own.
+  /// This is the tag of an enum of the `Rust` representation that `discover.rs` found, which has no
+  /// type of its own.
   ///
   /// # Panics
   ///
@@ -687,8 +687,9 @@ pub(crate) enum Uniform {
 ///
 /// Rust leaves a part of some layouts to the compiler, which may choose otherwise in its next
 /// version, or at random with `-Zrandomize-layout`: the order of the fields of a struct or a tuple
-/// of the `Rust` representation, and the tag and the niches of an enum without `repr`. A `Stable`
-/// says which facts of a layout hold in every choice. It is computed from the layouts of its parts.
+/// of the `Rust` representation, and the tag and the niches of an enum of that representation. A
+/// `Stable` says which facts of a layout hold in every choice. It is computed from the layouts of
+/// its parts.
 ///
 /// Without the `unstable` feature, the analysis does not look into a layout that is not `fixed`
 /// ([`Layout::is_opaque`]). As a source, such a layout is what every choice of it is: initialized
@@ -767,9 +768,9 @@ impl Stable {
 /// A type has one layout in a program, but two types, however similar, may be laid out otherwise
 /// where Rust leaves the layout to the compiler (see "Layout is subject to change" in the
 /// documentation of `core::mem::offset_of!`). `Wrapper<u8, u8>` and `Wrapper<u8, i8>`, of a generic
-/// struct without `repr`, may have their fields in different orders, as `-Zrandomize-layout` shows.
-/// Without the `unstable` feature, a layout that Rust leaves to the compiler proves only the same
-/// type, at the same place.
+/// struct of the `Rust` representation, may have their fields in different orders, as
+/// `-Zrandomize-layout` shows. Without the `unstable` feature, a layout that Rust leaves to the
+/// compiler proves only the same type, at the same place.
 ///
 /// Stable Rust compares no types in `const`. An identity is a name, and the identities of the
 /// parameters that make the type. `__site!` names a type that derives `Pun` by where it is
@@ -1429,8 +1430,8 @@ impl Enum {
     Self { tag: Field::new(0, tag), variants, specified, union: false }
   }
 
-  /// Returns the enum without `repr` that `rustc` laid out, as `discover.rs` found it, for
-  /// `#[derive(Pun)]`.
+  /// Returns the enum of the `Rust` representation that `rustc` laid out, as `discover.rs` found
+  /// it, for `#[derive(Pun)]`.
   ///
   /// The tag is the scalar `tag` at `offset`. The `variants` are in the order of their
   /// declarations, as [`Variant::discovered`] makes them. `specified` is the size and the alignment
@@ -1710,8 +1711,8 @@ impl Variant {
     Self { tag, ranges: None, holds_tag: false, layout }
   }
 
-  /// Returns the `index`th variant of an enum without `repr`, as `discover.rs` found it, for
-  /// `#[derive(Pun)]`.
+  /// Returns the `index`th variant of an enum of the `Rust` representation, as `discover.rs` found
+  /// it, for `#[derive(Pun)]`.
   ///
   /// The values of the tag for this variant are `ranges`, sorted and disjoint, and none if no value
   /// can be this variant. If `holds_tag`, the tag is in the fields of the variant: a niche.
@@ -2029,7 +2030,8 @@ fn pin<T>(_: T) {}
 /// Rust leaves a part of some layouts to the compiler, which may choose otherwise in its next
 /// version, or at random with `-Zrandomize-layout`. This part is the order of the fields of a
 /// struct or a tuple of the `Rust` representation, the place and the values of the tag of an enum
-/// without `repr`, and the niches of `Option` and `Result`, except where `core` documents them.
+/// of that representation, and the niches of `Option` and `Result`, except where `core` documents
+/// them.
 ///
 /// Without the `unstable` feature, nothing that `puns` does depends on a layout that Rust leaves to
 /// the compiler. Whether a pun compiles, what it checks, and which values it accepts are the same
@@ -2044,9 +2046,9 @@ pub const UNSTABLE: bool = cfg!(feature = "unstable");
 /// The message of the compile error of a function of [`Visit`](crate::Visit), for a type that has
 /// something to check, or a pointer, in a part whose layout Rust leaves to the compiler.
 pub(crate) const VISIT_UNSPECIFIED: &str = "the type has a part whose layout Rust does not keep \
-  from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum \
-  without `repr`), and something to check or a pointer in it, which would be at another place \
-  with another compiler.\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the \
+  from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation), \
+  and something to check or a pointer in it, which would be at another place with another \
+  compiler.\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the \
   `unstable` feature of `puns`";
 
 impl Layout {
@@ -2075,7 +2077,7 @@ impl Layout {
     mem::MaybeUninit::uninit()
   }
 
-  /// Returns what experiments find of the layout of the enum `E` without `repr`, for
+  /// Returns what experiments find of the layout of the enum `E` of the `Rust` representation, for
   /// `#[derive(Pun)]`.
   ///
   /// `samples[v]` is a value of the `v`th variant in the order of declarations, made by
@@ -2099,7 +2101,7 @@ impl Layout {
   }
 
   /// Returns a valid `T`, made from its layout alone, for the samples of the variants of an enum
-  /// without `repr` ([`Layout::discover`]).
+  /// of the `Rust` representation ([`Layout::discover`]).
   ///
   /// Every scalar holds the least of its values, and padding is uninitialized.
   ///
@@ -2236,7 +2238,8 @@ impl Layout {
     }
   }
 
-  /// Returns the layout of the tag of an enum without `repr` that `discover.rs` found.
+  /// Returns the layout of the tag of an enum of the `Rust` representation that `discover.rs`
+  /// found.
   ///
   /// The tag has no type of its own, so its alignment is 1.
   pub(crate) const fn tag(spec: Spec) -> Self {
@@ -3035,8 +3038,8 @@ impl Layout {
 
   /// Returns the layout of the enum with fields `T`, whose tag and variants `layout` describes.
   ///
-  /// `layout` is the enum that its representation specifies ([`Enum::new`]), or, without `repr`,
-  /// the one that `rustc` laid out.
+  /// `layout` is the enum that its representation specifies ([`Enum::new`]), or, for the `Rust`
+  /// representation, the one that `rustc` laid out.
   ///
   /// As a source, a value of the enum is known by its tag, and by the bytes that every variant that
   /// has values initializes. As a target, the enum is proven variant by variant where the source
@@ -3171,10 +3174,10 @@ impl Layout {
   /// Returns the same layout, of a type whose layout Rust leaves to the compiler, except for a size
   /// of 0.
   ///
-  /// This is an enum without `repr`, with fields or not, and `Option` and `Result` except where
-  /// `core` documents their layout. Rust specifies only that an enum without variants, or of one
-  /// variant whose fields have no size, has a size of 0. Such a layout is not `fixed` ([`Stable`]),
-  /// and is known as a source to be initialized only if it has no byte.
+  /// This is an enum of the `Rust` representation, with fields or not, and `Option` and `Result`
+  /// except where `core` documents their layout. Rust specifies only that an enum without variants,
+  /// or of one variant whose fields have no size, has a size of 0. Such a layout is not `fixed`
+  /// ([`Stable`]), and is known as a source to be initialized only if it has no byte.
   #[doc(hidden)]
   #[must_use]
   pub const fn unspecified(self) -> Self {
@@ -3529,8 +3532,8 @@ impl Layout {
     if index < rules.len() { Some(rules[index]) } else { None }
   }
 
-  /// Returns the tag of the `variant`th variant of an enum, or its index if the enum has no `repr`
-  /// ([`Variant::discovered`]), for `#[derive(Pun)]`.
+  /// Returns the tag of the `variant`th variant of an enum, or its index if the enum is of the
+  /// `Rust` representation ([`Variant::discovered`]), for `#[derive(Pun)]`.
   ///
   /// # Panics
   ///
@@ -3718,8 +3721,8 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if `self` is not an enum, has no `variant`th variant, or if that variant has no field
-  /// declared `index`th. A field of a variant without values of an enum without `repr` is not in
-  /// the layout.
+  /// declared `index`th. A field of a variant without values of an enum of the `Rust`
+  /// representation is not in the layout.
   #[doc(hidden)]
   #[must_use]
   pub const fn variant_field(&self, variant: usize, index: usize) -> &Field {
@@ -4209,11 +4212,12 @@ impl Layout {
   /// Returns whether bytes that are all zero are a valid value of the layout.
   ///
   /// Without the `unstable` feature, this is `false` for a layout that is not `fixed` except for a
-  /// struct, since the values of the tag of an enum without `repr` are not specified. The fields of
-  /// a struct are zeros in every order.
+  /// struct, since the values of the tag of an enum of the `Rust` representation are not specified.
+  /// The fields of a struct are zeros in every order.
   pub(crate) const fn zeroable(&self) -> bool {
-    // Whatever zeros are of an enum without `repr` (or of `Option<bool>`) is not kept: which
-    // values its tag has is not specified. The fields of a struct are zeros whatever their order.
+    // Whatever zeros are of an enum of the `Rust` representation (or of `Option<bool>`) is not
+    // kept: which values its tag has is not specified. The fields of a struct are zeros whatever
+    // their order.
     if !UNSTABLE && !self.stable.fixed && !matches!(self.kind, Kind::Struct(..)) {
       return false;
     }

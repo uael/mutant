@@ -43,7 +43,7 @@ pub mod marker {
   pub struct PhantomData<T: ?Sized>(std::marker::PhantomData<T>);
 }
 
-/// A struct without `repr`. The derive must not read the offsets of its fields with
+/// A struct of the `Rust` representation. The derive must not read the offsets of its fields with
 /// `::core::mem::offset_of!`, which swaps them here.
 #[cfg(feature = "unstable")]
 #[derive(Pun, Debug)]
@@ -60,7 +60,7 @@ enum Aligned {
   A(bool),
 }
 
-// `Pair` has no `repr`: which byte is its `bool` is the `unstable` feature.
+// `Pair` is of the `Rust` representation: which byte is its `bool` is the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
 fn offsets_are_not_read_from_core() {

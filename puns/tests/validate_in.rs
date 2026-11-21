@@ -131,8 +131,8 @@ enum Shape {
   Box(u8, NonZero<u8>),
 }
 
-/// Checks enums and niches. `Option<bool>` is an enum without `repr` with a niche, in which `None`
-/// is 2.
+/// Checks enums and niches. `Option<bool>` is an enum of the `Rust` representation with a niche, in
+/// which `None` is 2.
 #[test]
 fn enums_and_niches() {
   assert_eq!(ok::<Shape>(&[2, 7, 1], 0), Ok(()));

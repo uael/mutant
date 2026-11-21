@@ -15,9 +15,9 @@
 //!
 //! The types are plain data: structs and enums of any representation, `repr(C)` unions, tuples,
 //! arrays, slices, structs that end with a slice, `str`, `MaybeUninit`, and types without values.
-//! For an enum without `repr`, `puns` finds the layout that `rustc` chose. `#[derive(Pun)]`
-//! declares what the data itself says of a value: its size, the length of its slice, and the
-//! conditions that it meets.
+//! For an enum of the `Rust` representation, `puns` finds the layout that `rustc` chose.
+//! `#[derive(Pun)]` declares what the data itself says of a value: its size, the length of its
+//! slice, and the conditions that it meets.
 //!
 //! |               | Whole                                  | Front                     | Back                      |
 //! |---------------|----------------------------------------|---------------------------|---------------------------|
@@ -176,9 +176,9 @@
 //! and `Result` that `core` documents. [What Rust documents](#what-rust-documents) lists each of
 //! these guarantees with its source. Where Rust leaves a layout to the compiler, `puns` reads the
 //! layout that `rustc` chose for the build. It measures the offsets of fields on a value, and finds
-//! the tag of an enum without `repr` by experiments on a value of each variant. An experiment that
-//! goes wrong is a compile error, never a wrong layout. `puns` also relies on two behaviors of
-//! `rustc` that no documentation states:
+//! the tag of an enum of the `Rust` representation by experiments on a value of each variant. An
+//! experiment that goes wrong is a compile error, never a wrong layout. `puns` also relies on two
+//! behaviors of `rustc` that no documentation states:
 //!
 //! - A pointer to an unsized type has the representation of a pointer to a slice. This is checked
 //!   at compile time for each unsized type, against a pointer made with an `as` cast.
@@ -187,9 +187,9 @@
 //!   at this way. Tests hold the compiler to it in debug and in optimized builds.
 //!
 //! Without the `unstable` feature, no result of `puns` depends on a layout that Rust leaves to the
-//! compiler: the order of the fields of a struct or a tuple without `repr`, the tag of an enum
-//! without `repr`, and niches. With it, `puns` also uses the layout that `rustc` chose. [The
-//! `unstable` feature](#the-unstable-feature) states the rule, and [what it rests
+//! compiler: the order of the fields of a struct or a tuple of the `Rust` representation, the tag
+//! of an enum of that representation, and niches. With it, `puns` also uses the layout that `rustc`
+//! chose. [The `unstable` feature](#the-unstable-feature) states the rule, and [what it rests
 //! on](#what-this-rests-on).
 //!
 //! The tests run under [Miri], with tree borrows on x86-64, and with stacked borrows on a 32-bit
@@ -380,8 +380,8 @@
 //! the target, the message names that byte. The most common messages follow, each with code that
 //! compiles where the pun can be fixed.
 //!
-//! **The pun depends on a layout that Rust leaves to the compiler.** The fields of a struct without
-//! `repr` may be in any order, so `puns` cannot tell which byte is the `bool`.
+//! **The pun depends on a layout that Rust leaves to the compiler.** The fields of a struct of the
+//! `Rust` representation may be in any order, so `puns` cannot tell which byte is the `bool`.
 //!
 #![cfg_attr(not(feature = "unstable"), doc = "```compile_fail,E0080")]
 #![cfg_attr(feature = "unstable", doc = "```")]
@@ -395,7 +395,7 @@
 //! ```
 //!
 //! ```text
-//! cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+//! cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
 //! Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
 //! This is at byte 0 of the target.
 //! ```
@@ -565,7 +565,7 @@
 //!
 //! - The order of the fields of a struct or a tuple of the `Rust` representation, and so its size.
 //!   For example, `(u8, u16, u8)` is 4 or 6 bytes.
-//! - The place and the values of the tag of an enum without `repr`.
+//! - The place and the values of the tag of an enum of the `Rust` representation.
 //! - The niches of `Option` and `Result`, except where `core` documents them.
 //!
 //! `puns` reads what the compiler chose, so a pun is sound for the build that compiles it, whatever
@@ -606,10 +606,10 @@
 //!
 //! Which field a byte holds is not part of what a pun does. `pun::<[u8; 2], (u8, u8)>([1, 2])` is
 //! `(1, 2)` or `(2, 1)`. Either is a valid value, which is all that a pun promises, as `transmute`
-//! promises. Which bytes a value of a struct without `repr` has is the choice of the compiler, with
-//! or without `puns`. What a check says of given bytes is something that `puns` does, so it is the
-//! same in every layout. Whether `try_pun::<(u8, u8), F>((0, 2))` is `Ok`, for `F` a `repr(C)`
-//! struct of a `bool` and a `u8`, must not depend on which byte holds the `0`.
+//! promises. Which bytes a value of a struct of the `Rust` representation has is the choice of the
+//! compiler, with or without `puns`. What a check says of given bytes is something that `puns`
+//! does, so it is the same in every layout. Whether `try_pun::<(u8, u8), F>((0, 2))` is `Ok`, for
+//! `F` a `repr(C)` struct of a `bool` and a `u8`, must not depend on which byte holds the `0`.
 //!
 //! ### Puns without the feature
 //!
@@ -620,7 +620,7 @@
 //! | `(bool, u8)` as `[u8; 2]`, `as_bytes` | proven | both bytes are initialized, in either order |
 //! | `[u8; 4]` as `(u8, u16)` | proven | it only requires initialized bytes, wherever its padding is |
 //! | a `repr(C)` struct that holds a `(bool, u8)` as itself, or its first bytes as the `(bool, u8)` | proven | the same type at the same place |
-//! | an enum without `repr` as itself | proven | a type has one layout in a program |
+//! | an enum of the `Rust` representation as itself | proven | a type has one layout in a program |
 //! | `[bool; 2]` as `(bool, u8)` | proven | the `bool` may be either byte, and both bytes are a `bool` |
 //! | `[u8; 2]` as `(bool, u8)` | refused | the byte that must be 0 or 1 is either byte |
 //! | `(u8, u8)` as `[bool; 2]` | refused | the check of each element reads a byte that, in another layout, holds the other field |
@@ -629,17 +629,17 @@
 //! | `(u8, u8)` as a `repr(C)` struct of a `bool` and a `u8` | refused | the check reads one field or the other, and `(0, 2)` passes in one order only |
 //! | `(u8, u8)` as `NonZero<u16>` | refused | the check reads both bytes, and each may hold either field |
 //! | anything of `(u8, u16, u8)` but itself | refused | it is 4 or 6 bytes |
-//! | bytes as an enum without `repr`, or as `Option<bool>` | refused | nothing documents where its tag is, nor its values |
+//! | bytes as an enum of the `Rust` representation, or as `Option<bool>` | refused | nothing documents where its tag is, nor its values |
 //! | `validate_in::<(bool, u8)>` | refused | which byte it checks |
 //!
-//! A struct or a tuple without `repr` whose size is the same in every layout, and that has no rule
-//! and no pointer, is proven field by field. A field may be anywhere, so it must be proven
-//! everywhere that it may be. So two `bool`s prove a `(bool, u8)`, four initialized bytes prove a
-//! `(u8, u16)`, and two `NonZero<u16>` prove a `(NonZero<u16>, u16)`. A struct that has a rule,
-//! which names fields, or a pointer, which is paired by its place, proves only itself, as an enum
-//! does. Nothing in a part whose layout Rust leaves to the compiler is checked at run time, because
-//! a check would read where the compiler may not have put the field. What is not proven there does
-//! not compile.
+//! A struct or a tuple of the `Rust` representation whose size is the same in every layout, and
+//! that has no rule and no pointer, is proven field by field. A field may be anywhere, so it must
+//! be proven everywhere that it may be. So two `bool`s prove a `(bool, u8)`, four initialized bytes
+//! prove a `(u8, u16)`, and two `NonZero<u16>` prove a `(NonZero<u16>, u16)`. A struct that has a
+//! rule, which names fields, or a pointer, which is paired by its place, proves only itself, as an
+//! enum does. Nothing in a part whose layout Rust leaves to the compiler is checked at run time,
+//! because a check would read where the compiler may not have put the field. What is not proven
+//! there does not compile.
 //!
 //! ### The same type
 //!
@@ -706,8 +706,8 @@
 //! | A tuple has the `Rust` representation | R [`r-layout.tuple.def`][tuple] |
 //! | The representation of a type does not change the layout of its fields | R [`r-layout.repr.inter-field`][inter-field] |
 //! | A type has one layout in a program, and a similar type may have another | C [`offset_of!`, "Layout is subject to change"][offset_of layout], R [`r-type.struct.layout`][struct layout] |
-//! | Where and how the discriminant of an enum without `repr` is stored is not defined | R [`r-items.enum.discriminant.type`][discriminant type], C [`mem::discriminant`] |
-//! | The fields of a union without `repr` need not be at 0, so such a union is refused | R [`r-type.union.layout`][union layout] |
+//! | Where and how the discriminant of an enum of the `Rust` representation is stored is not defined | R [`r-items.enum.discriminant.type`][discriminant type], C [`mem::discriminant`] |
+//! | The fields of a union of the `Rust` representation need not be at 0, so such a union is refused | R [`r-type.union.layout`][union layout] |
 //! | `NonZero<T>` is `T`, except zero | C [`NonZero`, "Layout"][nonzero layout] |
 //! | `Option<T>` is `T`, and `None` is zeros, for a `NonZero` and a `repr(transparent)` struct around one | C [`option`, "Representation"][option representation] |
 //! | `Result<T, E>` is the same when the other of `T` and `E` has size 0 and alignment 1 | C [`result`, "Representation"][result representation] |
@@ -725,9 +725,9 @@
 //! byte, with `None` at 2, but that is how `rustc` does it today. The documentation of
 //! `MaybeUninit` and of `UnsafeCell` says that such optimizations vary. So `Option<bool>` needs the
 //! `unstable` feature. Niches that Rust documents only as "ABI-compatible" are not taken either. An
-//! enum without `repr` of a variant that holds a `NonZero` and a variant without fields, such as
-//! `enum Ticket { Free, Paid(NonZero<u32>) }`, needs the feature, though `rustc` lays it out as the
-//! `Option` of it.
+//! enum of the `Rust` representation of a variant that holds a `NonZero` and a variant without
+//! fields, such as `enum Ticket { Free, Paid(NonZero<u32>) }`, needs the feature, though `rustc`
+//! lays it out as the `Option` of it.
 //!
 //! `Option` of a self-relative pointer is the same pointer, which may be null, with or without the
 //! feature. Rust documents this for a `repr(transparent)` struct around a `NonZero`, which is how
@@ -749,8 +749,9 @@
 //! - Compile-fail tests hold each refusal without the feature and its message, and compile-pass
 //!   tests what compiles. Other compile-fail tests run with the feature. The rest are the same both
 //!   ways.
-//! - With the feature, the tests that need it run as well: enums without `repr`, `validate_in` of
-//!   `Option<bool>`, the tests of the layout that `rustc` chose, an example and a benchmark.
+//! - With the feature, the tests that need it run as well: enums of the `Rust` representation,
+//!   `validate_in` of `Option<bool>`, the tests of the layout that `rustc` chose, an example and a
+//!   benchmark.
 //!
 //! # Minimum Rust version
 //!
@@ -836,11 +837,11 @@
 //!   more, and how much more. A walk takes at most `8 * size + 128` steps.
 //! - Unions must be `repr(C)`, since the fields of another union are not known to be at 0. A union
 //!   must not hold a pointer, and is known as nothing as a source (see [Unions](#unions)).
-//! - An enum without `repr` holds no self-relative pointer, because a sample of a pointer cannot be
-//!   made from nothing. Its direct tag, all the bytes before the first field of any variant, is 1,
-//!   2, 4, 8 or 16 bytes, or it is refused, since `rustc` makes no other size. A variant without
-//!   values whose fields `rustc` places before those of the others makes the build fail rather than
-//!   be guessed, since its fields cannot be observed.
+//! - An enum of the `Rust` representation holds no self-relative pointer, because a sample of a
+//!   pointer cannot be made from nothing. Its direct tag, all the bytes before the first field of
+//!   any variant, is 1, 2, 4, 8 or 16 bytes, or it is refused, since `rustc` makes no other size. A
+//!   variant without values whose fields `rustc` places before those of the others makes the build
+//!   fail rather than be guessed, since its fields cannot be observed.
 //!
 //! ## Not done yet
 //!
@@ -1035,12 +1036,12 @@ pub use layout::{crc32, sum16};
 /// stores them. Without the `unstable` feature, such an enum is then known only as itself.
 ///
 /// **Enums with fields.** An enum with fields may be `repr(C)`, `repr(u8)` or another integer,
-/// both, or have no `repr`. With a `repr`, its layout is the one that [RFC 2195] specifies. Without
-/// `repr`, the derive finds the layout that `rustc` chose by experiments in const evaluation, on a
-/// value of each variant. An experiment that fails refuses the enum, so a wrong layout is never
-/// found. What is known of a value of such an enum is its tag. Making one from another type checks
-/// the tag, then what the fields of its variant require. Without `repr` and without the `unstable`
-/// feature, the enum is known only as itself.
+/// both, or be of the `Rust` representation. With `repr(C)` or an integer, its layout is the one
+/// that [RFC 2195] specifies. Otherwise, the derive finds the layout that `rustc` chose by
+/// experiments in const evaluation, on a value of each variant. An experiment that fails refuses
+/// the enum, so a wrong layout is never found. What is known of a value of such an enum is its tag.
+/// Making one from another type checks the tag, then what the fields of its variant require.
+/// Without `repr` and without the `unstable` feature, the enum is known only as itself.
 ///
 /// [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 ///
@@ -1277,11 +1278,11 @@ pub use layout::{crc32, sum16};
 /// - The variants of a view all hold a reference of the same named lifetime, `&'a T`.
 /// - The type of each variant of a view meets the compile-time conditions of [`from_bytes`], where
 ///   `from_head` or `from_bytes` of the view is used.
-/// - No field of an enum with fields and no `repr` holds a self-relative pointer.
-/// - The compiler lays out an enum with fields and no `repr` in a way that the derive recognizes.
-///   The variant of a value is told by a tag of 1, 2, 4, 8 or 16 bytes before the fields of every
-///   variant, or by a niche in a scalar of the fields of one variant. Another layout is refused as
-///   unsupported.
+/// - No field of an enum with fields, of the `Rust` representation holds a self-relative pointer.
+/// - The compiler lays out an enum with fields, of the `Rust` representation in a way that the
+///   derive recognizes. The variant of a value is told by a tag of 1, 2, 4, 8 or 16 bytes before
+///   the fields of every variant, or by a niche in a scalar of the fields of one variant. Another
+///   layout is refused as unsupported.
 ///
 /// Of a union:
 ///
@@ -1325,9 +1326,9 @@ pub use layout::{crc32, sum16};
 /// against) must not derive `Pun`, since a pun would turn one brand into another.
 ///
 /// Without the `unstable` feature, nothing that a pun does depends on a layout that Rust leaves to
-/// the compiler: the order of the fields of a struct without `repr`, the tag of an enum without
-/// `repr`, and niches. With it, a pun uses the layout that `rustc` chose for this build. See
-/// [The `unstable` feature](crate#the-unstable-feature).
+/// the compiler: the order of the fields of a struct or a tuple of the `Rust` representation, the
+/// tag of an enum of that representation, and niches. With it, a pun uses the layout that `rustc`
+/// chose for this build. See [The `unstable` feature](crate#the-unstable-feature).
 ///
 /// ## What the derive trusts
 ///
@@ -1594,8 +1595,8 @@ pub unsafe trait Scalar {
   /// The identity of the type (see [`layout::Id`]); none by default.
   #[doc(hidden)]
   const ID: layout::Id = layout::Id::NONE;
-  /// Whether Rust specifies how values of the type are stored. It does not for an enum without
-  /// `repr`, which `#[derive(Pun)]` makes a `Scalar` (see [`layout::UNSTABLE`]).
+  /// Whether Rust specifies how values of the type are stored. It does not for an enum of the
+  /// `Rust` representation, which `#[derive(Pun)]` makes a `Scalar` (see [`layout::UNSTABLE`]).
   #[doc(hidden)]
   const SPECIFIED: bool = true;
 }
@@ -1604,10 +1605,10 @@ pub unsafe trait Scalar {
 ///
 /// Every function of this crate takes `Pun` types. They are the integer and floating-point types,
 /// `bool`, `char`, `NonZero`, `()`, `PhantomData`, arrays, slices, `str`, tuples of up to 4
-/// elements, `Option` and `Result` of `Pun` types, `MaybeUninit`, `ManuallyDrop`, `Infallible`,
-/// the types of [`num`], every [`Scalar`], the self-relative pointers of [`self_relative!`], and
-/// the types that derive it. Without the `unstable` feature, a pun relies only on what every
-/// layout that Rust allows has in common, for a tuple, a struct or an enum without `repr`
+/// elements, `Option` and `Result` of `Pun` types, `MaybeUninit`, `ManuallyDrop`, `Infallible`, the
+/// types of [`num`], every [`Scalar`], the self-relative pointers of [`self_relative!`], and the
+/// types that derive it. Without the `unstable` feature, a pun relies only on what every layout
+/// that Rust allows has in common, for a tuple, a struct or an enum of the `Rust` representation
 /// ([`layout::UNSTABLE`]).
 ///
 /// # Safety
@@ -1680,7 +1681,7 @@ pub unsafe trait Pun {
   #[doc(hidden)]
   const LAYOUT: Layout;
   /// The layout of `Option<Self>`, if `Self` gives it, rather than the one found of `Option` as
-  /// of any enum without `repr` (`discover.rs`).
+  /// of any enum of the `Rust` representation (`discover.rs`).
   ///
   /// This is how `Option` of a self-relative pointer is the same pointer, which may be null:
   /// [`self_relative!`] fills it with [`Layout::nullable`], which checks that `None` is the
@@ -2498,17 +2499,17 @@ const POINTER_TARGET: &str = "the target holds a self-relative pointer, and what
 
 /// A pun that depends on what Rust does not keep from one compilation to the next.
 const UNSPECIFIED: &str = "the pun depends on a part of the source or of the target whose layout \
-  Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` \
-  representation, an enum without `repr`, `Option` or `Result` of most types): another compiler, \
-  or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place \
+  Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` \
+  representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, \
+  could arrange it otherwise. Only the same type at the same place \
   proves it.\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature \
   of `puns`";
 
 /// A `&mut` whose writes are not known to leave a valid source in every layout that Rust allows.
 const UNSPECIFIED_MUT: &str = "what may be written through the `&mut` is a valid source in the \
   layout that `rustc` chose, not in every layout that Rust allows: the source has a part whose \
-  layout Rust does not keep from one compilation to the next (a struct or a tuple of the `Rust` \
-  representation, an enum without `repr`).\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or \
+  layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the \
+  `Rust` representation).\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or \
   enable the `unstable` feature of `puns`";
 
 /// Why a pun of which `analysis` is the analysis does not meet the `need`, if it does not.

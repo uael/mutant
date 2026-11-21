@@ -1,8 +1,8 @@
 //! Tests enums whose layout Rust leaves to the compiler, and types without values.
 //!
-//! `puns` finds the layout that `rustc` chose for an enum without `repr` by experiments in const
-//! evaluation. The tests also cover `Option` and `Result`, and enums read from types that are not
-//! enums.
+//! `puns` finds the layout that `rustc` chose for an enum of the `Rust` representation by
+//! experiments in const evaluation. The tests also cover `Option` and `Result`, and enums read from
+//! types that are not enums.
 //!
 //! This file needs the `unstable` feature (`required-features` in `puns/Cargo.toml`). Without it,
 //! `puns` does not depend on the layout that `rustc` chose.
@@ -49,7 +49,7 @@ fn uninhabited() {
   let _ = puns::pun::<(u8, Void), (u8, Void)>;
 }
 
-// --- Enums without `repr` ------------------------------------------------------------------------
+// --- Enums of the `Rust` representation ----------------------------------------------------------
 
 /// An enum with a direct tag of one byte. The first field of `A` follows the tag.
 #[derive(Pun, Clone, Copy, Debug, PartialEq)]

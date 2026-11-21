@@ -19,7 +19,7 @@
 //! | an enum with fields checked, the tag then the variant  | `u32 -> Shape`                     |
 //! | a target with padding, read from initialized bytes     | `[u8; 4] -> PadMid`                |
 //! | the tags of a variant (several for a niche, `RANGES`)  | `u8 -> MaybeFlag`                  |
-//! | a direct tag widened to two bytes, without `repr`      | `[u8; 4] -> Wid`                   |
+//! | a direct tag widened to two bytes, `repr(Rust)`        | `[u8; 4] -> Wid`                   |
 //! | a union, field by field                                | `u8 -> ChoiceU`                    |
 //!
 //! A pair is not there for what the analysis proves of it. An enum proven variant by variant
@@ -55,10 +55,10 @@ fn sample() {
     puns_model::all_pairs!(6; u16, [bool; 2], (u8, bool), Aligned, Opt, NotOneOne);
     puns_model::all_pairs!(4; [u8; 3], Wide, Triple);
     puns_model::all_pairs!(4; u32, char, PadMid, Shape, Drawing);
-    // What is new of a kind, a pair or two each, both ways where both mean something (every pair
-    // of these types is in the full run): bytes that may be uninitialized, `MaybeUninit`, a
-    // variant without values, enums without `repr` (niches, a niche in a niche, two niches in one
-    // byte, a direct tag, a widened one, from what is not an enum and from an enum), unions.
+    // What is new of a kind, a pair or two each, both ways where both mean something (every pair of
+    // these types is in the full run): bytes that may be uninitialized, `MaybeUninit`, a variant
+    // without values, enums of the `Rust` representation (niches, a niche in a niche, two niches in
+    // one byte, a direct tag, a widened one, from what is not an enum and from an enum), unions.
     puns_model::pairs!(check_pair, 8;
       (Zero, u8), (u8, Zero), (Zero, bool), (u8, core::mem::MaybeUninit<u8>),
       (core::mem::MaybeUninit<u8>, u8), (ByteZero, u16), ([u8; 2], Never), (Never, Opt),

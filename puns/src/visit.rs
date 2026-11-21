@@ -232,11 +232,11 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to
-///   the compiler. No part of `T` whose arrangement Rust does not specify (such as a struct or a
-///   tuple of the `Rust` representation, or an enum without `repr`) holds a self-relative pointer
-///   or anything to check: a scalar with invalid bit patterns, an enum, or a rule. A part whose
-///   every possible arrangement places the same bytes is exempt.
+/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
+///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
+///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
@@ -345,11 +345,11 @@ pub fn validate_in<T: Pun, V: Visit>(
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to
-///   the compiler. No part of `T` whose arrangement Rust does not specify (such as a struct or a
-///   tuple of the `Rust` representation, or an enum without `repr`) holds a self-relative pointer
-///   or anything to check: a scalar with invalid bit patterns, an enum, or a rule. A part whose
-///   every possible arrangement places the same bytes is exempt.
+/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
+///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
+///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
@@ -445,11 +445,11 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to
-///   the compiler. No part of `T` whose arrangement Rust does not specify (such as a struct or a
-///   tuple of the `Rust` representation, or an enum without `repr`) holds a self-relative pointer
-///   or anything to check: a scalar with invalid bit patterns, an enum, or a rule. A part whose
-///   every possible arrangement places the same bytes is exempt.
+/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
+///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
+///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
@@ -558,11 +558,11 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to
-///   the compiler. No part of `T` whose arrangement Rust does not specify (such as a struct or a
-///   tuple of the `Rust` representation, or an enum without `repr`) holds a self-relative pointer
-///   or anything to check: a scalar with invalid bit patterns, an enum, or a rule. A part whose
-///   every possible arrangement places the same bytes is exempt.
+/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
+///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
+///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,

@@ -1,18 +1,19 @@
-//! The layout of an enum without `repr`, found by experiments in const evaluation on a sample of
-//! each variant.
+//! The layout of an enum of the `Rust` representation, found by experiments in const evaluation on
+//! a sample of each variant.
 //!
-//! Rust does not specify the layout of an enum with fields and no `repr`. Stable Rust names neither
-//! where its tag is nor its values. `offset_of!` on variants, [`mem::variant_count`] and
-//! [`discriminant_value`] are unstable, and nothing tells a niche. But const evaluation runs code
-//! on values of the enum. `#[derive(Pun)]` makes a *sample* of each variant ([`sample`]), with
-//! every scalar of each field at the least of its values and the padding uninitialized. It finds
-//! the offsets of the fields by matching on the sample. [`discover`] finds the rest by experiments
-//! on copies of the samples, which read the variant with [`mem::discriminant`] and read bytes.
-//! Every conclusion is either observed, or a hypothesis that an experiment verifies. When a
-//! hypothesis is wrong, the experiment gives another answer, and the enum is refused with a message
-//! ("no tag found", "unsupported layout", and so on), or it is an error of const evaluation, and
-//! the build fails. It never finds a wrong layout. Every experiment copies a sample and reads a
-//! variant. There are about four experiments for each variant, and none for each byte of a field.
+//! Rust does not specify the layout of an enum with fields, of the `Rust` representation. Stable
+//! Rust names neither where its tag is nor its values. `offset_of!` on variants,
+//! [`mem::variant_count`] and [`discriminant_value`] are unstable, and nothing tells a niche. But
+//! const evaluation runs code on values of the enum. `#[derive(Pun)]` makes a *sample* of each
+//! variant ([`sample`]), with every scalar of each field at the least of its values and the padding
+//! uninitialized. It finds the offsets of the fields by matching on the sample. [`discover`] finds
+//! the rest by experiments on copies of the samples, which read the variant with
+//! [`mem::discriminant`] and read bytes. Every conclusion is either observed, or a hypothesis that
+//! an experiment verifies. When a hypothesis is wrong, the experiment gives another answer, and the
+//! enum is refused with a message ("no tag found", "unsupported layout", and so on), or it is an
+//! error of const evaluation, and the build fails. It never finds a wrong layout. Every experiment
+//! copies a sample and reads a variant. There are about four experiments for each variant, and none
+//! for each byte of a field.
 //!
 //! # Cases
 //!
@@ -85,9 +86,10 @@
 //!
 //! ## The discriminant is the index
 //!
-//! `mem::Discriminant<E>` of an enum without `repr` holds its discriminant, which is the index of
-//! the variant, as an `isize`. No explicit discriminant is allowed on such an enum with fields. The
-//! size of `Discriminant<E>` is asserted, and every sample is checked to read as its own index.
+//! `mem::Discriminant<E>` of an enum of the `Rust` representation holds its discriminant, which is
+//! the index of the variant, as an `isize`. No explicit discriminant is allowed on such an enum
+//! with fields. The size of `Discriminant<E>` is asserted, and every sample is checked to read as
+//! its own index.
 //!
 //! ## A fresh value has uninitialized padding
 //!
@@ -288,7 +290,7 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
   // its value on every sample.
   assert!(
     size_of::<mem::Discriminant<E>>() == size_of::<isize>(),
-    "the discriminant of an enum without `repr` is not an `isize`"
+    "the discriminant of an enum of the `Rust` representation is not an `isize`"
   );
   // SAFETY: `read_unaligned` requires the pointer to be valid for reads, and to point to an
   // initialized `isize`, at any alignment. `discriminant` is a local of the size of an `isize`,
@@ -593,7 +595,7 @@ pub const fn discover<E, const V: usize>(
       let field = &these[i];
       assert!(
         !field.layout.has_pointers(),
-        "an enum without `repr` holds no self-relative pointer"
+        "an enum of the `Rust` representation holds no self-relative pointer"
       );
       inhabited &= field.layout.is_inhabited();
       i += 1;
@@ -655,7 +657,7 @@ pub const fn discover<E, const V: usize>(
     // and "A fresh value has uninitialized padding", above).
     assert!(
       matches!(start, 1 | 2 | 4 | 8 | 16),
-      "the bytes before the fields of an enum without `repr` are not an integer: unsupported layout"
+      "the bytes before the fields of an enum of the `Rust` representation are not an integer: unsupported layout"
     );
     try_tag(&mut desc, samples, fields, (0, start, None), V);
     assert!(desc.tag.1 > 0, "the tag of the enum does not tell its variants: unsupported layout");

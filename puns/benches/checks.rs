@@ -17,7 +17,7 @@
 //! under `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`.
 //!
 //! This is not a test, and `cargo test` does not run it. It needs the `unstable` feature, because
-//! its view enums read enums without `repr`.
+//! its view enums read enums of the `Rust` representation.
 //!
 //! # Instructions
 //!
@@ -209,7 +209,7 @@ pub struct Ipv6 {
   pub data: [u8],
 }
 
-/// An enum without `repr`, with a direct tag followed by what the variant holds.
+/// An enum of the `Rust` representation, with a direct tag followed by what the variant holds.
 #[derive(Pun, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Small {
   Byte(u8),
@@ -217,7 +217,7 @@ pub enum Small {
   Word(u16),
 }
 
-/// An enum without `repr`, with a niche in the `bool`.
+/// An enum of the `Rust` representation, with a niche in the `bool`.
 #[derive(Pun, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MaybeFlag {
   Nothing,
@@ -685,7 +685,8 @@ fn main() {
     |b: &[u8]| from_bytes::<[Kind]>(b).is_ok(),
     |b: &[u8]| b.iter().all(|&b| matches!(b, 1..=3 | 7)),
   );
-  // Enums without `repr`: a direct tag, then what its variant requires; a niche in a `bool`.
+  // Enums of the `Rust` representation: a direct tag, then what its variant requires; a niche in a
+  // `bool`.
   let smalls: Vec<u8> =
     noise(4 << 10).chunks(4).flat_map(|c| [c[0] % 3, c[1] & 1, c[2], c[3]]).collect();
   case(

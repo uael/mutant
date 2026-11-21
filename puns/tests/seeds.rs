@@ -44,24 +44,24 @@ unsafe impl<T: Pun> SelfRelative for Opt<T> {
 
 puns::self_relative!(impl[T: Pun] Opt<T>);
 
-/// A struct without `repr`. Rust specifies its size and that its bytes are initialized, but leaves
-/// to the compiler which byte is its `bool`.
+/// A struct of the `Rust` representation. Rust specifies its size and that its bytes are
+/// initialized, but leaves to the compiler which byte is its `bool`.
 #[derive(Pun, Clone, Copy)]
 struct Mixed {
   a: u8,
   b: bool,
 }
 
-/// A struct without `repr` with two fields of the same type. Every byte is a `bool`, whichever
-/// order the compiler chooses.
+/// A struct of the `Rust` representation with two fields of the same type. Every byte is a `bool`,
+/// whichever order the compiler chooses.
 #[derive(Pun, Clone, Copy)]
 struct Twins {
   a: bool,
   b: bool,
 }
 
-/// A struct without `repr` with a rule. Its bytes can hold any value, but the rule depends on
-/// which field each byte is.
+/// A struct of the `Rust` representation with a rule. Its bytes can hold any value, but the rule
+/// depends on which field each byte is.
 #[derive(Pun, Clone, Copy)]
 #[pun(assert(a < b))]
 struct Ordered {
@@ -78,7 +78,7 @@ struct Ruled {
   b: u8,
 }
 
-/// A struct without `repr` that holds a struct with a rule, at offset 0 or 1.
+/// A struct of the `Rust` representation that holds a struct with a rule, at offset 0 or 1.
 #[derive(Pun, Clone, Copy)]
 struct Carries {
   ruled: Ruled,
@@ -119,15 +119,15 @@ struct Holds {
   word: u16,
 }
 
-/// An enum with fields and without `repr`. Rust leaves its tag to the compiler.
+/// An enum with fields, of the `Rust` representation. Rust leaves its tag to the compiler.
 #[derive(Pun, Clone, Copy)]
 enum Tagged {
   A(u8),
   B(bool),
 }
 
-/// An enum without fields and without `repr`. Rust leaves the bit patterns of its variants to the
-/// compiler.
+/// An enum without fields, of the `Rust` representation. Rust leaves the bit patterns of its
+/// variants to the compiler.
 #[derive(Pun, Clone, Copy)]
 enum Plain {
   X,

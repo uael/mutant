@@ -198,13 +198,13 @@ pub unsafe trait SelfRelative: Sized {
 ///
 /// `Option<Type>` is found as follows. `Pun` has a hidden associated constant, the layout of
 /// `Option<Self>` if `Self` gives it, which is `None` by default. The layout of `Option` of another
-/// type is then found by experiment, as for any enum without `repr`. This macro gives it as the
-/// same pointer, which may be null, after a check made where `Option` of the pointer is used. The
-/// check is that `Option<Type>` has the size of `Type`, and that `None` is all zero bytes, read in
-/// const evaluation. Then `rustc` has put `None` in a niche of the bytes of the pointer, which are
-/// all of its offset and initialized ("The type is its offset" in [`SelfRelative`]), and that
-/// niche is zeros. `Some(p)` is the bytes of `p`, which are not all zero. So "Null" holds of
-/// `Option<Type>`.
+/// type is then found by experiment, as for any enum of the `Rust` representation. This macro gives
+/// it as the same pointer, which may be null, after a check made where `Option` of the pointer is
+/// used. The check is that `Option<Type>` has the size of `Type`, and that `None` is all zero
+/// bytes, read in const evaluation. Then `rustc` has put `None` in a niche of the bytes of the
+/// pointer, which are all of its offset and initialized ("The type is its offset" in
+/// [`SelfRelative`]), and that niche is zeros. `Some(p)` is the bytes of `p`, which are not all
+/// zero. So "Null" holds of `Option<Type>`.
 ///
 /// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
 /// zero bytes is `None`. This requires `None` to be all zero bytes, which holds if the offset has
