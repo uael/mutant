@@ -988,7 +988,7 @@ impl Pointer {
   ///
   /// Panics if `T` has a size of 0. In const evaluation, the panic is a compile error.
   const fn target<T>() -> (usize, usize) {
-    // A target without size could be anywhere, the pointer itself included, and is nothing that
+    // A target of size 0 could be anywhere, the pointer itself included, and is nothing that
     // a pointer can be read as: the proof stops at it (`deep::behind`).
     assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
     (size_of::<T>(), align_of::<T>())
@@ -1329,7 +1329,7 @@ const fn str_equals(a: &str, b: &str) -> bool {
 #[derive(Debug)]
 pub struct Enum {
   /// The tag, a scalar whose valid values are the tags of the variants, at its offset in the enum.
-  /// A scalar of no size for a union and for a type without values.
+  /// A scalar of size 0 for a union and for a type without values.
   pub(crate) tag: Field,
   /// The variants, in the order of their declarations.
   pub(crate) variants: &'static [Variant],
@@ -2019,7 +2019,7 @@ const fn excludes_zero<P>() -> bool {
   true
 }
 
-/// The tag of a union and of an enum without variants: a scalar of no size.
+/// The tag of a union and of an enum without variants: a scalar of size 0.
 const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 
 /// Does nothing. [`Layout::PIN`] holds instances of it, whose types name the types that it pins.
@@ -3176,12 +3176,12 @@ impl Layout {
   ///
   /// This is an enum of the `Rust` representation, with fields or not, and `Option` and `Result`
   /// except where `core` documents their layout. Rust specifies only that an enum without variants,
-  /// or of one variant whose fields have no size, has a size of 0. Such a layout is not `fixed`
+  /// or of one variant whose fields have a size of 0, has a size of 0. Such a layout is not `fixed`
   /// ([`Stable`]), and is known as a source to be initialized only if it has no byte.
   #[doc(hidden)]
   #[must_use]
   pub const fn unspecified(self) -> Self {
-    // An enum without variants, or of one variant whose fields have no size, has none.
+    // An enum without variants, or of one variant whose fields have a size of 0, has none.
     Self { stable: Stable::opaque(self.size == 0, true), ..self }
   }
 
@@ -3415,7 +3415,7 @@ impl Layout {
   /// Returns whether every byte of every value is initialized, in every layout that Rust allows.
   ///
   /// This is [`Layout::is_plain`], where a part that is not `fixed` counts for what it is in every
-  /// layout ([`Stable::init`]), and a field of no size is not looked at.
+  /// layout ([`Stable::init`]), and a field of size 0 is not looked at.
   pub(crate) const fn always_init(&self) -> bool {
     if !self.stable.fixed {
       return self.stable.init;
@@ -3822,8 +3822,8 @@ impl Layout {
   /// by offset.
   ///
   /// Each field gets its index in the order of declarations, and the number of leaves of the fields
-  /// declared before it. The sort is stable: fields at the same offset, which have no size except
-  /// for one, keep the order of their declarations.
+  /// declared before it. The sort is stable: fields at the same offset, which have a size of 0
+  /// except for one, keep the order of their declarations.
   ///
   /// # Examples
   ///
@@ -6560,7 +6560,7 @@ pub const fn merge_ranges<const N: usize>(
 /// - Every byte of `value` is initialized.
 #[doc(hidden)]
 pub const unsafe fn bits_of<T>(value: &T) -> u128 {
-  assert!(size_of::<T>() <= 16, "a fieldless enum cannot be larger than 16 bytes");
+  assert!(size_of::<T>() <= 16, "an enum without fields cannot be larger than 16 bytes");
   // SAFETY: `size_of::<T>() <= 16`, which is asserted above. `value` is a reference, so valid for
   // reads of `size_of::<T>()` bytes, which are initialized, by contract on the caller. These are
   // the requirements of `load`.

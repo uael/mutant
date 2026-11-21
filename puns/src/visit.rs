@@ -215,7 +215,7 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// buffer must then be at an address aligned to `align_of::<T>()`, and `at` a multiple of it. The
 /// same holds for what the pointers aim at, which their scheme places.
 ///
-/// A `T` without size has no bytes to check: it is valid if it has a value. `T` is `Sized`: a
+/// A `T` of size 0 has no bytes to check: it is valid if it has a value. `T` is `Sized`: a
 /// value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of pointers
 /// holds by value.
 ///

@@ -62,7 +62,7 @@
 //! So `pair` cannot choose what it names. It pairs by position: the fields of two structs and the
 //! variants of two enums in the order of their declarations, and elements with elements. This names
 //! more pairs than matter. Where the source has nothing, its side is `()`. `target` has nothing to
-//! prove of a type without size, since no pointer aims at one ([`Pointer::one`],
+//! prove of a type of size 0, since no pointer aims at one ([`Pointer::one`],
 //! [`Pointer::sequence`]), and the type that text aims at is `()`.
 //!
 //! `local`, which is `const` code, decides exactly which pairs matter. Every pointer of the target
@@ -375,7 +375,7 @@ fn variants<VA: Variants, VB: Variants>() {
 /// in `X`, a pointer of `Y` is not proven by a pointer of `X`, or some value of `X` is not a
 /// valid `Y` or does not meet one of its rules. Then the reasons of [`local`].
 pub const fn behind<X: Pun, Y: Pun>(fuel: usize) -> Option<&'static str> {
-  // Not a pair of pointers: no pointer aims at a type without size (`Pointer::one`,
+  // Not a pair of pointers: no pointer aims at a type of size 0 (`Pointer::one`,
   // `Pointer::sequence`), and the target type of text is `()`.
   if X::LAYOUT.size() == 0 || Y::LAYOUT.size() == 0 {
     return None;

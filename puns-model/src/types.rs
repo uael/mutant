@@ -31,8 +31,8 @@ macro_rules! model_struct {
   };
 }
 
-/// Declares a fieldless enum whose valid values are the bytes of its variants, read from a value
-/// of each variant.
+/// Declares an enum without fields whose valid values are the bytes of its variants, read from a
+/// value of each variant.
 macro_rules! model_fieldless {
   ($(#[$attr:meta])* enum $name:ident { $($variant:ident $(= $value:expr)?),+ $(,)? }) => {
     #[derive(Pun, Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,11 +47,11 @@ macro_rules! model_fieldless {
           let mut bits = 0u128;
           let bytes: &[u8] =
             // SAFETY: `variant` is a reference to a value of `$name`, valid for reads of its `size`
-            // bytes, of alignment 1 as `u8`s. A value of a fieldless enum is its discriminant. With
-            // `repr(C)` or a primitive representation, it has the size of that integer [1], so
-            // every byte is initialized. `Erust`, of the `Rust` representation, rests on the layout
-            // that `rustc` gives it, a one-byte tag. These are the requirements of
-            // `slice::from_raw_parts`.
+            // bytes, of alignment 1 as `u8`s. A value of an enum without fields is its
+            // discriminant. With `repr(C)` or a primitive representation, it has the size of that
+            // integer [1], so every byte is initialized. `Erust`, of the `Rust` representation,
+            // rests on the layout that `rustc` gives it, a one-byte tag. These are the requirements
+            // of `slice::from_raw_parts`.
             //
             // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.primitive.enum:
             //

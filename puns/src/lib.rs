@@ -701,7 +701,7 @@
 //! | `packed(N)` and `align(N)` | R [`r-layout.repr.alignment`][alignment] |
 //! | The `Rust` representation puts each field at a multiple of its alignment, and the type is at least as aligned as its fields | R [`r-layout.repr.rust.layout`][rust layout] |
 //! | The fields of a struct of the `Rust` representation do not overlap, in an order that is not specified | R [`r-layout.repr.rust.struct`][rust struct] |
-//! | A struct of the `Rust` representation whose fields have no size has none. So does an enum without variants, or of one variant whose fields have no size | R [`r-layout.repr.rust.struct-zst`][struct zst], [`r-layout.repr.rust.enum-empty-zst`][enum empty], [`r-layout.repr.rust.enum-struct-like-zst`][enum struct-like] |
+//! | A struct of the `Rust` representation whose fields have a size of 0 has none. So does an enum without variants, or of one variant whose fields have no size | R [`r-layout.repr.rust.struct-zst`][struct zst], [`r-layout.repr.rust.enum-empty-zst`][enum empty], [`r-layout.repr.rust.enum-struct-like-zst`][enum struct-like] |
 //! | The `Rust` representation guarantees nothing else | R [`r-layout.repr.rust.unspecified`][rust unspecified] |
 //! | A tuple has the `Rust` representation | R [`r-layout.tuple.def`][tuple] |
 //! | The representation of a type does not change the layout of its fields | R [`r-layout.repr.inter-field`][inter-field] |
@@ -2333,10 +2333,10 @@ macro_rules! impl_bits {
 
 impl_bits!(i8 i16 i32 i64 i128 isize f32 f64);
 
-// SAFETY: `PhantomData<T>` has size 0 [1], and so does `Spec::any::<Self>()`. A value of size 0
-// has no byte to hold or to accept, and `PhantomData<T>` has no invariant. It holds no
-// `UnsafeCell`. What `T` marks is not an invariant of the bytes: a type that relies on it must
-// not implement `Pun` (see the crate documentation, "Soundness").
+// SAFETY: `PhantomData<T>` has a size of 0 [1], and so does `Spec::any::<Self>()`. A value of
+// size 0 has no byte to hold or to accept, and `PhantomData<T>` has no invariant. It holds no
+// `UnsafeCell`. What `T` marks is not an invariant of the bytes: a type that relies on it must not
+// implement `Pun` (see the crate documentation, "Soundness").
 //
 // [1] Per https://doc.rust-lang.org/1.99.0/core/marker/struct.PhantomData.html:
 //
@@ -2802,7 +2802,7 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
       _ => return Err(Error::Size),
     };
     // An unsized target of greater alignment may end with more padding than the source has room
-    // for, even if its slice has no size (`[()]`).
+    // for, even if its slice has a size of 0 (`[()]`).
     if const { D::LAYOUT.is_unsized() && D::LAYOUT.align() > S::LAYOUT.align() } {
       match (target.size_of_val(len), layout.size_of_val(ptr::metadata(source))) {
         (Some(needed), Some(available)) if needed <= available => {}

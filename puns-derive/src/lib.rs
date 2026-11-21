@@ -1483,7 +1483,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   for (i, field) in fields.iter_mut().enumerate() {
     let member = &field.member;
     field.offset = match () {
-      // The field that is not zero-sized is at 0; zero-sized ones have no bytes to be anywhere.
+      // The field whose size is not 0 is at 0; fields of size 0 have no bytes to be anywhere.
       () if repr.transparent => quote!(0),
       () if repr.c => quote!(<Self as __PunOffsets>::OFFSETS[#i]),
       () => quote!({
