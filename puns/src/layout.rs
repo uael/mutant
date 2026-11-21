@@ -2782,25 +2782,27 @@ impl Layout {
 
   /// Returns the layout of the struct `T`, of the fields `fields` and the rules `rules`.
   ///
-  /// `fields` are the fields of `T`, as [`Layout::sort_fields`] returns them. `rules` are what a
-  /// value of `T` requires beyond the validity of its fields. A rule is a requirement, never a
-  /// guarantee. Safe code may write the fields of a value so that its rules do not hold.
+  /// `fields` are the fields of `T`, as [`Layout::sort_fields`] returns them, and `rules` are what
+  /// a value of `T` requires beyond the validity of its fields. A rule is a requirement, never a
+  /// guarantee: safe code may write the fields of a value so that its rules do not hold.
   ///
-  /// The size and the alignment of `T` come from the compiler. If the last field is unsized, so is
-  /// `T`. The size of a value of `T` whose tail has up to 8 elements is then compared with the one
-  /// that the layout computes: the offset of the tail, plus its elements, rounded up to the
-  /// alignment of `T`.
+  /// The size and alignment of `T` come from the compiler. If the last field is unsized, so is `T`,
+  /// and the size of a value of `T` whose tail has up to 8 elements is compared with the size that
+  /// the layout computes: the offset of the tail, plus its elements, rounded up to the alignment of
+  /// `T`.
   ///
   /// # Panics
   ///
-  /// Panics if a field that is not the last is unsized, if two fields overlap or are not sorted by
-  /// offset, or if a sized field ends past the size of `T`. Panics if a rule is not well formed, as
-  /// `#[derive(Pun)]` writes it: a rule reads a field past the sized fields, has too many
-  /// operations, walks or variables, needs too deep a stack, or is a size or a length that reads
-  /// the size of the value. Panics if a `len` rule is not about a last field that is a slice or an
-  /// array. Panics if the size of `T` is not the one that the layout computes, as for a `packed`
-  /// struct that ends with an aligned unsized field. In const evaluation, the panic is a compile
-  /// error.
+  /// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+  ///
+  /// - A field other than the last is unsized, two fields overlap or are not sorted by offset, or a
+  ///   sized field ends past the size of `T`.
+  /// - A rule is not well formed, as `#[derive(Pun)]` writes it: it reads a field past the sized
+  ///   fields, has too many operations, walks or variables, needs too deep a stack, or is a size or
+  ///   a length that reads the size of the value.
+  /// - A `len` rule is not about a last field that is a slice or an array.
+  /// - The size of `T` is not the one that the layout computes, as for a `packed` struct that ends
+  ///   with an aligned unsized field.
   ///
   /// # Safety
   ///
@@ -2970,8 +2972,8 @@ impl Layout {
   /// Returns the layout of a variant of the enum `T`, of the fields `fields`.
   ///
   /// `fields` are the fields of the variant, as [`Layout::sort_fields`] returns them, with their
-  /// offsets from the start of the enum. The layout is a struct of the size and the alignment of
-  /// `T`, in which every byte that no field covers is padding. [`Layout::enumeration`] checks the
+  /// offsets from the start of the enum. The layout is a struct with the size and alignment of `T`,
+  /// in which every byte that no field covers is padding, and [`Layout::enumeration`] checks the
   /// fields against the enum.
   ///
   /// # Examples
@@ -3034,25 +3036,28 @@ impl Layout {
 
   /// Returns the layout of the enum with fields `T`, whose tag and variants `layout` describes.
   ///
-  /// `layout` is the enum that its representation specifies ([`Enum::new`]), or, for the `Rust`
+  /// `layout` is the enum that its representation specifies ([`Enum::new`]) or, for the `Rust`
   /// representation, the one that `rustc` laid out.
   ///
-  /// As a source, a value of the enum is known by its tag, and by the bytes that every variant that
-  /// has values initializes. As a target, the enum is proven variant by variant where the source
-  /// proves each variant that it may be. Otherwise it is checked as a whole at run time: its tag,
-  /// then what the fields of its variant require.
+  /// As a source, a value of the enum is known by its tag, and by the bytes that every variant with
+  /// values initializes. As a target, the enum is proven variant by variant where the source proves
+  /// each variant it may be, and otherwise it is checked as a whole at run time: its tag, then what
+  /// the fields of its variant require.
   ///
   /// # Panics
   ///
-  /// Panics if the tag is not a scalar that is always initialized, of at most 16 bytes, within the
-  /// enum. Panics if `T` is not laid out as `layout` says: the size of `T` is not the one that
-  /// `layout` specifies, rounded up to the alignment of `T`, or `T` is less aligned than `layout`
-  /// specifies. Panics if a value of the tag of a variant is not a valid value of the tag, if the
-  /// values of the tag of a variant are not sorted, or if two variants share a value of the tag.
-  /// Panics if a variant does not have the size of `T`, if one of its fields is unsized, overlaps
-  /// the one before it, or ends past the size of `T`, or if a field overlaps the tag in a variant
-  /// that does not hold it. Panics if more than one variant holds the tag. In const evaluation, the
-  /// panic is a compile error.
+  /// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+  ///
+  /// - The tag is not a scalar of at most 16 bytes that is always initialized, within the enum.
+  /// - `T` is not laid out as `layout` says: the size of `T` is not the one that `layout`
+  ///   specifies, rounded up to the alignment of `T`, or `T` is less aligned than `layout`
+  ///   specifies.
+  /// - A value of the tag of a variant is not a valid value of the tag, the values of the tag of a
+  ///   variant are not sorted, or two variants share a value of the tag.
+  /// - A variant does not have the size of `T`, one of its fields is unsized, overlaps the one
+  ///   before it, or ends past the size of `T`, or a field overlaps the tag in a variant that does
+  ///   not hold it.
+  /// - More than one variant holds the tag.
   ///
   /// # Examples
   ///
@@ -3167,13 +3172,14 @@ impl Layout {
     Self { id, ..self }
   }
 
-  /// Returns the same layout, of a type whose layout Rust leaves to the compiler, except for a size
-  /// of 0.
+  /// Returns the same layout, marked as one that Rust leaves to the compiler, except for a size of
+  /// 0.
   ///
-  /// This is an enum of the `Rust` representation, with fields or not, and `Option` and `Result`
-  /// except where `core` documents their layout. Rust specifies only that an enum without variants,
-  /// or of one variant whose fields have a size of 0, has a size of 0. Such a layout is not `fixed`
-  /// ([`Stable`]), and is known as a source to be initialized only if it has no byte.
+  /// This is an enum of the `Rust` representation, with or without fields, and `Option` and
+  /// `Result` except where `core` documents their layout. Rust specifies only that an enum without
+  /// variants, or with one variant whose fields have a size of 0, has a size of 0. Such a layout is
+  /// not `fixed` ([`Stable`]), and as a source it is known to be initialized only if it has no
+  /// bytes.
   #[doc(hidden)]
   #[must_use]
   pub const fn unspecified(self) -> Self {
@@ -3181,7 +3187,7 @@ impl Layout {
     Self { stable: Stable::opaque(self.size == 0, true), ..self }
   }
 
-  /// Returns the same layout, which is the same in every layout that Rust allows wherever the size
+  /// Returns the same layout, marked as the same in every layout that Rust allows wherever the size
   /// of `like` is: the layout of `MaybeUninit<T>`, where `like` is the layout of `T`.
   #[doc(hidden)]
   #[must_use]
@@ -3193,9 +3199,9 @@ impl Layout {
   /// Returns the facts of a struct whose representation specifies its offsets, as `repr(C)` and
   /// `repr(transparent)` do.
   ///
-  /// The offsets are computed from the sizes and the alignments of the fields, so they are the same
-  /// in every layout if the sizes are. A rule that reads the bytes of the struct by offset reads
-  /// the same thing in every layout only if every field is `fixed` too, at any depth. Otherwise the
+  /// The offsets are computed from the sizes and alignments of the fields, so they are the same in
+  /// every layout if the sizes are. A rule that reads the bytes of the struct by offset reads the
+  /// same thing in every layout only if every field is `fixed` too, at any depth. Otherwise, the
   /// struct is not `fixed`, and its bytes are not known to be initialized.
   ///
   /// # Panics
@@ -3213,8 +3219,8 @@ impl Layout {
   /// Returns whether the size of every field of the struct is a multiple of the greatest alignment
   /// of a field.
   ///
-  /// The alignment of a field counts as the struct lowers it, if it is `packed(N)`. The fields that
-  /// have a size are then one right after the other in every order, without padding between them.
+  /// The alignment of a field counts as lowered by the struct, if it is `packed(N)`. The fields
+  /// with a size are then one right after another in every order, with no padding between them.
   ///
   /// # Panics
   ///
@@ -3241,26 +3247,26 @@ impl Layout {
     true
   }
 
-  /// Returns the same layout, of a struct or a tuple of the `Rust` representation, packed to
+  /// Returns the same layout, as that of a struct or tuple of the `Rust` representation packed to
   /// `pack`, or `usize::MAX` if it is not packed, for `#[derive(Pun)]`.
   ///
   /// Rust says only that each field of such a struct is at a multiple of its alignment, and that
-  /// the fields do not overlap. `rustc` places the fields one after the other, each at the first
-  /// offset that its alignment allows, in an order of its choosing. `-Zrandomize-layout` draws this
+  /// the fields do not overlap. `rustc` places the fields one after another, each at the first
+  /// offset its alignment allows, in an order of its choosing, and `-Zrandomize-layout` draws this
   /// order at random. The layout records what is the same in every order:
   ///
   /// - The whole layout, if every order makes the same bytes and no rule reads the bytes by offset.
   ///   This is so if one field has a size, which is then at offset 0. It is also so if the struct
   ///   has no rule, the size of each field is a multiple of the alignment of every field
-  ///   ([`Layout::tiled`]), and the fields that have a size are all bytes of any value without
+  ///   ([`Layout::tiled`]), and the fields with a size are either all bytes of any value without
   ///   rules, as in `(u8, [u8; 3])`, or all the same layout, fixed at any depth, as in `(bool,
   ///   bool)`. In both cases, the size of the struct must be the sum of the sizes of its fields,
-  ///   rounded up to its alignment. A rule names fields: `a < b` holds of other bytes in another
-  ///   order.
+  ///   rounded up to its alignment. A rule names fields, so `a < b` holds for different bytes in
+  ///   another order.
   /// - Otherwise, the size, if every order gives the size that `rustc` chose, and whether every
   ///   byte is initialized in every order. Orders are tried for up to 6 fields that have a size or
-  ///   an alignment greater than 1. With more, the size is the same only if the fields need no
-  ///   padding in any order.
+  ///   an alignment greater than 1. With more, the size counts as the same only if the fields need
+  ///   no padding in any order.
   ///
   /// # Panics
   ///
@@ -3379,7 +3385,7 @@ impl Layout {
   /// Returns whether the first `n` of `items`, each a size and an alignment, placed in `order`,
   /// give the struct the size of `self`, and whether they leave padding.
   ///
-  /// Each field is placed at the first offset after the one before that its alignment allows, as
+  /// Each field is placed at the first offset after the previous one that its alignment allows, as
   /// `rustc` does. An overflow returns `(false, true)`.
   const fn place(&self, items: &[(usize, usize); 6], order: &[usize; 6], n: usize) -> (bool, bool) {
     let (mut end, mut padded, mut i) = (0usize, false, 0);
@@ -3400,8 +3406,8 @@ impl Layout {
   /// enabled, and the layout is not `fixed` ([`Stable`]).
   ///
   /// A layout whose size is the same in every layout that Rust allows, that has no rule, and whose
-  /// bytes are all of any value or all padding, is looked into all the same: what its bytes are
-  /// does not depend on where its fields are.
+  /// bytes are all of any value or all padding, is looked into all the same, since what its bytes
+  /// are does not depend on where its fields are.
   pub(crate) const fn is_opaque(&self) -> bool {
     let same_bytes =
       self.stable.size && !self.has_rules && matches!(self.uniform, Uniform::Any | Uniform::Pad);
@@ -3411,7 +3417,7 @@ impl Layout {
   /// Returns whether every byte of every value is initialized, in every layout that Rust allows.
   ///
   /// This is [`Layout::is_plain`], where a part that is not `fixed` counts for what it is in every
-  /// layout ([`Stable::init`]), and a field of size 0 is not looked at.
+  /// layout ([`Stable::init`]), and fields of size 0 are not looked at.
   pub(crate) const fn always_init(&self) -> bool {
     if !self.stable.fixed {
       return self.stable.init;
@@ -3439,8 +3445,8 @@ impl Layout {
   /// Returns whether no part of the layout, at any depth, depends on a layout that Rust leaves to
   /// the compiler.
   ///
-  /// A struct whose orders of fields all make the same bytes counts, as `(u8, u8)` does, though
-  /// which byte holds which field depends on the compiler. What [`validate_in`](crate::validate_in)
+  /// A struct whose field orders all make the same bytes counts, as `(u8, u8)` does, though which
+  /// byte holds which field depends on the compiler: what [`validate_in`](crate::validate_in)
   /// checks of a value of such a layout is the same in every layout that Rust allows. The answer
   /// does not depend on the `unstable` feature.
   ///
@@ -3554,8 +3560,8 @@ impl Layout {
     layout.variants[variant].ranges
   }
 
-  /// Returns the layout of the type `T`, which has no value, as `Infallible` and an enum without
-  /// variants have none.
+  /// Returns the layout of the type `T`, which has no value, like `Infallible` and an enum without
+  /// variants.
   ///
   /// The layout is an enum without variants. No value of a type that has values is one of it, and
   /// as a source it proves anything, since no value of it exists.
@@ -3589,9 +3595,9 @@ impl Layout {
 
   /// Returns whether a value of the layout can exist.
   ///
-  /// A type without values has none, and so has an enum whose variants have none, and a struct, or
-  /// an array of at least one element, that holds a type without values. A slice and an array of no
-  /// element have values, since they may be empty.
+  /// A type without values has none, and neither does an enum whose variants have none, nor a
+  /// struct, or an array of at least one element, that holds a type without values. A slice and an
+  /// array of no elements have values, since they may be empty.
   ///
   /// # Examples
   ///
@@ -3635,21 +3641,21 @@ impl Layout {
 
   /// Returns the layout of the `repr(C)` union `T`, whose fields are the variants of `layout`.
   ///
-  /// The [validity] of unions is not settled by the language. Some rules being considered let a
-  /// union hold any bytes, others require them to be a valid value of one of its fields. This
-  /// layout takes what is sound under each. As a target, bytes are a valid union if they are a
-  /// valid value of one of its fields, which requires more than some of the rules do, never less.
-  /// As a source, nothing is known of a union, not even that its bytes are initialized, since safe
-  /// code may write one field over another.
+  /// The [validity] of unions is not settled by the language: some of the rules being considered
+  /// let a union hold any bytes, while others require them to be a valid value of one of its
+  /// fields. This layout takes what is sound under each. As a target, bytes are a valid union if
+  /// they are a valid value of one of its fields, which requires more than some of the rules do,
+  /// and never less. As a source, nothing is known about a union, not even that its bytes are
+  /// initialized, since safe code may write one field over another.
   ///
   /// [validity]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity.union
   ///
   /// # Panics
   ///
-  /// Panics if `layout` is not the layout of a union, as `#[derive(Pun)]` makes it. Panics if the
-  /// layout of a variant does not have the size of `T`, has more than one field, or holds a
-  /// self-relative pointer. Panics if a field is not at offset 0, is larger than `T`, or is
-  /// unsized. In const evaluation, the panic is a compile error.
+  /// Panics if `layout` is not the layout of a union as `#[derive(Pun)]` makes it, if the layout of
+  /// a variant does not have the size of `T`, has more than one field, or holds a self-relative
+  /// pointer, or if a field is not at offset 0, is larger than `T`, or is unsized. In const
+  /// evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
@@ -3671,7 +3677,7 @@ impl Layout {
   /// assert!(puns::try_pun::<u8, Choice>(4).is_err());
   /// ```
   ///
-  /// As a source, nothing is known of it, not even that its byte is initialized:
+  /// As a source, nothing is known about it, not even that its byte is initialized:
   ///
   /// ```compile_fail,E0080
   /// # use puns::{Pun, num::u8in};
@@ -3711,13 +3717,13 @@ impl Layout {
     }
   }
 
-  /// Returns the field declared `index`th of the `variant`th variant of an enum, for
+  /// Returns the `index`th declared field of the `variant`th variant of an enum, for
   /// `#[derive(Pun)]`.
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not an enum, has no `variant`th variant, or if that variant has no field
-  /// declared `index`th. A field of a variant without values of an enum of the `Rust`
+  /// Panics if `self` is not an enum, has no `variant`th variant, or if that variant has no
+  /// `index`th declared field. A field of a variant without values of an enum of the `Rust`
   /// representation is not in the layout.
   #[doc(hidden)]
   #[must_use]
@@ -3736,10 +3742,10 @@ impl Layout {
   /// Returns whether the bytes from `offset` are initialized, and the offset where this may stop
   /// being so.
   ///
-  /// With `always`, the bytes are initialized in every value of the layout: what a source
-  /// guarantees. Without, they are initialized in some value: what a target may require. The
-  /// returned end is an offset up to which the answer holds for every byte, and may be less than
-  /// where the answer changes.
+  /// With `always`, the bytes are initialized in every value of the layout, which is what a source
+  /// guarantees. Without it, they are initialized in some value, which is what a target may
+  /// require. The returned end is an offset up to which the answer holds for every byte, and may be
+  /// before the point where the answer changes.
   ///
   /// The function does not look into an array whose bytes are not all initialized or all padding.
   /// With `always`, its bytes are not known to be initialized. Without, they are all taken to be
