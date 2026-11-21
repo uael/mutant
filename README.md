@@ -34,19 +34,21 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity))
 `bools` borrows `switches`, and nothing is copied. Each such conversion is a *pun*, of one of three
 kinds:
 
-- **Proven**: `puns` can show that every value of the source is a valid value of the target, at an
-  address aligned for the target. `pun` and `pun_ref` accept only proven puns, and add no check at
-  run time.
-- **Checked**: some values of the source may be invalid for the target, or the address may not be
-  aligned for it. `try_pun`, `from_bytes` and the other functions whose names start with `try_` or
-  `from_` check at run time what `puns` could not prove, and return a `Result`. Given a checked
-  pun, `pun` and `pun_ref` do not compile, and the error suggests a `try_` function.
+- **Proven**: `puns` can show that every value of the source is a valid value of the target, with
+  a size that the target can have, at an address aligned for the target. `pun` and `pun_ref`
+  accept only proven puns, and add no check at run time.
+- **Checked**: some values of the source may be invalid for the target, or its length or its
+  address may not suit the target. `try_pun`, `from_bytes` and the other functions whose names
+  start with `try_` or `from_` check at run time what `puns` could not prove, and return a
+  `Result`. Given a checked pun, `pun` and `pun_ref` do not compile, and the error suggests a
+  `try_` function.
 - **Refused**: the pun can never be valid, or it would read padding, or `puns` can neither prove
   nor check what it needs. No function accepts it.
 
-A call that a function does not accept is a compile error, which `cargo build` reports, but
-`cargo check` and editors do not. So if `Switch` gained a variant with the value 2, `cargo build`
-would reject the call to `pun_ref`, and `try_pun_ref` would check each element instead.
+A call that a function does not accept is a compile error. If `Switch` gained a variant with the
+value 2, `pun_ref` would no longer accept the call above, and you would write `try_pun_ref`, which
+checks each element. `cargo build` reports such an error, but `cargo check` and editors miss most
+of them.
 
 `puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
 structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun`, `try_pun`,
@@ -118,10 +120,10 @@ assert_eq!(puns::from_head::<Packet>(&wrong).err(), Some(puns::Error::Validity))
 `u16be` and `u32be` are big-endian integers with an alignment of 1, so `Packet` has no padding,
 and can be read at any address. A rule is an expression over the unsigned integer fields, with
 operators, constants, and functions that the derive macro provides, like `crc32`, and `walk` to
-loop over a chain of headers. Other attributes give the valid values of a field, the length of a
-slice, regions whose sizes are in the data, and getters for bit fields. The
-[documentation of the derive][derive] lists them all. The error says that the bytes are invalid,
-but not which field or rule.
+loop over a chain of headers. A rule cannot call your own functions on the values of fields, and
+`puns` does not prove a rule from a different rule that implies it. Other attributes give the
+valid values of a field, the length of a slice, regions whose sizes are in the data, and getters
+for bit fields. The [documentation of the derive][derive] lists them all.
 
 A rule is checked by the function that reads the bytes, and nothing keeps it true afterwards.
 Through a `&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
@@ -174,9 +176,10 @@ existing variants.
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
 accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and
-returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). The same
-comparison proves one of your types from another, as in the version example, and the rules of a
-format have no counterpart in their traits.
+returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]).
+Comparing the two types also lets `puns` read one of your types as another, as in the version
+example, and the rules of a format, such as lengths and checksums, have no counterpart in their
+traits.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -189,22 +192,26 @@ available on nightly only.
 A proven pun adds no check. A checked pun checks only what `puns` could not prove.
 [`docs/performance.md`][performance] times those checks next to the same checks written by hand,
 on an Apple M4 Max. The checks of IPv4, IPv6, UDP and TCP packets take from about half as long to
-1.1 times as long as by hand, and the slowest case of the page 1.5 times as long.
+about 1.2 times as long as by hand. One case, which needs the `unstable` feature, takes 1.5 times
+as long.
 
 Comparing the types takes build time: about 17 ms of a debug build for each struct read from
-bytes, on average over 100 of them. A few kinds of types take seconds, as
-[`docs/performance.md`][performance] shows.
+bytes, on average over 100 of them. An enum of references that returns the first variant that
+the bytes match, a *view enum*, takes longer: with 64 overlapping variants, 25 s in a release
+build.
 
 ## Caveats
 
 - **Build the code to see the errors.** `puns` compares the types when the compiler generates
-  code, so `cargo check`, `cargo clippy` and editors do not report a call that does not compile,
-  and `cargo build` does. In an optimized build, the error may not name the line of your code.
+  code, so `cargo check`, `cargo clippy` and editors miss most refused calls, and `cargo build`
+  reports them. In an optimized build, the error may not name the line of your code.
   [Compile-time errors] shows what an error looks like, and how to fix it.
+- **Generic code is checked when it is used.** A generic function that calls `pun_ref` compiles
+  on its own. A call of it with types that do not pun fails at `cargo build`, and the error points
+  inside the generic function, since no trait bound can state that two types pun.
 - **Give your types a stable layout.** Use `#[repr(C)]` for a struct, and `#[repr(u8)]` or
-  another integer type for an enum. For fields, prefer the integers of [`puns::num`][num], like
-  `u16be`: their byte order is fixed, and their alignment of 1 leaves no padding. Without a
-  `repr`, the layout may change with the compiler, and `puns` refuses what depends on it, unless
+  another integer type for an enum, with fields like the integers of [`puns::num`][num]. Without
+  a `repr`, the layout may change with the compiler, and `puns` refuses what depends on it, unless
   you turn on the [`unstable` feature][unstable] (which works on stable Rust).
 - **Deriving `Pun` bypasses your constructors.** Any code can then make a value of the type from
   bytes, and read or write its fields, private ones included. Do not derive `Pun` on a type with a
@@ -213,19 +220,22 @@ bytes, on average over 100 of them. A few kinds of types take seconds, as
   to the length of the data. A checksum or a `walk` inside a `walk` takes time in proportion to
   the square of the length, or more. For such a type, check the length of untrusted bytes before
   you read them ([details][costs]).
+- **Errors are coarse.** An [`Error`][error-type] says whether the size, the alignment or a value
+  was wrong, but not which field or rule.
 
 ## Safety and testing
 
 Code that uses `puns` can keep `#![forbid(unsafe_code)]`: the `unsafe` code is in `puns`, and the
 analysis of the types decides when it runs. The [Soundness] section of the documentation lists
-what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states: the
-representation of a pointer to an unsized type, which `puns` checks at compile time for each type,
-and the evaluation of the constants of a function that is never called, which only self-relative
-pointers rely on.
+what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states. One,
+the representation of a pointer to an unsized type, is checked at compile time for each type. The
+other only matters to `view_ref` and `try_view_ref`, which read values that hold pointers, and
+tests check it in debug and optimized builds.
 
-[`docs/testing.md`][testing] describes the tests. A model check compares the analysis with oracles
-written by hand, on every ordered pair of test types of the same size. The tests run under Miri,
-also on 32-bit and big-endian targets. More than 100 programs must fail to compile, each with its
+[`docs/testing.md`][testing] describes the tests. One compares the analysis with answers written
+by hand, on every ordered pair of test types of the same size: for every value of the source up to
+2 bytes, and for chosen values beyond. The tests run under Miri, also on 32-bit and big-endian
+targets. More than 100 programs must fail to compile, each with its
 expected message. If you find a soundness bug, please [open an issue][issues].
 
 ## Learn more
@@ -233,7 +243,7 @@ expected message. If you find a soundness bug, please [open an issue][issues].
 The [reference][api] has a table of the functions, and [Limitations] lists what `puns` cannot do
 yet. The [examples] read parts of more than 40 formats, from TLS and DNS to ELF and SQLite, and
 Bluetooth in [`link.rs`][link]. The shortest, [`media.rs`][media], reads WAVE files and MP4
-boxes.
+boxes; in a clone of the repository, `cargo run --example media` runs it.
 
 ## History
 
@@ -262,6 +272,7 @@ additional terms or conditions.
 [api]: https://docs.rs/puns/latest/puns/#reference
 [Limitations]: https://docs.rs/puns/latest/puns/#limitations
 [num]: https://docs.rs/puns/latest/puns/num/index.html
+[error-type]: https://docs.rs/puns/latest/puns/enum.Error.html
 [derive]: https://docs.rs/puns/latest/puns/derive.Pun.html
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
 [deriving]: https://docs.rs/puns/latest/puns/#what-deriving-pun-means
