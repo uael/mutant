@@ -44,8 +44,13 @@ kinds:
 - **Refused**: the pun can never be valid, or it would read padding, or `puns` can neither prove
   nor check what it needs. No function accepts it.
 
-So if `Switch` gained a variant with the value 2, the call to `pun_ref` would stop compiling, and
-`try_pun_ref` would check each element instead.
+A call that a function does not accept is a compile error, which `cargo build` reports, but
+`cargo check` and editors do not. So if `Switch` gained a variant with the value 2, `cargo build`
+would reject the call to `pun_ref`, and `try_pun_ref` would check each element instead.
+
+`puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
+structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun`, `try_pun`,
+`head` and `tail` take values of `Copy` types; the other functions take references.
 
 ```sh
 cargo add puns
@@ -59,11 +64,11 @@ was in November 2026, and the API may change before 1.0.
 Use `puns` to read data in place, such as network packets, file headers and records, or to read a
 value of one of your types as another. It pays off when the format stores its own lengths and
 checksums, and when the target type accepts every value of the source, as in the examples below.
-It also goes the other way: `as_bytes` reads a value as its bytes, and `from_bytes_mut` lets you
-write a header in place in a buffer.
+It also goes the other way: `as_bytes` reads a value as its bytes, and `from_bytes_mut` gives a
+`&mut` to a valid header in a buffer, to change its fields in place.
 
-To decode data into owned values, or to transform data as you read it, use a declarative crate
-like [`binrw`][binrw] or [`deku`][deku], or a parser like [`nom`][nom].
+To decode data into owned values, or to transform data as you read it, consider a declarative
+crate like [`binrw`][binrw] or [`deku`][deku], or a parser like [`nom`][nom].
 
 ## Reading a packet
 
@@ -112,12 +117,14 @@ assert_eq!(puns::from_head::<Packet>(&wrong).err(), Some(puns::Error::Validity))
 
 `u16be` and `u32be` are big-endian integers with an alignment of 1, so `Packet` has no padding,
 and can be read at any address. A rule is an expression over the unsigned integer fields, with
-operators, constants, and functions that the derive macro provides, like `crc32`. Its
-[documentation][derive] lists them, with the other attributes. The error says that the bytes are
-invalid, but not which field or rule.
+operators, constants, and functions that the derive macro provides, like `crc32`, and `walk` to
+loop over a chain of headers. Other attributes give the valid values of a field, the length of a
+slice, regions whose sizes are in the data, and getters for bit fields. The
+[documentation of the derive][derive] lists them all. The error says that the bytes are invalid,
+but not which field or rule.
 
-A rule is checked when bytes are read, and nothing keeps it true afterwards. Through a
-`&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
+A rule is checked by the function that reads the bytes, and nothing keeps it true afterwards.
+Through a `&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
 
 `from_bytes`, `from_head` and `from_tail` are `const fn`, so bytes in a `const` are checked when
 you build.
@@ -167,7 +174,9 @@ existing variants.
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
 accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and
-returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]).
+returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). The same
+comparison proves one of your types from another, as in the version example, and the rules of a
+format have no counterpart in their traits.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -179,20 +188,18 @@ available on nightly only.
 
 A proven pun adds no check. A checked pun checks only what `puns` could not prove.
 [`docs/performance.md`][performance] times those checks next to the same checks written by hand,
-on an Apple M4 Max. The checks of IPv4, IPv6, UDP and TCP packets take between 0.55 and 1.13 times
-as long as by hand. One case is much slower: with the `unstable` feature, a slice of an enum of the
-`Rust` representation, whose tag is a niche in a `bool`, takes 1.5 times as long.
+on an Apple M4 Max. The checks of IPv4, IPv6, UDP and TCP packets take from about half as long to
+1.1 times as long as by hand, and the slowest case of the page 1.5 times as long.
 
-The comparison of the types costs build time. Reading a struct of five fields from bytes added
-about 17 ms to a debug build. An enum of references that reads several versions of a format (a
-*view enum*) costs more: with 64 variants that overlap, it took 10 s in a debug build, and 25 s
-in a release build.
+Comparing the types takes build time: about 17 ms of a debug build for each struct read from
+bytes, on average over 100 of them. A few kinds of types take seconds, as
+[`docs/performance.md`][performance] shows.
 
-## Before you use it
+## Caveats
 
 - **Build the code to see the errors.** `puns` compares the types when the compiler generates
-  code, so `cargo check`, `cargo clippy` and editors do not report a refused pun, and
-  `cargo build` does. In an optimized build, the error may not name the line of your code.
+  code, so `cargo check`, `cargo clippy` and editors do not report a call that does not compile,
+  and `cargo build` does. In an optimized build, the error may not name the line of your code.
   [Compile-time errors] shows what an error looks like, and how to fix it.
 - **Give your types a stable layout.** Use `#[repr(C)]` for a struct, and `#[repr(u8)]` or
   another integer type for an enum. For fields, prefer the integers of [`puns::num`][num], like
@@ -202,20 +209,24 @@ in a release build.
 - **Deriving `Pun` bypasses your constructors.** Any code can then make a value of the type from
   bytes, and read or write its fields, private ones included. Do not derive `Pun` on a type with a
   private invariant ([details][deriving]).
-- **Limit untrusted input for nested rules.** A rule like the CRC of `Packet` takes time in
-  proportion to the length of the data. A rule that computes a checksum, or loops over the data,
-  inside another loop over the data takes time in proportion to the square of the length, or more
-  ([details][costs]).
+- **Nested loops in rules cost more.** A rule like the CRC of `Packet` takes time in proportion
+  to the length of the data. A checksum or a `walk` inside a `walk` takes time in proportion to
+  the square of the length, or more. For such a type, check the length of untrusted bytes before
+  you read them ([details][costs]).
 
 ## Safety and testing
 
-`puns` uses `unsafe` code, so that you do not have to: code that uses it can keep
-`#![forbid(unsafe_code)]`. The [Soundness] section of the documentation lists what `puns` relies
-on, including two behaviors of `rustc` that no documentation states. [`docs/testing.md`][testing]
-describes the tests. The analysis is compared with oracles written by hand on every ordered pair of
-test types of the same size, the tests run under Miri on 32-bit and big-endian targets, and more
-than 100 programs are checked to fail to compile. If you find a soundness bug, please
-[open an issue][issues].
+Code that uses `puns` can keep `#![forbid(unsafe_code)]`: the `unsafe` code is in `puns`, and the
+analysis of the types decides when it runs. The [Soundness] section of the documentation lists
+what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states: the
+representation of a pointer to an unsized type, which `puns` checks at compile time for each type,
+and the evaluation of the constants of a function that is never called, which only self-relative
+pointers rely on.
+
+[`docs/testing.md`][testing] describes the tests. A model check compares the analysis with oracles
+written by hand, on every ordered pair of test types of the same size. The tests run under Miri,
+also on 32-bit and big-endian targets. More than 100 programs must fail to compile, each with its
+expected message. If you find a soundness bug, please [open an issue][issues].
 
 ## Learn more
 
