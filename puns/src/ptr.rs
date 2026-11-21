@@ -192,7 +192,8 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 /// Returns whether `addr` is a multiple of `align`.
 ///
 /// `align` must be a power of two, or the result is meaningless. The address is read as an
-/// integer, which const evaluation cannot do: a call evaluated at compile time does not compile.
+/// integer, which const evaluation cannot do for a pointer to memory: such a call evaluated at
+/// compile time does not compile. A pointer made from an integer is read as that integer.
 ///
 /// The address is read through a union, not with `addr`, `is_aligned_to` or `align_offset`: none
 /// of these is a `const fn` on Rust 1.99.
@@ -202,8 +203,9 @@ pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
   // bytes of `addr`, which are initialized, are a `usize` of the same size (see `Cast`). This
   // reads a pointer as an integer, which `core` says to avoid at run time [1], since the rules of
   // memory for it are not settled. It is not undefined behavior there, and the integer is never
-  // made into a pointer again. In const evaluation, it is undefined behavior, and `rustc` stops
-  // the evaluation [1]: a call evaluated at compile time does not compile.
+  // made into a pointer again. In const evaluation, it is undefined behavior for a pointer that
+  // was not made from an integer, and `rustc` stops the evaluation [1]: such a call evaluated at
+  // compile time does not compile.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.transmute.html#transmutation-between-pointers-and-integers:
   //

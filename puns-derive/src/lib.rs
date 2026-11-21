@@ -2056,7 +2056,8 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
 
 /// Derives `Pun` for an enum with fields of a layout that Rust specifies (RFC 2195).
 ///
-/// The offsets of the fields are those of `repr(C)` structs, which the compiler is asked for.
+/// The offsets of the fields are those of `repr(C)` structs, computed from the sizes and the
+/// alignments of the fields (`Layout::repr_c`).
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   if !repr.c && repr.int.is_none() {

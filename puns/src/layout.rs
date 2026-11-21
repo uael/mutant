@@ -40,12 +40,13 @@
 //! - An **enum** with fields ([`Enum`]) has a tag, a scalar at a fixed place, and each [`Variant`]
 //!   has its tags and a struct of its fields. The representations that Rust specifies (`repr(C)`,
 //!   `repr(u8)` and the other primitive representations, [RFC 2195]) are made of `repr(C)` structs:
-//!   the derive declares those structs and asks the compiler for their layouts, and the result is
-//!   checked against the size and alignment of the enum. For an enum of the `Rust` representation,
-//!   experiments in const evaluation find the layout that `rustc` chose. That layout has either a
-//!   direct tag or a *niche* in the fields of one variant, which then has several tags, the values
-//!   of the scalar that holds the niche, and holds the tag in its fields. A variant that holds a
-//!   type without values has no tag, since no value of it exists.
+//!   the derive computes their layouts from the sizes and alignments of the fields, as `repr(C)`
+//!   lays out a struct, and the result is checked against the size and alignment of the enum. For
+//!   an enum of the `Rust` representation, experiments in const evaluation find the layout that
+//!   `rustc` chose. That layout has either a direct tag or a *niche* in the fields of one variant,
+//!   which then has several tags, the values of the scalar that holds the niche, and holds the tag
+//!   in its fields. A variant that holds a type without values has no tag, since no value of it
+//!   exists.
 //! - A **union** (`repr(C)`) is an enum without a tag whose variants are its fields, each at offset
 //!   0. A value of it must be one of its fields ([Unions](crate#unions)).
 //! - A type **without values** is an enum without variants ([`Layout::uninhabited`]), such as
@@ -2289,7 +2290,8 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a scalar, or is a scalar that may be uninitialized. Also panics if
+  /// Panics if `self` is not a scalar, or is a scalar that accepts uninitialized bytes
+  /// ([`Spec::uninit`]). Also panics if
   /// `ranges` are not as [`Spec::with_ranges`] requires, or hold a value that the scalar does not
   /// accept. In const evaluation, the panic is a compile error.
   ///

@@ -396,8 +396,10 @@ impl Builder {
       value.fix(place);
       // SAFETY: `reserve` made room for `values.len()` elements from `at`, so `place` and the
       // `size_of::<T>()` bytes from it are in the blocks, valid for writes. `at` is a multiple of
-      // `first::<T, O>()`, at least the alignment of `T`, and so is `size_of::<T>()`. So `place`
-      // is aligned for `T`. These are the requirements of `add` and of `write`.
+      // `first::<T, O>()`, the alignment of `T` or the size of `O`, whichever is greater. Both
+      // are powers of two (an offset is 2, 4 or 8 bytes), so `first::<T, O>()` is a multiple of
+      // the alignment of `T`, and so is `at`, as `size_of::<T>()` is. So `place` is aligned for `T`. These are the
+      // requirements of `add` and of `write`.
       unsafe { self.base().add(place).cast::<T>().write(value) };
     }
     Seq::to(at)
