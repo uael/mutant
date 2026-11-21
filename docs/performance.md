@@ -73,9 +73,10 @@ benchmark, and each run takes the best of 7 samples of each case. They were meas
 - an Apple M4 Max (14 cores, 36 GiB) on macOS 26.7.2,
 - `cargo bench -p puns --features unstable --bench checks`.
 
-The load average of the machine was between 3.5 and 3.9 during the runs. 26 of the 33 cases
-varied by less than 2% from one run to the next, and the most variable one, `ipv6, tcp, 12
-headers`, by 22%. The output of each run is in [`docs/checks-2026-11-21.txt`][record].
+The load average of the machine was between 3.5 and 3.9 during the runs. From one run to the
+next, the time of `puns` varied by less than 2% in 26 of the 33 cases, and by 22% at most (`ipv6,
+tcp, 12 headers`). The time by hand varied by less than 2% in 19 cases, and by 40% at most (`ipv6,
+tcp, 0 headers`). The output of each run is in [`docs/checks-2026-11-21.txt`][record].
 
 | Case | `puns` | by hand |
 |---|---:|---:|
