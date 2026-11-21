@@ -30,6 +30,20 @@ macro_rules! endian {
   };
 }
 
+/// Expands to `$text` for an integer of fewer bytes than its `$raw` (`u24` and `u48`), which some
+/// values of `$raw` do not fit, and to nothing otherwise.
+macro_rules! narrower {
+  (u32 3, $text:expr) => {
+    $text
+  };
+  (u64 6, $text:expr) => {
+    $text
+  };
+  ($raw:ident $size:tt, $text:expr) => {
+    ""
+  };
+}
+
 /// Expands to the text that the examples of an integer of `$size` bytes write.
 ///
 /// With `$endian`, it is the value whose bytes in memory are 1, 2, 3 and so on in that byte
@@ -128,9 +142,9 @@ macro_rules! ints {
 
       #[doc = concat!("Creates the integer `value`, stored in ", stringify!($size), " bytes of this byte order.")]
       ///
-      /// # Panics
-      ///
-      #[doc = concat!("Panics if `value` does not fit in ", stringify!($size), " bytes.")]
+      #[doc = narrower!($raw $size, concat!(
+        "# Panics\n\nPanics if `value` does not fit in ", stringify!($size), " bytes.\n"
+      ))]
       ///
       /// # Examples
       ///
@@ -290,13 +304,11 @@ macro_rules! ints {
       "pun of it as a [`", stringify!($name), "`] is proven."
     )]
     ///
-    /// # Compile-time errors
-    ///
-    #[doc = concat!(
-      "A pun of a type that holds this type compiles only if `V` fits in ", stringify!($size),
-      " bytes. This is checked after monomorphization. `cargo check` does not report a ",
-      "violation, but `cargo build` does."
-    )]
+    #[doc = narrower!($raw $size, concat!(
+      "# Compile-time errors\n\nA pun of a type that holds this type compiles only if `V` fits ",
+      "in ", stringify!($size), " bytes. This is checked after monomorphization. `cargo check` ",
+      "does not report a violation, but `cargo build` does.\n"
+    ))]
     ///
     /// # Examples
     ///
@@ -322,9 +334,9 @@ macro_rules! ints {
     impl<const V: $raw> $literal<V> {
       /// Creates the value `V`, the only valid one.
       ///
-      /// # Panics
-      ///
-      #[doc = concat!("Panics if `V` does not fit in ", stringify!($size), " bytes.")]
+      #[doc = narrower!($raw $size, concat!(
+        "# Panics\n\nPanics if `V` does not fit in ", stringify!($size), " bytes.\n"
+      ))]
       ///
       /// # Examples
       ///

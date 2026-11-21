@@ -33,8 +33,9 @@
 //! The state of a walk is a fixed point. It is what the walk starts as, joined twice with what a
 //! step makes of it. Then each bound that still moves goes as far as it can, in at most four more
 //! steps. The number of steps of a walk, at most `8 * size + 128`, bounds nothing. On 64 bits it is
-//! more than `2^64` for a value of `isize::MAX` bytes. The state of a walk nested two deep or more
-//! may be anything, so that the analysis stays a few times the length of the expression.
+//! more than `2^64` for a value of `isize::MAX` bytes. The state of a walk three deep or more,
+//! inside two others, may be anything, so that the analysis stays a few times the length of the
+//! expression.
 //!
 //! # How an operation is computed
 //!
@@ -550,7 +551,8 @@ pub const fn walk_entry(ops: &[Op], entry: &Entry, at: usize) -> Entry {
   Entry { vars: analyze(ops, entry.vars, at, entry.walks).entry, walks: entry.walks + 1 }
 }
 
-/// The depth of walks from which the state of a walk may be anything.
+/// The number of walks around a walk from which its state may be anything: two, for a walk three
+/// deep.
 ///
 /// A fixed point is found by analyzing a step a few times, and the steps of the walks within it
 /// as many times each. This bound keeps the analysis a few times the length of the expression.

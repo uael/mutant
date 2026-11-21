@@ -59,7 +59,7 @@
 //! Types with a fixed byte order or a fixed value live in [`num`], the options of the derive are
 //! documented on [`macro@Pun`], and the building blocks of layouts and checksums are in [`layout`].
 //! For what works in practice, the tests and examples of the repository are the reference, and each
-//! example says what it does not cover, and why.
+//! example of a format says what of the format it does not cover, and why.
 //!
 //! ## Using the functions
 //!
@@ -207,10 +207,12 @@
 //!   another. The model check holds the layouts that they find to oracles that do not use them.
 //!
 //! To check the alignment of an address at run time, `puns` reads the address as an integer,
-//! through a union, since no stable `const fn` gives it on Rust 1.99. `core` advises against this,
-//! because the rules of memory for it are not settled, and promises only that it fails const
-//! evaluation. The integer is never made into a pointer again, and the tests run it under Miri with
-//! `-Zmiri-strict-provenance`.
+//! through a union, since no stable `const fn` gives it on Rust 1.99. At run time, `core` does not
+//! call this undefined behavior, but advises against it, because the rules of memory for it are not
+//! settled, and no documentation promises that the integer is the address. In const evaluation, it
+//! calls it undefined behavior and says that using the integer stops the evaluation, so a check of
+//! an address does not compile in a constant. The integer is never made into a pointer again, and
+//! the tests run it under Miri with `-Zmiri-strict-provenance`.
 //!
 //! Without the `unstable` feature, no result of `puns` depends on a layout that Rust leaves to the
 //! compiler: the order of the fields of a struct or tuple of the `Rust` representation, the tag of
@@ -868,6 +870,8 @@
 //! - A struct with more than about a hundred fields may need a higher `#![recursion_limit]` in the
 //!   crate that validates it, and so may an enum with fields and more than about 120 variants,
 //!   because validation recurses over the list of variants.
+//! - The analysis follows arrays, slices and structs nested at most 32 deep, and refuses a pun of a
+//!   type nested deeper ("type is nested too deeply").
 //! - A packed struct whose unsized field has trailing padding of its own is refused.
 //! - The build time of a view enum whose variants overlap grows with the square of the number of
 //!   variants, or faster.
@@ -899,7 +903,7 @@
 //!   [requirement](#guarantees-and-requirements).
 //! - **Ranges from conditions.** A counter that only a comparison bounds, such as the condition of
 //!   a walk (`|i| i < count`), is computed on 128 bits unless it is read at. The state of a walk
-//!   nested two deep or more may be anything.
+//!   three deep or more, inside two others, may be anything.
 //! - **Rules implied by other rules.** A rule is proven by the same rule, not by other rules that
 //!   imply it. For example, `v % 6 == 0` implies `v % 3 == 0`, but does not prove it. Nor is a rule
 //!   proven by the same rule in a struct of another extent, even when the rule does not read the
@@ -1024,7 +1028,8 @@
 //! [phantom layout]: https://doc.rust-lang.org/core/marker/struct.PhantomData.html#layout-1
 //! [abi compatibility]: https://doc.rust-lang.org/core/primitive.fn.html#abi-compatibility
 #![cfg_attr(not(test), no_std)]
-// Every public item has documentation, as docs.rs counts it; CI checks that each has an example.
+// Every public item has documentation, as docs.rs counts it. CI checks that each item that rustdoc
+// counts has an example.
 #![deny(missing_docs)]
 
 mod analysis;
@@ -1168,7 +1173,7 @@ pub use layout::{crc32, sum16};
 ///   remains. A method with each name, as visible as the field, returns the bytes of its region as
 ///   a `&[u8]`. With a type (`first: Type = EXPR`, `last: Type`), the method returns `Result<&Type,
 ///   Error>` instead, the region as a `&Type` if its bytes are one. A type parameter that only a
-///   region names is unused, which Rust refuses (E0392) before the derive runs. A `PhantomData<P>`
+///   region names is unused, which Rust refuses (E0392). A `PhantomData<P>`
 ///   field, which has no bytes, uses it.
 ///
 /// ## Expressions

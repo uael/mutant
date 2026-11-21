@@ -143,6 +143,27 @@ pub trait Visit {
 /// The position at which bytes stop being a valid value, as [`validate_in`] reports it.
 ///
 /// This type is `#[non_exhaustive]`, so that it may later say why. Make one with [`Invalid::at`].
+///
+/// # Examples
+///
+/// ```
+/// use puns::{Invalid, Pun, Visit};
+///
+/// /// Refuses every pointer: for values that hold none.
+/// struct NoPointers;
+///
+/// impl Visit for NoPointers {
+///   type Error = Invalid;
+///   fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Invalid> {
+///     Err(Invalid::at(at))
+///   }
+/// }
+///
+/// // The second `bool`, at position 2, holds 2.
+/// let bytes = [0, 1, 2];
+/// let error = puns::validate_in::<[bool; 2], _>(&bytes, 1, &mut NoPointers).unwrap_err();
+/// assert_eq!(error.at, 2);
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Invalid {
@@ -155,6 +176,12 @@ pub struct Invalid {
 
 impl Invalid {
   /// Creates an error at the position `at`.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// assert_eq!(puns::Invalid::at(4).at, 4);
+  /// ```
   #[must_use]
   pub const fn at(at: usize) -> Self {
     Self { at }
@@ -238,8 +265,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
-///   elements, rules and pointer targets that its layout describes. This holds for every type
-///   that derives `Pun` and every type for which `puns` implements it.
+///   elements and pointer targets that its layout describes and, for a struct whose layout has
+///   rules, those rules. This holds for every type that derives `Pun` and every type for which
+///   `puns` implements it.
 ///
 /// These conditions are checked after monomorphization. `cargo check` does not report a violation,
 /// but `cargo build` does. A generic function that calls `validate_in` compiles until it is
@@ -453,7 +481,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// # Compile-time errors
 ///
 /// A call compiles under the same conditions as one of [`validate_in`], which its
-/// [compile-time errors](validate_in#compile-time-errors) list. A generic function that calls
+/// [compile-time errors](validate_in#compile-time-errors) list, except that the rules are not
+/// compared with their list, since this walk does not read them. A generic function that calls
 /// `pointers_in` compiles until it is instantiated with types that violate them.
 ///
 /// # Examples
@@ -543,7 +572,8 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 /// # Compile-time errors
 ///
 /// A call compiles under the same conditions as one of [`validate_in`], which its
-/// [compile-time errors](validate_in#compile-time-errors) list. A generic function that calls
+/// [compile-time errors](validate_in#compile-time-errors) list, except that the rules are not
+/// compared with their list, since this walk does not read them. A generic function that calls
 /// `pointers_elems_in` compiles until it is instantiated with types that violate them.
 #[inline]
 pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(

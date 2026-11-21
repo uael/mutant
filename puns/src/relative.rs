@@ -11,9 +11,9 @@ use crate::{Pun, layout::Pointer};
 /// ([`Target`](SelfRelative::Target)). Through `puns`, a value that holds such pointers is then:
 ///
 /// - read as plain data by every function that reads, since an offset is initialized bytes;
-/// - made from bytes or from another value only by [`view_ref`](crate::view_ref) and
-///   [`try_view_ref`](crate::try_view_ref), which read it as another type that holds pointers
-///   where it does, and prove at compile time what the pointers aim at;
+/// - made only from another value that holds pointers where it does, by
+///   [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref), which prove at
+///   compile time what the pointers aim at, and never from bytes;
 /// - never behind a `&mut` that a function of `puns` gives.
 ///
 /// How the target is reached (from the address of the pointer, or through the buffer) and how the
@@ -236,7 +236,7 @@ pub unsafe trait SelfRelative: Sized {
 /// - `POINTER` may not be null already.
 /// - `Option<Type>` has the size of `Type`, as it has if the offset has a niche at zero.
 /// - `None` is all zero bytes.
-/// - If `Option<Option<Type>>` has the size of `Option<Type>`, then its `None` is all zero bytes.
+/// - `Option<Option<Type>>` is larger than `Option<Type>`.
 ///
 /// These conditions are checked after monomorphization, when the `LAYOUT` of `Type` or of
 /// `Option<Type>` is evaluated, and not where the macro is called, so `cargo check` does not report

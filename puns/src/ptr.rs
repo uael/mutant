@@ -202,8 +202,9 @@ pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
   // SAFETY: A pointer to a sized type has the size of a `usize` (see `from_raw_parts`). So the
   // bytes of `addr`, which are initialized, are a `usize` of the same size (see `Cast`). This
   // reads a pointer as an integer, which `core` says to avoid at run time [1], since the rules of
-  // memory for it are not settled. It is not undefined behavior there, and the integer is never
-  // made into a pointer again. In const evaluation, it is undefined behavior for a pointer that
+  // memory for it are not settled. The quoted text does not make it undefined behavior there, but
+  // no documentation promises that it reads the address either, so `puns` relies on it, as its
+  // section Soundness discloses. The integer is never made into a pointer again. In const evaluation, it is undefined behavior for a pointer that
   // was not made from an integer, and `rustc` stops the evaluation [1]: such a call evaluated at
   // compile time does not compile.
   //

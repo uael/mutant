@@ -53,7 +53,8 @@
 //!   `Infallible`. No value has its layout ([`Layout::is_inhabited`]), so as a source such a type
 //!   proves any target.
 //! - `MaybeUninit<T>` is padding with the size of `T`.
-//! - An **array** or a **slice** is the layout of an element and a count, and a slice has no count.
+//! - An **array** is the layout of an element and a count, and a **slice** is the layout of an element
+//!   alone, since its length is not part of its type.
 //! - A **pattern** is a tail of bytes that an automaton ([`Dfa`]) accepts, and `str` is the 8-state
 //!   automaton of UTF-8. An automaton is known by its states and edges. Its `id`, a field that safe
 //!   code can write, only serves to tell two automata apart, and two patterns are the same layout
@@ -1005,8 +1006,7 @@ impl Pointer {
   ///
   /// # Panics
   ///
-  /// Panics if `width` is not 1 to 16, or if `T` has a size of 0. In const evaluation, the panic is
-  /// a compile error.
+  /// Panics if `width` is not 1 to 16, or if `T` has a size of 0.
   ///
   /// # Examples
   ///
@@ -2108,8 +2108,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics, with the reason, if the layout is not of a shape that the experiments recognize. In
-  /// const evaluation, the panic is a compile error.
+  /// Panics, with the reason, if the layout is not of a shape that the experiments recognize.
   ///
   /// # Safety
   ///
@@ -2175,8 +2174,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if an offset or the size overflows a `usize`. In const evaluation, the panic is a
-  /// compile error.
+  /// Panics if an offset or the size overflows a `usize`.
   #[doc(hidden)]
   #[must_use]
   pub const fn repr_c<const N: usize>(
@@ -2230,8 +2228,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `spec` does not have the size of `T`. In const evaluation, the panic is a compile
-  /// error.
+  /// Panics if `spec` does not have the size of `T`.
   ///
   /// # Examples
   ///
@@ -2357,8 +2354,7 @@ impl Layout {
   ///
   /// Panics if pointers to `T` are not represented as pointers to slices, or if a value of `T` is
   /// not its bytes alone. Also panics if `dfa` has no state or more than 64, or if an edge of a
-  /// state is empty, leads to no state, or does not follow the edge before it. In const evaluation,
-  /// the panic is a compile error.
+  /// state is empty, leads to no state, or does not follow the edge before it.
   ///
   /// # Safety
   ///
@@ -2464,9 +2460,8 @@ impl Layout {
   ///
   /// Panics if `P` does not have the size of the offset, or if `pointer` was not made for a `T`
   /// (with its size and alignment). Also panics if `Option<P>` has the size of `P` but a `None`
-  /// whose bytes are not all zero, or if `pointer` may be null while `P` has no all-zero value. In
-  /// const evaluation, the panic is a compile error. The bytes of `None` are read at compile time,
-  /// so an uninitialized one fails to compile.
+  /// whose bytes are not all zero, or if `pointer` may be null while `P` has no all-zero value. The
+  /// bytes of `None` are read at compile time, so an uninitialized one fails to compile.
   #[doc(hidden)]
   #[must_use]
   pub const fn pointer<P, T>(pointer: Pointer) -> Self {
@@ -2516,9 +2511,8 @@ impl Layout {
   ///
   /// Panics if `pointer` may already be null, if `Option<P>` is larger than `P`, or if the bytes of
   /// `None` are not all zero. Also panics if `P` does not have the size of the offset, or if
-  /// `pointer` was not made for a `T` (with its size and alignment). In const evaluation, the panic
-  /// is a compile error. The bytes of `None` are read at compile time, so an uninitialized one
-  /// fails to compile.
+  /// `pointer` was not made for a `T` (with its size and alignment). The bytes of `None` are read
+  /// at compile time, so an uninitialized one fails to compile.
   ///
   /// # Examples
   ///
@@ -2717,8 +2711,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `elem` is unsized, or if the size of the array overflows a `usize`. In const
-  /// evaluation, the panic is a compile error.
+  /// Panics if `elem` is unsized, or if the size of the array overflows a `usize`.
   ///
   /// # Examples
   ///
@@ -2818,8 +2811,8 @@ impl Layout {
   /// - A field other than the last is unsized, two fields overlap or are not sorted by offset, or a
   ///   sized field ends past the size of `T`.
   /// - A rule is not well formed, as `#[derive(Pun)]` writes it: it reads a field past the sized
-  ///   fields, has too many operations, walks or variables, needs too deep a stack, or is a size or
-  ///   a length that reads the size of the value.
+  ///   fields, has too many operations or variables, nests its walks too deeply, needs too deep a
+  ///   stack, or is a size or a length that reads the size of the value.
   /// - A `len` rule is not about a last field that is a slice or an array.
   /// - The size of `T` is not the one that the layout computes, as for a `packed` struct that ends
   ///   with an aligned unsized field.
@@ -3662,6 +3655,9 @@ impl Layout {
 
   /// Returns the layout of the `repr(C)` union `T`, whose fields are the variants of `layout`.
   ///
+  /// Only `#[derive(Pun)]` makes a `layout` that this function accepts, with a hidden function, so
+  /// this function is for the code that the derive generates.
+  ///
   /// The language has not settled the validity of unions, and this layout takes what is sound under
   /// each of the rules being considered, as [Unions](crate#unions) describes.
   ///
@@ -3669,8 +3665,7 @@ impl Layout {
   ///
   /// Panics if `layout` is not the layout of a union as `#[derive(Pun)]` makes it, if the layout of
   /// a variant does not have the size of `T`, has more than one field, or holds a self-relative
-  /// pointer, or if a field is not at offset 0, is larger than `T`, or is unsized. In const
-  /// evaluation, the panic is a compile error.
+  /// pointer, or if a field is not at offset 0, is larger than `T`, or is unsized.
   ///
   /// # Examples
   ///
@@ -4633,8 +4628,7 @@ impl Dfa {
   /// # Panics
   ///
   /// Panics if the automaton has no state or more than 64, or if an edge of a state is empty, leads
-  /// to no state, or does not follow the edge before it. In const evaluation, the panic is a
-  /// compile error.
+  /// to no state, or does not follow the edge before it.
   const fn check(&self) {
     assert!(!self.states.is_empty() && self.states.len() <= 64, "a DFA has 1 to 64 states");
     let mut i = 0;
@@ -4977,8 +4971,7 @@ impl Op {
   /// # Panics
   ///
   /// Panics if `dfa` has no state or more than 64, or if an edge of a state is empty, leads to no
-  /// state, or does not follow the edge before it. In const evaluation, the panic is a compile
-  /// error.
+  /// state, or does not follow the edge before it.
   #[doc(hidden)]
   #[must_use]
   pub const fn matches(dfa: &'static Dfa) -> Self {
@@ -5008,8 +5001,7 @@ impl Op {
   ///
   /// # Panics
   ///
-  /// Panics if `T` is neither an unsigned integer nor a struct that holds only one. In const
-  /// evaluation, the panic is a compile error.
+  /// Panics if `T` is neither an unsigned integer nor a struct that holds only one.
   ///
   /// # Examples
   ///
