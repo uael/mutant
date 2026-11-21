@@ -4,21 +4,21 @@
 
 ## The model check
 
-The analysis is compared with oracles written by hand, which do not use it. This model check
-covers every ordered pair of its types of the same size. It tries every value of the source for
-types of up to 2 bytes, and a chosen set of values for larger ones. It runs in full every night,
-and in part on every push, with and without the `unstable` feature. The [crate documentation of
+The analysis is compared with oracles written by hand, which do not use it. This model check covers
+every ordered pair of its types of the same size, and tries every value of the source for types of
+up to 2 bytes and a chosen set of values for larger ones. It runs in full every night, and in part
+on every push, with and without the `unstable` feature. The [crate documentation of
 `puns-model`][model] describes its types, its oracles and what runs where.
 
 ## Miri
 
 The tests of `puns` run under [Miri] on every push: with tree borrows on x86-64, and with stacked
-borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). A test file that is not
-about the `unsafe` code does not run there, such as the examples other than `ethernet`. Under
-Miri, with tree borrows on x86-64 only, the model check runs a few pairs for each `unsafe` path
-that it reaches, not every pair
-([`miri_sample.rs`][sample] says which pair is for which). It does not call `pun`, `pun_mut`, the
-`_mut` functions that check, or regions: the tests of `puns` run these under Miri.
+borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). A test file that is not about
+the `unsafe` code does not run there, such as the examples other than `ethernet`. The model check
+runs under Miri too, with tree borrows on x86-64 only, on a few pairs for each `unsafe` path that it
+reaches rather than on every pair ([`miri_sample.rs`][sample] says which pair is for which). It does
+not call `pun`, `pun_mut`, the `_mut` functions that check, or regions, since the tests of `puns`
+run these under Miri.
 
 ## Compile errors
 
