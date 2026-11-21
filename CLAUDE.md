@@ -188,5 +188,4 @@ determine version bumps and generate changelog entries.
   `undocumented_unsafe_blocks` denied; `#[expect(lint, reason = "..")]` where a lint is wrong for
   the code
 - Every `unsafe` block has a `// SAFETY:` comment, every `unsafe fn` and trait a `# Safety` section
-- Prose (README, docs, `SAFETY` comments, Markdown) follows `docs/prose.md`
 - Dual-licensed: Apache-2.0 OR MIT
