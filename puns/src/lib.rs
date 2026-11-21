@@ -353,11 +353,10 @@
 //!   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //! ```
 //!
-//! Byte 1 is the first of the three bytes of padding after `kind`. Here the last note says where
-//! the call is in your code. Between the first lines and the last note, `rustc` prints about thirty
-//! lines that locate the failed constant inside `puns`, which you can skip. A refusal through
-//! another function, such as `from_bytes`, may end with a note that names an inner function of
-//! `puns` and two types, without the place of the call. The two types then tell which call it is.
+//! Byte 1 is the first of the three bytes of padding after `kind`. The last note says where the
+//! call is in your code: each function of the table evaluates its constant itself, so that the note
+//! names your call, not a call inside `puns`. Between the first lines and the last note, `rustc`
+//! prints about thirty lines that locate the failed constant inside `puns`, which you can skip.
 //!
 //! To fix this pun, declare the padding as a field, so that it is initialized.
 //!
@@ -3986,6 +3985,9 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 /// ```
 #[inline(always)]
 pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
+  // Evaluated here, not only in `pun_ref`, so that a refusal names the line that calls this
+  // function, not the line of this function that calls `pun_ref`.
+  const { Plan::<S, [u8]>::BY_REF };
   pun_ref(value)
 }
 
@@ -4050,6 +4052,9 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 /// [inhabited]: https://doc.rust-lang.org/reference/glossary.html#inhabited
 #[inline]
 pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
+  // Evaluated here, not only in `try_pun_ref`, so that a refusal names the line that calls this
+  // function, not the line of this function that calls `try_pun_ref`.
+  const { Plan::<[u8], D>::TRY_REF };
   try_pun_ref::<[u8], D>(bytes)
 }
 
@@ -4096,6 +4101,9 @@ pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
 /// [inhabited]: https://doc.rust-lang.org/reference/glossary.html#inhabited
 #[inline]
 pub const fn from_bytes_mut<D: ?Sized + Pun>(bytes: &mut [u8]) -> Result<&mut D, Error> {
+  // Evaluated here, not only in `try_pun_mut`, so that a refusal names the line that calls this
+  // function, not the line of this function that calls `try_pun_mut`.
+  const { Plan::<[u8], D>::TRY_MUT };
   try_pun_mut::<[u8], D>(bytes)
 }
 
