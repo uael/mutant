@@ -3916,9 +3916,10 @@ pub const fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Res
   }
 }
 
-/// Returns a value of type `T` whose bytes are all zero.
+/// Returns a value of type `T` whose fields and elements are all zero bytes.
 ///
-/// The rules of `T` (see [`macro@Pun`]) are not checked, so the result may break them.
+/// As with [`core::mem::zeroed`], the padding of the result is not guaranteed to be zero. The rules
+/// of `T` (see [`macro@Pun`]) are not checked, so the result may break them.
 ///
 /// # Compile-time errors
 ///
