@@ -340,22 +340,9 @@ pub fn validate_in<T: Pun, V: Visit>(
 ///
 /// # Compile-time errors
 ///
-/// A call compiles only if all of the following hold:
-///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
-///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
-///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
-///   places the same bytes is exempt.
-/// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
-///   told.
-/// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
-///   elements, rules and pointer targets that its layout describes. This holds for every type
-///   that derives `Pun` and every type for which `puns` implements it.
-///
-/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
-/// but `cargo build` does. A generic function that calls `validate_elems_in` compiles until it is
-/// instantiated with types that violate them.
+/// A call compiles under the same conditions as one of [`validate_in`], which its
+/// [compile-time errors](validate_in#compile-time-errors) list. A generic function that calls
+/// `validate_elems_in` compiles until it is instantiated with types that violate them.
 ///
 /// # Examples
 ///
@@ -465,22 +452,9 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///
 /// # Compile-time errors
 ///
-/// A call compiles only if all of the following hold:
-///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
-///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
-///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
-///   places the same bytes is exempt.
-/// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
-///   told.
-/// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
-///   elements, rules and pointer targets that its layout describes. This holds for every type
-///   that derives `Pun` and every type for which `puns` implements it.
-///
-/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
-/// but `cargo build` does. A generic function that calls `pointers_in` compiles until it is
-/// instantiated with types that violate them.
+/// A call compiles under the same conditions as one of [`validate_in`], which its
+/// [compile-time errors](validate_in#compile-time-errors) list. A generic function that calls
+/// `pointers_in` compiles until it is instantiated with types that violate them.
 ///
 /// # Examples
 ///
@@ -568,22 +542,9 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///
 /// # Compile-time errors
 ///
-/// A call compiles only if all of the following hold:
-///
-/// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
-///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
-///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
-///   places the same bytes is exempt.
-/// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
-///   told.
-/// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
-///   elements, rules and pointer targets that its layout describes. This holds for every type
-///   that derives `Pun` and every type for which `puns` implements it.
-///
-/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
-/// but `cargo build` does. A generic function that calls `pointers_elems_in` compiles until it is
-/// instantiated with types that violate them.
+/// A call compiles under the same conditions as one of [`validate_in`], which its
+/// [compile-time errors](validate_in#compile-time-errors) list. A generic function that calls
+/// `pointers_elems_in` compiles until it is instantiated with types that violate them.
 #[inline]
 pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
   base: *const u8,

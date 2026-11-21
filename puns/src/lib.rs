@@ -1111,10 +1111,8 @@ pub use layout::{crc32, sum16};
 /// square of that number, or faster in a release build, when the values of each variant are also
 /// values of the next.
 ///
-/// **Unions.** A union must be `repr(C)` and not packed. As a target, bytes are a valid union if
-/// they are a valid value of one of its fields. As a source, nothing is known about a union, not
-/// even that its bytes are initialized. The language has not settled the validity of unions, and
-/// this is what is sound under each of the rules being considered.
+/// **Unions.** A union must be `repr(C)` and not packed. What a pun takes a union to be, as a
+/// target and as a source, is in [Unions](crate#unions).
 ///
 /// **Byte order.** A field has the byte order of its type, and `u32be`, `i16le` and `f64be` from
 /// [`num`] are numbers with a fixed byte order. A format whose values tell their own byte order

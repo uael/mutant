@@ -212,7 +212,7 @@ impl Spec {
   ///
   /// # Panics
   ///
-  /// Panics if `size` is greater than 16. In const evaluation, the panic is a compile error.
+  /// Panics if `size` is greater than 16.
   pub(crate) const fn of_size(size: usize) -> Self {
     assert!(size <= 16, "a scalar is at most 16 bytes wide");
     Self { size, endian: Endian::NATIVE, valid: Valid::Any, known: Valid::Any, number: true }
@@ -250,7 +250,6 @@ impl Spec {
   /// # Panics
   ///
   /// Panics if `T` is not 1 to 16 bytes, or if `ranges` are not as [`Spec::with_ranges`] requires.
-  /// In const evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
@@ -278,7 +277,7 @@ impl Spec {
   ///
   /// Panics if the scalar is not 1 to 16 bytes, if `ranges` is empty, or if a range is empty or
   /// holds a value too large for the scalar. Also panics if the ranges are not sorted, or if two of
-  /// them overlap or are adjacent. In const evaluation, the panic is a compile error.
+  /// them overlap or are adjacent.
   ///
   /// # Examples
   ///
@@ -328,7 +327,7 @@ impl Spec {
   /// # Panics
   ///
   /// Panics if `self` accepts any initialized bytes, or uninitialized bytes, since such a scalar is
-  /// [`Spec::uninit`]. In const evaluation, the panic is a compile error.
+  /// [`Spec::uninit`].
   ///
   /// # Examples
   ///
@@ -389,7 +388,7 @@ impl Spec {
   ///
   /// # Panics
   ///
-  /// Panics as [`Spec::ranges`] does. In const evaluation, the panic is a compile error.
+  /// Panics as [`Spec::ranges`] does.
   #[doc(hidden)]
   #[must_use]
   pub const fn native_ranges<T>(ranges: &'static [(u128, u128)]) -> Self {
@@ -407,7 +406,7 @@ impl Spec {
   ///
   /// # Panics
   ///
-  /// Panics if the range is empty. In const evaluation, the panic is a compile error.
+  /// Panics if the range is empty.
   #[doc(hidden)]
   #[must_use]
   pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -> (u128, u128) {
@@ -427,7 +426,7 @@ impl Spec {
   ///
   /// # Panics
   ///
-  /// Panics if `T` is larger than 16 bytes. In const evaluation, the panic is a compile error.
+  /// Panics if `T` is larger than 16 bytes.
   ///
   /// # Safety
   ///
@@ -970,7 +969,7 @@ impl Pointer {
   ///
   /// # Panics
   ///
-  /// Panics if `width` is not 1 to 16. In const evaluation, the panic is a compile error.
+  /// Panics if `width` is not 1 to 16.
   const fn new(
     scheme: &'static str,
     aim: Aim,
@@ -986,7 +985,7 @@ impl Pointer {
   ///
   /// # Panics
   ///
-  /// Panics if `T` has a size of 0. In const evaluation, the panic is a compile error.
+  /// Panics if `T` has a size of 0.
   const fn target<T>() -> (usize, usize) {
     // A target of size 0 could be anywhere, the pointer itself included, and is nothing that
     // a pointer can be read as: the proof stops at it (`deep::behind`).
@@ -1027,7 +1026,7 @@ impl Pointer {
   /// # Panics
   ///
   /// Panics if `width` is not 1 to 16, if `T` has a size of 0, or if `align` is not a power of two
-  /// at least as large as the alignment of `T`. In const evaluation, the panic is a compile error.
+  /// at least as large as the alignment of `T`.
   ///
   /// # Examples
   ///
@@ -1069,7 +1068,7 @@ impl Pointer {
   ///
   /// # Panics
   ///
-  /// Panics if `width` is not 1 to 16. In const evaluation, the panic is a compile error.
+  /// Panics if `width` is not 1 to 16.
   ///
   /// # Examples
   ///
@@ -1360,7 +1359,7 @@ impl Enum {
   /// # Panics
   ///
   /// Panics if `fields` is not where the shadows start, or if the size of the enum overflows a
-  /// `usize`. In const evaluation, the panic is a compile error.
+  /// `usize`.
   ///
   /// # Examples
   ///
@@ -1468,7 +1467,7 @@ impl Enum {
   ///
   /// # Panics
   ///
-  /// Panics if the offset overflows a `usize`. In const evaluation, the panic is a compile error.
+  /// Panics if the offset overflows a `usize`.
   ///
   /// # Examples
   ///
@@ -1833,7 +1832,7 @@ impl Field {
   ///
   /// # Panics
   ///
-  /// Panics if `layout` is not a scalar. In const evaluation, the panic is a compile error.
+  /// Panics if `layout` is not a scalar.
   ///
   /// # Examples
   ///
@@ -1973,7 +1972,7 @@ pub(crate) const fn round_up(value: usize, align: usize) -> Option<usize> {
 ///
 /// # Panics
 ///
-/// Panics if the offset overflows a `usize`. In const evaluation, the panic is a compile error.
+/// Panics if the offset overflows a `usize`.
 #[doc(hidden)]
 #[must_use]
 pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
@@ -2131,7 +2130,7 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if `T` has no value, or holds a self-relative pointer, since no pointer is made from
-  /// nothing. In const evaluation, the panic is a compile error.
+  /// nothing.
   #[doc(hidden)]
   #[must_use]
   pub const fn sample<T: crate::Pun>() -> mem::MaybeUninit<T> {
@@ -2202,7 +2201,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if the offset overflows a `usize`. In const evaluation, the panic is a compile error.
+  /// Panics if the offset overflows a `usize`.
   #[doc(hidden)]
   #[must_use]
   pub const fn tail_offset(end: usize, align: usize) -> usize {
@@ -2213,7 +2212,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if the offset overflows a `usize`. In const evaluation, the panic is a compile error.
+  /// Panics if the offset overflows a `usize`.
   #[doc(hidden)]
   #[must_use]
   pub const fn tail_offset_packed(end: usize, align: usize, pack: usize) -> usize {
@@ -2295,7 +2294,7 @@ impl Layout {
   ///
   /// Panics if `self` is not a scalar, or is a scalar that accepts uninitialized bytes
   /// ([`Spec::uninit`]). Also panics if `ranges` are not as [`Spec::with_ranges`] requires, or hold
-  /// a value that the scalar does not accept. In const evaluation, the panic is a compile error.
+  /// a value that the scalar does not accept.
   ///
   /// # Examples
   ///
@@ -2753,7 +2752,7 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if `elem` is unsized or does not have the size of `T`, or if pointers to `[T]` are not
-  /// represented as `probe` says. In const evaluation, the panic is a compile error.
+  /// represented as `probe` says.
   ///
   /// # Safety
   ///
@@ -2809,7 +2808,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+  /// Panics in any of the following cases.
   ///
   /// - A field other than the last is unsized, two fields overlap or are not sorted by offset, or a
   ///   sized field ends past the size of `T`.
@@ -3062,7 +3061,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+  /// Panics in any of the following cases.
   ///
   /// - The tag is not a scalar of at most 16 bytes that is always initialized, within the enum.
   /// - `T` is not laid out as `layout` says: the size of `T` is not the one that `layout`
@@ -3287,7 +3286,7 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if `self` is not the layout of a struct, if the struct is unsized, or if the sum of the
-  /// sizes of the fields overflows a `usize`. In const evaluation, the panic is a compile error.
+  /// sizes of the fields overflows a `usize`.
   #[doc(hidden)]
   #[must_use]
   pub const fn rust(self, pack: usize) -> Self {
@@ -3657,14 +3656,8 @@ impl Layout {
 
   /// Returns the layout of the `repr(C)` union `T`, whose fields are the variants of `layout`.
   ///
-  /// The [validity] of unions is not settled by the language. Some of the rules being considered
-  /// let a union hold any bytes, while others require them to be a valid value of one of its
-  /// fields. This layout takes what is sound under each. As a target, bytes are a valid union if
-  /// they are a valid value of one of its fields, which requires more than some of the rules do,
-  /// and never less. As a source, nothing is known about a union, not even that its bytes are
-  /// initialized, since safe code may write one field over another.
-  ///
-  /// [validity]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity.union
+  /// The language has not settled the validity of unions, and this layout takes what is sound under
+  /// each of the rules being considered, as [Unions](crate#unions) describes.
   ///
   /// # Panics
   ///
@@ -5223,7 +5216,6 @@ impl Crc {
   /// # Panics
   ///
   /// Panics if `width` is not 1 to 64, or if `poly`, `init` or `xorout` has more than `width` bits.
-  /// In const evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
@@ -5837,7 +5829,7 @@ pub(crate) const MAX_WALKS: usize = 4;
 ///
 /// # Panics
 ///
-/// Panics as [`check_ops`] does. In const evaluation, the panic is a compile error.
+/// Panics as [`check_ops`] does.
 const fn check_rules(rules: &[Rule], head: usize) {
   let mut i = 0;
   while i < rules.len() {
@@ -5872,7 +5864,7 @@ pub(crate) const fn op_at(ops: &[Op], index: usize) -> Option<Op> {
 ///
 /// # Panics
 ///
-/// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+/// Panics in any of the following cases.
 ///
 /// - The expression has more than [`MAX_OPS`] operations, nests walks deeper than [`MAX_WALKS`],
 ///   needs a stack deeper than [`STACK`], or uses a variable past [`VARIABLES`] or before it is
@@ -6518,7 +6510,7 @@ const fn fold(mut sum: u64) -> u16 {
 ///
 /// # Panics
 ///
-/// Panics if the range is empty. In const evaluation, the panic is a compile error.
+/// Panics if the range is empty.
 #[doc(hidden)]
 #[must_use]
 pub const fn range<T>(start: Option<u128>, end: Option<u128>, inclusive: bool) -> (u128, u128) {
@@ -6579,7 +6571,7 @@ pub const fn merge_ranges<const N: usize>(
 ///
 /// # Panics
 ///
-/// Panics if `T` is larger than 16 bytes. In const evaluation, the panic is a compile error.
+/// Panics if `T` is larger than 16 bytes.
 ///
 /// # Safety
 ///
