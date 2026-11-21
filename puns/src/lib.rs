@@ -1028,16 +1028,16 @@ pub use layout::{crc32, sum16};
 /// [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 ///
 /// **Structs.** A struct may have any representation. A struct whose last field is unsized must be
-/// `repr(C)` or `repr(transparent)`. Without `repr`, Rust lets the compiler choose the order of the
-/// fields. Without the `unstable` feature, a pun then relies only on what every order has (see
+/// `repr(C)` or `repr(transparent)`. With the `Rust` representation, Rust lets the compiler choose
+/// the order of the fields. Without the `unstable` feature, a pun then relies only on what every order has (see
 /// [`layout::UNSTABLE`]). If every order makes the same bytes, as for `(u8, [u8; 3])` or `(bool,
 /// bool)`, the struct is known whole. Otherwise it is known to have initialized bytes, if it has
 /// them in every order, and it is known as itself. A struct may have rules, which its attributes
 /// state (see "Attributes").
 ///
 /// **Enums without fields.** An enum without fields may have any representation. Its valid values
-/// are its discriminants, as the compiler stores them. Without `repr`, Rust does not specify how it
-/// stores them. Without the `unstable` feature, such an enum is then known only as itself.
+/// are its discriminants, as the compiler stores them. With the `Rust` representation, Rust does not
+/// specify how it stores them. Without the `unstable` feature, such an enum is then known only as itself.
 ///
 /// **Enums with fields.** An enum with fields may be `repr(C)`, `repr(u8)` or another integer,
 /// both, or be of the `Rust` representation. With `repr(C)` or an integer, its layout is the one
@@ -1045,7 +1045,8 @@ pub use layout::{crc32, sum16};
 /// experiments in const evaluation, on a value of each variant. An experiment that fails refuses
 /// the enum, so a wrong layout is never found. What is known of a value of such an enum is its tag.
 /// Making one from another type checks the tag, then what the fields of its variant require.
-/// Without `repr` and without the `unstable` feature, the enum is known only as itself.
+/// With the `Rust` representation and without the `unstable` feature, the enum is known only as
+/// itself.
 ///
 /// [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 ///
@@ -1353,8 +1354,8 @@ pub use layout::{crc32, sum16};
 ///   `Sized`, and the offsets are found by projecting a pointer to an uninitialized value
 ///   (`&raw const (*p).field`). This costs nothing in const evaluation, whatever the size.
 /// - The variants of an enum with fields and a primitive or `C` representation are laid out as
-///   [RFC 2195] specifies, from the sizes and the alignments of their fields. Without `repr`, a
-///   function of `Layout` finds them from samples that another function of `Layout` makes. The
+///   [RFC 2195] specifies, from the sizes and the alignments of their fields. With the `Rust`
+///   representation, a function of `Layout` finds them from samples that another function of `Layout` makes. The
 ///   offsets in those samples are found by code that matches on them, with `byte_offset_from`, a
 ///   method of a pointer that no path names. A fake `MaybeUninit`, or a fake type of the result,
 ///   named by a path does not have the type that these functions take or return, and does not

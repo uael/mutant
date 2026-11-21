@@ -1284,7 +1284,7 @@ const fn str_equals(a: &str, b: &str) -> bool {
 /// [`Layout::enumeration`] makes the layout of an enum from it, and [`Layout::union`] the layout of
 /// a union. The tag of an enum is a scalar at a fixed place, whose value tells the variant. Where
 /// Rust specifies the representation of the enum, the tag is where the representation puts it.
-/// Without `repr`, it is where `rustc` put it, as `#[derive(Pun)]` finds it. It may then be a
+/// With the `Rust` representation, it is where `rustc` put it, as `#[derive(Pun)]` finds it. It may then be a
 /// niche: a scalar of the fields of one variant, whose valid values are that variant, and whose
 /// other values are the other variants.
 ///
@@ -1813,7 +1813,7 @@ impl Field {
   /// const WRAPPER: Layout =
   ///   unsafe { Layout::structure::<Wrapper>(core::ptr::null(), &FIELDS, &[]) };
   ///
-  /// // Every byte is the field's: plain data, which nothing is checked of.
+  /// // Every byte is the field's: plain data, with nothing to check.
   /// assert!(WRAPPER.is_plain() && WRAPPER.is_free());
   /// ```
   #[inline]
@@ -3832,7 +3832,7 @@ impl Layout {
   ///
   /// use puns::layout::{Field, Layout, Spec};
   ///
-  /// // Without `repr`, `rustc` chooses the order of the fields.
+  /// // With the `Rust` representation, `rustc` chooses the order of the fields.
   /// struct Mixed {
   ///   narrow: u8,
   ///   wide: u32,
@@ -4886,21 +4886,22 @@ pub enum Op {
   /// `!` on a `bool`: replaces 0 by 1, and any other value by 0. `#[derive(Pun)]` writes `!` on an
   /// integer, which is bitwise, as an [`Op::Xor`] with `u128::MAX`.
   Not,
-  /// Follows the condition of an `if`. If the condition is false, the `len` operations that follow,
-  /// the branch of the `if` and its [`Op::Else`], are not computed, and a placeholder stands for
-  /// the value of the branch, which [`Op::Select`] does not take.
+  /// Follows the condition of an `if`. If the condition is false, the operations that follow, as
+  /// many as the `u16`, are not computed: the branch of the `if` and its [`Op::Else`]. A placeholder
+  /// stands for the value of the branch, which [`Op::Select`] does not take.
   Then(u16),
-  /// Follows the branch of an `if` that is taken when its condition is true. The `len` operations
-  /// that follow, the `else` branch, are not computed, and a placeholder stands for its value.
+  /// Follows the branch of an `if` that is taken when its condition is true. The operations that
+  /// follow, as many as the `u16`, are not computed: the `else` branch. A placeholder stands for
+  /// its value.
   Else(u16),
   /// Follows an [`Op::Then`] and an [`Op::Else`], and their branches. Replaces a condition and two
   /// values by the first value if the condition is true, else by the second. Only that value was
   /// computed.
   Select,
-  /// Takes a value off the stack, which becomes the `index`th variable. As in Rust, what a `let`
-  /// binds is computed whether it is used or not.
+  /// Takes a value off the stack, which becomes the variable of this index. As in Rust, what a
+  /// `let` binds is computed whether it is used or not.
   Set(u8),
-  /// Pushes the `index`th variable.
+  /// Pushes the variable of this index.
   Get(u8),
   /// Replaces a value by what it becomes when it is replaced by the expression `next` for as long
   /// as the expression `cond` is true of it. In both expressions, the value is the variable `var`.

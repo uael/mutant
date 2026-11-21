@@ -2003,7 +2003,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   }
   let count = variants.len();
   let repr = parse_repr(&input.attrs)?;
-  // Without `repr`, Rust does not specify how a variant is stored, nor its size.
+  // With the `Rust` representation, Rust does not specify how a variant is stored, nor its size.
   let specified = repr.c || repr.transparent || repr.int.is_some();
   Ok(quote! {
     // SAFETY: `SPEC` has the size of `Self`, and the items of the `# Safety` of `Scalar` hold:
