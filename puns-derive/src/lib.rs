@@ -166,9 +166,9 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 /// Returns the identity of the type of `input` (`puns::layout::Id`): where it is declared, and
 /// its name.
 ///
-/// A generic type has none (`Id::NONE`). Two of its instances are other types, which `rustc` may
-/// arrange otherwise, and what makes one is not all `Pun` (`PhantomData<T>`). Lifetime parameters
-/// do not count.
+/// A generic type has none (`Id::NONE`), since two of its instances are other types, which `rustc`
+/// may arrange otherwise, and what makes one is not all `Pun` (`PhantomData<T>`). Lifetime
+/// parameters do not count.
 fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
   // One crate is expanded by one process, in which each derive takes the next number.
   static DERIVES: AtomicUsize = AtomicUsize::new(0);
@@ -401,7 +401,7 @@ struct FieldInfo<'a> {
 /// The depth of the stack of the evaluator, which `layout::check_ops` checks again.
 ///
 /// The validation applies each operation in an instance of a function of its own, down a tree of
-/// the operations. So an expression also has at most [`MAX_OPS`] operations, and nests at most
+/// the operations, so an expression also has at most [`MAX_OPS`] operations and nests at most
 /// [`MAX_WALKS`] walks. It has at most [`VARIABLES`] variables.
 const STACK: usize = 16;
 /// The number of variables of an expression.

@@ -1,9 +1,9 @@
 //! A model check of self-relative pointers, against an oracle that does not use the analysis.
 //!
-//! The model checks what `puns::view_ref` and `puns::try_view_ref` accept. The pointers are those
-//! of the tests of `puns` ([`relative`](crate::relative)), declared through the public API only. A
-//! pointer is an offset in a given byte order. It aims at one value, at a sequence whose length is
-//! right before it, or at text whose length is right before it. Some pointers may be null.
+//! The model checks what `puns::view_ref` and `puns::try_view_ref` accept, with the pointers of the
+//! tests of `puns` ([`relative`](crate::relative)), declared through the public API only. A pointer
+//! is an offset in a given byte order, which aims at one value, at a sequence whose length is right
+//! before it, or at text whose length is right before it, and some pointers may be null.
 //!
 //! Each type of the model is described by hand ([`Desc`]). A description gives the plain bytes of
 //! the type and what they may be, its fields and variants at their offsets, and its pointers and
@@ -502,9 +502,9 @@ impl From<puns::Invalid> for Stop {
 
 /// A visitor that follows the pointers of the tests (`relative`) through `bytes`.
 ///
-/// It validates what each pointer aims at with `puns`, in turn. This is what a crate that has
-/// pointers does with `validate_in`. It is written from the layouts of the pointers only
-/// (`as_pointer`, `Pointee`).
+/// It validates what each pointer aims at with `puns`, in turn, as a crate that has pointers does
+/// with `validate_in`, and is written from the layouts of the pointers only (`as_pointer`,
+/// `Pointee`).
 pub struct Follow<'b> {
   /// The buffer that holds the values and what their pointers aim at.
   pub bytes: &'b [u8],
@@ -553,9 +553,9 @@ enum Target {
 impl Follow<'_> {
   /// Returns what the pointer `P` at `at` aims at, from the layout of `P` only (`as_pointer`).
   ///
-  /// It checks what the scheme of the pointer requires. The target must be in `bytes` and
-  /// aligned, and a length must not be negative. Text must be valid UTF-8. Following the pointer
-  /// takes one unit of fuel.
+  /// It checks what the scheme of the pointer requires: the target must be in `bytes` and aligned,
+  /// a length must not be negative, and text must be valid UTF-8. Following the pointer takes one
+  /// unit of fuel.
   ///
   /// # Errors
   ///
@@ -818,8 +818,8 @@ pub fn check_pointers_in<T: Model>(masks: &[u8]) -> usize {
 /// describes them.
 ///
 /// These are the bytes that the value holds initialized: its scalars, the tag of an enum and the
-/// fields of its variant. The bytes of a pointer are not marked, unless the pointer is null. What
-/// the pointers aim at is not marked. This is the oracle of [`check_copy_in`].
+/// fields of its variant. The bytes of a pointer are not marked unless the pointer is null, and
+/// what the pointers aim at is not marked. This is the oracle of [`check_copy_in`].
 ///
 /// # Panics
 ///

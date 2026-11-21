@@ -30,7 +30,7 @@
 //! `misaligned` checks that an address is rejected for its alignment (`try_pun_ref`, `from_tail`).
 //! The parts (`head*`, `tail*`) are in `parts.rs`, slices and unsized tails in `dst.rs`, and view
 //! enums in `views.rs`. The model does not run `pun`, `pun_mut`, `try_pun_mut`, `from_head_mut`,
-//! `from_tail_mut` and the regions. The tests of `puns` run them under Miri.
+//! `from_tail_mut` and the regions, which the tests of `puns` run under Miri.
 
 #[cfg(not(miri))]
 use core::num::NonZero;

@@ -24,8 +24,8 @@
 //! # Requirements
 //!
 //! A value that safe code holds need not meet what `#[pun(valid(..))]` or a rule requires, because
-//! safe code can write any value of its type to a field. The oracles therefore have two modes.
-//! Without `target`, an oracle decides only what the type system guarantees. With `target`, the
+//! safe code can write any value of its type to a field. The oracles therefore have two modes:
+//! without `target`, an oracle decides only what the type system guarantees, and with `target`, the
 //! requirements count too.
 //!
 //! The library may leave a requirement of the target unchecked only if the requirements of the
@@ -236,8 +236,8 @@ thread_local! {
 /// Records a requirement of a value that the type system does not guarantee, and returns `holds`.
 ///
 /// A requirement is a `valid(..)`, a rule, or what a target requires of a scalar that may be
-/// uninitialized. `off` is its offset in the value. `what` names it, and must be the same for the
-/// same requirement at every offset. The requirement is recorded only while `requirements`
+/// uninitialized. `off` is its offset in the value, and `what` names it, which must be the same for
+/// the same requirement at every offset. The requirement is recorded only while `requirements`
 /// collects them.
 ///
 /// # Errors
@@ -596,8 +596,8 @@ pub unsafe fn make<T: Oracle>(bytes: &Bytes) -> T {
 ///
 /// The caller must ensure that:
 ///
-/// - The oracle of `T` reads no byte that may be uninitialized in a value of `T`. This holds if the
-///   oracle is right. A wrong oracle makes this function read an uninitialized byte, which Miri
+/// - The oracle of `T` reads no byte that may be uninitialized in a value of `T`, which holds if
+///   the oracle is right: a wrong oracle makes this function read an uninitialized byte, which Miri
 ///   reports.
 pub unsafe fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
   let size = size_of::<T>();
