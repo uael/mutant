@@ -173,4 +173,5 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) — release-plz
 - Imports: reordered, grouped by `StdExternalCrate`, granularity `Crate`
 - Clippy: `pedantic` + `nursery` at warn; `dbg_macro`, `allow_attributes`, `missing_safety_doc`, `undocumented_unsafe_blocks` denied; `#[expect(lint, reason = "..")]` where a lint is wrong for the code
 - Every `unsafe` block has a `// SAFETY:` comment, every `unsafe fn` and trait a `# Safety` section
+- Prose (README, docs, `SAFETY` comments, Markdown) follows `docs/prose.md`
 - Dual-licensed: Apache-2.0 OR MIT
