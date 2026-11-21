@@ -1,9 +1,9 @@
 # The design of `puns`
 
-The design is in the rustdoc. This file says where each part is written, and states the
+The design is in the rustdoc, and this file says where each part is written and states the
 invariants that cross modules. Read the module documentation of what you change before you change
 it, and keep it true. `cargo doc --no-deps -p puns --document-private-items` renders the private
-modules. The module `view` is `#[doc(hidden)]`, so read its documentation in the source.
+modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in the source.
 
 ## What `puns` promises
 
@@ -24,8 +24,8 @@ modules. The module `view` is `#[doc(hidden)]`, so read its documentation in the
 - **The analysis compares two layouts at compile time.** [`analysis`](src/analysis.rs) decides
   fit, validity, marks and mutability, with its cost, shifted relations, mutable parts, how rules
   are proven, and the layouts that Rust leaves to the compiler.
-- **Validation checks only the marks.** [`validate`](src/validate.rs) recurses over types, with
-  no interpreter. The evaluator of rules is `layout::Machine`.
+- **Validation checks only the marks.** [`validate`](src/validate.rs) recurses over types, with no
+  interpreter, and the evaluator of rules is `layout::Machine`.
 - **Narrowing.** [`narrow`](src/narrow.rs) computes the range of every value of a rule, so that
   each operation runs in a register where it fits.
 - **Views.** [`view`](src/view.rs) decides each variant of a view enum once, from its base.
@@ -71,31 +71,31 @@ What users meet is in "Limitations" of the crate documentation. The following ar
 their costs, for whoever takes one up.
 
 - **One walk to copy a value and hand over its pointers.** A deep copy is `copy_in` then
-  `pointers_in` on the same value. The tag of an enum is then read, and its variant chosen,
-  twice. One walk could hand the pointers to the visitor during the copy. But the visitor of a
-  deep copy allocates the targets, which can move the buffer under the copy. The walk would have
-  to keep the pointers aside until it ends. A prototype that kept them on a stack of its own was
-  twice as slow, with an indirect call, a push and a pop for each pointer.
+  `pointers_in` on the same value, so the tag of an enum is read, and its variant chosen, twice. One
+  walk could hand the pointers to the visitor during the copy, but the visitor of a deep copy
+  allocates the targets, which can move the buffer under the copy, so the walk would have to keep
+  the pointers aside until it ends. A prototype that kept them on a stack of its own was twice as
+  slow, with an indirect call, a push and a pop for each pointer.
 - **Checks behind pointers.** Checking behind pointers is a walk of the buffer with the marks of
-  each pair of types. Only the crate that has the pointers can make that walk, since it knows the
-  way to the targets. The version of `validate_in` for a pair would be a function of its own,
+  each pair of types, which only the crate that has the pointers can make, since it knows the way to
+  the targets. The version of `validate_in` for a pair would be a function of its own,
   `validate_pair_in::<S, D, V>`. It would check what the marks of the analysis of `S` as `D` leave,
   and hand over pairs of pointers through a method added to `Visit` with a default body,
-  `pointer_pair::<PS, PD>(at)`. By default, that method would validate the target of `PD` alone.
-  Adding either breaks nothing of `validate_in`.
+  `pointer_pair::<PS, PD>(at)`, that validates the target of `PD` alone. Adding either breaks
+  nothing of `validate_in`.
 - **Precise mutable parts.** The operations of a rule tell which fields and bytes it reads, so
-  `head_mut` and `tail_mut` could allow a rule over other fields only. They could allow an enum
-  all of whose variants accept what is written. A `pun_mut` of a whole value does not require
-  this of rules, and the two could be made the same, either way.
+  `head_mut` and `tail_mut` could allow a rule over other fields only, and an enum all of whose
+  variants accept what is written. A `pun_mut` of a whole value does not require this of rules, and
+  the two could be made the same, either way.
 - **Ranges from conditions.** A value is narrowed by what it is made of and by the reads that
-  succeeded, not by a comparison that held. The condition of a walk does not narrow its step, nor
+  succeeded, not by a comparison that held, so the condition of a walk does not narrow its step, nor
   does the condition of an `if` narrow its branches. The examples have neither case, since their
   walks move offsets.
 - **Rules implied by other rules.** The model check counts as nothing what the source implies and
-  the library checks all the same. It is not wrong.
+  the library checks all the same, which is not wrong.
 - **A rule that two variants of a view share, where neither takes the other.** The later variants
-  that have a rule that failed, over the same extent at the same place (`Layout::same_rules`),
-  could be ended at once. The validation would then report which rule failed. Every check would
+  that have a rule that failed, over the same extent at the same place (`Layout::same_rules`), could
+  be ended at once, and the validation would then report which rule failed. But every check would
   carry that report, where it is now a `bool` that the optimizer folds.
 - **Precise checks of an enum made from something else.** Only what was not proven could be
   checked, rather than the whole enum.
@@ -104,9 +104,9 @@ their costs, for whoever takes one up.
 - **Checking some fields of a union.** Checking only the fields that read no padding would be
   sound, but the marks of the analysis cannot tell the validation which fields to skip.
 - **The identity of an enum whose bytes may be uninitialized.** A scalar made by
-  `Spec::maybe_uninit` equals no scalar. So a struct or an enum that holds one does not prove
-  itself by `Layout::equals`. The library makes no such enum today, since the tags that it
-  discovers are exact.
+  `Spec::maybe_uninit` equals no scalar, so a struct or an enum that holds one does not prove itself
+  by `Layout::equals`. The library makes no such enum today, since the tags that it discovers are
+  exact.
 - **Fields of fields in rules.** Loading `header.length` or `magic[0]` would be sound if the
   offset were checked against the layout of the field, as a scalar of that size there, as it is
   for the fields of the struct.
