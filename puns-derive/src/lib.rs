@@ -1647,7 +1647,10 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         });
         accessors.push(region.ty.as_ref().map_or_else(
           || {
-            let doc = format!("The bytes of the `{name}` region.");
+            let doc = format!(
+              "Returns the bytes of the `{name}` region of the tail, cut short if the fields that \
+               size the regions give more bytes than the tail holds."
+            );
             quote! {
               #[doc = #doc]
               #[inline]
@@ -1657,7 +1660,12 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
             }
           },
           |ty| {
-            let doc = format!("The `{name}` region, if its bytes are what it is said to hold.");
+            let doc = format!(
+              "Returns the `{name}` region of the tail as the type it is said to hold, read with \
+               `puns::from_bytes`. The region is cut short if the fields that size the regions \
+               give more bytes than the tail holds.\n\n# Errors\n\nReturns the error of \
+               `puns::from_bytes` if the bytes of the region are not a value of that type."
+            );
             quote! {
               #[doc = #doc]
               #[inline]
@@ -1675,7 +1683,11 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
   for getter in &options.getters {
     let (name, ty, vis) = (&getter.name, &getter.ty, &input.vis);
     let expr = rust(&getter.expr, &fields, &root, repr.packed.is_some());
-    let doc = format!("`{}`", getter.expr.to_token_stream());
+    let doc = format!(
+      "Returns `{}`, computed from the fields of the value, as a `{}`.",
+      getter.expr.to_token_stream(),
+      ty.to_token_stream()
+    );
     accessors.push(quote! {
       #[doc = #doc]
       #[inline]
@@ -1971,6 +1983,8 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         /// Returns the first variant, in order, whose type `bytes` start with a valid value of,
         /// and the bytes after that value.
         ///
+        /// # Errors
+        ///
         /// Returns `Err(Error::Validity)` if `bytes` start with a value of no variant's type.
         #vis const fn from_head(bytes: #bytes) -> #result<(Self, #bytes), #root::Error> {
           let mut known = #root::view::Known::<Self, #count, true>::new(bytes);
@@ -1979,6 +1993,8 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         }
 
         /// Returns the first variant, in order, whose type all of `bytes` are a valid value of.
+        ///
+        /// # Errors
         ///
         /// Returns `Err(Error::Validity)` if `bytes` are a value of no variant's type.
         #vis const fn from_bytes(bytes: #bytes) -> #result<Self, #root::Error> {

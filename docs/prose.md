@@ -86,7 +86,8 @@ Avoid these patterns, each of which is common in generated text:
 
 ## Mechanics
 
-- Lines are at most 100 columns. Quoted compiler messages and link definitions may be longer.
+- Lines are at most 100 columns. Quoted compiler messages, link definitions, table rows and
+  commands in code blocks may be longer, since they cannot be wrapped.
 - Every link resolves. A link to a hidden item is a dead link, so name such an item in code
   without a link.
 - No arbitrary identifiers (rule numbers, internal ticket ids) in the documentation.
