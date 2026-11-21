@@ -1308,12 +1308,12 @@ const fn str_equals(a: &str, b: &str) -> bool {
 
 /// The tag and the variants of an enum with fields, or the fields of a union.
 ///
-/// [`Layout::enumeration`] makes the layout of an enum from it, and [`Layout::union`] the layout of
-/// a union. The tag of an enum is a scalar at a fixed place, whose value tells the variant. Where
-/// Rust specifies the representation of the enum, the tag is where the representation puts it. With
-/// the `Rust` representation, it is where `rustc` put it, as `#[derive(Pun)]` finds it, and it may
-/// then be a niche, a scalar among the fields of one variant, whose valid values are that variant
-/// and whose other values are the other variants.
+/// [`Layout::enumeration`] makes the layout of an enum from it. `#[derive(Pun)]` also makes the
+/// layout of a union from one, with functions of its own. The tag of an enum is a scalar at a fixed
+/// place, whose value tells the variant. Where Rust specifies the representation of the enum, the
+/// tag is where the representation puts it. With the `Rust` representation, it is where `rustc` put
+/// it, as `#[derive(Pun)]` finds it, and it may then be a niche, a scalar among the fields of one
+/// variant, whose valid values are that variant and whose other values are the other variants.
 ///
 /// # Examples
 ///
@@ -1476,7 +1476,7 @@ impl Enum {
 
   /// Returns the `repr(C)` union of `fields`, for `#[derive(Pun)]`.
   ///
-  /// Each field is a variant with one field at offset 0, in declaration order. [`Layout::union`]
+  /// Each field is a variant with one field at offset 0, in declaration order. `Layout::union`
   /// checks the result against the union.
   #[doc(hidden)]
   #[must_use]
@@ -3683,10 +3683,10 @@ impl Layout {
     }
   }
 
-  /// Returns the layout of the `repr(C)` union `T`, whose fields are the variants of `layout`.
+  /// Returns the layout of the `repr(C)` union `T`, whose fields are the variants of `layout`, for
+  /// `#[derive(Pun)]`.
   ///
-  /// Only `#[derive(Pun)]` makes a `layout` that this function accepts, with a hidden function, so
-  /// this function is for the code that the derive generates.
+  /// Only `Enum::union` makes a `layout` that this function accepts.
   ///
   /// The language has not settled the validity of unions, and this layout takes what is sound under
   /// each of the rules being considered, as [Unions](crate#unions) describes.
@@ -3726,6 +3726,7 @@ impl Layout {
   /// # union Choice { flag: bool, small: u8in<0, 3> }
   /// let _: u8 = puns::pun(Choice { flag: true });
   /// ```
+  #[doc(hidden)]
   #[must_use]
   pub const fn union<T>(layout: &'static Enum) -> Self {
     assert!(layout.union, "not a union");
