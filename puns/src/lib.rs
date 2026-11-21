@@ -1027,67 +1027,67 @@ pub use layout::{crc32, sum16};
 /// Implements [`Pun`](trait@Pun) for a struct, an enum or a union, from its declaration and its
 /// `#[pun(..)]` attributes.
 ///
-/// The derive reads the layout of the type from the compiler: the size, the alignment and the
-/// offset of each field, and the discriminants of an enum. It reads the [valid] values of the type
-/// from the `Pun` implementations of its fields, and from its attributes.
+/// The derive reads the layout of the type from the compiler (its size, its alignment, the offset
+/// of each field, and the discriminants of an enum), and the [valid] values of the type from the
+/// `Pun` implementations of its fields and from its attributes.
 ///
 /// [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 ///
-/// **Structs.** A struct may have any representation. A struct whose last field is unsized must be
-/// `repr(C)` or `repr(transparent)`. With the `Rust` representation, Rust lets the compiler choose
-/// the order of the fields. Without the `unstable` feature, a pun then relies only on what every
-/// order has (see [`layout::UNSTABLE`]). If every order makes the same bytes, as for `(u8, [u8;
-/// 3])` or `(bool, bool)`, the struct is known whole. Otherwise it is known to have initialized
-/// bytes, if it has them in every order, and it is known as itself. A struct may have rules, which
-/// its attributes state (see "Attributes").
+/// **Structs.** A struct may have any representation, but a struct whose last field is unsized must
+/// be `repr(C)` or `repr(transparent)`. With the `Rust` representation, Rust lets the compiler
+/// choose the order of the fields, so without the `unstable` feature, a pun relies only on what
+/// every order has in common (see [`layout::UNSTABLE`]). If every order makes the same bytes, as
+/// for `(u8, [u8; 3])` or `(bool, bool)`, the struct is known whole. Otherwise, it is known to have
+/// initialized bytes if it has them in every order, and it is known as itself. A struct may also
+/// have rules, which its attributes state (see "Attributes").
 ///
 /// **Enums without fields.** An enum without fields may have any representation. Its valid values
-/// are its discriminants, as the compiler stores them. With the `Rust` representation, Rust does
-/// not specify how it stores them. Without the `unstable` feature, such an enum is then known only
-/// as itself.
+/// are its discriminants, as the compiler stores them. Rust does not specify how they are stored
+/// with the `Rust` representation, so without the `unstable` feature, such an enum is known only as
+/// itself.
 ///
 /// **Enums with fields.** An enum with fields may be `repr(C)`, `repr(u8)` or another integer,
-/// both, or be of the `Rust` representation. With `repr(C)` or an integer, its layout is the one
-/// that [RFC 2195] specifies. Otherwise, the derive finds the layout that `rustc` chose by
-/// experiments in const evaluation, on a value of each variant. An experiment that fails refuses
-/// the enum, so a wrong layout is never found. What is known of a value of such an enum is its tag.
-/// Making one from another type checks the tag, then what the fields of its variant require.
-/// With the `Rust` representation and without the `unstable` feature, the enum is known only as
-/// itself.
+/// both, or of the `Rust` representation. With `repr(C)` or an integer, its layout is the one that
+/// [RFC 2195] specifies. Otherwise, the derive finds the layout that `rustc` chose by experimenting
+/// in const evaluation on a value of each variant. An experiment that fails refuses the enum, so a
+/// wrong layout is never found. What is known about a value of such an enum is its tag: making one
+/// from another type checks the tag, then what the fields of its variant require. With the `Rust`
+/// representation and without the `unstable` feature, the enum is known only as itself.
 ///
 /// [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 ///
-/// **Enums without variants.** An enum without variants has no value. Nothing is made of one.
+/// **Enums without variants.** An enum without variants has no value, so nothing is ever made of
+/// one.
 ///
-/// **Views.** An enum whose variants each hold one shared reference, all of the same lifetime, is
-/// not data. It is a *view* of data that is one thing or another, such as `enum Frame<'a> {
-/// Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`. The derive implements no `Pun` for it. It
+/// **Views.** An enum whose variants each hold one shared reference, all with the same lifetime, is
+/// not data but a *view* of data that is one thing or another, such as `enum Frame<'a> { Ipv4(&'a
+/// Ipv4), Arp(&'a Arp), Other(&'a [u8]) }`. The derive implements no `Pun` for it. Instead, it
 /// generates two `const fn`s, as visible as the enum:
 ///
 /// - `from_head(bytes: &[u8]) -> Result<(Self, &[u8]), Error>` returns the first variant that
 ///   `bytes` start with, and the bytes that follow it.
-/// - `from_bytes(bytes: &[u8]) -> Result<Self, Error>` returns the first variant that `bytes` are,
-///   whole.
+/// - `from_bytes(bytes: &[u8]) -> Result<Self, Error>` returns the first variant that `bytes` are
+///   as a whole.
 ///
 /// Both return [`Error::Validity`] if no variant fits. They answer as trying the variants in order
-/// would, but they check each variant at most once, and only for what is not known of it already. A
-/// variant whose first constrained scalar (an EtherType, say) the bytes do not have is passed over
-/// on that scalar alone. A variant whose values are all values of a later variant is decided after
-/// that one, from it. It fails if that one fails, and is checked only for what that one does not
-/// prove of it. So a variant `Frame<Ipv4<Udp>>` before `Frame<Ipv4>` is checked for its protocol,
-/// and not for the checksums again. The error does not tell why no variant fits. A view has no
-/// `from_tail`, because its variants may be unsized. Its build grows about in proportion to the
-/// number of its variants where each starts with a different constant, and as the square of that
-/// number where the values of each variant are also values of the next.
+/// would, but they check each variant at most once, and only for what is not already known about
+/// it. A variant whose first constrained scalar (an EtherType, say) the bytes do not match is
+/// skipped on that scalar alone. A variant whose values are all values of a later variant is
+/// decided after that one, from it: it fails if that one fails, and is checked only for what that
+/// one does not prove about it. So a variant `Frame<Ipv4<Udp>>` before `Frame<Ipv4>` is checked for
+/// its protocol, without checking the checksums again. The error does not say why no variant fits.
+/// A view has no `from_tail`, because its variants may be unsized. Its build time grows roughly in
+/// proportion to the number of variants when each starts with a different constant, and with the
+/// square of that number when the values of each variant are also values of the next.
 ///
-/// **Unions.** A union must be `repr(C)`, and not packed. As a target, bytes are a valid union if
-/// they are a valid value of one of its fields. As a source, nothing is known of a union, not even
-/// that its bytes are initialized. The validity of unions is not settled by the language, and this
-/// is what is sound under each of the rules being considered.
+/// **Unions.** A union must be `repr(C)` and not packed. As a target, bytes are a valid union if
+/// they are a valid value of one of its fields. As a source, nothing is known about a union, not
+/// even that its bytes are initialized. The language has not settled the validity of unions, and
+/// this is what is sound under each of the rules being considered.
 ///
-/// **Byte order.** The byte order of a field is the one of its type: `u32be`, `i16le` and `f64be`
-/// of [`num`] are numbers of a given byte order. A format whose values tell their byte order (ELF,
-/// TIFF) is a choice between two types, which a view makes.
+/// **Byte order.** A field has the byte order of its type: `u32be`, `i16le` and `f64be` from
+/// [`num`] are numbers with a fixed byte order. A format whose values tell their own byte order
+/// (ELF, TIFF) is a choice between two types, which a view makes.
 ///
 /// # Attributes
 ///
@@ -1096,25 +1096,25 @@ pub use layout::{crc32, sum16};
 /// On a struct:
 ///
 /// - `#[pun(size = EXPR)]`: the size in bytes of a value is `EXPR`.
-/// - `#[pun(assert(EXPR))]`: `EXPR` is true of a value. A struct may have several.
+/// - `#[pun(assert(EXPR))]`: `EXPR` must be true of a value. A struct may have several.
 /// - `#[pun(get(name: Type = EXPR, ..))]`: generates `const fn name(&self) -> Type`, which returns
 ///   `(EXPR) as Type`, for bit fields and the like. The method is as visible as the struct. Here
-///   `EXPR` is any Rust expression. In it, the name of an unsigned integer field, or `self.name`,
-///   is the value of that field as a `u128`, except for a name that a `let` or a closure declares.
-///   A field of another type is refused where the method is used. The field is read by reference,
-///   or copied in a packed struct.
+///   `EXPR` is any Rust expression, in which the name of an unsigned integer field, or `self.name`,
+///   is the value of that field as a `u128`, unless a `let` or a closure declares that name. A
+///   field of another type is refused where the method is used. The field is read by reference, or
+///   copied in a packed struct.
 /// - `#[pun(tag(Key = Type, ..))]`: implements [`Tag<Key>`](Tag) with `type Tag = Type`. Where the
-///   struct is carried by something that tells what it carries with a `Key`, that `Key` must be a
-///   `Type`.
+///   struct is carried by something that identifies what it carries with a `Key`, that `Key` must
+///   be a `Type`.
 ///
 /// On a struct, an enum with fields that is not a view, or a union:
 ///
-/// - `#[pun(bound(T: Trait, ..))]`: the bounds of the implementation of `Pun`, on top of the bounds
-///   of the type. They replace the bounds that the derive finds by itself. Those require that the
-///   type of each field that depends on a type parameter is `Pun`, unless that type names the type
-///   being derived. Generic types that hold each other behind pointers need it, since the bounds
-///   found for each would form a cycle. Write `#[pun(bound())]` when the bounds of the type are
-///   enough.
+/// - `#[pun(bound(T: Trait, ..))]`: the bounds of the implementation of `Pun`, in addition to the
+///   bounds of the type. They replace the bounds that the derive finds by itself, which require the
+///   type of each field that depends on a type parameter to be `Pun`, unless that type names the
+///   type being derived. Generic types that hold each other behind pointers need this, since the
+///   bounds found for each would form a cycle. Write `#[pun(bound())]` when the bounds of the type
+///   are enough.
 ///
 /// On any type:
 ///
@@ -1124,44 +1124,44 @@ pub use layout::{crc32, sum16};
 /// On a field of a struct, of an enum with fields that is not a view, or of a union:
 ///
 /// - `#[pun(valid(0x45..=0x4f, 0x60, ..))]`: the field must have one of these values. Each item is
-///   a value or a range, of unsigned integer literals or constants. The value of the field is its
-///   bits, read as an unsigned integer in its byte order, so `0xff` is `-1i8`.
+///   a value or a range of unsigned integer literals or constants. The value of the field is its
+///   bits read as an unsigned integer in its byte order, so `0xff` is `-1i8`.
 ///
 /// On the last field of a struct:
 ///
-/// - `#[pun(len = EXPR)]`: the slice or the array of the field has `EXPR` elements.
+/// - `#[pun(len = EXPR)]`: the slice or array of the field has `EXPR` elements.
 /// - `#[pun(regions(first = EXPR, second = EXPR, last))]`: the bytes of the field are consecutive
-///   regions, of `EXPR` bytes each. The last region may omit its size, and then takes what remains.
-///   A method of each name returns the bytes of its region, `&[u8]`. It is as visible as the field.
-///   With a type (`first: Type = EXPR`, `last: Type`), the method returns `Result<&Type, Error>`
-///   instead. It is the region as a `&Type`, if its bytes are one. A type parameter that only a
-///   region names is unused, which Rust refuses (E0392) before the derive runs. A field
-///   `PhantomData<P>`, which has no byte, uses it.
+///   regions of `EXPR` bytes each. The last region may omit its size, and then takes whatever
+///   remains. A method with each name, as visible as the field, returns the bytes of its region as
+///   a `&[u8]`. With a type (`first: Type = EXPR`, `last: Type`), the method returns `Result<&Type,
+///   Error>` instead: the region as a `&Type`, if its bytes are one. A type parameter that only a
+///   region names is unused, which Rust refuses (E0392) before the derive runs. A `PhantomData<P>`
+///   field, which has no bytes, uses it.
 ///
 /// ## Expressions
 ///
 /// The `EXPR` of `size`, `assert`, `len` and `regions` is a *rule*. A rule is compiled to a
-/// constant program. It can be evaluated in a `const fn`, and costs what its arithmetic costs.
+/// constant program, which can be evaluated in a `const fn` and costs what its arithmetic costs.
 ///
-/// A rule means what the same Rust expression means where every integer is a `u128`, or it is
-/// refused. It is typed as Rust types it. Arithmetic is on integers. The operands of `&&` and `||`,
-/// and the condition of an `if`, are `bool`s. An `assert` is a `bool`, and a `size`, a `len` or a
-/// region is an integer. Rust has no truthiness: `flags & 1` is not an assertion, but `flags & 1 !=
-/// 0` is.
+/// A rule means what the same Rust expression would mean if every integer were a `u128`, or it is
+/// refused. It is typed as Rust would type it: arithmetic is on integers, the operands of `&&` and
+/// `||` and the condition of an `if` are `bool`s, an `assert` is a `bool`, and a `size`, a `len` or
+/// a region is an integer. Rust has no truthiness, so `flags & 1` is not an assertion, but `flags &
+/// 1 != 0` is.
 ///
 /// A rule is made of:
 ///
-/// - the fields of its struct that are unsigned integers: `u8`, `u16be`, `NonZero<u32>`..., or a
-///   struct whose only field with a size is one of these. A field is named by its name, or as
+/// - the fields of its struct that are unsigned integers (`u8`, `u16be`, `NonZero<u32>`...), or
+///   structs whose only field with a size is one of these. A field is named by its name, or as
 ///   `self.name` (`self.0` in a tuple struct). A signed or floating-point number, a `bool`, a
 ///   `char` or an enum is refused, since its bits are not its value. A rule does not name the
-///   fields of a field or the elements of an array. It reads them with `le` and `be`.
+///   fields of a field or the elements of an array: it reads them with `le` and `be`.
 /// - `size_of_val(self)`, the size of the value in bytes, except in a `size` or a `len`, which
 ///   defines it.
-/// - integer literals, with no suffix or the one of an unsigned type (`1u8`), and byte literals
-///   (`b'a'`). A floating-point number, a negative number, a signed integer and a `char` are
-///   refused, since they would mean something else.
-/// - constants, which Rust computes, of an unsigned integer type: `MAX_LEN`, `u16::MAX`, a const
+/// - integer literals, with no suffix or the suffix of an unsigned type (`1u8`), and byte literals
+///   (`b'a'`). Floating-point numbers, negative numbers, signed integers and `char`s are refused,
+///   since they would mean something else.
+/// - constants of an unsigned integer type, which Rust computes: `MAX_LEN`, `u16::MAX`, a const
 ///   parameter `N`, `size_of::<Header>()`, `offset_of!(Self, field)`, or `self::f(3)` for a `const
 ///   fn f`.
 /// - the operators `+ - * / % & | ^ << >> == != < <= > >= && || !`. On an integer, `!` is a bitwise
@@ -1173,47 +1173,46 @@ pub use layout::{crc32, sum16};
 /// - choices, `if EXPR { EXPR } else { EXPR }`.
 /// - the functions below. A rule calls no other function by its name alone, and no method.
 ///
-/// Where Rust would panic, the rule fails, which means that it does not hold. This is so of an
-/// overflow of `+`, `-` or `*`, of a division or a remainder by zero, of a shift by 128 or more,
-/// and of a read out of the value. `<<` drops the bits that it shifts out, as in Rust: `(1 << 127)
-/// << 1` is `0`. As in Rust, the right side of `&&` and `||` is computed only if the left side does
-/// not decide, and the branch of an `if` that is not taken is not computed. What is not computed
-/// cannot fail, and costs nothing. So `kind != 7 || be(40, 2) == 0` holds of a value that is not of
-/// kind 7, however short. As in Rust, a `let` is computed whether its name is used or not, and a
-/// block fails if one of its `let`s fails.
+/// Where Rust would panic, the rule fails, which means that it does not hold: on an overflow of
+/// `+`, `-` or `*`, a division or remainder by zero, a shift by 128 or more, and a read outside the
+/// value. `<<` drops the bits it shifts out, as in Rust: `(1 << 127) << 1` is `0`. As in Rust, the
+/// right side of `&&` and `||` is computed only if the left side does not decide, and the branch of
+/// an `if` that is not taken is not computed. What is not computed cannot fail, and costs nothing,
+/// so `kind != 7 || be(40, 2) == 0` holds for a value that is not of kind 7, however short. Also as
+/// in Rust, a `let` is computed whether its name is used or not, and a block fails if one of its
+/// `let`s fails.
 ///
 /// The evaluator has a stack of 16 values. `a + (b + (c + ..))` needs one more for each level,
-/// which a `let` or another order saves. The derive reports an expression that needs more.
+/// which a `let` or a different order saves, and the derive reports an expression that needs more.
 ///
-/// A rule can read the bytes of the value beyond its fields. Its `start`, `end` and `offset` count
-/// bytes from the start of the value. A `size` or a `len` can read them too. [`from_head`]
-/// evaluates it over the bytes that there are, so `size = 2 + if length == 126 { 2 + be(2, 2) }
-/// else { length }` takes WebSocket frames from a stream, and an MQTT packet is `size = 1 +
-/// leb128_len(1) + leb128(1)`. `from_head` then validates the value that it takes as a whole, the
-/// rule included, over the bytes of that value only. So a rule that reads beyond what it sizes
-/// fails. Every read is bounded by the value, so a read or a range out of it fails.
+/// A rule can read the bytes of the value beyond its fields. Its `start`, `end` and `offset`
+/// arguments count bytes from the start of the value. A `size` or a `len` can read them too, and
+/// [`from_head`] evaluates it over the bytes that are there, so `size = 2 + if length == 126 { 2 +
+/// be(2, 2) } else { length }` takes WebSocket frames from a stream, and an MQTT packet is `size =
+/// 1 + leb128_len(1) + leb128(1)`. `from_head` then validates the value it takes as a whole, rule
+/// included, over the bytes of that value only, so a rule that reads beyond what it sizes fails.
+/// Every read is bounded by the value, so a read or a range outside it fails.
 ///
-/// So a trailer is a region, and "the last 4 bytes are the CRC of what is before" is an
+/// A trailer is therefore a region, and "the last 4 bytes are the CRC of what comes before" is an
 /// assertion. A checksum that covers several layers is an assertion of the struct that holds them
-/// all. The checksum of UDP and TCP covers the addresses of the IP header, so it is an assertion of
+/// all: the checksum of UDP and TCP covers the addresses of the IP header, so it is an assertion of
 /// the IPv4 packet. The functions are:
 ///
 /// - `le(offset, N)` and `be(offset, N)`: the unsigned integer of `N` bytes at `offset`,
 ///   little-endian or big-endian. `N` is a constant from 1 to 16.
 /// - `leb128(offset)`, `quic(offset)` and `vlq(offset)`: the variable-length integer at `offset`.
-///   LEB128 has 7 bits a byte, least significant first (Protocol Buffers, WebAssembly, MQTT). QUIC
-///   (RFC 9000) has 1, 2, 4 or 8 bytes, which its two high bits tell. VLQ is big-endian base 128
+///   LEB128 has 7 bits per byte, least significant first (Protocol Buffers, WebAssembly, MQTT).
+///   QUIC (RFC 9000) has 1, 2, 4 or 8 bytes, as its two high bits say. VLQ is big-endian base 128
 ///   (ASN.1 tag numbers and object identifiers). `leb128_len(offset)`, `quic_len(offset)` and
-///   `vlq_len(offset)` are its number of bytes. They fail if the integer does not end within the
-///   value, or does not fit in a `u128`. A longer encoding than needed is read as it is. A rule can
-///   refuse it: `leb128_len(1) <= 4`.
-/// - `crc32(start, end)`: the CRC-32 of Ethernet of the bytes from `start` to `end`.
-/// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of 1 to 64 bits, by the
-///   parameters of the catalogue of CRCs (see [`layout::Crc`]). `crc::<16, 0x8005, 0xffff, true,
-///   0>` is the CRC of Modbus, and `crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>` is
-///   CRC-32C.
+///   `vlq_len(offset)` give its length in bytes. They fail if the integer does not end within the
+///   value, or does not fit in a `u128`. A longer encoding than needed is read as it is, and a rule
+///   can refuse it: `leb128_len(1) <= 4`.
+/// - `crc32(start, end)`: the Ethernet CRC-32 of the bytes from `start` to `end`.
+/// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of 1 to 64 bits, given by its
+///   parameters in the catalogue of CRCs (see [`layout::Crc`]). `crc::<16, 0x8005, 0xffff, true,
+///   0>` is the Modbus CRC, and `crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>` is CRC-32C.
 /// - `crc32(start, end, from, to)` and `crc::<..>(start, end, from, to)`: the same, with the bytes
-///   from `from` to `to` taken as zeros, for a CRC over the header that holds it (GPT).
+///   from `from` to `to` read as zeros, for a CRC over the header that holds it (GPT).
 /// - `sum16(start, end)`: the ones' complement sum of the 16-bit words from `start` to `end`. It is
 ///   `0xffff` over data that holds its own IP checksum.
 /// - `fletcher16(start, end)`: Fletcher-16. It is `0` over data that holds its own ISO 8473
@@ -1222,162 +1221,163 @@ pub use layout::{crc32, sum16};
 /// - `sum(start, end)`: the sum of the bytes (tar).
 /// - `matches(DFA, start, end)`: whether an automaton accepts the bytes from `start` to `end`.
 ///   `DFA` is a `&'static` [`layout::Dfa`]: `Dfa::ASCII`, `Dfa::DIGITS`, `Dfa::OCTAL`, `Dfa::HEX`,
-///   `Dfa::UTF8`, `Dfa::UTF8_NO_NUL`, or one of yours. It states a pattern that the struct requires
-///   of its bytes. Like any rule, it proves nothing of them. A type that guarantees a pattern, as
-///   `str` does, cannot be derived, since safe code can write its fields.
+///   `Dfa::UTF8`, `Dfa::UTF8_NO_NUL`, or one of your own. It states a pattern that the struct
+///   requires of its bytes, and like any rule, it proves nothing about them. A type that guarantees
+///   a pattern, as `str` does, cannot be derived, since safe code can write its fields.
 /// - `walk(START, |at| COND, |at| NEXT)`: what `START` becomes when it is replaced by `NEXT` for as
-///   long as `COND` is true of it. A walk reaches what is at an offset that depends on what is
-///   before it: after options, at the end of a chain of headers, or at the end of a string. The
-///   offset of the first "type, length, value" whose type is 0 is `walk(0, |at| be(at, 1) != 0,
-///   |at| at + 2 + be(at + 1, 1))`. The size of a string that ends with a zero is `size = walk(0,
-///   |at| be(at, 1) != 0, |at| at + 1) + 1`. A walk may be in any rule, in another walk, and
-///   several may be in one expression. A walk takes at most `8 * size_of_val(self) + 128` steps,
-///   one for each bit of the value and for each bit of a `u128`, and fails beyond. So a walk ends,
-///   and a walk over the bits of a field fits whatever the size of the value.
+///   long as `COND` holds. A walk reaches something at an offset that depends on what comes before
+///   it: after options, at the end of a chain of headers, or at the end of a string. The offset of
+///   the first "type, length, value" whose type is 0 is `walk(0, |at| be(at, 1) != 0, |at| at + 2 +
+///   be(at + 1, 1))`, and the size of a zero-terminated string is `size = walk(0, |at| be(at, 1) !=
+///   0, |at| at + 1) + 1`. A walk may be in any rule or in another walk, and one expression may
+///   hold several. A walk takes at most `8 * size_of_val(self) + 128` steps, one for each bit of
+///   the value and of a `u128`, and fails beyond that. So a walk always ends, and a walk over the
+///   bits of a field fits whatever the size of the value.
 ///
-/// The state of a walk is one `u128`. A walk that carries two numbers, such as the kind of a
-/// header and where it starts, packs them in it. Pack them at bit 64, as `(kind << 64) + start`.
-/// On a 64-bit target the two halves are then two registers, and `at >> 64` and
-/// `at & 0xffff_ffff_ffff_ffff` are each a register. Packed as `kind + (start << 8)`, reading
-/// `start` would need a shift across registers and writing it back a merge, on the path from one
-/// step to the next. Where the low half is known not to carry, an addition to it is computed there
-/// alone, without a carry into the high half. `examples/ethernet.rs` checks the checksum of IPv6
+/// The state of a walk is one `u128`. A walk that carries two numbers, such as the kind of a header
+/// and where it starts, packs them into it. Pack them at bit 64, as `(kind << 64) + start`: on a
+/// 64-bit target, the two halves are then two registers, and `at >> 64` and `at &
+/// 0xffff_ffff_ffff_ffff` are each one register. Packed as `kind + (start << 8)`, reading `start`
+/// would need a shift across registers, and writing it back a merge, on the path from one step to
+/// the next. Where the low half is known not to carry, an addition to it is computed in that half
+/// alone, without a carry into the high half. `examples/ethernet.rs` checks the IPv6 checksum
 /// behind any chain of extension headers this way.
 ///
 /// # Compile-time errors
 ///
-/// A derive compiles, and its implementation of `Pun` evaluates, only if all of the following hold.
+/// A derive compiles, and its implementation of `Pun` evaluates, only if all of the following
+/// conditions hold.
 ///
-/// Of every type:
+/// For every type:
 ///
-/// - No identifier in the item starts with `__Pun`. These names are reserved.
-/// - Every option of `#[pun(..)]` on the type, or on a field of a struct, of a union or of an enum
-///   that is not a view, is one of those above, at a place where it means something.
+/// - No identifier in the item starts with `__Pun`, since these names are reserved.
+/// - Every `#[pun(..)]` option on the type, or on a field of a struct, a union or an enum that is
+///   not a view, is one of those above, in a place where it means something.
 /// - The type of every field implements `Pun`.
-/// - The type of every field of a struct, of an enum that is not a view, or of a union, is at least
-///   as visible as the type (E0446).
-/// - The bounds that the derive finds for a generic type do not form a cycle (E0275). Otherwise
+/// - The type of every field of a struct, an enum that is not a view, or a union is at least as
+///   visible as the type (E0446).
+/// - The bounds that the derive finds for a generic type do not form a cycle (E0275). Otherwise,
 ///   `#[pun(bound(..))]` states them.
 ///
-/// Of a struct:
+/// For a struct:
 ///
 /// - A struct whose last field is unsized is `repr(C)` or `repr(transparent)`.
 /// - A `packed` struct does not end with an unsized field whose alignment is greater than the
 ///   packing.
-/// - The type of a field that has `valid` is a [`Scalar`] of 1 to 16 bytes whose bytes are always
+/// - The type of a field with `valid` is a [`Scalar`] of 1 to 16 bytes whose bytes are always
 ///   initialized. Integers, floating-point numbers, `bool`, `char`, `NonZero` and enums without
-///   fields are such scalars. A struct, even `repr(transparent)`, is not one.
+///   fields are such scalars, but a struct, even a `repr(transparent)` one, is not.
 /// - Every item of `valid` is an unsigned integer literal or a constant of an unsigned integer
-///   type. Every range of `valid` is not empty. Every value of `valid` is a valid value of the type
-///   of the field.
-/// - `len` and `regions` are on the last field. The last field of a struct with `len` is a slice or
-///   an array. Only the last region of `regions` omits its size.
-/// - Every rule is an expression as "Expressions" describes, of the type that its option requires.
-///   Each field that it names is an unsigned integer, as above.
+///   type, no range of `valid` is empty, and every value of `valid` is a valid value of the type of
+///   the field.
+/// - `len` and `regions` are on the last field, the last field of a struct with `len` is a slice or
+///   an array, and only the last region of `regions` omits its size.
+/// - Every rule is an expression as described in "Expressions", of the type that its option
+///   requires, and each field it names is an unsigned integer, as above.
 /// - A rule has at most 256 operations, needs a stack of at most 16 values, and has at most 8 names
 ///   at once. Its walks are nested at most 4 deep.
 /// - The width of each `crc::<..>` is 1 to 64 bits, and its other parameters fit in that width.
 /// - The automaton of each `matches` has 1 to 64 states, and the edges of each state are sorted and
 ///   disjoint.
 ///
-/// Of the methods that a struct generates, where they are used:
+/// For the methods that a struct generates, where they are used:
 ///
-/// - The fields that a getter of `get` names are unsigned integers, as a rule requires.
-/// - A struct with `regions` has no padding. A region with a type meets the compile-time conditions
-///   of [`from_bytes`] for that type.
+/// - The fields that a `get` getter names are unsigned integers, as a rule requires.
+/// - A struct with `regions` has no padding, and a region with a type meets the compile-time
+///   conditions of [`from_bytes`] for that type.
 ///
-/// Of an enum:
+/// For an enum:
 ///
-/// - The variants of a view all hold a reference of the same named lifetime, `&'a T`.
+/// - The variants of a view all hold a reference with the same named lifetime, `&'a T`.
 /// - The type of each variant of a view meets the compile-time conditions of [`from_bytes`], where
 ///   `from_head` or `from_bytes` of the view is used.
-/// - No field of an enum with fields, of the `Rust` representation holds a self-relative pointer.
-/// - The compiler lays out an enum with fields, of the `Rust` representation in a way that the
-///   derive recognizes. The variant of a value is told by a tag of 1, 2, 4, 8 or 16 bytes before
-///   the fields of every variant, or by a niche in a scalar of the fields of one variant. Another
-///   layout is refused as unsupported.
+/// - No field of an enum with fields of the `Rust` representation holds a self-relative pointer.
+/// - The compiler lays out an enum with fields of the `Rust` representation in a way that the
+///   derive recognizes: the variant of a value is told by a tag of 1, 2, 4, 8 or 16 bytes before
+///   the fields of every variant, or by a niche in a scalar among the fields of one variant. Any
+///   other layout is refused as unsupported.
 ///
-/// Of a union:
+/// For a union:
 ///
 /// - The union is `repr(C)`, and not packed.
 /// - No field holds a self-relative pointer.
 ///
-/// The derive reports an option that is unknown or misplaced, and an expression that is not a rule,
-/// at the place of the fault. `cargo check` reports these errors, and the errors of types. The
-/// other conditions are checked when the layout of the type is evaluated (E0080). For a type
-/// without generic parameters, `cargo check` reports a violation. For a generic type, the
-/// conditions are checked after monomorphization. `cargo check` does not report a violation, but
-/// `cargo build` does, for each instance that is used. The conditions of a generated method are
-/// checked where the method is used, by `cargo build`.
+/// The derive reports an unknown or misplaced option, and an expression that is not a rule, at the
+/// place of the fault. `cargo check` reports these errors, as well as type errors. The other
+/// conditions are checked when the layout of the type is evaluated (E0080). For a type without
+/// generic parameters, `cargo check` reports a violation. For a generic type, the conditions are
+/// checked after monomorphization, so `cargo check` does not report a violation, but `cargo build`
+/// does, for each instance that is used. The conditions of a generated method are checked where the
+/// method is used, by `cargo build`.
 ///
 /// # Analysis
 ///
 /// *This section describes what the derive assumes, and what deriving `Pun` gives away. Unsafe code
 /// may rely only on the documented contract of [`Pun`](trait@Pun), never on how this derive meets
-/// it. The analysis may change.*
+/// it, since the analysis may change.*
 ///
-/// A pun gives a value of a type only from bytes that are a valid value of it. The bytes are proven
-/// at compile time to be one, or checked at run time. What can be neither proven nor checked does
-/// not compile. The validity that a pun relies on is only what the language guarantees: the values
-/// of `bool`, `char`, enums and `NonZero`, the UTF-8 of `str`, and the private invariants of the
-/// types of [`num`].
+/// A pun only gives a value of a type from bytes that are a valid value of it: the bytes are either
+/// proven at compile time to be one, or checked at run time, and what can be neither proven nor
+/// checked does not compile. The validity that a pun relies on is only what the language
+/// guarantees: the values of `bool`, `char`, enums and `NonZero`, the UTF-8 of `str`, and the
+/// private invariants of the types of [`num`].
 ///
 /// Deriving `Pun` makes every field as accessible as if it were public. A value of the type can be
-/// made from anything whose bytes are valid for its fields and its rules, read as anything its
-/// bytes are, and written through a `&mut` to another type. [`try_pun`] and [`from_bytes`] check
-/// what the derive is told, and nothing that a constructor would check. A type whose private fields
-/// keep an invariant that the derive is not told of must not derive `Pun`.
+/// made from anything whose bytes are valid for its fields and rules, read as anything its bytes
+/// are, and written through a `&mut` to another type. [`try_pun`] and [`from_bytes`] check what the
+/// derive was told, and nothing that a constructor would check, so a type whose private fields keep
+/// an invariant that the derive is not told about must not derive `Pun`.
 ///
 /// `#[pun(valid(..))]` and rules are requirements, not guarantees. They are checked when a value is
-/// made from another type, or proven by the same rules at the same place of the source. They never
-/// prove what another type guarantees, since safe code can write any value to a field. Bytes of a
-/// struct whose field has `valid(..=0x7f)` are still checked when read as a `str`.
+/// made from another type, or proven by the same rules at the same place in the source. They never
+/// prove what another type guarantees, since safe code can write any value to a field: the bytes of
+/// a struct whose field has `valid(..=0x7f)` are still checked when read as a `str`.
 ///
-/// Two types that differ only by phantom parameters or by lifetimes have the same layout. Each
-/// converts to the other freely, by value and by `&mut`. A type whose parameters are a brand (an
+/// Two types that differ only in phantom parameters or lifetimes have the same layout, and each
+/// converts to the other freely, by value and by `&mut`. A type whose parameters act as a brand (an
 /// invariant lifetime that ties a value to a scope, or a marker of what a value was checked
 /// against) must not derive `Pun`, since a pun would turn one brand into another.
 ///
 /// Without the `unstable` feature, nothing that a pun does depends on a layout that Rust leaves to
-/// the compiler: the order of the fields of a struct or a tuple of the `Rust` representation, the
-/// tag of an enum of that representation, and niches. With it, a pun uses the layout that `rustc`
-/// chose for this build. See [The `unstable` feature](crate#the-unstable-feature).
+/// the compiler: the order of the fields of a struct or tuple of the `Rust` representation, the tag
+/// of an enum of that representation, or niches. With it, a pun uses the layout that `rustc` chose
+/// for this build. See [The `unstable` feature](crate#the-unstable-feature).
 ///
 /// ## What the derive trusts
 ///
-/// The derive writes `unsafe impl`s in the crate that uses it. There, safe code can make every
-/// path lead elsewhere. `#[pun(crate = ..)]` names any module, `#[pun(crate)]` the root of the
-/// crate, and `extern crate other as core;` makes `::core` another crate. So what the layout is
-/// made of does not depend on any path, in the following ways:
+/// The derive writes `unsafe impl`s in the crate that uses it, where safe code can make every path
+/// lead somewhere else: `#[pun(crate = ..)]` names any module, `#[pun(crate)]` the root of the
+/// crate, and `extern crate other as core;` makes `::core` another crate. So what a layout is made
+/// of does not depend on any path, in the following ways:
 ///
 /// - The functions that the generated code calls are associated functions of the types that the
-///   implemented traits name ([`layout::Layout`], [`layout::Spec`], [`layout::Field`]). Or they
-///   are associated functions of [`layout::Rule`], [`layout::Op`], [`layout::Field`],
-///   [`layout::Enum`] and [`layout::Variant`], which a hidden constant of `Layout` fixes with
-///   `fn(T)` types, for which no path can stand.
+///   implemented traits name ([`layout::Layout`], [`layout::Spec`], [`layout::Field`]), or
+///   associated functions of [`layout::Rule`], [`layout::Op`], [`layout::Field`], [`layout::Enum`]
+///   and [`layout::Variant`], which a hidden constant of `Layout` fixes with `fn(T)` types that no
+///   path can stand in for.
 /// - The offsets of the fields do not come from `offset_of!`, which is a macro named by a path.
-///   With `repr(C)`, they are what `repr(C)` specifies, computed from the sizes and the alignments
-///   of the fields. With `repr(transparent)`, the field of a size is at 0. Otherwise the struct is
-///   `Sized`, and the offsets are found by projecting a pointer to an uninitialized value
-///   (`&raw const (*p).field`). This costs nothing in const evaluation, whatever the size.
+///   With `repr(C)`, they are what `repr(C)` specifies, computed from the sizes and alignments of
+///   the fields. With `repr(transparent)`, the field with a size is at 0. Otherwise, the struct is
+///   `Sized`, and the offsets are found by projecting a pointer to an uninitialized value (`&raw
+///   const (*p).field`), which costs nothing in const evaluation, whatever the size.
 /// - The variants of an enum with fields and a primitive or `C` representation are laid out as [RFC
-///   2195] specifies, from the sizes and the alignments of their fields. With the `Rust`
+///   2195] specifies, from the sizes and alignments of their fields. With the `Rust`
 ///   representation, a function of `Layout` finds them from samples that another function of
-///   `Layout` makes. The offsets in those samples are found by code that matches on them, with
-///   `byte_offset_from`, a method of a pointer that no path names. A fake `MaybeUninit`, or a fake
-///   type of the result, named by a path does not have the type that these functions take or
-///   return, and does not compile.
-/// - The trait that says where a field is (`Path`) is sealed. The leaf at which a list of fields
-///   says that a field is, is checked against the layout.
+///   `Layout` makes, and the offsets in those samples are found by code that matches on them, with
+///   `byte_offset_from`, a pointer method that no path names. A fake `MaybeUninit`, or a fake
+///   result type, named by a path does not have the type that these functions take or return, and
+///   does not compile.
+/// - The trait that says where a field is (`Path`) is sealed, and the leaf at which a list of
+///   fields places a field is checked against the layout.
 /// - Names that start with `__Pun` are reserved. In the type of a field, `Self` is replaced by the
-///   type that it means. The generated code writes these types where both names mean something
+///   type it means, and the generated code writes these types where both names would mean something
 ///   else.
 ///
 /// The rest of `::core` that the derive names (`Option`, `PhantomData`, `usize`, and so on) is
-/// checked by the types of the traits that it implements. The derive trusts the compiler for what
-/// it parses, such as `repr`. It also trusts that the type of a field is the same type wherever
-/// the derive writes it. A procedural macro in the type of a field that expands to another type at
-/// each expansion would break that.
+/// checked by the types of the traits it implements. The derive trusts the compiler for what it
+/// parses, such as `repr`. It also trusts that the type of a field is the same type wherever the
+/// derive writes it, which a procedural macro in the type of a field that expands to a different
+/// type at each expansion would break.
 ///
 /// # Examples
 ///
