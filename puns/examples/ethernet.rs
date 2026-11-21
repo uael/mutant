@@ -36,6 +36,14 @@
 //! | label stacks, sessions, lengths in other units      | `get(..)`, `size = length * 8 + ..`   |
 //! | a frame that is one of several kinds                | an enum of references ([`AnyFrame`])  |
 //!
+//! The following are not covered:
+//!
+//! - The options of TCP and of the IPv6 hop-by-hop header are a region of bytes. No rule reads
+//!   them, so a wrong option is not an error.
+//! - A fragment is not the whole of what is carried, so it has no checksum to check. Putting the
+//!   fragments back together is not a view of the bytes.
+//! - What is encrypted cannot be read, so the checksums of IPv6 are not checked behind it.
+//!
 //! `main` reads frames of each kind from bytes and asserts their fields, regions and getters.
 //! Some conversions are proven, and use [`pun_ref`], such as an ARP frame read as bytes. `main`
 //! also changes bytes, such as an EtherType, a size or a checksum, and asserts the [`Error`] that
