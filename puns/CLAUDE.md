@@ -24,8 +24,8 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
 - **The analysis compares two layouts at compile time.** [`analysis`](src/analysis.rs) decides
   fit, validity, marks and mutability, with its cost, shifted relations, mutable parts, how rules
   are proven, and the layouts that Rust leaves to the compiler.
-- **Validation checks only the marks.** [`validate`](src/validate.rs) recurses over types, with no
-  interpreter, and the evaluator of rules is `layout::Machine`.
+- **Validation checks only the marks.** [`validate`](src/validate.rs) recurses over the types and
+  runs no interpreter. Rules are evaluated by `layout::Machine`.
 - **Narrowing.** [`narrow`](src/narrow.rs) computes the range of every value of a rule, so that
   each operation runs in a register where it fits.
 - **Views.** [`view`](src/view.rs) decides each variant of a view enum once, from its base.
@@ -38,7 +38,8 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
   functions. [`visit`](src/visit.rs) validates, walks and copies a value in a buffer for the crate
   that has the pointers.
 - **Measurements.** [`examples/codegen.rs`](examples/codegen.rs) records the machine code of each
-  function. [`benches/checks.rs`](benches/checks.rs) records the instructions of each check.
+  function. [`benches/checks.rs`](benches/checks.rs) times each check next to the same check
+  written by hand.
 - **The model check.** [`puns-model`](../puns-model/src/lib.rs) compares every verdict with
   oracles that do not use the analysis.
 
@@ -59,15 +60,14 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
   listed field among the fields of the layout, by its index, offset and layout. `deep::listed`
   checks less: the number and order of the fields, the type of a field that holds a pointer, the
   tags of the variants, the elements and the targets, and takes the rest from the `# Safety` of
-  `Pun`. The validation of the `try_` and `from_` functions compares
-  the rules (`validate::listed`) and the place of each field (`F::Path`), and takes the other
-  lists from the `# Safety` of `Pun`.
+  `Pun`. The validation of the `try_` and `from_` functions compares the rules (`validate::listed`)
+  and the place of each field (`F::Path`), and takes the other lists from the `# Safety` of `Pun`.
 - What a layout is made of depends on no path that the deriving crate can redefine, though the
   generated code names `::core` and the root of `puns` ("What the derive trusts" in the
   documentation of `#[derive(Pun)]`). `fakecore` in `puns-model` holds the derive to it.
 - Every pointer type in the repository is declared through the public API only, as another crate
-  would declare it: in doc tests, which are outside the crate, and in the tests, the model check and
-  `examples/codegen.rs`. Most of them share
+  would declare it: in doc tests, which are outside the crate, and in the tests, the model check
+  and `examples/codegen.rs`. Most of them share
   [`tests/support/relative.rs`](tests/support/relative.rs).
 
 ## Not done yet
@@ -96,8 +96,10 @@ their costs, for whoever takes one up.
   succeeded, not by a comparison that held, so the condition of a walk does not narrow its step, nor
   does the condition of an `if` narrow its branches. The examples have neither case, since their
   walks move offsets.
-- **Rules implied by other rules.** The model check counts as nothing what the source implies and
-  the library checks all the same, which is not wrong.
+- **Rules implied by other rules.** The analysis proves a rule of the target from the source only
+  where the source has the same rule, over the same extent at the same place. A rule that other
+  rules of the source imply is checked all the same. This is sound, and the model check does not
+  count it as imprecise.
 - **A rule that two variants of a view share, where neither takes the other.** The later variants
   that have a rule that failed, over the same extent at the same place (`Layout::same_rules`), could
   be ended at once, and the validation would then report which rule failed. But every check would

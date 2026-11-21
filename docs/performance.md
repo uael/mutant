@@ -56,10 +56,10 @@ pub fn puns_slice(s: &[Switch]) -> &[bool] {
 }
 ```
 
-`zc_slice` and `bm_slice` compile to a loop that compares each byte with 2, of 9 and 10
-instructions. `puns_slice` compiles to `ret`. For a single `Switch` reinterpreted as a `bool`, by
-value, the three compile to `ret`: the optimizer knows that a `Switch` is 0 or 1, and removes the
-check.
+`zc_slice` compiles to a loop of 9 instructions, and `bm_slice` to one of 10, each comparing every
+byte with 2. `puns_slice` compiles to `ret`. For a single `Switch` reinterpreted as a `bool`, by
+value, all three compile to `ret`, because the optimizer knows that a `Switch` is 0 or 1 and removes
+the check.
 
 ## Time
 
@@ -115,21 +115,24 @@ tcp, 0 headers`). The output of each run is in [`docs/checks-2026-11-21.txt`][re
 | `crc-16/xmodem (a Crc), 1518 bytes` | 451 | 3,188 |
 | `sum16, 1500 bytes` | 22.1 | 21.9 |
 
-A case is named as in the benchmark, and `cargo bench -p puns --features unstable --bench checks
--- 'ipv6'` runs the cases whose name contains `ipv6`. The size of an IPv4 case is the size of its
-UDP datagram or TCP segment, after the 20 bytes of the IPv4 header. The IPv6 cases of TCP time the
-walk over the extension headers only. The IPv6 case of 1400 bytes computes a checksum that fails.
-By hand, CRC-32 and CRC-32C are computed 16 bytes at a time, unless the name says a byte at a
-time, and a slice is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`. The two
-CRC-16s are computed by hand a byte at a time, with a table, while `puns` computes every CRC 16
-bytes at a time, so their rows compare two algorithms rather than the cost of the check around
-them.
+Cases are named as in the benchmark, so `cargo bench -p puns --features unstable --bench checks --
+'ipv6'` runs the cases whose name contains `ipv6`. The size of an IPv4 case is the size of its UDP
+datagram or TCP segment, after the 20 bytes of the IPv4 header. The IPv6 cases of TCP time only the
+walk over the extension headers, and the IPv6 case of 1400 bytes computes a checksum that fails.
+
+The code written by hand computes CRC-32 and CRC-32C 16 bytes at a time, unless the name of the
+case says a byte at a time, and checks a slice with an iterator, such as `bytes.iter().all(|&b| b
+<= 1)`. It computes the two CRC-16s a byte at a time, with a table, while `puns` computes every CRC
+16 bytes at a time, so these two rows compare two algorithms rather than the cost of the check
+around them.
 
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
 without a branch inside a block. A slice of `MaybeFlag`, an enum of the `Rust` representation whose
-tag is a niche in a `bool`, is not checked this way, and is slower than by hand. In a view enum, a
-variant whose values are all values of a later variant is checked from that variant, so a wrong
-checksum of UDP over IPv4 is computed once, for the IPv4 variant.
+tag is a niche in a `bool`, is not checked this way, and is slower than by hand.
+
+In a view enum, when a later variant accepts every value of an earlier one, the earlier variant is
+checked only for what the later one does not prove. So for UDP over IPv4 with a wrong checksum, the
+checksum is computed once, for the IPv4 variant.
 
 ## Build time
 
@@ -167,8 +170,8 @@ release build.
 A check never allocates and never panics. Without nested walks, its time grows with the size of the
 value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
 `walk` multiplies the time by the size, at each level. Walks nest up to 4 deep, so a checksum inside
-the deepest one takes time in proportion to the fifth power of the size: keep this in mind before
-you give such a type untrusted bytes. Each checked pun is code specialized for its two types, and
+the deepest one takes time in proportion to the fifth power of the size. Consider this before you
+give such a type untrusted bytes. Each checked pun is code specialized for its two types, and it
 relies on inlining, which a debug build mostly does not do, so measure the checks in release.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
