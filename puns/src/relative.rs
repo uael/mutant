@@ -28,13 +28,13 @@ use crate::{Pun, layout::Pointer};
 /// address and its bytes.
 ///
 /// 1. **The type is its offset.** `Self` is the integer that `POINTER` describes, of its width
-///    and in its byte order, and nothing else. Every byte of every value is initialized, and none
-///    is in an `UnsafeCell`. [`self_relative!`](crate::self_relative) asserts the width. The
-///    offset may be a `NonZero`. `puns` detects this, because `Option<Self>` then has the size of
-///    `Self` and `None` is all zero bytes, and never reads such a type from a pointer that may be
-///    zero without a check. No other restriction of the values of the offset is supported. `puns`
-///    refuses a niche other than zero where it finds one, but cannot find a restriction that the
-///    compiler does not know of.
+///    and in its byte order, and nothing else; [`self_relative!`](crate::self_relative) asserts
+///    the width. Every byte of every value is initialized, and none is in an `UnsafeCell`. The
+///    offset may be a `NonZero`, which `puns` detects because `Option<Self>` then has the size of
+///    `Self` and `None` is all zero bytes, and `puns` then never reads such a type from a pointer
+///    that may be zero without a check. No other restriction of the values of the offset is
+///    supported: `puns` refuses a niche other than zero where it finds one, but cannot find a
+///    restriction that the compiler does not know of.
 /// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or
 ///    bytes it aims at, depend only on its scheme, the width and the byte order of its offset,
 ///    the kind of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, or text),
@@ -185,38 +185,37 @@ pub unsafe trait SelfRelative: Sized {
 /// Implements [`Pun`] for a [`SelfRelative`] type, and makes `Option` of it the same pointer,
 /// which may be null.
 ///
-/// Call `self_relative!(Type)` for a type without generic parameters, and
-/// `self_relative!(impl[T: Bound, ..] Type<T, ..>)` with the generic parameters of its
-/// implementation of `SelfRelative`. The macro is safe to call. It writes the implementation of
-/// `Pun` from what `SelfRelative` says of the type, and nothing that the trait does not say. It
-/// requires `Type: SelfRelative`, whose `unsafe impl` carries the promise. Do not implement `Pun`
-/// for a pointer type by hand. The items of `Pun` belong to `puns`, and may change. The macro is
-/// expanded with the version of `puns` that defines them.
+/// Call `self_relative!(Type)` for a type without generic parameters, and `self_relative!(impl[T:
+/// Bound, ..] Type<T, ..>)` with the generic parameters of its implementation of `SelfRelative`.
+/// The macro is safe to call, since it writes the implementation of `Pun` only from what
+/// `SelfRelative` says of the type, and requires `Type: SelfRelative`, whose `unsafe impl` carries
+/// the promise. Do not implement `Pun` for a pointer type by hand: the items of `Pun` belong to
+/// `puns` and may change, while the macro is expanded with the version of `puns` that defines them.
 ///
 /// The macro is not a blanket implementation of `Pun` for every `SelfRelative` type. That
 /// implementation would overlap the one for every [`Scalar`](crate::Scalar), because coherence
 /// cannot tell that no type is both.
 ///
-/// `Option<Type>` is found as follows. `Pun` has a hidden associated constant, the layout of
-/// `Option<Self>` if `Self` gives it, which is `None` by default. The layout of `Option` of another
-/// type is then found by experiment, as for any enum of the `Rust` representation. This macro gives
-/// it as the same pointer, which may be null, after a check made where `Option` of the pointer is
-/// used. The check is that `Option<Type>` has the size of `Type`, and that `None` is all zero
-/// bytes, read in const evaluation. Then `rustc` has put `None` in a niche of the bytes of the
-/// pointer, which are all of its offset and initialized ("The type is its offset" in
-/// [`SelfRelative`]), and that niche is zeros. `Some(p)` is the bytes of `p`, which are not all
-/// zero. So "Null" holds of `Option<Type>`.
+/// `Pun` has a hidden associated constant, the layout of `Option<Self>` if `Self` gives it, which
+/// is `None` by default, so that the layout of `Option` of another type is found by experiment, as
+/// for any enum of the `Rust` representation. This macro gives it as the same pointer, which may be
+/// null, after a check made where `Option` of the pointer is used: that `Option<Type>` has the size
+/// of `Type`, and that `None`, read in const evaluation, is all zero bytes. If so, `rustc` has put
+/// `None` in a niche of the bytes of the pointer, which are all of its offset and initialized ("The
+/// type is its offset" in [`SelfRelative`]), and that niche is zeros. `Some(p)` is then the bytes
+/// of `p`, which are not all zero, so "Null" holds of `Option<Type>`.
 ///
 /// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
-/// zero bytes is `None`. This requires `None` to be all zero bytes, which holds if the offset has
-/// a niche at zero (a `NonZero`). An offset without such a niche makes `Option<Type>` larger than
-/// `Type`, and a use of `Option<Type>` does not compile.
+/// zero bytes is `None`. This holds if the offset has a niche at zero (a `NonZero`). An offset
+/// without such a niche makes `Option<Type>` larger than `Type`, so a use of `Option<Type>` does
+/// not compile.
 ///
-/// That `None` is all zero bytes is what `rustc` does. Rust documents it for a
+/// That `None` is all zero bytes is what `rustc` does, and Rust documents it for a
 /// `repr(transparent)` struct around a `NonZero` ("Representation" in [`core::option`]). Declare
-/// the pointer type so for `Option` of it to be the same pointer with every compiler. `puns`
-/// cannot see the `repr` of the type. It takes `Option` of it as the same pointer, with or without
-/// the `unstable` feature (see [`layout::UNSTABLE`](crate::layout::UNSTABLE)).
+/// the pointer type so, for `Option` of it to be the same pointer with every compiler. `puns`
+/// cannot see the `repr` of the type, so it takes `Option` of it as the same pointer, after the
+/// check above, with or without the `unstable` feature (see
+/// [`layout::UNSTABLE`](crate::layout::UNSTABLE)).
 ///
 /// # Compile-time errors
 ///
@@ -237,10 +236,10 @@ pub unsafe trait SelfRelative: Sized {
 /// - `None` is all zero bytes.
 /// - If `Option<Option<Type>>` has the size of `Option<Type>`, then its `None` is all zero bytes.
 ///
-/// These conditions are checked when the `LAYOUT` of `Type` or of `Option<Type>` is evaluated,
-/// after monomorphization. The call of the macro itself compiles. `cargo check` does not report a
-/// violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic
-/// of [`Pointer::one`](crate::layout::Pointer::one),
+/// These conditions are checked after monomorphization, when the `LAYOUT` of `Type` or of
+/// `Option<Type>` is evaluated, and not where the macro is called: `cargo check` does not report a
+/// violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic of
+/// [`Pointer::one`](crate::layout::Pointer::one),
 /// [`Pointer::sequence`](crate::layout::Pointer::sequence) or
 /// [`Pointer::text`](crate::layout::Pointer::text) is also a compile error.
 ///
