@@ -1193,7 +1193,7 @@ impl Pointer {
 
   /// Returns the alignment of the target type, or of an element of a sequence. It is 1 for text.
   ///
-  /// This is not the alignment that the declaring crate guarantees of the first element of a
+  /// This is not the alignment that the declaring crate guarantees for the first element of a
   /// sequence, which [`Pointer::aim`] returns.
   ///
   /// # Examples
@@ -1214,17 +1214,17 @@ impl Pointer {
   /// far as the pointers themselves go.
   ///
   /// Returns `None` if it never can, `Some(true)` if it always can, and `Some(false)` if it can
-  /// only when the bytes of the offset are not all zero, which is then to be checked at run time.
+  /// only when the bytes of the offset are not all zero, which must then be checked at run time.
   /// The answer is `Some(false)` where `to` may not be null, the bytes of `self` may be all zero
-  /// (`self` may be null, or its type has a value of zeros), and such bytes are not a pointer of
-  /// `to` (its type has no value of zeros, or they are null in `self`). What the targets hold is
-  /// related through the types, by `deep.rs`.
+  /// (because `self` may be null, or its type has an all-zero value), and such bytes are not a
+  /// pointer of `to` (because its type has no all-zero value, or they are null in `self`). What the
+  /// targets hold is related through the types, by `deep.rs`.
   ///
-  /// Both pointers must be of the same scheme, and have offsets of the same width and byte order,
-  /// so that they find the same target in the same buffer. They must aim at the same kind of
-  /// target. One value is read as a value no larger, that needs no more alignment. A sequence is
-  /// read as a sequence of elements of the same size, since its length is a number of elements,
-  /// whose declared alignment is no greater. Text is read as text.
+  /// Both pointers must have the same scheme, and offsets of the same width and byte order, so that
+  /// they find the same target in the same buffer. They must also aim at the same kind of target.
+  /// One value is read as a value that is no larger and needs no more alignment. A sequence is read
+  /// as a sequence of elements of the same size, since its length is a number of elements, with a
+  /// declared alignment that is no greater. Text is read as text.
   pub(crate) const fn reads_as(&self, to: &Pointer) -> Option<bool> {
     let fits = str_equals(self.scheme, to.scheme)
       && self.width == to.width
@@ -1282,9 +1282,9 @@ const fn str_equals(a: &str, b: &str) -> bool {
 /// [`Layout::enumeration`] makes the layout of an enum from it, and [`Layout::union`] the layout of
 /// a union. The tag of an enum is a scalar at a fixed place, whose value tells the variant. Where
 /// Rust specifies the representation of the enum, the tag is where the representation puts it. With
-/// the `Rust` representation, it is where `rustc` put it, as `#[derive(Pun)]` finds it. It may then
-/// be a niche: a scalar of the fields of one variant, whose valid values are that variant, and
-/// whose other values are the other variants.
+/// the `Rust` representation, it is where `rustc` put it, as `#[derive(Pun)]` finds it, and it may
+/// then be a niche: a scalar among the fields of one variant, whose valid values are that variant
+/// and whose other values are the other variants.
 ///
 /// # Examples
 ///
@@ -1327,11 +1327,11 @@ const fn str_equals(a: &str, b: &str) -> bool {
 #[derive(Debug)]
 pub struct Enum {
   /// The tag, a scalar whose valid values are the tags of the variants, at its offset in the enum.
-  /// A scalar of size 0 for a union and for a type without values.
+  /// For a union and for a type without values, it is a scalar of size 0.
   pub(crate) tag: Field,
   /// The variants, in the order of their declarations.
   pub(crate) variants: &'static [Variant],
-  /// The size and the alignment that the representation of the enum gives, before an `align(N)`.
+  /// The size and alignment that the representation of the enum gives, before any `align(N)`.
   /// Unused for a union.
   pub(crate) specified: (usize, usize),
   /// Whether this is a union: it has no tag, its variants are its fields, and bytes are a valid
@@ -1340,18 +1340,18 @@ pub struct Enum {
 }
 
 impl Enum {
-  /// Returns the enum that `repr(C)`, `repr(u8)` or another integer type, or both, specify, as [RFC
-  /// 2195] lays it out.
+  /// Returns the enum that `repr(C)`, `repr(u8)` or another integer type, or both, specify, laid
+  /// out as [RFC 2195] describes.
   ///
   /// The tag is the scalar `tag`, whose valid values are the tags of the `variants`. Each variant
-  /// is a `repr(C)` struct of its fields, its *shadow*. `shadows` holds the size and the alignment
-  /// of the shadow of each variant.
+  /// is a `repr(C)` struct of its fields, called its *shadow*, and `shadows` holds the size and
+  /// alignment of the shadow of each variant.
   ///
   /// With `repr(C)`, the tag is `outside` the shadows. The shadows then start at the offset
   /// `fields`, which must be [`Enum::fields`] of `tag` and `shadows`, and a field is at that offset
   /// plus its offset in its shadow. With an integer type alone, the tag is the first field of each
   /// shadow, and `fields` must be 0. In both cases, the offsets of the fields of `variants` are
-  /// from the start of the enum.
+  /// counted from the start of the enum.
   ///
   /// [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
   ///
@@ -1431,9 +1431,9 @@ impl Enum {
   /// Returns the enum of the `Rust` representation that `rustc` laid out, as `discover.rs` found
   /// it, for `#[derive(Pun)]`.
   ///
-  /// The tag is the scalar `tag` at `offset`. The `variants` are in the order of their
-  /// declarations, as [`Variant::discovered`] makes them. `specified` is the size and the alignment
-  /// of the enum. [`Layout::enumeration`] checks the result against the enum.
+  /// The tag is the scalar `tag` at `offset`. The `variants` are in declaration order, as
+  /// [`Variant::discovered`] makes them, and `specified` is the size and alignment of the enum.
+  /// [`Layout::enumeration`] checks the result against the enum.
   #[doc(hidden)]
   #[must_use]
   pub const fn discovered(
@@ -1447,8 +1447,8 @@ impl Enum {
 
   /// Returns the `repr(C)` union of `fields`, for `#[derive(Pun)]`.
   ///
-  /// Each field is a variant of one field at offset 0, in the order of their declarations.
-  /// [`Layout::union`] checks the result against the union.
+  /// Each field is a variant with one field at offset 0, in declaration order. [`Layout::union`]
+  /// checks the result against the union.
   #[doc(hidden)]
   #[must_use]
   pub const fn union(fields: &'static [Variant]) -> Self {
@@ -1539,25 +1539,25 @@ impl Enum {
 #[derive(Copy, Clone, Debug)]
 pub struct Variant {
   /// The value of the tag for this variant, if `ranges` is `None`. Otherwise, the index of the
-  /// variant, which tells it from the others in the lists of variants that are types.
+  /// variant, which tells it apart from the others in the type-level lists of variants.
   pub(crate) tag: u128,
   /// The values of the tag for this variant, as sorted inclusive ranges, if they are not `tag`
-  /// alone. The variant of a niche has several. A variant that no value can be, since it holds a
-  /// type without values, has none.
+  /// alone. The variant of a niche has several, and a variant that no value can be, since it holds
+  /// a type without values, has none.
   pub(crate) ranges: Option<&'static [(u128, u128)]>,
   /// Whether the tag is in the fields of this variant: a niche.
   pub(crate) holds_tag: bool,
   /// The enum when it is this variant: a struct of its fields, in which the tag is padding, except
-  /// for the variant that holds it.
+  /// in the variant that holds it.
   pub(crate) layout: &'static Layout,
 }
 
-/// A set of values of a tag, as sorted inclusive ranges, which is read one range at a time.
+/// A set of values of a tag, as sorted inclusive ranges, read one range at a time.
 #[derive(Copy, Clone)]
 pub(crate) struct Tags {
   /// The one range, if `ranges` is `None`.
   one: (u128, u128),
-  /// The ranges, sorted, if there are not one.
+  /// The ranges, sorted, if there is more than one.
   ranges: Option<&'static [(u128, u128)]>,
 }
 
@@ -1660,8 +1660,8 @@ impl Tags {
 impl Variant {
   /// Returns the variant whose tag is `tag`, and whose fields are `layout`.
   ///
-  /// `tag` is the value of the tag of the enum for this variant, read as an unsigned integer in the
-  /// byte order of the tag. `layout` is the [`Layout::variant`] of its fields.
+  /// `tag` is the value of the enum's tag for this variant, read as an unsigned integer in the byte
+  /// order of the tag, and `layout` is the [`Layout::variant`] of its fields.
   /// [`Layout::enumeration`] checks that `tag` is a valid value of the tag, and that no other
   /// variant has it.
   ///
@@ -1712,9 +1712,9 @@ impl Variant {
   /// Returns the `index`th variant of an enum of the `Rust` representation, as `discover.rs` found
   /// it, for `#[derive(Pun)]`.
   ///
-  /// The values of the tag for this variant are `ranges`, sorted and disjoint, and none if no value
-  /// can be this variant. If `holds_tag`, the tag is in the fields of the variant: a niche.
-  /// `layout` is the [`Layout::variant`] of its fields.
+  /// The values of the tag for this variant are `ranges`, sorted and disjoint, and there are none
+  /// if no value can be this variant. If `holds_tag`, the tag is in the fields of the variant, as a
+  /// niche. `layout` is the [`Layout::variant`] of its fields.
   #[doc(hidden)]
   #[must_use]
   pub const fn discovered(
@@ -1731,8 +1731,8 @@ impl Variant {
     Tags { one: (self.tag, self.tag), ranges: self.ranges }
   }
 
-  /// Returns whether a value can be this variant: some value of the tag is, and its fields have
-  /// values.
+  /// Returns whether a value can be this variant: some value of the tag selects it, and its fields
+  /// have values.
   pub(crate) const fn is_present(&self) -> bool {
     !matches!(self.ranges, Some(ranges) if ranges.is_empty()) && self.layout.is_inhabited()
   }
@@ -1783,7 +1783,7 @@ pub struct Field {
   pub(crate) offset: usize,
   /// The layout of the field.
   pub(crate) layout: &'static Layout,
-  /// The index of the field in the order of the declarations.
+  /// The index of the field in declaration order.
   pub(crate) index: usize,
   /// The number of leaves ([`Layout::leaves`]) of the fields declared before this one.
   pub(crate) leaf: usize,
@@ -1795,7 +1795,7 @@ pub struct Field {
 impl Field {
   /// Returns the field at `offset` in its struct, of the layout `layout`.
   ///
-  /// The offset of the field of a variant is from the start of its enum.
+  /// The offset of the field of a variant is counted from the start of its enum.
   ///
   /// # Examples
   ///
@@ -1820,12 +1820,12 @@ impl Field {
     Self { offset, layout, index: 0, leaf: 0, restricted: false }
   }
 
-  /// Returns the field at `offset`, of the scalar `layout`, which requires more than the type of
+  /// Returns the field at `offset`, with the scalar `layout`, which requires more than the type of
   /// the field guarantees.
   ///
   /// This is what `#[pun(valid(..))]` makes of a field, with a `layout` made by
-  /// [`Layout::restricted`]. Safe code may write any value of its type to the field, so the field
-  /// is required to hold the values of `layout`, and is known to hold only what its type
+  /// [`Layout::restricted`]. Since safe code may write any value of its type to the field, the
+  /// field is required to hold the values of `layout`, but is known to hold only what its type
   /// guarantees.
   ///
   /// # Panics
@@ -1857,7 +1857,8 @@ impl Field {
     Self { offset, layout, index: 0, leaf: 0, restricted: true }
   }
 
-  /// Returns the scalar of the field if it is restricted ([`Field::restricted`]), else `None`.
+  /// Returns the scalar of the field if it is restricted ([`Field::restricted`]), and `None`
+  /// otherwise.
   #[doc(hidden)]
   #[must_use]
   pub const fn restriction(&self) -> Option<Spec> {
@@ -1886,15 +1887,15 @@ impl Field {
 /// The layout of a type: its size, its alignment, its parts, and its valid values.
 ///
 /// Every [`Pun`](crate::Pun) type has a layout, which `#[derive(Pun)]` makes with the functions
-/// below. The analysis compares layouts at compile time.
+/// below, and the analysis compares layouts at compile time.
 ///
-/// The layout of a type is the one that `rustc` chose for the build. The size, the alignment and
-/// the offsets come from the compiler. Each layout also records what of it is the same in every
-/// layout that Rust allows for the type, and the identity of the type. Without the `unstable`
-/// feature ([`UNSTABLE`]), the analysis relies only on that.
+/// The layout of a type is the one that `rustc` chose for the build: the size, the alignment and
+/// the offsets come from the compiler. Each layout also records which parts of it are the same in
+/// every layout that Rust allows for the type, and the identity of the type. Without the `unstable`
+/// feature ([`UNSTABLE`]), the analysis relies only on those.
 ///
 /// A layout makes no value of a type. It stands for a type only through an implementation of `Pun`,
-/// an `unsafe trait`, which guarantees that the layout describes the type.
+/// an `unsafe trait` that guarantees that the layout describes the type.
 ///
 /// # Examples
 ///
@@ -1912,22 +1913,22 @@ impl Field {
 pub struct Layout {
   /// What the layout is made of.
   pub(crate) kind: Kind,
-  /// The size of the type if it is `Sized`, otherwise the offset of the first element of its tail
-  /// slice.
+  /// The size of the type if it is `Sized`, and otherwise the offset of the first element of its
+  /// tail slice.
   pub(crate) size: usize,
   /// The alignment of the type.
   pub(crate) align: usize,
-  /// The size of an element of the tail slice, 0 if the type is `Sized`.
+  /// The size of an element of the tail slice, or 0 if the type is `Sized`.
   pub(crate) tail: usize,
-  /// Whether the type is unsized: it ends with a slice or a pattern.
+  /// Whether the type is unsized, ending with a slice or a pattern.
   pub(crate) unsized_: bool,
-  /// The number of leaves: the parts that the validation may have to check. These are scalars that
-  /// accept only some values, patterns, pointers, enums with fields, unions, types without values,
-  /// and structs with rules. The element of an array or a slice counts once.
+  /// The number of leaves, the parts that the validation may have to check: scalars that accept
+  /// only some values, patterns, pointers, enums with fields, unions, types without values, and
+  /// structs with rules. The element of an array or a slice counts once.
   pub(crate) leaves: usize,
   /// What every byte is, if every byte is the same thing.
   pub(crate) uniform: Uniform,
-  /// Whether a struct of the layout, at any depth, has rules. The fields of the variants of an enum
+  /// Whether a struct in the layout, at any depth, has rules. The fields of the variants of an enum
   /// do not count, since the enum is checked as a whole.
   pub(crate) has_rules: bool,
   /// What the layout has in common with every layout that Rust allows for its type.
@@ -1962,7 +1963,7 @@ pub(crate) const fn round_up(value: usize, align: usize) -> Option<usize> {
 
 /// Returns the offset of a field of a `repr(C)` struct, as the representation specifies it.
 ///
-/// `end` is the offset where the field before it ends, 0 for the first field. `align` is the
+/// `end` is the offset where the previous field ends, or 0 for the first field. `align` is the
 /// alignment of the type of the field, a power of two. `pack` is the `N` of `repr(packed(N))`, or
 /// `usize::MAX` for a struct that is not packed. The field is at `end`, rounded up to the lesser of
 /// `align` and `pack`.
@@ -1982,15 +1983,15 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
 /// Returns whether the type `P`, the offset of a self-relative pointer, has no value whose bytes
 /// are all zero.
 ///
-/// This is so when `Option<P>` has the size of `P`, with a `None` whose bytes are all zero. `rustc`
+/// This is so when `Option<P>` has the size of `P`, with a `None` whose bytes are all zero: `rustc`
 /// then put `None` in a niche of `P` at zero, as it does for a `NonZero`.
 ///
 /// # Panics
 ///
-/// Panics if `Option<P>` has the size of `P` with a `None` whose bytes are not all zero. Such a
-/// niche tells of values of the offset that are no pointer, and is not supported. In const
-/// evaluation, the panic is a compile error, and so is a byte of `None` that is uninitialized. At
-/// run time, reading such a byte is undefined behavior, so the function is meant only for const
+/// Panics if `Option<P>` has the size of `P` with a `None` whose bytes are not all zero: such a
+/// niche means that some values of the offset are not pointers, which is not supported. In const
+/// evaluation, the panic is a compile error, and so is an uninitialized byte of `None`. At run
+/// time, reading such a byte is undefined behavior, so the function is meant only for const
 /// evaluation.
 const fn excludes_zero<P>() -> bool {
   if size_of::<Option<P>>() != size_of::<P>() {
@@ -2020,25 +2021,24 @@ const fn excludes_zero<P>() -> bool {
 /// The tag of a union and of an enum without variants: a scalar of size 0.
 const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 
-/// Does nothing. `Layout::PIN` holds instances of it, whose types name the types that it pins.
+/// Does nothing. `Layout::PIN` holds instances of it, whose types name the types it pins.
 fn pin<T>(_: T) {}
 
 /// Whether the `unstable` feature is enabled.
 ///
-/// Rust leaves a part of some layouts to the compiler, which may choose otherwise in its next
-/// version, or at random with `-Zrandomize-layout`. This part is the order of the fields of a
-/// struct or a tuple of the `Rust` representation, the place and the values of the tag of an enum
-/// of that representation, and the niches of `Option` and `Result`, except where `core` documents
-/// them.
+/// Rust leaves part of some layouts to the compiler, which may choose differently in its next
+/// version, or at random under `-Zrandomize-layout`: the order of the fields of a struct or tuple
+/// of the `Rust` representation, the position and values of the tag of an enum of that
+/// representation, and the niches of `Option` and `Result`, except where `core` documents them.
 ///
 /// Without the `unstable` feature, nothing that `puns` does depends on a layout that Rust leaves to
-/// the compiler. Whether a pun compiles, what it checks, and which values it accepts are the same
+/// the compiler: whether a pun compiles, what it checks, and which values it accepts are the same
 /// in every layout that Rust allows. Only the message of a refusal may differ.
 ///
 /// With the `unstable` feature, `puns` uses the layout that `rustc` chose for the build, as it is.
 /// A pun is still sound for the build that compiles it. Everything that compiles without the
-/// feature compiles with it, and does the same. More compiles. See
-/// [The `unstable` feature](crate#the-unstable-feature).
+/// feature also compiles with it and does the same, and more compiles. See [The `unstable`
+/// feature](crate#the-unstable-feature).
 pub const UNSTABLE: bool = cfg!(feature = "unstable");
 
 /// The message of the compile error of a function of [`Visit`](crate::Visit), for a type that has
@@ -2055,10 +2055,10 @@ impl Layout {
   ///
   /// The generated code names `Rule`, `Op`, `Field`, `Enum` and `Variant` by their path in the
   /// crate that `#[pun(crate = ..)]` names, which safe code can make lead elsewhere. It calls only
-  /// associated functions of these types, and of `Layout` and `Spec`, which the traits that it
-  /// implements name. It also writes this constant with the same paths, as a tuple of `fn` types. A
-  /// path that leads to another type does not compile, since a `fn` type is not a path and nothing
-  /// can stand for it.
+  /// associated functions of these types, and of `Layout` and `Spec`, which the traits it
+  /// implements name. It also writes this constant with the same paths, as a tuple of `fn` types,
+  /// so a path that leads to another type does not compile: a `fn` type is not a path, and nothing
+  /// can stand in for it.
   #[doc(hidden)]
   #[expect(
     clippy::type_complexity,
@@ -2075,17 +2075,17 @@ impl Layout {
     mem::MaybeUninit::uninit()
   }
 
-  /// Returns what experiments find of the layout of the enum `E` of the `Rust` representation, for
-  /// `#[derive(Pun)]`.
+  /// Returns what experiments find about the layout of the enum `E` of the `Rust` representation,
+  /// for `#[derive(Pun)]`.
   ///
-  /// `samples[v]` is a value of the `v`th variant in the order of declarations, made by
-  /// [`Layout::sample`] and [`Layout::wrap`], or anything for a variant that has no value.
-  /// `fields[v]` is the fields of that variant, at the offsets observed on its sample.
-  /// `discover.rs` says what each experiment relies on.
+  /// `samples[v]` is a value of the `v`th variant in declaration order, made by [`Layout::sample`]
+  /// and [`Layout::wrap`], or anything for a variant that has no value. `fields[v]` is the fields
+  /// of that variant, at the offsets observed on its sample, and `discover.rs` says what each
+  /// experiment relies on.
   ///
   /// # Panics
   ///
-  /// Panics if the layout is not of a shape that the experiments recognize, with the reason. In
+  /// Panics, with the reason, if the layout is not of a shape that the experiments recognize. In
   /// const evaluation, the panic is a compile error, and so is an experiment that reads an
   /// uninitialized byte. At run time, such a read is undefined behavior, so the function is meant
   /// only for const evaluation.
@@ -2105,7 +2105,7 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `T` has no value, or holds a self-relative pointer, of which no value is made from
+  /// Panics if `T` has no value, or holds a self-relative pointer, since no pointer is made from
   /// nothing. In const evaluation, the panic is a compile error.
   #[doc(hidden)]
   #[must_use]
@@ -2135,10 +2135,10 @@ impl Layout {
     true
   }
 
-  /// Returns the offsets of `fields` in a `repr(C)` struct, and the size and the alignment of the
+  /// Returns the offsets of `fields` in a `repr(C)` struct, and the size and alignment of the
   /// struct, for `#[derive(Pun)]`.
   ///
-  /// Each field is given as its size and its alignment. The fields follow what `start` says is
+  /// Each field is given as its size and alignment. The fields follow what `start` says comes
   /// before them: the offset where it ends, and its alignment. This is how [RFC 2195] specifies the
   /// variants of an enum with fields.
   ///
@@ -2197,7 +2197,7 @@ impl Layout {
 
   /// Returns the layout of the scalar type `T`, whose values `spec` describes.
   ///
-  /// The size is the one of `spec`, and the alignment the one of `T`.
+  /// The size is that of `spec`, and the alignment that of `T`.
   ///
   /// # Panics
   ///
@@ -2236,8 +2236,7 @@ impl Layout {
     }
   }
 
-  /// Returns the layout of the tag of an enum of the `Rust` representation that `discover.rs`
-  /// found.
+  /// Returns the layout of the tag of an enum of the `Rust` representation found by `discover.rs`.
   ///
   /// The tag has no type of its own, so its alignment is 1.
   pub(crate) const fn tag(spec: Spec) -> Self {
@@ -2262,16 +2261,16 @@ impl Layout {
   /// Returns the same scalar, which requires its value to be in one of `ranges`, as a field with
   /// `#[pun(valid(..))]` does.
   ///
-  /// This is a requirement, not a guarantee. A target requires the values of `ranges`, but a source
+  /// This is a requirement, not a guarantee: a target requires the values of `ranges`, but a source
   /// is known to hold only what the type of the scalar guarantees, since safe code may write any
   /// value of the type. [`Field::restricted`] makes the field. The ranges are as
   /// [`Spec::with_ranges`] takes them, and must all be values of the scalar.
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a scalar, or is a scalar that may be uninitialized. Panics if `ranges`
-  /// are not as [`Spec::with_ranges`] requires, or hold a value that the scalar does not accept. In
-  /// const evaluation, the panic is a compile error.
+  /// Panics if `self` is not a scalar, or is a scalar that may be uninitialized. Also panics if
+  /// `ranges` are not as [`Spec::with_ranges`] requires, or hold a value that the scalar does not
+  /// accept. In const evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
@@ -2328,9 +2327,9 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if pointers to `T` are not represented as pointers to slices, or if a value of `T` is
-  /// not its bytes alone. Panics if `dfa` has no state or more than 64, or if an edge of a state is
-  /// empty, leads to no state, or does not follow the edge before it. In const evaluation, the
-  /// panic is a compile error.
+  /// not its bytes alone. Also panics if `dfa` has no state or more than 64, or if an edge of a
+  /// state is empty, leads to no state, or does not follow the edge before it. In const evaluation,
+  /// the panic is a compile error.
   ///
   /// # Safety
   ///
@@ -2394,11 +2393,10 @@ impl Layout {
     }
   }
 
-  /// Returns the layout of a type of the size and the alignment of `T`, whose bytes are all
-  /// padding.
+  /// Returns the layout of a type with the size and alignment of `T`, whose bytes are all padding.
   ///
-  /// This is the layout of `MaybeUninit<T>`. As a target, it takes any bytes. As a source, it
-  /// proves nothing but what takes any bytes.
+  /// This is the layout of `MaybeUninit<T>`. As a target, it accepts any bytes. As a source, it
+  /// proves nothing except a target that accepts any bytes.
   ///
   /// # Examples
   ///
@@ -2429,16 +2427,16 @@ impl Layout {
   /// Returns the layout of the self-relative pointer type `P`, described by `pointer`, which aims
   /// at `T`, for [`self_relative!`](crate::self_relative).
   ///
-  /// `P` is the offset of `pointer` and nothing else. `T` is the target type, the element type of a
-  /// sequence, or `()` for text. Whether `P` has a value whose bytes are all zero is found here,
-  /// from `Option<P>`.
+  /// `P` is the offset of `pointer` and nothing else, and `T` is the target type, the element type
+  /// of a sequence, or `()` for text. Whether `P` has an all-zero value is found here, from
+  /// `Option<P>`.
   ///
   /// # Panics
   ///
-  /// Panics if `P` does not have the size of the offset, or if `pointer` was not made for a `T` (of
-  /// its size and alignment). Panics if `Option<P>` has the size of `P` but a `None` whose bytes
-  /// are not all zero, and if `pointer` may be null while `P` has no value of zeros. In const
-  /// evaluation, the panic is a compile error, and so is a byte of `None` that is uninitialized. At
+  /// Panics if `P` does not have the size of the offset, or if `pointer` was not made for a `T`
+  /// (with its size and alignment). Also panics if `Option<P>` has the size of `P` but a `None`
+  /// whose bytes are not all zero, or if `pointer` may be null while `P` has no all-zero value. In
+  /// const evaluation, the panic is a compile error, and so is an uninitialized byte of `None`. At
   /// run time, reading such a byte is undefined behavior, so the function is meant only for const
   /// evaluation.
   #[doc(hidden)]
@@ -2476,24 +2474,24 @@ impl Layout {
   /// Returns the layout of `Option<P>`, where `P` is a self-relative pointer described by `pointer`
   /// that aims at `T`: the same pointer, which may be null.
   ///
-  /// [`self_relative!`](crate::self_relative) gives this layout as the one of `Option<P>`. It is
-  /// right when `Option<P>` has the size of `P` and `None` is all zero bytes, which this function
-  /// checks. Every byte of `P` is a byte of its offset, initialized
-  /// ([`SelfRelative`](crate::SelfRelative)). So `rustc` put `None` in a niche of `P` at zero, and
+  /// [`self_relative!`](crate::self_relative) gives this layout as that of `Option<P>`. It is right
+  /// when `Option<P>` has the size of `P` and `None` is all-zero bytes, which this function checks.
+  /// Every byte of `P` is an initialized byte of its offset
+  /// ([`SelfRelative`](crate::SelfRelative)), so `rustc` put `None` in a niche of `P` at zero, and
   /// the bytes of `Some(p)` are the bytes of `p`, which are not all zero. A value of `Option<P>`
-  /// whose bytes are all zero then aims at nothing, and any other is a pointer as a `P` is.
+  /// whose bytes are all zero then aims at nothing, and any other is a pointer, as a `P` is.
   ///
-  /// This is so of a `repr(transparent)` struct around a `NonZero`, as `core` documents for
+  /// This holds for a `repr(transparent)` struct around a `NonZero`, as `core` documents for
   /// `Option`. An offset without a niche at zero, such as a byte array, makes `Option<P>` larger.
   ///
   /// # Panics
   ///
   /// Panics if `pointer` may already be null, if `Option<P>` is larger than `P`, or if the bytes of
-  /// `None` are not all zero. Panics if `P` does not have the size of the offset, or if `pointer`
-  /// was not made for a `T` (of its size and alignment). In const evaluation, the panic is a
-  /// compile error, and so is a byte of `None` that is uninitialized. At run time, reading such a
-  /// byte is undefined behavior. Call this function only in const evaluation, as `self_relative!`
-  /// does.
+  /// `None` are not all zero. Also panics if `P` does not have the size of the offset, or if
+  /// `pointer` was not made for a `T` (with its size and alignment). In const evaluation, the panic
+  /// is a compile error, and so is an uninitialized byte of `None`. At run time, reading such a
+  /// byte is undefined behavior, so call this function only in const evaluation, as
+  /// `self_relative!` does.
   ///
   /// # Examples
   ///
@@ -2570,7 +2568,7 @@ impl Layout {
   ///
   /// This is so if the layout has no leaf: no scalar that accepts only some values, no pattern, no
   /// pointer, no enum with fields, no union, no type without values, and no rule. Any bytes that
-  /// are initialized wherever the layout is not padding are then a valid value.
+  /// are initialized wherever the layout is not padding are then a valid value, and
   /// [`validate_in`](crate::validate_in) reads nothing of such a value.
   ///
   /// # Examples
@@ -2695,7 +2693,7 @@ impl Layout {
 
   /// Returns the layout of an array of `len` elements of the layout `elem`.
   ///
-  /// The elements are one after the other, the size of `elem` apart.
+  /// The elements are one after another, the size of `elem` apart.
   ///
   /// # Panics
   ///
