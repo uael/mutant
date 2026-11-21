@@ -179,13 +179,20 @@
 //! `puns` reads the one that `rustc` chose for the build: it measures field offsets on a value, and
 //! finds the tag of an enum of the `Rust` representation by experimenting on a value of each
 //! variant. An experiment that goes wrong is a compile error, never a wrong layout. Beyond that,
-//! `puns` relies on two behaviors of `rustc` that no documentation states:
+//! `puns` relies on three behaviors of `rustc` that no documentation states:
 //!
 //! - A pointer to an unsized type has the representation of a pointer to a slice. This is checked
 //!   at compile time for each unsized type, against a pointer made with an `as` cast.
 //! - The compiler evaluates the `const` blocks of every function that compiled code names, even one
 //!   that is never called. This is how [`view_ref`] and [`try_view_ref`] prove what self-relative
 //!   pointers aim at, and tests hold the compiler to it in both debug and optimized builds.
+//! - Const evaluation reports an error, rather than going on, when it reads an uninitialized byte,
+//!   reads the variant of a value whose tag is not the tag of a variant, or meets a slice larger
+//!   than an object can be. The experiments that find the layout of an enum of the `Rust`
+//!   representation, and the check that `None` of a self-relative pointer is zeros, rely on the
+//!   first two, and only run at compile time. The derive relies on the third for an unsized struct
+//!   whose tail is so large that 8 elements overflow an `isize`. Compile-fail tests hold the
+//!   compiler to each of the three errors.
 //!
 //! Without the `unstable` feature, no result of `puns` depends on a layout that Rust leaves to the
 //! compiler: the order of the fields of a struct or tuple of the `Rust` representation, the tag of
