@@ -73,9 +73,9 @@
 //! scalar in the fields of one variant, the dataful one, that no field of another variant covers.
 //! The values of the niche that are valid for its field are that variant, and each other value is
 //! one other variant, or no value. This is how `rustc` lays out enums, since 2017 for one variant
-//! with fields and since 1.64 for several. It is not a promise of the language. The experiments
-//! verify what they rely on of it. The tag decides, and nothing outside the tag does. A layout of
-//! another shape is refused.
+//! with fields and since Rust 1.65 for several. It is not a promise of the language. The
+//! experiments verify what they rely on of it. The tag decides, and nothing outside the tag does. A
+//! layout of another shape is refused.
 //!
 //! ## Const evaluation fails on what is not a value
 //!
@@ -99,8 +99,8 @@
 //!
 //! `mem::Discriminant<E>` of an enum of the `Rust` representation holds its discriminant, which is
 //! the index of the variant, as an `isize`. No explicit discriminant is allowed on such an enum
-//! with fields. The size of `Discriminant<E>` is asserted, and every sample is checked to read as
-//! its own index.
+//! with fields. The size of `Discriminant<E>` is asserted, and the discriminant of every sample is
+//! checked to be its own index.
 //!
 //! ## A fresh value has uninitialized padding
 //!
@@ -118,8 +118,8 @@
 //!
 //! # What each experiment holds
 //!
-//! - Every sample reads as its own variant. This holds [The discriminant is the index][index], and
-//!   that the samples are values.
+//! - Every sample is its own variant. This holds [The discriminant is the index][index], and that
+//!   the samples are values.
 //! - The bytes of the tag, moved from the sample of each variant to the sample of another
 //!   ([`try_tag`]), make it that variant. This holds [One scalar tells the variant][one]: the tag
 //!   is there. A wrong candidate changes nothing, and is dropped. A byte that is moved and is
@@ -207,7 +207,7 @@ const unsafe fn write(layout: &Layout, ptr: *mut u8) {
           return;
         }
         write(elem, ptr);
-        // As many copies as the elements, doubled each time: no step per element.
+        // Each copy doubles the elements written, so there is no step per element.
         let mut done = 1;
         while done < len {
           let count = if done < len - done { done } else { len - done };
@@ -300,8 +300,8 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
   //     An enum must have a valid discriminant, and all fields of the variant indicated by that
   //     discriminant must be valid at their respective type.
   let discriminant = mem::discriminant(unsafe { &*ptr });
-  // "The discriminant is the index", above: an `isize`, the index of the variant. Its size here,
-  // its value on every sample.
+  // "The discriminant is the index", above: an `isize` that is the index of the variant. Its size
+  // is asserted here, and its value is checked on every sample.
   assert!(
     size_of::<mem::Discriminant<E>>() == size_of::<isize>(),
     "the discriminant of an enum of the `Rust` representation is not an `isize`"
@@ -619,8 +619,8 @@ pub const unsafe fn discover<E, const V: usize>(
   fields: &[&[Field]; V],
 ) -> Desc<V> {
   let (size, mut desc) = (size_of::<E>(), Desc::none());
-  // Field: what has values, where the fields are; each sample is its own variant ("The discriminant
-  // is the index", above).
+  // Find which variants have values and where their fields are, and check that each sample is its
+  // own variant ("The discriminant is the index", above).
   let (mut count, mut first, mut sized, mut start, mut v) = (0, V, false, size, 0);
   while v < V {
     let (these, mut i) = (fields[v], 0);
@@ -673,9 +673,10 @@ pub const unsafe fn discover<E, const V: usize>(
     return desc;
   }
   if count == 1 && (!sized || start == 0) {
-    // One variant that has values, and no other laid out (it is then a struct), or one whose
-    // fields start at 0, where a direct tag would be: a struct, or a niche in its fields, all of
-    // whose valid values are this variant. Either way its fields tell it, nothing else: checked.
+    // One variant has values, and either no other variant is laid out, so the enum is a struct, or
+    // its fields start at 0, where a direct tag would be. The enum is then a struct, or a niche in
+    // its fields all of whose valid values are this variant. Either way, its fields alone tell it,
+    // which is checked.
     let these = fields[first];
     assert!(
       // SAFETY: `discover` is evaluated at compile time, by contract on the caller, so this call
@@ -688,8 +689,8 @@ pub const unsafe fn discover<E, const V: usize>(
     return desc;
   }
   if start > 0 {
-    // A direct tag: before the fields of every variant. `rustc` widens it to all the bytes before
-    // the first field, which are then read in every sample: a byte that is not of the tag is
+    // A direct tag is before the fields of every variant. `rustc` widens it to all the bytes before
+    // the first field, which are then read in every sample. A byte that is not of the tag is
     // padding, uninitialized, and fails the build ("Const evaluation fails on what is not a value"
     // and "A fresh value has uninitialized padding", above).
     assert!(
@@ -702,8 +703,9 @@ pub const unsafe fn discover<E, const V: usize>(
     assert!(desc.tag.1 > 0, "the tag of the enum does not tell its variants: unsupported layout");
     return desc;
   }
-  // A niche: in the fields of one variant, not covered by the fields of any other. `rustc` puts it
-  // in the largest variant: its scalars are tried first (the order only changes the cost).
+  // A niche is in the fields of one variant, and not covered by the fields of any other. `rustc`
+  // puts it in the largest variant, so its scalars are tried first. The order only changes the
+  // cost.
   let (mut largest, mut most, mut v) = (first, 0, 0);
   while v < V {
     if desc.inhabited[v] {
@@ -787,7 +789,7 @@ const unsafe fn try_tag<E, const V: usize>(
   dataful: usize,
 ) -> bool {
   let (offset, len, known) = window;
-  // A variant that has values, not the dataful one: the tag is not one of its fields.
+  // A variant that has values and is not the dataful one. The tag is not one of its fields.
   let mut base = 0;
   while base < V && (!desc.inhabited[base] || base == dataful) {
     base += 1;
@@ -821,17 +823,16 @@ const unsafe fn try_tag<E, const V: usize>(
     }
     v += 1;
   }
-  // Nor anything outside its fields the dataful variant: its gaps filled with zeros, then with
-  // ones, leave it that variant ("One scalar tells the variant", above, says that a niche is told
-  // by its scalar alone; a layout in which another place takes part, a two-level encoding say, is
-  // refused here).
-  // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call is
-  // too.
+  // Nothing outside its fields tells the dataful variant either: its gaps, filled with zeros and
+  // then with ones, leave it that variant. "One scalar tells the variant", above, says that a niche
+  // is told by its scalar alone, so a layout in which another place takes part, such as an encoding
+  // in two levels, is refused here. SAFETY: `try_tag` is evaluated at compile time, by contract on
+  // the caller, so this call is too.
   if dataful < V && !unsafe { decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) } {
     return false;
   }
-  // Their tags: initialized, so bytes of the tag ("A fresh value has uninitialized padding",
-  // above), and different.
+  // Their tags are initialized, so they are bytes of the tag ("A fresh value has uninitialized
+  // padding", above), and they must differ.
   let (mut values, mut single, mut v) = ([0; V], [false; V], 0);
   while v < V {
     if desc.inhabited[v] && v != dataful {
@@ -864,7 +865,8 @@ const unsafe fn try_tag<E, const V: usize>(
     }
     desc.valid.1 = n;
   } else {
-    // Every other value of the scalar, of which its field rejects the ones that are not.
+    // The dataful variant takes every other value of the scalar. Its field rejects those that are
+    // not valid for it.
     let (max, mut next, mut i, mut out) = (max_value(len), 0u128, 0, 0);
     let mut done = false;
     while i < n && !done {
@@ -885,7 +887,7 @@ const unsafe fn try_tag<E, const V: usize>(
       out += 1;
     }
     desc.dataful_tags.1 = out;
-    // The values of the scalar, which the tags of the others are not.
+    // The tags of the other variants must not be values of the scalar.
     if let Some(ranges) = known {
       let mut v = 0;
       while v < V {

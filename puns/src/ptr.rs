@@ -193,7 +193,7 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 ///
 /// `align` must be a power of two, or the result is meaningless. The address is reinterpreted as an
 /// integer, which const evaluation cannot do for a pointer to memory: such a call evaluated at
-/// compile time does not compile. A pointer made from an integer is read as that integer.
+/// compile time does not compile. A pointer made from an integer is reinterpreted as that integer.
 ///
 /// The address is read through a union, not with `addr`, `is_aligned_to` or `align_offset`: none
 /// of these is a `const fn` on Rust 1.99.

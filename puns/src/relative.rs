@@ -18,7 +18,7 @@ use crate::{Pun, layout::Pointer};
 /// - never behind a `&mut` that a function of `puns` gives.
 ///
 /// How the target is reached (from the address of the pointer, or through the buffer) and how the
-/// buffer is built are the business of the declaring crate.
+/// buffer is built are decided by the declaring crate.
 ///
 /// # Safety
 ///
@@ -28,21 +28,21 @@ use crate::{Pun, layout::Pointer};
 /// (a `Deref` implementation, a method). *What it aims at* is what the scheme derives from its
 /// address and its bytes.
 ///
-/// 1. **The type is its offset.** `Self` is the integer that `POINTER` describes, of its width
-///    and in its byte order, and nothing else; [`self_relative!`](crate::self_relative) asserts
-///    the width. Every byte of every value is initialized, and none is in an `UnsafeCell`. The
-///    offset may be a `NonZero`, which `puns` detects because `Option<Self>` then has the size of
-///    `Self` and `None` is all zero bytes, and `puns` then never reads such a type from a pointer
-///    that may be zero without a check. No other restriction of the values of the offset is
+/// 1. **The type is its offset.** `Self` is the integer that `POINTER` describes, of its width and
+///    in its byte order, and nothing else; [`self_relative!`](crate::self_relative) asserts the
+///    width. Every byte of every value is initialized, and none is in an `UnsafeCell`. The offset
+///    may be a `NonZero`, which `puns` detects because `Option<Self>` then has the size of `Self`
+///    and `None` is all zero bytes, and `puns` then never reinterprets a pointer that may be zero
+///    as such a type without a check. No other restriction of the values of the offset is
 ///    supported. `puns` refuses a niche other than zero where it finds one, but cannot find a
 ///    restriction that the compiler does not know of.
-/// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or
-///    bytes it aims at, depend only on its scheme, the width and the byte order of its offset,
-///    the kind of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, or text),
-///    its address, the bytes of its offset, and bytes of its buffer (a length next to the target,
-///    say). They never depend on the type that holds the pointer, on its `Target`, on its
-///    alignment, or on whether it may be null. Two pointers of the same scheme, offset and kind,
-///    at the same address with the same bytes, aim at the same place. A scheme is a name that the
+/// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or bytes
+///    it aims at, depend only on its scheme, the width and the byte order of its offset, the kind
+///    of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, or text), its
+///    address, the bytes of its offset, and bytes of its buffer (such as a length next to the
+///    target). They never depend on the type that holds the pointer, on its `Target`, on its
+///    alignment, or on whether it may be null. Two pointers of the same scheme, offset and kind, at
+///    the same address with the same bytes, aim at the same place. A scheme is a name that the
 ///    declaring crate owns, such as its own name. The crate declares no type of the scheme of
 ///    another crate unless that crate allows it, and changes the way to the target only with the
 ///    name.
@@ -324,8 +324,8 @@ macro_rules! self_relative {
         Self,
         <$ty as $crate::SelfRelative>::Target,
       >(<$ty as $crate::SelfRelative>::POINTER);
-      // `Option` of the pointer is the same pointer, that may be null: if `None` is the pointer
-      // of zeros, which `nullable` checks where `Option` of it is used (the requirement of
+      // `Option` of the pointer is the same pointer, which may be null, if `None` is the pointer of
+      // zeros. `nullable` checks this where `Option` of the pointer is used (the requirement of
       // `SelfRelative` on a pointer that may be null, `SelfRelative`, section Safety).
       const OPTION: ::core::option::Option<$crate::layout::Layout> =
         ::core::option::Option::Some($crate::layout::Layout::nullable::<
@@ -342,7 +342,7 @@ macro_rules! self_relative {
 /// Returns the `PROBE` of a sized type, a null pointer.
 ///
 /// [`self_relative!`] names it through `$crate`, so that no path of the crate that calls the macro
-/// can make it lead elsewhere.
+/// can make it name something else.
 #[doc(hidden)]
 #[must_use]
 pub const fn sized_probe<T>() -> *const T {

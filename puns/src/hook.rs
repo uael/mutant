@@ -263,7 +263,7 @@ pub fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(
   }
   let source: *mut S = value;
   // SAFETY: `verdict::<S, D>().try_pun_mut` is `true`, which is `check(Need::TRY_REF)` being `None`
-  // and `Plan::MUTABLE`, the condition under which `Plan::<S, D>::TRY_MUT` compiles. The proof of
+  // and `Plan::MUTABLE`, the condition under which `Plan::<S, D>::TRY_MUT` compiles. The proofs of
   // the blocks of `crate::try_pun_mut` apply.
   Some(unsafe { Plan::<S, D>::try_cast(source) }.map(|target| unsafe { &mut *target.cast_mut() }))
 }

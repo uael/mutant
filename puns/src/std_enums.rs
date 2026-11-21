@@ -276,10 +276,10 @@ unsafe impl<T: Pun, E: Pun> Pun for Result<T, E> {
   const LAYOUT: Layout = {
     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
       .identified(Id::new("Result", &[T::LAYOUT.id, E::LAYOUT.id]));
-    // Where `core` documents it: one of `T` and `E` of the `Option` that it documents, the
-    // other of size 0 and alignment 1. What is found is then what it documents: the variant of
-    // the `NonZero` is its value, and the other one, a single value, the only bytes that are not
-    // one: zeros.
+    // `core` documents the layout where one of `T` and `E` is a type for which it documents
+    // `Option`, and the other has size 0 and alignment 1. What is found is then what it documents:
+    // the variant of the `NonZero` is its value, and the other variant is the one value that is not
+    // a `NonZero`, all zeros.
     if T::NULL_OPTIMIZED && is_1_zst::<E>() || E::NULL_OPTIMIZED && is_1_zst::<T>() {
       layout
     } else {
