@@ -84,6 +84,9 @@ The chart and the table are written from the record by `cargo xtask checks-chart
 <!-- checks:start -->
 ![The time of each check by puns relative to the same check by hand: from 0.038 to 1.52 times, below 1 for 22 of the 33 cases](charts/checks.svg)
 
+<details>
+<summary>The times in nanoseconds per check, the median of 5 runs</summary>
+
 | Case | `puns` | by hand |
 |---|---:|---:|
 | `ipv4, udp, 64 bytes` | 5.07 | 4.59 |
@@ -119,6 +122,8 @@ The chart and the table are written from the record by `cargo xtask checks-chart
 | `crc-16/modbus (a Crc), 1518 bytes` | 389 | 2,813 |
 | `crc-16/xmodem (a Crc), 1518 bytes` | 451 | 3,188 |
 | `sum16, 1500 bytes` | 22.1 | 21.9 |
+
+</details>
 <!-- checks:end -->
 
 Cases are named as in the benchmark, so `cargo bench -p puns --features unstable --bench checks --
@@ -175,10 +180,13 @@ release build.
 
 A check never allocates and never panics. Without nested walks, its time grows with the size of the
 value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
-`walk` multiplies the time by the size, at each level. Walks nest up to 4 deep, so a checksum inside
-the deepest one takes time in proportion to the fifth power of the size. Consider this before you
-give such a type untrusted bytes. Each checked pun is code specialized for its two types, and it
-relies on inlining, which a debug build mostly does not do, so measure the checks in release.
+`walk` multiplies the time by the size, at each level. Each checked pun is code specialized for its
+two types, and it relies on inlining, which a debug build mostly does not do, so measure the checks
+in release.
+
+> [!WARNING]
+> Walks nest up to 4 deep, so a checksum inside the deepest one takes time in proportion to the
+> fifth power of the size. Consider this before you give such a type untrusted bytes.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs

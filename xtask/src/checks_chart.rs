@@ -66,7 +66,12 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
   let (Some(start), Some(end)) = (performance.find(START), performance.find(END)) else {
     bail!("{PERFORMANCE} has no `{START}` and `{END}`");
   };
-  let table = format!("{START}\n{}\n\n{}{END}", image(&cases), table(&cases));
+  let table = format!(
+    "{START}\n{}\n\n<details>\n<summary>The times in nanoseconds per check, the median of {runs} \
+     runs</summary>\n\n{}\n</details>\n{END}",
+    image(&cases),
+    table(&cases),
+  );
   let performance = format!("{}{table}{}", &performance[..start], &performance[end + END.len()..]);
   let chart = chart(&cases, runs);
   for (path, text) in [(PERFORMANCE, &performance), (CHART, &chart)] {
