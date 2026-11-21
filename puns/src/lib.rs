@@ -1594,8 +1594,8 @@ pub unsafe trait Scalar {
   /// The identity of the type (see [`layout::Id`]); none by default.
   #[doc(hidden)]
   const ID: layout::Id = layout::Id::NONE;
-  /// Whatever Rust specifies how values of the type are stored: not of an enum without `repr`,
-  /// which `#[derive(Pun)]` makes a `Scalar` (see [`layout::UNSTABLE`]).
+  /// Whether Rust specifies how values of the type are stored. It does not for an enum without
+  /// `repr`, which `#[derive(Pun)]` makes a `Scalar` (see [`layout::UNSTABLE`]).
   #[doc(hidden)]
   const SPECIFIED: bool = true;
 }
@@ -1682,7 +1682,7 @@ pub unsafe trait Pun {
   /// The layout of `Option<Self>`, if `Self` gives it, rather than the one found of `Option` as
   /// of any enum without `repr` (`discover.rs`).
   ///
-  /// This is how `Option` of a self-relative pointer is the same pointer, that may be null:
+  /// This is how `Option` of a self-relative pointer is the same pointer, which may be null:
   /// [`self_relative!`] fills it with [`Layout::nullable`], which checks that `None` is the
   /// pointer of zeros and nothing else. A crate that implements `Pun` otherwise (which only
   /// `#[derive(Pun)]` and the macros of this crate do) leaves it `None`. If it is `Some`, it is
@@ -3740,7 +3740,7 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
   unsafe { &mut *Plan::<S, D>::tail_cast(source).cast_mut() }
 }
 
-/// Reinterprets a reference to an `S` as a reference to a `D`, after checking what the compiler
+/// Reinterprets a reference to an `S` as a reference to a `D`, after checking what the analysis
 /// could not prove.
 ///
 /// The returned reference points to the same bytes as `value`. Only what the analysis could not
@@ -3814,7 +3814,7 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 }
 
 /// Reinterprets a mutable reference to an `S` as a mutable reference to a `D`, after checking
-/// what the compiler could not prove.
+/// what the analysis could not prove.
 ///
 /// The returned reference points to the same bytes as `value`. What is checked at run time is
 /// what [`try_pun_ref`] checks. Any `D` may be written through the result, so every `D` must also
@@ -4230,7 +4230,7 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Size`] if `bytes` are fewer than what the `D` takes, [`Error::Alignment`] if
+/// Returns [`Error::Size`] if `bytes` is shorter than what the `D` takes, [`Error::Alignment`] if
 /// `bytes` is not aligned for `D`, and [`Error::Validity`] if the `size` or `len` rule of `D`
 /// cannot be computed or gives a size that `D` cannot have, or if the bytes taken are not a
 /// [valid](crate#soundness) `D`.
@@ -4318,7 +4318,7 @@ pub const fn rejects<D: ?Sized + Pun>(bytes: &[u8]) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Size`] if `bytes` are fewer than `size_of::<D>()`, [`Error::Alignment`] if
+/// Returns [`Error::Size`] if `bytes` is shorter than `size_of::<D>()`, [`Error::Alignment`] if
 /// the last `size_of::<D>()` bytes are not aligned for `D`, and [`Error::Validity`] if they are
 /// not a [valid](crate#soundness) `D`.
 ///
@@ -4386,7 +4386,7 @@ pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&[u8], &D), Err
 ///
 /// # Errors
 ///
-/// Returns [`Error::Size`] if `bytes` are fewer than what the `D` takes, [`Error::Alignment`] if
+/// Returns [`Error::Size`] if `bytes` is shorter than what the `D` takes, [`Error::Alignment`] if
 /// `bytes` is not aligned for `D`, and [`Error::Validity`] if the `size` or `len` rule of `D`
 /// cannot be computed or gives a size that `D` cannot have, or if the bytes taken are not a
 /// [valid](crate#soundness) `D`.
@@ -4453,7 +4453,7 @@ pub const fn from_head_mut<D: ?Sized + Pun>(
 ///
 /// # Errors
 ///
-/// Returns [`Error::Size`] if `bytes` are fewer than `size_of::<D>()`, [`Error::Alignment`] if
+/// Returns [`Error::Size`] if `bytes` is shorter than `size_of::<D>()`, [`Error::Alignment`] if
 /// the last `size_of::<D>()` bytes are not aligned for `D`, and [`Error::Validity`] if they are
 /// not a [valid](crate#soundness) `D`.
 ///
