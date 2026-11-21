@@ -46,12 +46,13 @@ use crate::{Pun, layout::Pointer};
 ///    another crate unless that crate allows it, and changes the way to the target only with the
 ///    name.
 /// 3. **What it aims at is there, and valid**, in the same allocation, for as long as a shared
-///    reference to the pointer lives. For one value ([`Pointer::one`]), it is a [valid] `Target`
-///    at an address that is a multiple of the alignment of `Target`. For a sequence
+///    reference to the pointer lives. For one value ([`Pointer::one`]), it is a [valid] `Target` at
+///    an address that is a multiple of the alignment of `Target`. For a sequence
 ///    ([`Pointer::sequence`]), it is as many valid `Target`s as the scheme says,
 ///    `size_of::<Target>()` bytes apart, the first at an address that is a multiple of the
-///    alignment of `POINTER`. For text ([`Pointer::text`]), it is as many bytes of UTF-8 as the
-///    scheme says. Every byte of it that `Target` requires to be initialized is initialized.
+///    alignment that `POINTER` declares for the sequence (the `align` of [`Pointer::sequence`]).
+///    For text ([`Pointer::text`]), it is as many bytes of UTF-8 as the scheme says. Every byte of
+///    it that `Target` requires to be initialized is initialized.
 /// 4. **What it aims at is its own.** While a shared reference to a pointer lives, nothing writes
 ///    to what it aims at, nor makes a `&mut` to any of it. It is borrowed with the pointer, and
 ///    read through what `view_ref` makes of it.
@@ -80,9 +81,9 @@ use crate::{Pun, layout::Pointer};
 /// of the same scheme, offset and kind of aim. That pointer may be null only if `Self` may be, or
 /// it is checked at run time not to be null. What it aims at is proven to be a valid target of
 /// `Self`: for one value, a value at least as large and as aligned as `Target`; for a sequence,
-/// elements of the same size, the first at an alignment at least that of `POINTER`; for text,
-/// text. `puns` reads the bytes of a pointer, never writes them, and never gives a `&mut` to a
-/// value that holds one.
+/// elements of the same size, the first at an alignment at least the one that `POINTER` declares;
+/// for text, text. `puns` reads the bytes of a pointer, never writes them, and never gives a `&mut`
+/// to a value that holds one.
 ///
 /// This trait is meant to be implemented by hand, by the crate that declares the pointer type.
 /// [`Pun`] is not: implement it with [`self_relative!`](crate::self_relative).
