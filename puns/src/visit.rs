@@ -467,7 +467,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
 ///   `size_of::<T>()` bytes at `base + at` are valid for reads. They need not be aligned.
 /// - Those bytes hold a `T` as its types say. Every scalar is initialized and a valid value of its
-///   type (`bool`, `char`, `NonZero`, an enum without fields, the offset of a pointer).
+///   type (`bool`, `char`, `NonZero`, an enum without fields, the offset of a pointer), except a
+///   scalar that may be uninitialized, such as a `MaybeUninit`.
 /// - The tag of every enum, or its niche, is initialized and selects one of its variants. The
 ///   bytes that this variant holds meet these requirements in turn.
 ///
@@ -790,9 +791,9 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// The caller must ensure that:
 ///
 /// - The `size_of::<T>()` bytes at `src` are valid for reads, and hold a `T` as its types say, as
-///   [`pointers_in`] requires. Every scalar is initialized and valid for its type, and the tag of
-///   every enum, or its niche, is initialized and selects one of its variants, whose bytes meet
-///   these requirements in turn. They need not be aligned.
+///   [`pointers_in`] requires. Every scalar is initialized and valid for its type, except a scalar
+///   that may be uninitialized, and the tag of every enum, or its niche, is initialized and selects
+///   one of its variants, whose bytes meet these requirements in turn. They need not be aligned.
 /// - The `size_of::<T>()` bytes at `dst` are valid for writes. They need not be aligned.
 /// - The two ranges do not overlap.
 ///

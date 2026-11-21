@@ -645,7 +645,7 @@ fn compile_block(
   Ok(ty)
 }
 
-/// Returns the number of operations of a part of an expression that may not be computed, as an
+/// Returns the number of operations in a part of an expression that may not be computed, as an
 /// operation holds it (`layout::Op::Shortcut`).
 ///
 /// # Errors
@@ -1846,8 +1846,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         // an unsized last field, whose `Pun` type is a slice, `str`, or a struct whose last field
         // is one of these. Its probe is the probe of that field, `<[E] as Pun>::PROBE` cast with
         // `as` casts, cast again to `*const Self`. The size of the struct with 8 elements in its
-        // tail must fit in an `isize`, which the derive does not check: `rustc` reports an error
-        // in const evaluation where it does not.
+        // tail must fit in an `isize`. The derive does not check it, and relies on `rustc` to
+        // report an error in const evaluation where it does not fit, a behavior that the crate
+        // documentation discloses (section Soundness).
         const LAYOUT: #root::layout::Layout = unsafe {
           #root::layout::Layout::structure::<Self>(
             Self::PROBE,
@@ -2688,9 +2689,9 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
       #[allow(dead_code, non_camel_case_types)]
       #vis struct #shadow #impl_generics(::core::marker::PhantomData<#this>) #where_clause;
 
-      // SAFETY: `TAG` is the index `#i` of the variant of the layout of the union that is its
-      // field `#i`. `Next` is the variant after it, or `()` after the last. So the list is the
-      // variants of the layout, in order, as the `# Safety` of `Variants` requires.
+      // SAFETY: `TAG` is `#i`, the index of the variant of the union layout that is its field `#i`.
+      // `Next` is the variant after it, or `()` after the last. So the list is the variants of the
+      // layout, in order, as the `# Safety` of `Variants` requires.
       unsafe impl #impl_generics #root::Variants for #shadow #ty_generics #where_clause {
         type Fields = #marker #ty_generics;
         type Next = #next;

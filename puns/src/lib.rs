@@ -597,7 +597,7 @@
 //!
 //! - The order of the fields of a struct or tuple of the `Rust` representation, and therefore its
 //!   size, so `(u8, u16, u8)` is 4 or 6 bytes.
-//! - The position and the values of the tag of an enum of the `Rust` representation.
+//! - The position and the values of the tag, for an enum of the `Rust` representation.
 //! - The niches of `Option` and `Result`, except where `core` documents them.
 //!
 //! `puns` reads what the compiler chose, so a pun is sound for the build that compiles it, whatever
@@ -2139,12 +2139,12 @@ unsafe impl<T: Pun, const N: usize> Pun for [T; N] {
     Layout::array(&T::LAYOUT, N).identified(layout::Id::sized("[T; N]", &[T::LAYOUT.id], N));
 }
 
-// SAFETY: `Layout::slice` is the layout of elements of the layout of `T`, the size of `T` apart,
-// with the alignment of `T`, as many as the length of the slice: the layout of `[T]` [1]. A slice
-// is valid if each of its elements is a valid `T`, as an array is, which is what `T::LAYOUT`
+// SAFETY: `Layout::slice` is the layout of elements that have the layout of `T`, the size of `T`
+// apart, with the alignment of `T`, as many as the length of the slice: the layout of `[T]` [1]. A
+// slice is valid if each of its elements is a valid `T`, as an array is, which is what `T::LAYOUT`
 // describes, by the `# Safety` of `Pun` for `T`. `Elem` is `T`, and the other lists are `()`.
-// `OPTION` is `None`. Its bytes are those of its elements, none of which is inside an
-// `UnsafeCell`, since `T: Pun`.
+// `OPTION` is `None`. Its bytes are those of its elements, none of which is inside an `UnsafeCell`,
+// since `T: Pun`.
 //
 // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#slice-layout:
 //
@@ -3328,11 +3328,11 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// - If a pointer of `D` is not nullable, neither is the pointer of `S` at its place. If the
 ///   offset of a pointer of `D` cannot be zero, neither can the offset of the pointer of `S`.
 ///   Use [`try_view_ref`] to check these at run time.
-/// - Pointers are paired by position. A field of `D` that holds a pointer has the position, among
-///   the fields in the order of their declarations, of a field of `S` at the same offset. A
-///   variant of `D` that holds a pointer has the position of a variant of `S` with the same tag,
-///   unless `S` has no variant with that tag and the variant of `S` at that position holds no
-///   pointer. Elements of `D` that hold pointers are elements of `S` of the same size.
+/// - Pointers are paired by position. A field of `D` that holds a pointer has the declaration index
+///   of the field of `S` at the same offset. A variant of `D` that holds a pointer has the position
+///   of a variant of `S` with the same tag, unless `S` has no variant with that tag and the variant
+///   of `S` at that position holds no pointer. Elements of `D` that hold pointers are elements of
+///   `S` of the same size.
 /// - For each pair of pointers at the same place, let `X` be the type that the pointer of `S`
 ///   aims at, and `Y` the type that the pointer of `D` aims at. `X` is at least as large as `Y`.
 ///   Every byte that `Y` requires to be initialized is initialized in every `X`. The first bytes

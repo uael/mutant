@@ -1,10 +1,10 @@
 //! The implementations of `Pun` for `Option<T>` and `Result<T, E>`, for any `T` and `E`.
 //!
-//! Both are enums of the `Rust` representation. Their layouts are found as the layout of an enum of
-//! that representation that derives `Pun` is found ([`discover`](crate::discover)), for any `T` and
-//! `E` whose layout is known. Where `core` documents the layout, as for an `Option` of a `NonZero`
-//! (`Pun::NULL_OPTIMIZED`), it is a layout that Rust specifies. Otherwise it is a layout that Rust
-//! leaves to the compiler.
+//! Both are enums of the `Rust` representation. Their layouts are found in the same way as the
+//! layout of an enum of that representation that derives `Pun` ([`discover`](crate::discover)), for
+//! any `T` and `E` whose layout is known. Where `core` documents the layout, as for an `Option` of
+//! a `NonZero` (`Pun::NULL_OPTIMIZED`), it is a layout that Rust specifies. Otherwise it is a
+//! layout that Rust leaves to the compiler.
 //!
 //! `Option<NonZero<u32>>` is a niche at 0, so every `u32` is one, proven both ways.
 //! `Option<bool>` is the niche 2. `Option<Option<bool>>` has two niches, and `rustc` puts `None`
@@ -116,9 +116,9 @@ impl<T: Pun> Found for Option<T> {
     [Layout::wrap(None), Layout::uninit()]
   } else {
     // SAFETY: `Layout::sample::<T>()` is a valid `T`, as `assume_init` requires. It writes the
-    // least valid value of each scalar of the layout of `T`, the tag and the fields of its first
-    // variant that has values, and leaves padding as it is. Every value that the layout accepts
-    // is a valid `T` (`Pun`, section Safety). `T` has values: it is checked above.
+    // least valid value of each scalar in the layout of `T`, the tag and the fields of its first
+    // variant that has values, and leaves padding as it is. Every value that the layout accepts is
+    // a valid `T` (`Pun`, section Safety). `T` has values: it is checked above.
     [Layout::wrap(None), Layout::wrap(Some(unsafe { Layout::sample::<T>().assume_init() }))]
   };
   const OFFSETS: [usize; 2] = if Self::GIVEN || !T::LAYOUT.is_inhabited() {

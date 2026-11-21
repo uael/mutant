@@ -95,7 +95,7 @@ struct Ruled {
   b: u8,
 }
 
-/// The rule of a field holds of the bytes where the field is: in a tuple, which Rust may order
+/// The rule of a field holds for the bytes where the field is: in a tuple, which Rust may order
 /// otherwise, it is not of the same bytes in every layout.
 #[test]
 fn a_rule_of_a_field_is_where_the_field_is() {
@@ -831,9 +831,9 @@ fn heading_ids(text: &str) -> Vec<String> {
     .collect()
 }
 
-/// A heading of the README with the id of a heading of the rest of the crate documentation takes
-/// that id, and the other becomes `id-1`: a link to `#soundness` once led to a short section of
-/// the README instead of the chapter of `lib.rs`.
+/// A README heading with the same id as a heading elsewhere in the crate documentation takes that
+/// id, and the other becomes `id-1`: a link to `#soundness` once led to a short section of the
+/// README instead of the chapter of `lib.rs`.
 #[test]
 fn the_readme_takes_no_heading_id_of_the_crate_documentation() {
   let crate_docs = include_str!("lib.rs")

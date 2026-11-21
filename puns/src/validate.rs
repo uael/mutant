@@ -160,8 +160,8 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
 ///
 /// - `ptr` is valid for reads of a `T`. It need not be aligned.
 /// - `layout` is the layout of `T`.
-/// - The tag of the enum is initialized, and so is every byte that the checks of the fields of the
-///   variant of that tag read, which check every part.
+/// - The tag of the enum is initialized, and so is every byte that the checks of the fields of that
+///   tag's variant read, which check every part.
 #[inline(always)]
 const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> bool {
   let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
@@ -230,7 +230,7 @@ const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> b
     return false;
   }
   // SAFETY: `V` is in the list of the variants of `T`, by contract on the caller, so `V::Fields` is
-  // the one field of a variant of the layout of the union, at offset 0 (`Variants`, section
+  // the one field of a variant in the layout of the union, at offset 0 (`Variants`, section
   // Safety). Every byte that its checks read is initialized, by contract on the caller, as
   // `validate_fields` requires. The requirements of the call for the next fields are those of this
   // call.
@@ -672,7 +672,7 @@ const unsafe fn steps<X: Ops, S: Steps>(
       "not the operations of the expression"
     );
   };
-  // SAFETY: `op` is the operation at `S::AT` of `X::OPS`, the expression of a rule of the layout of
+  // SAFETY: `op` is the operation at `S::AT` of `X::OPS`, the expression of a rule in the layout of
   // a struct, or of a walk in one (`InRule`, `InWalk`). `Layout::structure` accepted these
   // operations (`check_ops`): a load reads 1 to 16 bytes within the sized fields. `base` is valid
   // for reads of `size` initialized bytes, which cover the sized fields of the struct, by contract
@@ -768,8 +768,8 @@ const unsafe fn walk<X: Ops, W: Steps>(
 
 // -------------------------------------------------------------------------------------------------
 
-/// Returns the number of elements of the tail of the struct at `ptr`, the size of that tail in
-/// bytes, and the extent of the struct.
+/// Returns the length of the tail of the struct at `ptr`, the size of that tail in bytes, and the
+/// extent of the struct.
 ///
 /// The tail of a `Sized` struct is its last field, and its extent is its size. The extent of an
 /// unsized struct ends with its slice, without the padding that may follow it, which

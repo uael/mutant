@@ -118,24 +118,25 @@
 //!
 //! # What each experiment holds
 //!
-//! - Every sample is its own variant. This holds [The discriminant is the index][index], and that
-//!   the samples are values.
+//! - Every sample is its own variant. This verifies [The discriminant is the index][index], and
+//!   that the samples are values.
 //! - The bytes of the tag, moved from the sample of each variant to the sample of another
-//!   ([`try_tag`]), make it that variant. This holds [One scalar tells the variant][one]: the tag
-//!   is there. A wrong candidate changes nothing, and is dropped. A byte that is moved and is
+//!   ([`try_tag`]), make it that variant. This verifies [One scalar tells the variant][one]: the
+//!   tag is there. A wrong candidate changes nothing, and is dropped. A byte that is moved and is
 //!   padding stays padding. The experiment relies on [the variant is read from the tag][tag].
 //! - The gaps of each variant that has one tag, outside the tag, filled with zeros and then with
-//!   ones, leave it that variant ([`decided_by`]). This holds [one]: nothing else tells the
-//!   variant, since a byte of a tag outside would take two values for one variant. The same holds
-//!   of every gap of the dataful variant of a niche, and of the only variant of an enum laid out as
-//!   a struct: its fields alone tell it.
-//! - The tag of each variant but the dataful one is read in its sample, and must be initialized.
-//!   [fresh] makes it a byte of the tag, and [fails] fails the build if it is padding. For a direct
-//!   tag, every byte before the first field of any variant is read so, since `rustc` widens the tag
-//!   to these bytes.
-//! - The tags differ, and are not values of the scalar of a niche. This holds [one].
+//!   ones, leave it that variant ([`decided_by`]). This verifies [one]: nothing else tells the
+//!   variant, since a byte of a tag outside would take two values for one variant. The same is
+//!   verified of every gap of the dataful variant of a niche, and of the only variant of an enum
+//!   laid out as a struct: its fields alone tell it.
+//! - The tag of each variant but the dataful one is read in its sample, and must be initialized. By
+//!   [A fresh value has uninitialized padding][fresh], it is then a byte of the tag, and by [Const
+//!   evaluation fails on what is not a value][fails], the build fails if it is padding. For a
+//!   direct tag, every byte before the first field of any variant is read so, since `rustc` widens
+//!   the tag to these bytes.
+//! - The tags differ, and are not values of the scalar of a niche. This verifies [one].
 //! - A layout that is not of the shape of [one] is refused. An assertion of the size of
-//!   `mem::Discriminant<E>`, and the check of every sample, hold [index].
+//!   `mem::Discriminant<E>`, and the check of every sample, verify [index].
 //!
 //! [one]: #one-scalar-tells-the-variant
 //! [fails]: #const-evaluation-fails-on-what-is-not-a-value
@@ -382,7 +383,7 @@ impl<E> Buf<E> {
   }
 }
 
-/// What the experiments find of the layout of an enum of `V` variants.
+/// What the experiments find of the layout of an enum with `V` variants.
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
 pub struct Desc<const V: usize> {
@@ -398,8 +399,8 @@ pub struct Desc<const V: usize> {
   tags: [(u128, u128); V],
   /// The tags of the dataful variant, every value but the tags of the others, and their number.
   dataful_tags: ([(u128, u128); V], usize),
-  /// The values of the scalar of the field of the dataful variant that holds the niche, if they
-  /// are known as a tag is read.
+  /// The values of the niche scalar, in the field of the dataful variant that holds it, if they are
+  /// known as a tag is read.
   ///
   /// These are the tags of the dataful variant, more exactly than `dataful_tags`. The tags of the
   /// other variants are none of them, by [one scalar tells the

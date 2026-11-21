@@ -156,6 +156,11 @@
 //! - `view_ref` and `try_view_ref` require each pointer of the target to be a pointer of the source
 //!   ([No bytes prove a pointer](#no-bytes-prove-a-pointer)), prove what it aims at, and return a
 //!   `&`.
+//! - `validate_in` and `validate_elems_in` read bytes, and hand each pointer to a `Visit` by its
+//!   position. They make no value of a type and follow no pointer. `pointers_in` and
+//!   `pointers_elems_in` do the same with bytes that the caller promises hold a value, and check
+//!   nothing. `copy_in` copies such a value except its pointers, which the caller writes. These
+//!   three are `unsafe fn`, and their callers take on the requirements of their `# Safety`.
 //! - `SelfRelative` and `self_relative!` are a declaration, whose promise is the `unsafe impl`. The
 //!   macro writes `Pun` from it, and asserts what can be asserted
 //!   ([Pointer layouts come from `SelfRelative`](#pointer-layouts-come-from-selfrelative)).

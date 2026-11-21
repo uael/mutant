@@ -59,8 +59,9 @@ union Cast<A: Copy, B: Copy> {
 /// The caller must ensure that:
 ///
 /// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
-/// - A `*const T` is represented as a `*const [u8]`, whose length is the length of the tail. This
-///   holds if [`verify`] accepted a probe of `T`, or the call is made by `verify`.
+/// - Either a `*const T` is represented as a `*const [u8]`, whose length is the length of the tail,
+///   which holds if [`verify`] accepted a probe of `T`. Or the caller is `verify`, a `*const T` has
+///   the size of a `*const [u8]`, and every byte of it is initialized.
 #[inline(always)]
 pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
   // SAFETY: A `*const T` is represented as a `*const [u8]`, by contract on the caller. So its bytes

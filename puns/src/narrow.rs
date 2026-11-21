@@ -1,4 +1,4 @@
-//! The ranges of the values of the expressions of rules, computed at compile time.
+//! The value ranges of rule expressions, computed at compile time.
 //!
 //! An expression means what it means on `u128`, but most of its values are known to be much
 //! smaller. Examples are a field of two bytes, a sum of two such fields, a checksum of 16 bits, or

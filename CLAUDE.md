@@ -19,7 +19,7 @@ cargo bench -p puns --features unstable --bench checks -- ipv6  # Only the cases
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests  # Miri, tree borrows
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target s390x-unknown-linux-gnu  # Miri, stacked borrows, on a big-endian target
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns --tests --target i686-unknown-linux-gnu  # 32 bits
-cargo test --profile model -p puns-model --features full  # The full model check (nightly in model.yml, also with `full,unstable`); `cargo test` runs a sample
+cargo test --profile model -p puns-model --features full  # The full model check (every night in model.yml, also with `full,unstable`); `cargo test` runs a sample
 cargo test -p puns --features verdict  # Without the `unstable` feature, the default: every test that builds without it, the record of verdicts included
 cargo test -p puns --features unstable  # With it: the targets that need it too (`required-features`), the cases of `compile-fail-unstable`
 PUNS_BLESS=1 cargo test -p puns --features verdict --test seeds  # Write the record of verdicts again (`puns/tests/seeds.txt`)
@@ -156,7 +156,7 @@ Merging that PR publishes to crates.io and creates a GitHub release with a `v<ve
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the
   higher of their next versions
 - `release_always = false`: nothing is published by an ordinary push, only by merging a release PR
-  (a branch whose name starts with `release-plz-`). The first release, 0.1.0, is the merge of the
+  (a branch whose name starts with `release-plz-`). The first release, 0.1.0, was the merge of the
   first release PR
 
 ### Commit Message Format

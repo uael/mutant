@@ -26,9 +26,10 @@
 //!
 //! # Cost
 //!
-//! A [`Cursor`] walks a layout as *runs*, each of which is padding, initialized bytes of any value,
-//! or a constrained scalar. A subtree without constraint is one run whatever its size, so
-//! `[u8; 1 << 40]` is one step.
+//! A [`Cursor`] walks a layout as *runs*, each of one kind of [`RunKind`]: padding, initialized
+//! bytes of any value, a constrained scalar, bytes that an automaton accepts, a self-relative
+//! pointer, or a part whose layout Rust leaves to the compiler. A subtree without constraint is one
+//! run whatever its size, so `[u8; 1 << 40]` is one step.
 //!
 //! Scalars are compared as sets of values, not byte by byte. Two aligned scalars compare their
 //! lists of ranges, while scalars that are misaligned, or of different byte orders, go through an
@@ -134,7 +135,7 @@
 //!   enums. One exception holds for a struct with rules that lies within the bytes. It is accepted
 //!   if the target has the same rules over the same extent there ([`proves_rules`], the test of
 //!   [Rules](#rules) in the other direction), since what is written through the target then meets
-//!   the rules of the source if it meets those of the target. The same holds of the elements of an
+//!   the rules of the source if it meets those of the target. The same holds for the elements of an
 //!   array that lie within the bytes, which are accepted at once where the target has elements of
 //!   the same size at the same place, or else one by one, up to 64 elements.
 //!
@@ -196,8 +197,10 @@
 //!   validation what to check, are at places that every layout shares.
 //!
 //! A check must not read a byte of the source that, in another layout that Rust allows, holds
-//! another field ([`reads_moved`]). The analysis counts exactly the bytes that a check reads, as
-//! "What a check may read" in the [crate documentation](crate#what-a-check-may-read) says.
+//! another field ([`reads_moved`]). The analysis counts the bytes that a check reads as "What a
+//! check may read" in the [crate documentation](crate#what-a-check-may-read) says. Under an array
+//! whose elements the source does not match, it counts every byte, including bytes that no check
+//! reads.
 //!
 //! The analysis looks for nothing inside a part of the source that is not fixed, at the place where
 //! `rustc` put it. A rule is proven by the same rule of the same struct at the same place, which
@@ -461,7 +464,7 @@ impl Cursor {
         && (marked || !same_elements(source, frame.base, frame.layout))
       {
         // The elements share their rules: proven all at once, or checked everywhere. (Where the
-        // source has the same elements, what holds of one element holds of the one at the top.)
+        // source has the same elements, what holds for one element holds for the one at the top.)
         marked = true;
       }
       if frame.layout.rules_read_bytes()
@@ -935,9 +938,9 @@ struct Tag {
 /// may move.
 ///
 /// A part may move if it is not [`ordered`](crate::layout::Stable::ordered). Where `tag` is at the
-/// place of the tag of an enum of `source`, only the variants whose tags meet those of `tag`
-/// count, since a check reads no further for the others. With the `unstable` feature, nothing
-/// moves, so the result is `false`.
+/// place of an enum tag in `source`, only the variants whose tags meet those of `tag` count, since
+/// a check reads no further for the others. With the `unstable` feature, nothing moves, so the
+/// result is `false`.
 const fn moves(source: &Layout, base: usize, start: usize, end: usize, tag: Option<Tag>) -> bool {
   let (lo, hi) = (max(start, base), min(end, extent_end(source, base)));
   if !STRICT || lo >= hi {
@@ -2318,8 +2321,8 @@ const fn proves_rules(source: &'static Layout, offset: usize, target: &'static L
   }
 }
 
-/// Returns whether `source` has, at `offset`, at least as many elements of the size of those of
-/// the array or slice `target`, from the start of an element of an array or a slice.
+/// Returns whether `source` has, at `offset`, at least as many elements as the array or slice
+/// `target`, of the same element size, starting where an element of an array or a slice starts.
 ///
 /// Each element of the target is then at the same place in an element of the source as the first
 /// one is. Without the `unstable` feature, nothing is looked for inside a part of the source whose
@@ -2684,12 +2687,12 @@ const CUT_ELEMENTS: usize = 64;
 /// `hi` may be `usize::MAX`. The target `b`, which is written over the bytes, starts at `lo`. See
 /// [`mutable_part`].
 ///
-/// A struct with rules that lies within the bytes is not cut if the target has, at the same
-/// place, a struct with the same rules over the same extent ([`proves_rules`], the other way).
-/// What is written then meets the rules of the source if it meets those of the target. The same
-/// holds of elements with rules, if the target has elements of the same size at the same place.
-/// Without the `unstable` feature, a part whose layout Rust leaves to the compiler is cut unless
-/// the target has the same layout over the whole of it ([`covered`]).
+/// A struct with rules that lies within the bytes is not cut if the target has, at the same place,
+/// a struct with the same rules over the same extent ([`proves_rules`], the other way). What is
+/// written then meets the rules of the source if it meets those of the target. The same holds for
+/// elements with rules, if the target has elements of the same size at the same place. Without the
+/// `unstable` feature, a part whose layout Rust leaves to the compiler is cut unless the target has
+/// the same layout over the whole of it ([`covered`]).
 const fn cut(
   layout: &'static Layout,
   base: usize,

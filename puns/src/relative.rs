@@ -22,20 +22,20 @@ use crate::{Pun, layout::Pointer};
 ///
 /// # Safety
 ///
-/// An implementation must guarantee all of the following of `Self`. In these items, the pointers
-/// of a scheme are all the types, in any crate, whose `POINTER` has that scheme. A *pointer* is a
-/// value of `Self` that the declaring crate may follow to its target through a shared reference
-/// (a `Deref` implementation, a method). *What it aims at* is what the scheme derives from its
-/// address and its bytes.
+/// An implementation must guarantee all of the following of `Self`. In these items, a type *of a
+/// scheme* is any type, in any crate, whose `POINTER` has that scheme. A *pointer* is a value of
+/// `Self` that the declaring crate may follow to its target through a shared reference (a `Deref`
+/// implementation, a method). *What it aims at* is what the scheme derives from its address and its
+/// bytes.
 ///
 /// 1. **The type is its offset.** `Self` is the integer that `POINTER` describes, of its width and
 ///    in its byte order, and nothing else; [`self_relative!`](crate::self_relative) asserts the
 ///    width. Every byte of every value is initialized, and none is in an `UnsafeCell`. The offset
 ///    may be a `NonZero`, which `puns` detects because `Option<Self>` then has the size of `Self`
 ///    and `None` is all zero bytes, and `puns` then never reinterprets a pointer that may be zero
-///    as such a type without a check. No other restriction of the values of the offset is
-///    supported. `puns` refuses a niche other than zero where it finds one, but cannot find a
-///    restriction that the compiler does not know of.
+///    as such a type without a check. The offset has no other restriction of its values. `puns`
+///    refuses a niche other than zero where it finds one, but cannot find a restriction that the
+///    compiler does not know of.
 /// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or bytes
 ///    it aims at, depend only on its scheme, the width and the byte order of its offset, the kind
 ///    of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, or text), its
@@ -206,7 +206,7 @@ pub unsafe trait SelfRelative: Sized {
 /// size of `Type`, and that `None`, read in const evaluation, is all zero bytes. If so, `rustc` has
 /// put `None` in a niche of the bytes of the pointer, which are all of its offset and initialized
 /// ("The type is its offset" in [`SelfRelative`]), and that niche is zeros. `Some(p)` is then the
-/// bytes of `p`, which are not all zero, so "Null" holds of `Option<Type>`.
+/// bytes of `p`, which are not all zero, so "Null" holds for `Option<Type>`.
 ///
 /// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
 /// zero bytes is `None`. This holds if the offset has a niche at zero (a `NonZero`). An offset

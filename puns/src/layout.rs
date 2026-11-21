@@ -1485,7 +1485,7 @@ impl Enum {
   const NEVER: Self =
     Self { tag: Field::new(0, &NO_TAG), variants: &[], specified: (0, 1), union: false };
 
-  /// Returns the offset of the fields of the variants of a `repr(C)` enum, whose tag is outside the
+  /// Returns the offset of the variant fields of a `repr(C)` enum, whose tag is outside the
   /// `shadows` ([`Enum::new`]).
   ///
   /// This is the size of `tag`, rounded up to the greatest alignment of a shadow.
@@ -2144,8 +2144,8 @@ impl Layout {
     unsafe { crate::discover::discover(samples, fields) }
   }
 
-  /// Returns a valid `T`, made from its layout alone, for the samples of the variants of an enum
-  /// of the `Rust` representation ([`Layout::discover`]).
+  /// Returns a valid `T`, made from its layout alone, for the variant samples of an enum of the
+  /// `Rust` representation ([`Layout::discover`]).
   ///
   /// Every scalar holds the least of its values, and padding is uninitialized.
   ///
@@ -2280,7 +2280,7 @@ impl Layout {
     }
   }
 
-  /// Returns the layout of the tag of an enum of the `Rust` representation found by `discover.rs`.
+  /// Returns the tag layout of an enum of the `Rust` representation, as `discover.rs` finds it.
   ///
   /// The tag has no type of its own, so its alignment is 1.
   pub(crate) const fn tag(spec: Spec) -> Self {
@@ -2379,7 +2379,8 @@ impl Layout {
   /// The caller must ensure that:
   ///
   /// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
-  /// - `probe` is `<[u8] as Pun>::PROBE`, cast to `*const T` with `as` casts only.
+  /// - `probe` is `<[u8] as Pun>::PROBE`, a null `*const [u8]` whose length is 3, cast to `*const
+  ///   T` with `as` casts only.
   /// - The size of a value of `T` whose tail has the length of the tail of `probe` is at most
   ///   `isize::MAX`.
   ///
@@ -2775,7 +2776,7 @@ impl Layout {
   ///
   /// The caller must ensure that:
   ///
-  /// - `probe` is `<[T] as Pun>::PROBE`.
+  /// - `probe` is `<[T] as Pun>::PROBE`, a null `*const [T]` whose length is 3.
   ///
   /// # Examples
   ///
@@ -2842,9 +2843,9 @@ impl Layout {
   ///
   /// - If `T` is unsized, it is a struct whose last field is a slice, `str`, or a struct whose last
   ///   field is one of these, at any depth.
-  /// - If `T` is unsized, `probe` is `T::PROBE`: `<[E] as Pun>::PROBE` for the element type `E` of
-  ///   its tail, cast to `*const T` with `as` casts only. Otherwise `probe` may be any pointer,
-  ///   which is not read.
+  /// - If `T` is unsized, `probe` is `<[E] as Pun>::PROBE`, a null `*const [E]` whose length is 3,
+  ///   for the element type `E` of its tail (`u8` for `str`), cast to `*const T` with `as` casts
+  ///   only. Otherwise `probe` may be any pointer, which is not read.
   /// - If `T` is unsized, the size of a value of `T` whose tail has 8 elements is at most
   ///   `isize::MAX`.
   ///
@@ -4013,7 +4014,7 @@ impl Layout {
     self.field(index).offset
   }
 
-  /// Returns the number of leaves of the fields of a struct declared before the `index`th declared
+  /// Returns the number of leaves in the fields of a struct that are declared before its `index`th
   /// field ([`Field::leaf`]).
   ///
   /// # Panics
@@ -4249,8 +4250,8 @@ impl Layout {
   /// Returns whether bytes that are all zero are a valid value of the layout.
   ///
   /// Without the `unstable` feature, this is `false` for a layout that is not `fixed`, except for a
-  /// struct, since the values of the tag of an enum of the `Rust` representation are not specified.
-  /// The fields of a struct are zeros in every order.
+  /// struct, since the tag values of an enum of the `Rust` representation are not specified. The
+  /// fields of a struct are zeros in every order.
   pub(crate) const fn zeroable(&self) -> bool {
     if !UNSTABLE && !self.stable.fixed && !matches!(self.kind, Kind::Struct(..)) {
       return false;
@@ -4307,11 +4308,11 @@ impl Layout {
   /// Returns whether two structs have rules that are the same function of the bytes of each.
   ///
   /// A rule is a function of the bytes of its struct, of its size (`size_of_val(self)`, a `size`
-  /// rule), of the number of elements of its tail (a `len` rule), and of the bytes of its tail
-  /// (regions). So two structs compute the same rules over the same bytes, whatever their fields,
-  /// if they have at least one rule, the same rules in the same order ([`Rule::equals`]), the same
-  /// sized part, and the same tail (where it starts, the size of an element, and, for a sized
-  /// struct, the size of the tail and the length of the array it ends with).
+  /// rule), of the length of its tail (a `len` rule), and of the bytes of its tail (regions). So
+  /// two structs compute the same rules over the same bytes, whatever their fields, if they have at
+  /// least one rule, the same rules in the same order ([`Rule::equals`]), the same sized part, and
+  /// the same tail (where it starts, the size of an element, and, for a sized struct, the size of
+  /// the tail and the length of the array it ends with).
   pub(crate) const fn same_rules(&self, other: &Layout) -> bool {
     let (Kind::Struct(_, mine), Kind::Struct(_, theirs)) = (self.kind, other.kind) else {
       return false;
@@ -4421,7 +4422,7 @@ impl Layout {
   }
 }
 
-/// Returns whether two sets of values of scalars of the same size are the same.
+/// Returns whether two sets of values, of scalars of the same size, are the same.
 ///
 /// Two sets of ranges are the same only if the scalars have the same byte order.
 #[expect(
@@ -5749,8 +5750,7 @@ pub enum Rule {
   /// The extent of the value in bytes, up to the end of its slice and without the padding that may
   /// follow it, is the value of the expression.
   Size(&'static [Op]),
-  /// The number of elements of the tail of the value, a slice or an array, is the value of the
-  /// expression.
+  /// The length of the tail of the value, a slice or an array, is the value of the expression.
   Len(&'static [Op]),
   /// The value of the expression is not 0.
   Assert(&'static [Op]),
@@ -6162,7 +6162,7 @@ impl Machine {
   ///
   /// The caller must ensure that:
   ///
-  /// - `op` is the operation at the index `at` of an expression of a rule of the layout of a
+  /// - `op` is the operation at the index `at` of an expression of a rule in the layout of a
   ///   struct, which [`check_rules`] accepted, so that a [`Op::Load`] reads within the sized fields
   ///   of the struct.
   /// - `base` is valid for reads of the bytes of the sized fields of the struct, and of `size`
