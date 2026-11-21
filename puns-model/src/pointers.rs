@@ -93,6 +93,10 @@ impl Desc {
 /// The bytes of a buffer, and which of them a value was written to.
 ///
 /// The other bytes are padding or gaps between values, and are never read.
+///
+/// # Invariant
+///
+/// A byte that is marked as written is initialized.
 pub struct Image {
   /// The bytes of the buffer.
   bytes: Vec<MaybeUninit<u8>>,
@@ -103,9 +107,6 @@ pub struct Image {
 impl Image {
   /// Returns the `size` bytes at `at`.
   ///
-  /// A byte that is marked as written must be initialized. A wrong description can mark a byte of
-  /// padding, and reading it is then undefined behavior, which Miri reports.
-  ///
   /// # Errors
   ///
   /// Returns an error if a byte is out of bounds or was not written to.
@@ -115,9 +116,8 @@ impl Image {
     if !self.init[at..end].iter().all(|init| *init) {
       return Err(format!("a byte at {at}..{end} is not initialized"));
     }
-    // SAFETY: bytes that a value was written to, as the description of the type that wrote them
-    // says (`mark`): a description that says so of a byte of padding is wrong, which Miri reports
-    // here.
+    // SAFETY: The bytes from `at` to `end` are marked as written, which is checked above, so they
+    // are initialized (`Image`, section Invariant), as `assume_init` requires.
     Ok(self.bytes[at..end].iter().map(|byte| unsafe { byte.assume_init() }).collect())
   }
 
@@ -126,7 +126,13 @@ impl Image {
   /// # Panics
   ///
   /// Panics if a byte is out of bounds.
-  fn write(&mut self, at: usize, size: usize) -> Vec<u8> {
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - The `size` bytes at `at` are initialized, so that the `Image` keeps its invariant.
+  unsafe fn write(&mut self, at: usize, size: usize) -> Vec<u8> {
     self.init[at..at + size].fill(true);
     self.read(at, size).expect("written bytes")
   }
@@ -253,40 +259,62 @@ pub fn valid_with(desc: &Desc, image: &Image, at: usize, fuel: &mut usize) -> Re
 ///
 /// Panics if the bytes are not a value of `desc`, which means that the description or the corpus
 /// is wrong.
-pub fn mark(desc: &Desc, image: &mut Image, at: usize) {
+///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - The bytes of `image` hold a value at `at`, and `desc` describes its type: each byte that `desc`
+///   says the value holds is initialized, and so is each byte that it says what a pointer aims at
+///   holds. The `# Safety` of [`Model`] requires this of `Model::desc`.
+pub unsafe fn mark(desc: &Desc, image: &mut Image, at: usize) {
   match desc {
-    Desc::Plain { size, .. } => {
+    // SAFETY: In each arm, `desc` describes the value at `at`, by contract on the caller. So the
+    // bytes that it says a scalar, a tag, a pointer or a length holds are initialized, as `write`
+    // requires. A field is a value of the type that its description describes, at its offset, and
+    // what a pointer aims at is a value of its target, as `mark` requires.
+    Desc::Plain { size, .. } => unsafe {
       image.write(at, *size);
-    }
+    },
     Desc::Struct { fields, .. } => {
       for (offset, field) in fields {
-        mark(field, image, at + offset);
+        // SAFETY: As above, for a field.
+        unsafe { mark(field, image, at + offset) };
       }
     }
     Desc::Enum { variants, .. } => {
-      let tag = image.write(at, 1)[0];
+      // SAFETY: As above, for the tag.
+      let tag = unsafe { image.write(at, 1) }[0];
       let (_, fields) = variants.iter().find(|(of, _)| *of == tag).expect("a tag");
       for (offset, field) in fields {
-        mark(field, image, at + offset);
+        // SAFETY: As above, for a field of the variant of the tag.
+        unsafe { mark(field, image, at + offset) };
       }
     }
     Desc::Pointer { big, aim: what, target, .. } => {
-      image.write(at, 4);
+      // SAFETY: As above, for the offset of a pointer.
+      unsafe { image.write(at, 4) };
       let Some(to) = aim(image, at, *big).expect("a pointer") else { return };
       let target = target();
       match what {
-        Aim::One => mark(&target, image, to),
+        // SAFETY: As above, for what a pointer aims at.
+        Aim::One => unsafe { mark(&target, image, to) },
         Aim::Seq => {
-          image.write(to - 4, 4);
+          // SAFETY: As above, for the length before a sequence.
+          unsafe { image.write(to - 4, 4) };
           let len = length(image, to, *big).expect("a length");
           for i in 0..len {
-            mark(&target, image, to + i * target.size());
+            // SAFETY: As above, for each value of the sequence.
+            unsafe { mark(&target, image, to + i * target.size()) };
           }
         }
         Aim::Text => {
-          image.write(to - 4, 4);
-          let len = length(image, to, *big).expect("a length");
-          image.write(to, len);
+          // SAFETY: As above, for the length before text and for its bytes.
+          unsafe {
+            image.write(to - 4, 4);
+            let len = length(image, to, *big).expect("a length");
+            image.write(to, len);
+          }
         }
       }
     }
@@ -295,7 +323,14 @@ pub fn mark(desc: &Desc, image: &mut Image, at: usize) {
 
 /// A type of the model, with its description, a corpus of its values, and a way to read all of a
 /// value.
-pub trait Model: Pun + Fix + 'static {
+///
+/// # Safety
+///
+/// An implementation must guarantee that `desc` describes `Self`: each byte that it says a value
+/// of `Self` holds is initialized in every value, and so is each byte that it says what a pointer
+/// aims at holds. A wrong description makes [`image`] read an uninitialized byte, which Miri
+/// reports.
+pub unsafe trait Model: Pun + Fix + 'static {
   /// Returns the description of the type.
   fn desc() -> Desc;
 
@@ -329,7 +364,9 @@ fn name<T>() -> &'static str {
 pub fn image<T: Model>(region: &Region<T>) -> Image {
   let bytes = region.bytes().to_vec();
   let mut image = Image { init: vec![false; bytes.len()], bytes };
-  mark(&T::desc(), &mut image, region.root());
+  // SAFETY: The bytes of `region` hold a `T` at `region.root()`, and `T::desc()` describes `T`, by
+  // the `# Safety` of `Model`. These are the requirements of `mark`.
+  unsafe { mark(&T::desc(), &mut image, region.root()) };
   if let Err(why) = valid(&T::desc(), &image, region.root()) {
     panic!("the oracle refuses a {} of the corpus: {why}", name::<T>());
   }
@@ -914,13 +951,18 @@ pub mod types {
 
   /// Returns the region of the root that `build` returns, with what `build` put in the builder.
   ///
-  /// `build` must make every pointer of the root, and of what it points to, with the builder that
-  /// it receives.
-  fn region<T: Fix>(build: impl FnOnce(&mut Builder) -> T) -> Region<T> {
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - `build` makes every pointer of the root, and of what it aims at, with the builder that it
+  ///   receives, with what the pointer aims at, and puts each pointer in one value only.
+  unsafe fn region<T: Fix>(build: impl FnOnce(&mut Builder) -> T) -> Region<T> {
     let mut b = Builder::new();
     let root = build(&mut b);
-    // SAFETY: every pointer of `root`, and of what it points to, made by `b` (each type of the
-    // model fixes all of its pointers).
+    // SAFETY: Every pointer of `root`, and of what `b` holds, was made by `b` with what it aims
+    // at, and is in one value only, by contract on the caller. `T` and the types that `b` holds
+    // implement `Fix` as its `# Safety` requires. These are the requirements of `Region::new`.
     unsafe { Region::new(b, root) }
   }
 
@@ -953,7 +995,9 @@ pub mod types {
   /// Implements [`Model`] for types that are only targets, each with its description.
   macro_rules! plain {
     ($($ty:ty: $desc:expr;)+) => {$(
-      impl Model for $ty {
+      // SAFETY: `$desc` describes the bytes of `$ty`, a scalar or an array of scalars whose bytes
+      // are all initialized, as the `# Safety` of `Model` requires.
+      unsafe impl Model for $ty {
         fn desc() -> Desc {
           $desc
         }
@@ -982,14 +1026,25 @@ pub mod types {
   /// # Panics
   ///
   /// Panics if `values` is empty.
-  fn chain<T: Fix, V: Copy>(values: &[V], make: impl Fn(V, Opt<T>) -> T) -> Region<T> {
-    region(|b| {
-      let mut next = Opt::none();
-      for value in values[1..].iter().rev() {
-        next = b.opt(Some(make(*value, next)));
-      }
-      make(values[0], next)
-    })
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - `make` makes a value whose only pointer is the one that it receives.
+  unsafe fn chain<T: Fix, V: Copy>(values: &[V], make: impl Fn(V, Opt<T>) -> T) -> Region<T> {
+    // SAFETY: The first pointer is null, and each other one is made by `b.opt` with the value
+    // that it aims at. Each is put in the one value that `make` makes of it, which holds no other
+    // pointer, by contract on the caller. These are the requirements of `region`.
+    unsafe {
+      region(|b| {
+        let mut next = Opt::none();
+        for value in values[1..].iter().rev() {
+          next = b.opt(Some(make(*value, next)));
+        }
+        make(values[0], next)
+      })
+    }
   }
 
   /// Returns every chain of one and of two values of `alphabet`, and one chain of three values.
@@ -997,16 +1052,26 @@ pub mod types {
   /// # Panics
   ///
   /// Panics if `alphabet` is empty.
-  fn chains<T: Fix, V: Copy>(alphabet: &[V], make: impl Fn(V, Opt<T>) -> T) -> Vec<Region<T>> {
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure the requirement of [`chain`].
+  unsafe fn chains<T: Fix, V: Copy>(
+    alphabet: &[V],
+    make: impl Fn(V, Opt<T>) -> T,
+  ) -> Vec<Region<T>> {
     let mut corpus = vec![];
-    for first in alphabet {
-      corpus.push(chain(&[*first], &make));
-      for second in alphabet {
-        corpus.push(chain(&[*first, *second], &make));
+    // SAFETY: `make` is the one of the caller, which meets the requirement of `chain`.
+    unsafe {
+      for first in alphabet {
+        corpus.push(chain(&[*first], &make));
+        for second in alphabet {
+          corpus.push(chain(&[*first, *second], &make));
+        }
       }
+      let last = alphabet[alphabet.len() - 1];
+      corpus.push(chain(&[alphabet[0], last, last], &make));
     }
-    let last = alphabet[alphabet.len() - 1];
-    corpus.push(chain(&[alphabet[0], last, last], &make));
     corpus
   }
 
@@ -1039,7 +1104,9 @@ pub mod types {
         }
       }
 
-      impl Model for $ty {
+      // SAFETY: `desc` gives each field of the struct at its offset, with the description of its
+      // type, and the pointer aims at another `$ty`, as the `# Safety` of `Model` requires.
+      unsafe impl Model for $ty {
         fn desc() -> Desc {
           structure::<Self>(vec![
             (offset_of!(Self, flag), $flag),
@@ -1048,7 +1115,8 @@ pub mod types {
         }
 
         fn corpus() -> Vec<Region<Self>> {
-          chains(&$alphabet, |flag, next| $ty { flag, next })
+          // SAFETY: The closure makes a value whose only pointer is `next`, as `chains` requires.
+          unsafe { chains(&$alphabet, |flag, next| $ty { flag, next }) }
         }
 
         fn show<R>(&self, r: &Region<R>) -> String {
@@ -1075,7 +1143,16 @@ pub mod types {
   }
 
   /// Returns regions of trees over `alphabet`, of one to four levels.
-  fn lists<T: Fix, V: Copy>(alphabet: &[V], make: impl Fn(V, Seq<T>) -> T) -> Vec<Region<T>> {
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - `make` makes a value whose only pointer is the one that it receives.
+  unsafe fn lists<T: Fix, V: Copy>(
+    alphabet: &[V],
+    make: impl Fn(V, Seq<T>) -> T,
+  ) -> Vec<Region<T>> {
     let leaf = |value| Node(value, vec![]);
     let mut corpus = vec![];
     for &first in alphabet {
@@ -1086,7 +1163,10 @@ pub mod types {
         let deep = Node(second, vec![leaf(first), Node(first, vec![leaf(second)])]);
         shapes.push(Node(first, vec![leaf(second), deep]));
       }
-      corpus.extend(shapes.iter().map(|shape| region(|b| tree(b, shape, &make))));
+      // SAFETY: `tree` makes each sequence with `b.seq`, of the values that it holds, and puts it
+      // in the one value that `make` makes of it, which holds no other pointer, by contract on the
+      // caller. These are the requirements of `region`.
+      corpus.extend(shapes.iter().map(|shape| unsafe { region(|b| tree(b, shape, &make)) }));
     }
     corpus
   }
@@ -1120,7 +1200,9 @@ pub mod types {
         }
       }
 
-      impl Model for $ty {
+      // SAFETY: `desc` gives each field of the struct at its offset, with the description of its
+      // type, and the pointer aims at a sequence of `$ty`s, as the `# Safety` of `Model` requires.
+      unsafe impl Model for $ty {
         fn desc() -> Desc {
           structure::<Self>(vec![
             (offset_of!(Self, flag), $flag),
@@ -1129,7 +1211,8 @@ pub mod types {
         }
 
         fn corpus() -> Vec<Region<Self>> {
-          lists(&$alphabet, |flag, rest| $ty { flag, rest })
+          // SAFETY: The closure makes a value whose only pointer is `rest`, as `lists` requires.
+          unsafe { lists(&$alphabet, |flag, rest| $ty { flag, rest }) }
         }
 
         fn show<R>(&self, r: &Region<R>) -> String {
@@ -1166,13 +1249,17 @@ pub mod types {
         }
       }
 
-      impl Model for $ty {
+      // SAFETY: `desc` gives the one field of the struct at its offset, with `$desc`, the
+      // description of its pointer and of what it aims at, as the `# Safety` of `Model` requires.
+      unsafe impl Model for $ty {
         fn desc() -> Desc {
           structure::<Self>(vec![(offset_of!(Self, to), $desc)])
         }
 
         fn corpus() -> Vec<Region<Self>> {
-          $values.into_iter().map(|value| region(|b| $ty { to: $build(b, value) })).collect()
+          // SAFETY: `$build` makes the one pointer of the value with `b`, with what it aims at,
+          // as `region` requires.
+          $values.into_iter().map(|value| unsafe { region(|b| $ty { to: $build(b, value) }) }).collect()
         }
 
         fn show<R>(&self, r: &Region<R>) -> String {
@@ -1228,7 +1315,9 @@ pub mod types {
     fn fix(&mut self, _: usize) {}
   }
 
-  impl Model for Raw {
+  // SAFETY: `desc` gives the one field of the struct at its offset, 4 initialized bytes, as the
+  // `# Safety` of `Model` requires.
+  unsafe impl Model for Raw {
     fn desc() -> Desc {
       structure::<Self>(vec![(offset_of!(Self, raw), bytes(4))])
     }
@@ -1236,7 +1325,8 @@ pub mod types {
     fn corpus() -> Vec<Region<Self>> {
       [[0; 4], [1, 0, 0, 0], [4, 0, 0, 0], [0, 0, 0, 4], [0xff; 4], [8, 0, 0, 0]]
         .into_iter()
-        .map(|raw| region(|_| Raw { raw }))
+        // SAFETY: A `Raw` holds no pointer, as `region` requires.
+        .map(|raw| unsafe { region(|_| Raw { raw }) })
         .collect()
     }
 
@@ -1264,7 +1354,10 @@ pub mod types {
     }
   }
 
-  impl Model for Tree {
+  // SAFETY: `desc` gives the tag of each variant, a `u8` at offset 0 since the enum is `repr(u8)`,
+  // and its field at offset 1, after the tag: a `bool`, or a pointer to another `Tree`, as the
+  // `# Safety` of `Model` requires.
+  unsafe impl Model for Tree {
     fn desc() -> Desc {
       Desc::Enum {
         size: size_of::<Self>(),
@@ -1279,12 +1372,16 @@ pub mod types {
     fn corpus() -> Vec<Region<Self>> {
       let mut corpus = vec![];
       for value in [false, true] {
-        corpus.push(region(|_| Tree::Leaf(value)));
-        corpus.push(region(|b| Tree::Node(b.one(Tree::Leaf(value)))));
-        corpus.push(region(|b| {
-          let leaf = b.one(Tree::Leaf(value));
-          Tree::Node(b.one(Tree::Node(leaf)))
-        }));
+        // SAFETY: Each closure makes every pointer with `b.one`, of the value that it aims at, and
+        // puts it in one value, as `region` requires.
+        unsafe {
+          corpus.push(region(|_| Tree::Leaf(value)));
+          corpus.push(region(|b| Tree::Node(b.one(Tree::Leaf(value)))));
+          corpus.push(region(|b| {
+            let leaf = b.one(Tree::Leaf(value));
+            Tree::Node(b.one(Tree::Node(leaf)))
+          }));
+        }
       }
       corpus
     }
@@ -1320,7 +1417,10 @@ pub mod types {
     }
   }
 
-  impl Model for Wood {
+  // SAFETY: `desc` gives the tag of each variant, a `u8` at offset 0 since the enum is `repr(u8)`,
+  // and its field at offset 1, after the tag: a `u8`, a pointer to another `Wood`, or a pointer
+  // to a sequence of them, as the `# Safety` of `Model` requires.
+  unsafe impl Model for Wood {
     fn desc() -> Desc {
       Desc::Enum {
         size: size_of::<Self>(),
@@ -1336,17 +1436,21 @@ pub mod types {
     fn corpus() -> Vec<Region<Self>> {
       let mut corpus = vec![];
       for value in [0, 1, 2, 255] {
-        corpus.push(region(|_| Wood::Leaf(value)));
-        corpus.push(region(|b| Wood::Node(b.one(Wood::Leaf(value)))));
-        corpus.push(region(|b| {
-          let leaf = b.one(Wood::Leaf(value));
-          Wood::Node(b.one(Wood::Node(leaf)))
-        }));
-        corpus.push(region(|b| Wood::Pair(b.seq([Wood::Leaf(value), Wood::Leaf(1)]))));
-        corpus.push(region(|b| {
-          let (leaf, empty) = (b.one(Wood::Leaf(value)), b.seq([]));
-          Wood::Pair(b.seq([Wood::Node(leaf), Wood::Pair(empty)]))
-        }));
+        // SAFETY: Each closure makes every pointer with `b.one` or `b.seq`, of the values that it
+        // aims at, and puts it in one value, as `region` requires.
+        unsafe {
+          corpus.push(region(|_| Wood::Leaf(value)));
+          corpus.push(region(|b| Wood::Node(b.one(Wood::Leaf(value)))));
+          corpus.push(region(|b| {
+            let leaf = b.one(Wood::Leaf(value));
+            Wood::Node(b.one(Wood::Node(leaf)))
+          }));
+          corpus.push(region(|b| Wood::Pair(b.seq([Wood::Leaf(value), Wood::Leaf(1)]))));
+          corpus.push(region(|b| {
+            let (leaf, empty) = (b.one(Wood::Leaf(value)), b.seq([]));
+            Wood::Pair(b.seq([Wood::Node(leaf), Wood::Pair(empty)]))
+          }));
+        }
       }
       corpus
     }

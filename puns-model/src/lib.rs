@@ -375,7 +375,10 @@ impl Oracle for Option<Option<bool>> {
   fn check(b: &Bytes, off: usize, reads: &mut [bool], _: bool) -> Valid {
     let v = int(b, off, 1, true, reads)?;
     let none = None::<Option<bool>>;
-    // SAFETY: a byte of a niche, which `rustc` writes (`None` is no padding).
+    const { assert!(size_of::<Option<Option<bool>>>() == 1, "the niches are in one byte") };
+    // SAFETY: `none` is 1 byte, which is asserted above, so the pointer is valid for reads of a
+    // `u8`, aligned for it. That byte holds the niche of `None`, which `rustc` writes, so it is
+    // initialized. Rust does not document this, and Miri reports a read of an uninitialized byte.
     let none = u128::from(unsafe { *core::ptr::from_ref(&none).cast::<u8>() });
     Ok(v <= 2 || v == none)
   }
@@ -559,20 +562,27 @@ pub fn values_over<T: Oracle>(of: usize) -> Vec<Vec<Option<u8>>> {
 
 /// Returns a `T` made of `bytes`, leaving the `None` bytes uninitialized.
 ///
-/// This function is safe to call, but it assumes that `bytes` has `size_of::<T>()` elements and
-/// that the oracle of `T` accepts them as a source. A wrong oracle makes it return an invalid `T`,
-/// which is undefined behavior that Miri reports.
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - `bytes` has at most `size_of::<T>()` elements.
+/// - `bytes`, with uninitialized bytes where it holds `None`, is a valid `T`. A value of
+///   [`values`] is one if the oracle of `T` is right. A wrong oracle makes this function return
+///   an invalid `T`, which Miri reports.
 #[must_use]
-pub fn make<T: Oracle>(bytes: &Bytes) -> T {
+pub unsafe fn make<T: Oracle>(bytes: &Bytes) -> T {
   let mut value = MaybeUninit::<T>::uninit();
   let ptr = value.as_mut_ptr().cast::<u8>();
   for (i, byte) in bytes.iter().enumerate() {
     if let Some(byte) = byte {
-      // SAFETY: in bounds.
+      // SAFETY: `i < bytes.len() <= size_of::<T>()`, by contract on the caller. So `add(i)` stays
+      // in `value`, and the byte there is valid for writes. A `u8` is aligned at any address.
       unsafe { ptr.add(i).write(*byte) };
     }
   }
-  // SAFETY: the oracle says that these bytes are a `T`. If it is wrong, Miri says so.
+  // SAFETY: The bytes of `value` are `bytes`, uninitialized where it holds `None`, which is a
+  // valid `T` by contract on the caller, as `assume_init` requires.
   unsafe { value.assume_init() }
 }
 
@@ -580,8 +590,16 @@ pub fn make<T: Oracle>(bytes: &Bytes) -> T {
 ///
 /// Which bytes the oracle reads depends on the value, for example on the tag of an enum. The
 /// function therefore reads the bytes of `value` in rounds, only those that the oracle has read so
-/// far, until a round reads no new byte. If the oracle is right, no byte that it reads is padding.
-pub fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
+/// far, until a round reads no new byte.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - The oracle of `T` reads no byte that may be uninitialized in a value of `T`. This holds if the
+///   oracle is right. A wrong oracle makes this function read an uninitialized byte, which Miri
+///   reports.
+pub unsafe fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
   let size = size_of::<T>();
   let mut reads = vec![false; size];
   // Which bytes are looked at depends on the value: find them with the bytes of the value,
@@ -593,7 +611,9 @@ pub fn bytes_of<T: Oracle>(value: &T) -> Vec<Option<u8>> {
     let _ = T::check(&known, 0, &mut reads, false);
     for i in 0..size {
       if reads[i] {
-        // SAFETY: a byte that the oracle reads is not padding.
+        // SAFETY: `i < size_of::<T>()`, so `add(i)` stays in `value`, which is valid for reads. A
+        // `u8` is aligned at any address. The oracle read the byte, so it is initialized in
+        // `value`, by contract on the caller.
         known[i] = Some(unsafe { ptr.add(i).read() });
       }
     }
@@ -811,7 +831,9 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
     // (b) the run-time check accepts exactly the valid values.
     if v.try_pun && !any_uninit && !soft_uninit {
       for ((p, t), claim) in source.iter().zip(&truths).zip(&claims).take(limit) {
-        let value = make::<S>(p);
+        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
+        // on the oracles being right, which Miri checks. These are the requirements of `make`.
+        let value = unsafe { make::<S>(p) };
         let result = hook::try_pun::<S, D>(value).expect("try_pun compiles");
         // By reference, an address that is not aligned for the target is an error of its own
         // (Miri puts values anywhere their alignment allows, natively they are often more aligned).
@@ -831,7 +853,8 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
         conversions += 1;
         let accepted = result.is_ok();
         if let Ok(d) = result {
-          let got = bytes_of(&d);
+          // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+          let got = unsafe { bytes_of(&d) };
           let want: Vec<Option<u8>> =
             (0..ds).map(|i| if got[i].is_some() { p[i] } else { None }).collect();
           if got != want {
@@ -874,8 +897,11 @@ pub fn check_pair<S: Oracle, D: Oracle>(limit: usize) {
     // Truncation: the first bytes of the source, unchanged.
     if ds < ss && v.head {
       for p in source.iter().take(limit) {
-        let d = hook::head::<S, D>(make::<S>(p)).expect("head compiles");
-        let got = bytes_of(&d);
+        // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
+        // on the oracles being right, which Miri checks. These are the requirements of `make`.
+        let d = hook::head::<S, D>(unsafe { make::<S>(p) }).expect("head compiles");
+        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+        let got = unsafe { bytes_of(&d) };
         let want: Vec<Option<u8>> =
           (0..ds).map(|i| if got[i].is_some() { p[i] } else { None }).collect();
         conversions += 1;
@@ -1034,11 +1060,14 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
       (0..ds).map(|i| if got[i].is_some() { p[off + i] } else { None }).collect()
     };
     for p in source.iter().take(limit) {
-      let value = make::<S>(p);
+      // SAFETY: `p` is a value of `values::<S>()`, of `size_of::<S>()` bytes. The model check relies
+      // on the oracles being right, which Miri checks. These are the requirements of `make`.
+      let value = unsafe { make::<S>(p) };
       let got = if part == "head" { hook::head::<S, D>(value) } else { hook::tail::<S, D>(value) };
       if let Some(d) = got {
         conversions += 1;
-        let got = bytes_of(&d);
+        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+        let got = unsafe { bytes_of(&d) };
         if got != want(p, &got) {
           unsound.push(format!("{pair}: {part} of {} is {}", show(p), show(&got)));
           break;
@@ -1051,7 +1080,8 @@ pub fn check_part<S: Oracle, D: Oracle>(limit: usize) {
       };
       if let Some(d) = got {
         conversions += 1;
-        let (at, got) = (offset_in(&value, d), bytes_of(d));
+        // SAFETY: The model check relies on the oracle of `D` being right, as `bytes_of` requires.
+        let (at, got) = (offset_in(&value, d), unsafe { bytes_of(d) });
         if at != off || got != want(p, &got) {
           unsound.push(format!("{pair}: {part}_ref of {} is {} at {at}", show(p), show(&got)));
           break;

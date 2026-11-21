@@ -1039,7 +1039,13 @@ model_tagged!(#[repr(u8)] enum ThirdSoftIn: tag 1 { A(ThirdSoft = ThirdSoft { v:
 /// # Panics
 ///
 /// Panics if `E` is not 2 bytes, or if the tags of the samples are not 0 and 1.
-fn rust_variant<E: Copy>(
+///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - Both bytes of each sample are initialized.
+unsafe fn rust_variant<E: Copy>(
   samples: [(E, usize); 2],
   b: &Bytes,
   off: usize,
@@ -1047,7 +1053,9 @@ fn rust_variant<E: Copy>(
 ) -> Result<Option<(usize, usize)>, Uninit> {
   assert_eq!(size_of::<E>(), 2, "not the layout of the oracle");
   for (i, (sample, _)) in samples.iter().enumerate() {
-    // SAFETY: both variants initialize both bytes: a tag, and a byte of a field.
+    // SAFETY: `E` is 2 bytes, which is asserted above, so `transmute_copy` reads the 2 bytes of
+    // `sample` as a `[u8; 2]`, which needs no alignment. Both are initialized, by contract on the
+    // caller, so they are a valid `[u8; 2]`.
     let bytes: [u8; 2] = unsafe { core::mem::transmute_copy(sample) };
     assert_eq!(usize::from(bytes[0]), i, "not the layout of the oracle");
   }
@@ -1069,7 +1077,10 @@ impl Oracle for RustThird {
     let (a, b_) = (RustThird::A(Third { v: 0 }), RustThird::B(0));
     let (RustThird::A(x), RustThird::B(y)) = (&a, &b_) else { unreachable!() };
     let samples = [(a, offset_in(&a, x)), (b_, offset_in(&b_, y))];
-    match rust_variant(samples, b, off, reads)? {
+    // SAFETY: Each sample is a tag and a field of 1 byte, a `Third` or a `u8`, in 2 bytes. So both
+    // of its bytes are initialized, as `rust_variant` requires. If `rustc` gave the enum another
+    // layout, a byte could be padding, which Miri reports.
+    match unsafe { rust_variant(samples, b, off, reads) }? {
       Some((0, at)) => Third::check(b, off + at, reads, target),
       Some((_, at)) => int(b, off + at, 1, true, reads).map(|_| true),
       None => Ok(false),
@@ -1089,7 +1100,10 @@ impl Oracle for RustThirdSoft {
     let (a, b_) = (RustThirdSoft::A(ThirdSoft { v: 0 }), RustThirdSoft::B(0));
     let (RustThirdSoft::A(x), RustThirdSoft::B(y)) = (&a, &b_) else { unreachable!() };
     let samples = [(a, offset_in(&a, x)), (b_, offset_in(&b_, y))];
-    match rust_variant(samples, b, off, reads)? {
+    // SAFETY: Each sample is a tag and a field of 1 byte, a `ThirdSoft` or a `u8`, in 2 bytes. So both
+    // of its bytes are initialized, as `rust_variant` requires. If `rustc` gave the enum another
+    // layout, a byte could be padding, which Miri reports.
+    match unsafe { rust_variant(samples, b, off, reads) }? {
       Some((0, at)) => ThirdSoft::check(b, off + at, reads, target),
       Some((_, at)) => int(b, off + at, 1, true, reads).map(|_| true),
       None => Ok(false),
