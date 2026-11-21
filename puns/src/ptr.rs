@@ -29,6 +29,24 @@ use crate::Pun;
 #[doc(hidden)]
 pub const PROBE_LEN: usize = 3;
 
+// Reads the bits of an `A` as a `B`. The union is `repr(C)`, so both fields are at offset 0 [1],
+// and reading `to` reads the first `size_of::<B>()` bytes of `from` as a `B` [2]. Each use reads a
+// `B` of the size of `A`. A `B` is a raw pointer or a `usize`, which is valid if its bytes are
+// initialized [3].
+//
+// [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.union.size-align:
+//
+//     Each field lives at byte offset 0 from the beginning of the union.
+//
+// [2] Per https://doc.rust-lang.org/1.99.0/reference/items/unions.html#r-items.union.fields.read:
+//
+//     Reading a union field reads the bits of the union at the field's type.
+//
+// [3] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.scalar:
+//
+//     An integer (`i*`/`u*`), floating point value (`f*`), or raw pointer must be initialized,
+//     i.e., must not be obtained from uninitialized memory.
+#[repr(C)]
 union Cast<A: Copy, B: Copy> {
   from: A,
   to: B,
@@ -41,9 +59,12 @@ union Cast<A: Copy, B: Copy> {
 /// The caller must ensure that:
 ///
 /// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
+/// - A `*const T` is represented as a `*const [u8]`, whose length is the length of the tail. This
+///   holds if [`verify`] accepted a probe of `T`, or the call is made by `verify`.
 #[inline(always)]
 pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
-  // SAFETY: see the module documentation.
+  // SAFETY: A `*const T` is represented as a `*const [u8]`, by contract on the caller. So its bytes
+  // are initialized, and are a `*const [u8]` of the same size (see `Cast`).
   unsafe { Cast::<*const T, *const [u8]> { from: ptr }.to }.len()
 }
 
@@ -51,13 +72,12 @@ pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
 ///
 /// # Safety
 ///
-/// The caller must ensure that:
-///
-/// - `T` is a slice, `str`, or a struct whose last field is one of these, at any depth.
+/// The caller must ensure the requirements of [`raw_len`].
 #[inline(always)]
 pub const unsafe fn raw_with_len<T: ?Sized>(ptr: *const T, len: usize) -> *const T {
   let slice = core::ptr::slice_from_raw_parts(ptr.cast::<u8>(), len);
-  // SAFETY: see the module documentation.
+  // SAFETY: A `*const T` is represented as a `*const [u8]`, by contract on the caller. So the bytes
+  // of `slice`, which are initialized, are a `*const T` of the same size (see `Cast`).
   unsafe { Cast::<*const [u8], *const T> { from: slice }.to }
 }
 
@@ -82,7 +102,13 @@ pub const unsafe fn verify<T: ?Sized>(probe: *const T) {
   assert!(size_of::<*const T>() == size_of::<*const [u8]>(), "{}", MESSAGE);
   assert!(align_of::<*const T>() == align_of::<*const [u8]>(), "{}", MESSAGE);
   // SAFETY: By contract on the caller, `T` is a slice, `str`, or a struct whose last field is one
-  // of these. This is what `raw_len` and `raw_with_len` require.
+  // of these. The call is made by `verify`, as `raw_len` and `raw_with_len` require: the pointers
+  // have the same size, which is asserted above, and the assertions below check the rest of the
+  // representation. If a byte of `*const T` were not initialized, the read would be undefined
+  // behavior. In the evaluation of a `LAYOUT` constant, which calls `verify`, `rustc` reports such
+  // a read as an error (`discover`, module documentation). Rust does not promise that a pointer
+  // has no uninitialized byte, so a call at run time relies on the representation that `rustc`
+  // gives pointers, which has none.
   unsafe {
     assert!(raw_len(probe) == PROBE_LEN, "{}", MESSAGE);
     let other = raw_with_len(probe, PROBE_LEN + 39);
@@ -98,12 +124,12 @@ pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
   if const { !T::LAYOUT.unsized_ } {
     return 0;
   }
-  // SAFETY: `T` is a slice, `str`, or a struct whose last field is one of these, as `raw_len`
-  // requires. `T::LAYOUT.unsized_` is `true`. Only `Layout::slice`, `Layout::pattern` and
+  // SAFETY: `T::LAYOUT.unsized_` is `true`. Only `Layout::slice`, `Layout::pattern` and
   // `Layout::structure` of a struct whose last field is unsized make such a layout, and each
   // calls `verify` on the probe of the type. By the `# Safety` of `Pun`, `T::LAYOUT` is the
   // layout of `T`. `ManuallyDrop<T>` reuses the layout of `T`, and is a struct whose only field
-  // is a `T`.
+  // is a `T`. So `T` is a slice, `str`, or a struct whose last field is one of these, and
+  // `verify` accepted a probe of `T`. These are the requirements of `raw_len`.
   unsafe { raw_len(ptr) }
 }
 
@@ -114,10 +140,18 @@ pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
 pub const fn from_raw_parts<T: ?Sized + Pun>(addr: *const u8, len: usize) -> *const T {
   if const { T::LAYOUT.unsized_ } {
     let slice = core::ptr::slice_from_raw_parts(addr, len);
-    // SAFETY: `T` is unsized, see the module documentation.
+    // SAFETY: `T::LAYOUT.unsized_` is `true`, so `verify` accepted a probe of `T`, as in
+    // `metadata`: a `*const T` is represented as a `*const [u8]`. So the bytes of `slice`, which
+    // are initialized, are a `*const T` of the same size (see `Cast`).
     unsafe { Cast::<*const [u8], *const T> { from: slice }.to }
   } else {
-    // SAFETY: `T` is `Sized`: both are thin pointers.
+    // SAFETY: `T::LAYOUT.unsized_` is `false`, so `T` is `Sized`, by the `# Safety` of `Pun`. A
+    // pointer to a sized type has the size of a `usize` [1], as `addr` does. So the bytes of
+    // `addr`, which are initialized, are a `*const T` of the same size (see `Cast`).
+    //
+    // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.pointer.thin:
+    //
+    //     Pointers to sized types have the same size and alignment as `usize`.
     unsafe { Cast::<*const u8, *const T> { from: addr }.to }
   }
 }
@@ -158,10 +192,26 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 ///
 /// `align` must be a power of two, or the result is meaningless. The address is read as an
 /// integer, which const evaluation cannot do: a call evaluated at compile time does not compile.
+///
+/// The address is read through a union, not with `addr`, `is_aligned_to` or `align_offset`: none
+/// of these is a `const fn` on Rust 1.99.
 #[inline(always)]
 pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
-  // SAFETY: a pointer can be read as an integer at run time (this does not expose its
-  // provenance, which is fine as the integer is never turned back into a pointer).
+  // SAFETY: A pointer to a sized type has the size of a `usize` (see `from_raw_parts`). So the
+  // bytes of `addr`, which are initialized, are a `usize` of the same size (see `Cast`). This
+  // reads a pointer as an integer, which `core` says to avoid at run time [1], since the rules of
+  // memory for it are not settled. It is not undefined behavior there, and the integer is never
+  // made into a pointer again. In const evaluation, it is undefined behavior, and `rustc` stops
+  // the evaluation [1]: a call evaluated at compile time does not compile.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.transmute.html#transmutation-between-pointers-and-integers:
+  //
+  //     Transmuting pointers to integers in a const context is undefined behavior, unless the
+  //     pointer was originally created from an integer. (That includes [...] semantically-
+  //     equivalent conversions such as punning through `repr(C)` union fields.) Any attempt to
+  //     use the resulting value for integer operations will abort const-evaluation. (And even
+  //     outside `const`, such transmutation is touching on many unspecified aspects of the Rust
+  //     memory model and should be avoided. [...])
   let addr = unsafe { Cast::<*const u8, usize> { from: addr }.to };
   addr & (align - 1) == 0
 }

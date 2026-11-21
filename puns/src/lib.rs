@@ -3054,15 +3054,32 @@ pub const fn try_pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> Result<D, Error>
   Ok(unsafe { pun_unchecked(value) })
 }
 
+/// Reads the first `size_of::<D>()` bytes of `value` as a `D`.
+///
 /// # Safety
-/// `D` must not be larger than `S`, and the first bytes of `value` must be a valid `D`.
+///
+/// The caller must ensure that:
+///
+/// - `D` is not larger than `S`.
+/// - The first `size_of::<D>()` bytes of `value` are a valid `D`.
 #[inline(always)]
 const unsafe fn pun_unchecked<S: Copy, D: Copy>(value: S) -> D {
+  #[repr(C)]
   union Overlay<S: Copy, D: Copy> {
     source: S,
     target: D,
   }
-  // SAFETY: guaranteed by the caller.
+  // SAFETY: The union is `repr(C)`, so both fields are at offset 0 [1], and reading `target` reads
+  // the first `size_of::<D>()` bytes of `value` as a `D` [2]. `D` is not larger than `S`, and these
+  // bytes are a valid `D`, by contract on the caller.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.union.size-align:
+  //
+  //     Each field lives at byte offset 0 from the beginning of the union.
+  //
+  // [2] Per https://doc.rust-lang.org/1.99.0/reference/items/unions.html#r-items.union.fields.read:
+  //
+  //     Reading a union field reads the bits of the union at the field's type.
   unsafe { Overlay { source: value }.target }
 }
 
