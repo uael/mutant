@@ -79,6 +79,11 @@ next, the time of `puns` varied by less than 2% in 26 of the 33 cases, and by 22
 tcp, 12 headers`). The time by hand varied by less than 2% in 19 cases, and by 40% at most (`ipv6,
 tcp, 0 headers`). The output of each run is in [`docs/checks-2026-11-21.txt`][record].
 
+The chart and the table are written from the record by `cargo xtask checks-chart`.
+
+<!-- checks:start -->
+![The time of each check by puns relative to the same check by hand: from 0.038 to 1.52 times, below 1 for 22 of the 33 cases](charts/checks.svg)
+
 | Case | `puns` | by hand |
 |---|---:|---:|
 | `ipv4, udp, 64 bytes` | 5.07 | 4.59 |
@@ -114,6 +119,7 @@ tcp, 0 headers`). The output of each run is in [`docs/checks-2026-11-21.txt`][re
 | `crc-16/modbus (a Crc), 1518 bytes` | 389 | 2,813 |
 | `crc-16/xmodem (a Crc), 1518 bytes` | 451 | 3,188 |
 | `sum16, 1500 bytes` | 22.1 | 21.9 |
+<!-- checks:end -->
 
 Cases are named as in the benchmark, so `cargo bench -p puns --features unstable --bench checks --
 'ipv6'` runs the cases whose name contains `ipv6`. The size of an IPv4 case is the size of its UDP

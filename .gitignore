@@ -16,6 +16,8 @@
 !docs/
 !docs/*.md
 !docs/*.txt
+!docs/charts/
+!docs/charts/*.svg
 !deny.toml
 !release-plz.toml
 !.github/

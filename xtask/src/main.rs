@@ -1,4 +1,5 @@
 mod build_time;
+mod checks_chart;
 
 use std::{path::PathBuf, sync::LazyLock};
 
@@ -31,6 +32,13 @@ enum Command {
   },
   /// Time the builds of the section "Build time" of `docs/performance.md`
   BuildTime,
+  /// Write the table and the chart of the section "Time" of `docs/performance.md` from the record
+  /// of the benchmark
+  ChecksChart {
+    /// Fail if the table or the chart is not what this writes, rather than write them
+    #[arg(long)]
+    check: bool,
+  },
 }
 
 /// The root directory of the workspace.
@@ -48,6 +56,7 @@ fn main() -> Result<()> {
     Command::Fmt { check } => fmt(&sh, check),
     Command::Lint { fix } => lint(&sh, fix),
     Command::BuildTime => build_time::run(&ROOT),
+    Command::ChecksChart { check } => checks_chart::run(&ROOT, check),
   }
 }
 
