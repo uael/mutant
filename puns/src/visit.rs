@@ -187,9 +187,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// Validates the `T` at the position `at` of `bytes`, except what its pointers aim at, and hands
 /// each of its self-relative pointers to `visit`.
 ///
-/// The function is safe for any bytes and any `at`. It reads nothing outside `bytes` and does not
-/// panic. It does not follow pointers. The visitor follows them, or does not. The bytes may be at
-/// any address.
+/// The function is safe for any bytes and any `at`. It reads nothing outside `bytes`, and does not
+/// panic unless `visit` does. It does not follow pointers: the visitor follows them, or does not.
+/// The bytes may be at any address.
 ///
 /// After `Ok(())`, unsafe code may rely on the following, and on nothing more:
 ///
@@ -215,9 +215,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// buffer must then be at an address aligned to `align_of::<T>()`, and `at` a multiple of it. The
 /// same holds for what the pointers aim at, which their scheme places.
 ///
-/// A `T` of size 0 has no bytes to check: it is valid if it has a value. `T` is `Sized`: a
-/// value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of pointers
-/// holds by value.
+/// A `T` of size 0 has no bytes to check: it is valid if it has a value and its rules hold. `T` is
+/// `Sized`: a value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of
+/// pointers holds by value.
 ///
 /// [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 /// [`SelfRelative`]: crate::SelfRelative
