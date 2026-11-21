@@ -236,7 +236,7 @@ public. Do not derive it on a type with a private invariant ([What deriving `Pun
 - A generic function cannot require in its bounds that two types pun, since the analysis is a
   constant, not a trait. The error appears where the function is instantiated.
 - Each pair of types takes about 17 ms of a debug build. A view enum whose variants overlap builds
-  in time that grows as the square of its number of variants: 0.75 s for 16, 10 s for 64.
+  in time that grows as the square of its number of variants: 0.7 s for 16, 10 s for 64.
 - An [`Error`] says whether the size, the alignment or a value is wrong, not where.
 - A `walk` is a loop in a rule. A checksum or a `walk` inside a `walk` takes time in proportion
   to the square of the size of the value, and each further level multiplies it by the size again.
