@@ -30,8 +30,8 @@ puns-derive = { version = "=0.1.5", path = "../puns-derive" }
 trybuild = "1"
 
 # What is checked at run time, next to the same checks by hand: `cargo bench -p puns --features
-# unstable`. Not a test. Its view enums of enums of the `Rust` representation need the `unstable`
-# feature.
+# unstable`. Not a test. Two of its cases read slices of enums of the `Rust` representation, which
+# needs the `unstable` feature.
 [[bench]]
 name = "checks"
 harness = false

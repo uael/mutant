@@ -192,7 +192,8 @@
 //! target that holds a pointer over a pattern of the source, and an enum of the target that holds a
 //! pointer and is checked whole. `relate_enums` and `relate_enum_from` relate each variant in a
 //! `Relation` of its own, and pass on the pointer that it records. Every plan refuses it, fallible
-//! or not (`check` in `lib.rs`).
+//! or not (`check` in `lib.rs`). Without the `unstable` feature, a part of the target whose layout
+//! Rust leaves to the compiler is recorded as `unspecified` instead, which every plan refuses too.
 //!
 //! ## Only views make a value that holds a pointer
 //!

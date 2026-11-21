@@ -18,7 +18,7 @@
 //! under `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`.
 //!
 //! This is not a test, and `cargo test` does not run it. It needs the `unstable` feature, because
-//! its view enums read enums of the `Rust` representation.
+//! two of its cases read slices of enums of the `Rust` representation (`[Small]`, `[MaybeFlag]`).
 //!
 //! # Instructions
 //!

@@ -247,6 +247,8 @@ const unsafe fn write(layout: &Layout, ptr: *mut u8) {
 
 /// Writes the integer `value` as `size` bytes at `ptr`, in `endian` byte order.
 ///
+/// Bytes beyond the 16 of a `u128`, in a scalar wider than that, are 0.
+///
 /// # Safety
 ///
 /// The caller must ensure that:
@@ -259,7 +261,7 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
     // SAFETY: `i < size`, and `ptr` is valid for writes of `size` bytes, by contract on the
     // caller. So `add(i)` stays within them, and the byte there is valid for writes. A `u8` is
     // aligned at any address. These are the requirements of `add` and of `write`.
-    unsafe { ptr.add(i).write((value >> (8 * digit)) as u8) };
+    unsafe { ptr.add(i).write(if digit < 16 { (value >> (8 * digit)) as u8 } else { 0 }) };
     i += 1;
   }
 }

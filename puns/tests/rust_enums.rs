@@ -648,3 +648,29 @@ fn no_value_is_what_the_type_system_says() {
   assert!(<Never as puns::Pun>::LAYOUT.is_inhabited());
   assert_eq!(<Never as puns::Pun>::LAYOUT.variant_ranges(1), None);
 }
+
+/// A scalar of 32 bytes, wider than the 16 of a `u128`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+struct Wide([u8; 32]);
+
+// SAFETY: `Wide` is `repr(transparent)` over `[u8; 32]`, so `SPEC`, made for `Self`, has its size.
+// The items of the `# Safety` of `Scalar` hold:
+// - `SPEC` is made with `Spec::any`, and every byte of a `[u8; 32]` is initialized.
+// - Every initialized value of its bytes is a valid `[u8; 32]`. `Wide` has no other invariant.
+// - `Wide` holds no `UnsafeCell`.
+unsafe impl puns::Scalar for Wide {
+  const SPEC: puns::layout::Spec = puns::layout::Spec::any::<Self>();
+}
+
+#[test]
+fn wide_scalars_in_option() {
+  // The experiments write a sample of the scalar, of which a `u128` gives the first 16 bytes. A
+  // debug build fails here if the others overflow.
+  assert_eq!(size_of::<Option<Wide>>(), 33);
+  // SAFETY: `Option<Wide>` and `[u8; 33]` have the same size, asserted above. `Some` of a `Wide`
+  // has an alignment of 1 and no padding: its 33 bytes are its tag and its 32 bytes, all
+  // initialized, which is a valid `[u8; 33]`.
+  let bytes: [u8; 33] = unsafe { core::mem::transmute(Some(Wide([7; 32]))) };
+  assert_eq!(puns::try_pun::<[u8; 33], Option<Wide>>(bytes), Ok(Some(Wide([7; 32]))));
+}

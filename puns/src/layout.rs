@@ -2318,9 +2318,9 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a scalar, or is a scalar that accepts uninitialized bytes
-  /// ([`Spec::uninit`]). Also panics if `ranges` are not as [`Spec::with_ranges`] requires, or hold
-  /// a value that the scalar does not accept.
+  /// Panics if `self` is not a scalar, is a scalar that accepts uninitialized bytes
+  /// ([`Spec::uninit`]), or is not 1 to 16 bytes. Also panics if `ranges` are not as
+  /// [`Spec::with_ranges`] requires, or hold a value that the scalar does not accept.
   ///
   /// # Examples
   ///
