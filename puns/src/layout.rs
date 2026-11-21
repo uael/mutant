@@ -4890,33 +4890,33 @@ pub enum Op {
   /// an integer, which is bitwise, as an [`Op::Xor`] with `u128::MAX`.
   Not,
   /// Follows the condition of an `if`. If the condition is false, the operations that follow, as
-  /// many as the `u16`, are not computed: the branch of the `if` and its [`Op::Else`]. A
+  /// many as the `u16` says, are not computed: the branch of the `if` and its [`Op::Else`]. A
   /// placeholder stands for the value of the branch, which [`Op::Select`] does not take.
   Then(u16),
   /// Follows the branch of an `if` that is taken when its condition is true. The operations that
-  /// follow, as many as the `u16`, are not computed: the `else` branch. A placeholder stands for
-  /// its value.
+  /// follow, as many as the `u16` says, are not computed: the `else` branch. A placeholder stands
+  /// for its value.
   Else(u16),
   /// Follows an [`Op::Then`] and an [`Op::Else`], and their branches. Replaces a condition and two
-  /// values by the first value if the condition is true, else by the second. Only that value was
-  /// computed.
+  /// values with the first value if the condition is true, and with the second otherwise. Only that
+  /// value was computed.
   Select,
-  /// Takes a value off the stack, which becomes the variable of this index. As in Rust, what a
+  /// Takes a value off the stack, which becomes the variable with this index. As in Rust, what a
   /// `let` binds is computed whether it is used or not.
   Set(u8),
-  /// Pushes the variable of this index.
+  /// Pushes the variable with this index.
   Get(u8),
-  /// Replaces a value by what it becomes when it is replaced by the expression `next` for as long
-  /// as the expression `cond` is true of it. In both expressions, the value is the variable `var`.
+  /// Replaces a value with what it becomes when it is replaced by the expression `next` for as long
+  /// as the expression `cond` holds for it. In both expressions, the value is the variable `var`.
   ///
-  /// A walk reaches what is at an offset that depends on what is before it: after options, or at
-  /// the end of a chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is
-  /// the size of the value in bytes: a step for each bit of the value, and for each bit of a
-  /// `u128`. It fails if `cond` still holds after them, or if `cond` or `next` fails.
+  /// A walk reaches something at an offset that depends on what comes before it: after options, or
+  /// at the end of a chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is
+  /// the size of the value in bytes: one step for each bit of the value and of a `u128`. It fails
+  /// if `cond` still holds after them, or if `cond` or `next` fails.
   Walk {
     /// The variable that holds the value, in `cond` and in `next`.
     var: u8,
-    /// The expression that must be true of the value for the walk to take a step.
+    /// The expression that must hold for the value for the walk to take a step.
     cond: &'static [Op],
     /// The expression of what the value becomes at each step.
     next: &'static [Op],
@@ -4925,7 +4925,7 @@ pub enum Op {
 
 /// The types of the constants of rules: the unsigned integer types, on which rules compute.
 ///
-/// The trait is sealed. Only this crate implements it.
+/// The trait is sealed: only this crate implements it.
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
   message = "a constant of `#[pun(..)]` is an unsigned integer: `{Self}` is not one",
@@ -4969,8 +4969,7 @@ impl Op {
     Op::Matches(dfa)
   }
 
-  /// The greatest value of a `usize`, as a `u128`: what `as usize` keeps of a value is its bits
-  /// under it.
+  /// The greatest value of a `usize`, as a `u128`: `as usize` keeps the bits of a value below it.
   #[doc(hidden)]
   pub const USIZE_MAX: u128 = usize::MAX as u128;
 
@@ -4992,7 +4991,7 @@ impl Op {
   ///
   /// # Panics
   ///
-  /// Panics if `T` is not an unsigned integer, nor a struct that holds only one. In const
+  /// Panics if `T` is neither an unsigned integer nor a struct that holds only one. In const
   /// evaluation, the panic is a compile error.
   ///
   /// # Examples
@@ -5084,7 +5083,8 @@ impl Op {
     }
   }
 
-  /// Returns a number that tells the kind of the operation from the others, whatever its data.
+  /// Returns a number that tells the kind of the operation apart from the others, whatever its
+  /// data.
   const fn code(self) -> u8 {
     // SAFETY-free: the discriminant of a variant without data, by exhaustion.
     match self {
@@ -5129,15 +5129,15 @@ impl Op {
   }
 }
 
-/// A CRC of 1 to 64 bits, by the parameters of the catalogue of CRCs.
+/// A CRC of 1 to 64 bits, given by its parameters in the catalogue of CRCs.
 ///
 /// The parameters are the `width` in bits, the polynomial `poly` without its high bit, the value
-/// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, which the
-/// result is combined with by XOR. Reflected bits take each byte least significant bit first, and
-/// the result is read so. `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` in a rule of
-/// `#[derive(Pun)]` is this CRC of the bytes from `start` to `end`.
+/// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, which is
+/// XORed into the result. With reflected bits, each byte is taken least significant bit first, and
+/// the result is read the same way. `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` in a
+/// rule of `#[derive(Pun)]` is this CRC of the bytes from `start` to `end`.
 ///
-/// A `Crc` holds tables of 32 KiB, or of 2 KiB on a 16-bit target, made in const evaluation. It is
+/// A `Crc` holds 32 KiB of tables, or 2 KiB on a 16-bit target, made in const evaluation, so it is
 /// meant to be a constant.
 ///
 /// # Examples
@@ -5159,46 +5159,47 @@ pub struct Crc {
   init: u64,
   reflect: bool,
   xorout: u64,
-  /// `tables[k][b]` is the register after the byte `b` then `k` zero bytes, from a register of
-  /// zeros: in its low bits if reflected, else in its high bits. Sixteen bytes are then sixteen
-  /// lookups that do not wait for each other (slicing by 16), rather than a chain of sixteen.
+  /// `tables[k][b]` is the register after the byte `b` followed by `k` zero bytes, starting from an
+  /// all-zero register: in its low bits if reflected, and in its high bits otherwise. Sixteen bytes
+  /// then take sixteen lookups that do not wait for each other (slicing by 16), instead of a chain
+  /// of sixteen.
   tables: Tables,
 }
 
-/// The tables of a [`Crc`], [`CRC_TABLES`] of them: of `u32`s for a CRC of at most 32 bits, else of
-/// `u64`s.
+/// The tables of a [`Crc`], [`CRC_TABLES`] of them: of `u32`s for a CRC of at most 32 bits, and of
+/// `u64`s otherwise.
 ///
-/// Tables of `u32`s are 16 KiB, half of what tables of `u64`s take in the cache.
+/// Tables of `u32`s take 16 KiB, half of what tables of `u64`s take in the cache.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[expect(
   clippy::large_enum_variant,
   reason = "a `Crc` is a constant of 32 KiB, as it was with tables of `u64`s only: nothing to box"
 )]
 enum Tables {
-  /// The register in the low bits of a `u32` if reflected, else in its high bits.
+  /// The register in the low bits of a `u32` if reflected, and in its high bits otherwise.
   Narrow([[u32; 256]; CRC_TABLES]),
-  /// The register in the low bits of a `u64` if reflected, else in its high bits.
+  /// The register in the low bits of a `u64` if reflected, and in its high bits otherwise.
   Wide([[u64; 256]; CRC_TABLES]),
 }
 
-/// The number of tables of a [`Crc`]: 16, for sixteen bytes at a time, but 1, for a byte at a time,
-/// on a 16-bit target.
+/// The number of tables of a [`Crc`]: 16, for sixteen bytes at a time, but 1, for one byte at a
+/// time, on a 16-bit target.
 ///
-/// Sixteen tables of `u64`s are 32 KiB, and a value on a 16-bit target is at most `isize::MAX`
-/// bytes, 32 KiB minus 1. One table is 2 KiB. The CRC is the same either way.
+/// Sixteen tables of `u64`s take 32 KiB, while a value on a 16-bit target is at most `isize::MAX`
+/// bytes, 32 KiB minus 1. One table takes 2 KiB, and the CRC is the same either way.
 pub(crate) const CRC_TABLES: usize = if cfg!(target_pointer_width = "16") { 1 } else { 16 };
 
 // The tables of a `Crc` are a value, which is at most `isize::MAX` bytes.
 const _: () = assert!(size_of::<[[u64; 256]; CRC_TABLES]>() <= isize::MAX as usize);
 
 impl Crc {
-  /// The CRC-32 of Ethernet, zlib and PNG, which [`crc32`] computes, and `crc32(start, end)` in a
-  /// rule.
+  /// The CRC-32 of Ethernet, zlib and PNG, which [`crc32`] computes, and which is `crc32(start,
+  /// end)` in a rule.
   pub const CRC32: Self = Self::new(32, 0x04c1_1db7, 0xffff_ffff, true, 0xffff_ffff);
 
   /// Returns the CRC of these parameters ([`Crc`]).
   ///
-  /// The tables of a `Crc` are 32 KiB, of which a CRC of up to 32 bits uses 16 KiB, or 2 KiB on a
+  /// The tables of a `Crc` take 32 KiB, of which a CRC of up to 32 bits uses 16 KiB, or 2 KiB on a
   /// 16-bit target. A `Crc` is meant to be a constant, made in const evaluation.
   ///
   /// # Panics
@@ -5289,9 +5290,10 @@ impl Crc {
     self.compute(bytes, (0, 0))
   }
 
-  /// Returns the CRC of `bytes`, the bytes from `zeros.0` to `zeros.1` taken as zeros.
+  /// Returns the CRC of `bytes`, with the bytes from `zeros.0` to `zeros.1` read as zeros.
   ///
-  /// The range of zeros is cut to the bytes, and is empty if `zeros.0` is not less than `zeros.1`.
+  /// The range of zeros is clipped to the bytes, and is empty if `zeros.0` is not less than
+  /// `zeros.1`.
   #[inline]
   pub(crate) const fn compute(&self, bytes: &[u8], zeros: (usize, usize)) -> u64 {
     let mut register = if self.reflect {
@@ -5333,7 +5335,7 @@ impl Crc {
   }
 
   /// Returns [`Crc::update`] with tables of `u32`s, which hold the register in the low bits if
-  /// `reflect`, else in the high bits, as [`crc32`] does.
+  /// `reflect`, and in the high bits otherwise, as [`crc32`] does.
   #[inline]
   const fn update_narrow(
     t: &[[u32; 256]; CRC_TABLES],
@@ -5439,8 +5441,8 @@ impl Crc {
     register
   }
 
-  /// Returns the CRC of `bytes` with the first table only, a byte at a time, as a target of one
-  /// table computes it, for the tests.
+  /// Returns the CRC of `bytes` using only the first table, one byte at a time, as a target with
+  /// one table computes it, for the tests.
   #[cfg(test)]
   pub(crate) fn bytewise(&self, bytes: &[u8]) -> u64 {
     let mut register = if self.reflect {
@@ -5509,8 +5511,8 @@ impl Crc {
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Checksum {
-  /// The sum of the bytes, not reduced, as the header of tar holds it. `% 256` makes it a sum of
-  /// one byte.
+  /// The sum of the bytes, not reduced, as the tar header holds it. `% 256` makes it a one-byte
+  /// sum.
   Sum,
   /// Fletcher-16: two sums modulo 255, the second of the first, as `second << 8 | first`. It is 0
   /// over data that holds its own ISO 8473 checksum, as in OSPF and IS-IS.
@@ -5546,7 +5548,7 @@ impl Checksum {
 /// A form of variable-length integer, which [`Op::Varint`] reads.
 ///
 /// It is `leb128(offset)`, `quic(offset)` or `vlq(offset)` in a rule of `#[derive(Pun)]`, and
-/// `leb128_len(offset)`, `quic_len(offset)` or `vlq_len(offset)` for its number of bytes. A longer
+/// `leb128_len(offset)`, `quic_len(offset)` or `vlq_len(offset)` for its length in bytes. A longer
 /// encoding than needed is read as it is.
 ///
 /// # Examples
@@ -5580,19 +5582,19 @@ impl Checksum {
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Varint {
-  /// Unsigned LEB128, of Protocol Buffers, WebAssembly, MQTT and DWARF: 7 bits a byte, the least
-  /// significant first, each byte but the last with its high bit set.
+  /// Unsigned LEB128, of Protocol Buffers, WebAssembly, MQTT and DWARF: 7 bits per byte, least
+  /// significant first, with the high bit set on every byte but the last.
   Leb128,
-  /// The variable-length integer of QUIC (RFC 9000): the two high bits of the first byte tell its
+  /// The variable-length integer of QUIC (RFC 9000): the two high bits of the first byte give its
   /// length, 1, 2, 4 or 8 bytes, and the other bits are the value, big-endian.
   Quic,
-  /// 7 bits a byte, the most significant first, each byte but the last with its high bit set, as
-  /// the tag numbers and the arcs of object identifiers of ASN.1, and MIDI, write them.
+  /// 7 bits per byte, most significant first, with the high bit set on every byte but the last, as
+  /// ASN.1 writes tag numbers and the arcs of object identifiers, and as MIDI does.
   Vlq,
 }
 
 impl Varint {
-  /// Returns the value of the integer at `ptr`, of at most `size` bytes, and its number of bytes.
+  /// Returns the value of the integer at `ptr`, of at most `size` bytes, and its length in bytes.
   ///
   /// # Errors
   ///
@@ -5642,9 +5644,8 @@ impl Varint {
   }
 }
 
-/// Returns whether an expression computes on fields alone, with a few instructions each. Such an
-/// expression reads no byte by offset, computes no checksum, CRC or pattern, does not walk, and
-/// does not divide.
+/// Returns whether an expression computes on fields alone, with a few instructions each: it reads
+/// no byte by offset, computes no checksum, CRC or pattern, does not walk, and does not divide.
 const fn cheap_ops(ops: &[Op]) -> bool {
   let mut i = 0;
   while i < ops.len() {
@@ -5681,9 +5682,9 @@ pub(crate) const fn same_ops(a: &[Op], b: &[Op]) -> bool {
 /// A rule of a struct: what a value requires beyond the validity of its fields.
 ///
 /// A rule is checked when a value of the struct is made from another type, as by `try_pun` or
-/// `from_head`, unless the source has the same rules at the same place. A `size` or a `len` rule
-/// also tells `from_head` how long a value is. A rule is a requirement, not a guarantee. Safe code
-/// may write the fields of a value so that its rules do not hold. Unsafe code must not rely on a
+/// `from_head`, unless the source has the same rules at the same place. A `size` or `len` rule also
+/// tells `from_head` how long a value is. A rule is a requirement, not a guarantee: safe code may
+/// write the fields of a value so that its rules do not hold, and unsafe code must not rely on a
 /// rule of a value that it did not check.
 ///
 /// `#[derive(Pun)]` makes the rules of `#[pun(size = ..)]` and `#[pun(assert(..))]` on a struct,
@@ -5716,9 +5717,9 @@ pub enum Rule {
   Len(&'static [Op]),
   /// The value of the expression is not 0.
   Assert(&'static [Op]),
-  /// The tail of the value has a region of as many bytes as the value of the expression, or of what
-  /// remains of the tail for `None`. The regions follow each other from the start of the tail, in
-  /// the order of the rules.
+  /// The tail of the value has a region of as many bytes as the value of the expression, or of
+  /// whatever remains of the tail for `None`. The regions follow each other from the start of the
+  /// tail, in the order of the rules.
   Region(Option<&'static [Op]>),
 }
 
@@ -5776,9 +5777,10 @@ impl Rule {
 pub(crate) struct TailShape {
   /// The offset of the tail.
   pub(crate) start: usize,
-  /// The size of the tail if the struct is `Sized`, else 0.
+  /// The size of the tail if the struct is `Sized`, and 0 otherwise.
   pub(crate) bytes: usize,
-  /// The number of elements of the array that the tail ends with, if the struct is `Sized`, else 0.
+  /// The number of elements of the array that the tail ends with, if the struct is `Sized`, and 0
+  /// otherwise.
   pub(crate) len: usize,
   /// Whether the tail of a `Sized` struct ends with an array.
   pub(crate) array: bool,
@@ -5789,8 +5791,8 @@ pub(crate) struct TailShape {
 pub(crate) struct LengthRule {
   /// The offset of the struct that has the rule.
   pub(crate) base: usize,
-  /// Whether the expression is a number of elements of the tail, a `len` rule, rather than the size
-  /// in bytes of the struct, a `size` rule.
+  /// Whether the expression is a number of elements of the tail (a `len` rule), rather than the
+  /// size in bytes of the struct (a `size` rule).
   pub(crate) elements: bool,
   /// The expression of the rule.
   pub(crate) ops: &'static [Op],
@@ -5802,16 +5804,16 @@ pub(crate) const STACK: usize = 16;
 pub(crate) const VARIABLES: usize = 8;
 /// The greatest number of operations of an expression.
 ///
-/// The validation applies each operation in an instance of a function of its own, reached by
-/// recursions over a tree of the operations (`validate::steps`), which this limit and [`MAX_WALKS`]
-/// keep short. `#[derive(Pun)]` has the same limits, and says where an expression goes beyond them.
+/// The validation applies each operation in an instance of its own function, reached by recursion
+/// over a tree of the operations (`validate::steps`), which this limit and [`MAX_WALKS`] keep
+/// shallow. `#[derive(Pun)]` has the same limits, and says where an expression goes beyond them.
 pub(crate) const MAX_OPS: usize = 256;
-/// The greatest depth of walks in an expression, where a walk in a walk is two deep. See
+/// The greatest depth of walks in an expression, where a walk inside a walk is two deep. See
 /// [`MAX_OPS`].
 pub(crate) const MAX_WALKS: usize = 4;
 
 /// Asserts that the expressions of `rules` are well formed, and read the fields of the struct only
-/// in its first `head` bytes.
+/// within its first `head` bytes.
 ///
 /// # Panics
 ///
@@ -5834,28 +5836,30 @@ pub(crate) const fn op_at(ops: &[Op], index: usize) -> Option<Op> {
 
 /// Asserts that an expression is well formed.
 ///
-/// The variables of `defined`, a bit for each, are defined before the expression, which is in
+/// The variables of `defined`, one bit each, are defined before the expression, which is inside
 /// `walks` walks. With `sizes`, the expression is a size or a length, which cannot be computed from
-/// the size of the value. A field that the expression loads must be in the first `head` bytes of
-/// the struct.
+/// the size of the value. A field that the expression loads must be within the first `head` bytes
+/// of the struct.
 ///
 /// What an [`Op::Shortcut`], an [`Op::Then`] or an [`Op::Else`] may leave out is a *part*: the
 /// right side of a `&&` or a `||`, or a branch of an `if`. A part must end with what it is a part
-/// of (the `Both`, `Either`, `Else` or `Select`), be within the part that holds it, and push one
-/// value without taking any value from below it. Then the stack is as deep after a part, whether
-/// the part was computed or not, since the evaluator pushes a placeholder for a branch that is not
+/// of (the `Both`, `Either`, `Else` or `Select`), lie within the part that holds it, and push one
+/// value without taking any value from below it. The stack is then as deep after a part whether or
+/// not the part was computed, since the evaluator pushes a placeholder for a branch that is not
 /// computed. What a part defines is not defined after it. Every `&&`, `||` and `if` has its parts,
 /// so what is computed is what Rust computes, and no failure is left out of the value of the
 /// expression.
 ///
 /// # Panics
 ///
-/// Panics if the expression has more than [`MAX_OPS`] operations, nests walks deeper than
-/// [`MAX_WALKS`], needs a stack deeper than [`STACK`], or uses a variable past [`VARIABLES`] or
-/// before it is defined. Panics if a load is not within the first `head` bytes, if a read of the
-/// value is not of 1 to 16 bytes, or if a size or a length reads the size of the value. Panics if
-/// the parts are not as above, or if the expression does not leave exactly one value. In const
-/// evaluation, the panic is a compile error.
+/// Panics in any of the following cases. In const evaluation, the panic is a compile error.
+///
+/// - The expression has more than [`MAX_OPS`] operations, nests walks deeper than [`MAX_WALKS`],
+///   needs a stack deeper than [`STACK`], or uses a variable past [`VARIABLES`] or before it is
+///   defined.
+/// - A load is not within the first `head` bytes, a read of the value is not of 1 to 16 bytes, or a
+///   size or a length reads the size of the value.
+/// - The parts are not as above, or the expression does not leave exactly one value.
 pub(crate) const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined: u8, walks: usize) {
   assert!(ops.len() <= MAX_OPS, "an expression is too long");
   let (mut depth, mut i) = (0usize, 0);
@@ -5972,11 +5976,11 @@ const fn effect(op: Op) -> (usize, usize) {
 /// The evaluator of an expression: a stack of values, and variables.
 ///
 /// The machine is given one operation at a time, each a constant of the instance of the function
-/// that applies it (`validate::steps`), so there is no interpreter. Once inlined there, what
-/// remains is the arithmetic of the expression, without relying on much of the optimizer. The stack
-/// is not an array but a field for each of its slots. What is not computed is told by an index
-/// (`skip`), which is a constant on each path through the code. A failure is the failure of the
-/// expression, since nothing that is computed is left out of its value, so it returns at once.
+/// that applies it (`validate::steps`), so there is no interpreter: once inlined there, what
+/// remains is the arithmetic of the expression, without relying much on the optimizer. The stack is
+/// not an array but one field per slot. What is not computed is marked by an index (`skip`), which
+/// is a constant on each path through the code. A failure is the failure of the expression, since
+/// everything that is computed counts toward its value, so it returns at once.
 ///
 /// The operations of an expression must be applied in order, each once, to a machine that starts as
 /// [`Machine::NEW`] or as [`Machine::enter`] makes it. [`check_ops`] ensures that the stack then
@@ -5994,14 +5998,14 @@ pub(crate) struct Machine {
   skip: usize,
 }
 
-/// Declares, for `slots!(Name: [0 1 2 ..] last)`, a type of `u128` values in fields, one for each
-/// index, rather than in an array, so that the optimizer makes a variable of each.
+/// Declares, for `slots!(Name: [0 1 2 ..] last)`, a type that holds `u128` values in fields, one
+/// per index, rather than in an array, so that the optimizer makes a variable of each.
 ///
 /// The `get` and `set` of an index past `last` reach the field `last`, so that a `match` on the
-/// index has no case that the others do not ([`Machine`]).
+/// index has no case that the others do not cover ([`Machine`]).
 macro_rules! slots {
   ($($name:ident: [$($index:tt)+] $last:tt)+) => {$(
-    /// Values in fields, one for each index.
+    /// Values in fields, one per index.
     #[derive(Copy, Clone)]
     struct $name($(slots!(@u128 $index),)+ u128);
 
