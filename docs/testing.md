@@ -15,7 +15,8 @@ and in part on every push, with and without the `unstable` feature. The [crate d
 The tests of `puns` run under [Miri] on every push: with tree borrows on x86-64, and with stacked
 borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). A test file that is not
 about the `unsafe` code does not run there, such as the examples other than `ethernet`. Under
-Miri, the model check runs a few pairs for each `unsafe` path that it reaches, not every pair
+Miri, with tree borrows on x86-64 only, the model check runs a few pairs for each `unsafe` path
+that it reaches, not every pair
 ([`miri_sample.rs`][sample] says which pair is for which). It does not call `pun`, `pun_mut`, the
 `_mut` functions that check, or regions: the tests of `puns` run these under Miri.
 
