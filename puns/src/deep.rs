@@ -28,8 +28,8 @@
 //!   source aims at and a type `Y` that the pointer of the target at the same place aims at. Its
 //!   `const` block is the whole proof of that pair up to the next pointers ([`behind`], the
 //!   analysis of `X` as `Y`). It requires that every `X` is a valid `Y` over the bytes of `Y`, with
-//!   nothing left to check, and that every pointer of `Y` is, in `X`, a pointer whose target it can
-//!   read ([`local`]).
+//!   nothing left to check, and that every pointer of `Y` is, in `X`, a pointer whose target can be
+//!   reinterpreted as what the pointer of `Y` aims at ([`local`]).
 //! - [`pair::<A, B>`](pair) names `target` for the pointers that `A` and `B` hold at the same
 //!   place, through their fields, variants and elements. It names `target` as a function pointer
 //!   that nothing calls. A recursive type thus closes a cycle of instances, which the compiler
@@ -79,7 +79,8 @@
 //! leaves out a field, or gives a field that holds a pointer another type, cannot make a pointer be
 //! missed, or taken for another (compile-fail test `lists_not_the_layout`). That the offset and the
 //! layout of each listed field are those of the layout is taken from the `# Safety` of `Pun`, which
-//! the derive meets by taking each field from the layout (`Layout::field`). Hence the limits, each of which is a refusal:
+//! the derive meets by taking each field from the layout (`Layout::field`). Hence the limits, each
+//! of which is a refusal:
 //!
 //! - A field that holds a pointer keeps its position among the fields of its struct.
 //! - A variant that holds a pointer keeps its position among the variants of its enum, and new
@@ -89,8 +90,8 @@
 //!
 //! [`try_view_ref`](crate::try_view_ref) checks what is not proven of the value itself, with the
 //! marks of the analysis. That may be a variant that the target does not have, a restricted scalar,
-//! or a nullable pointer read as one that is not nullable, whose bytes must not be all zero. It
-//! requires of what the value points to what `view_ref` requires.
+//! or a nullable pointer reinterpreted as one that is not nullable, whose bytes must not be all
+//! zero. It requires of what the value points to what `view_ref` requires.
 //!
 //! # Rules that every function keeps
 //!
@@ -99,18 +100,18 @@
 //!
 //! ## No bytes prove a pointer
 //!
-//! A pointer of the target is proven only by a pointer of the source at the same place whose target
-//! it can read ([`Pointer::reads_as`](crate::layout::Pointer::reads_as)). That pointer must have
-//! the same scheme, the same offset (width and byte order), and the same kind of aim. Its target
-//! must be no larger and need no more alignment. For one value, that is its size and alignment. For
-//! a sequence, the elements must have the same size, and the declared alignment of the target must
+//! A pointer of the target is proven only by a pointer of the source at the same place, when what
+//! that pointer aims at can be reinterpreted as what the pointer of the target aims at
+//! ([`Pointer::reads_as`](crate::layout::Pointer::reads_as)). That pointer must have the same
+//! scheme, the same offset (width and byte order), and the same kind of aim. Its target must be no
+//! larger and need no more alignment. For one value, that is its size and alignment. For a
+//! sequence, the elements must have the same size, and the declared alignment of the target must
 //! not be greater than that of the source. For text, nothing more is needed. The pointer of the
-//! source must not be nullable where that of the target is not. Its type must not have an offset
-//! of zero where the type of the target has none (a `NonZero`), unless that is checked.
-//! `try_view_ref` checks that it is not zero, and `view_ref` refuses it. Anything else sets the
-//! `pointer` of the [`Relation`](crate::analysis::Relation), which no function accepts and no check
-//! makes up for. An enum that holds pointers is proven by an enum, variant by variant, or not at
-//! all.
+//! source must not be nullable where that of the target is not. Its type must not have an offset of
+//! zero where the type of the target has none (a `NonZero`), unless that is checked. `try_view_ref`
+//! checks that it is not zero, and `view_ref` refuses it. Anything else sets the `pointer` of the
+//! [`Relation`](crate::analysis::Relation), which no function accepts and no check makes up for. An
+//! enum that holds pointers is proven by an enum, variant by variant, or not at all.
 //!
 //! ## Only a proof of what pointers aim at makes a value that holds one
 //!
@@ -281,7 +282,7 @@ const fn require(why: Option<&'static str>) {
   }
 }
 
-/// Proves what the pointers of `D` aim at, when a `D` is read where an `S` is.
+/// Proves what the pointers of `D` aim at, when an `S` is reinterpreted as a `D`.
 ///
 /// [`view_ref`](crate::view_ref) and [`try_view_ref`](crate::try_view_ref) call it, after their
 /// plans have related the bytes of `S` to `D`. It does nothing at run time.
@@ -290,10 +291,10 @@ const fn require(why: Option<&'static str>) {
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - Every pointer of `D` is, in `S`, a pointer at the same place whose target it can read
-///   ([`local`]).
-/// - For every pair of types that [`pair`] names behind pointers, [`behind`] finds nothing that
-///   prevents the read.
+/// - Every pointer of `D` is, in `S`, a pointer at the same place whose target can be reinterpreted
+///   as what the pointer of `D` aims at ([`local`]).
+/// - For every pair of types that [`pair`] names behind pointers, [`behind`] finds no reason to
+///   refuse the pair.
 ///
 /// These conditions are checked after monomorphization, as [the crate
 /// documentation](crate#compile-time-errors) explains.
@@ -357,17 +358,16 @@ fn variants<VA: Variants, VB: Variants>() {
 // -------------------------------------------------------------------------------------------------
 // What is proven of a pair of types, up to the next pointers: `const` code, exact.
 //
-// With `fuel`, the next pointers are followed as well, that many times: this is how the model
-// check asks what `view_ref` would do without failing to compile (`hook::view_ref`). The proof
-// itself asks with none, the instances being what follows pointers there.
+// With `fuel`, the next pointers are followed as well, that many times: this is how the model check
+// asks what `view_ref` would do without failing to compile (`hook::view_ref`). The proof itself
+// asks with none, since there the instances follow the pointers.
 
 /// Returns why an `X` that a pointer aims at cannot be reinterpreted as a `Y`, or `None` if it can.
 ///
-/// A `Y` is read from the first bytes of an `X`. The pointers already showed that `Y` needs no
-/// more alignment than `X`, and that the elements of two sequences have the same size. Every
-/// value of `X` must be a valid `Y` with nothing left to check, since nothing is checked behind
-/// a pointer. If `X` or `Y` has size 0, the pair is not a pair of pointers, and `None` is
-/// returned.
+/// The first bytes of an `X` are reinterpreted as a `Y`. The pointers already showed that `Y` needs
+/// no more alignment than `X`, and that the elements of two sequences have the same size. Every
+/// value of `X` must be a valid `Y` with nothing left to check, since nothing is checked behind a
+/// pointer. If `X` or `Y` has size 0, the pair is not a pair of pointers, and `None` is returned.
 ///
 /// With `fuel` greater than 0, the pointers of `Y` are followed that many more times, as the model
 /// check asks (`hook::views`). The proof asks with 0, and follows pointers through the instances of
@@ -407,14 +407,14 @@ pub const fn behind<X: Pun, Y: Pun>(fuel: usize) -> Option<&'static str> {
 /// Returns why a pointer of `B` is not, in `A`, the pointer that [`pair`] pairs it with, or
 /// `None` if every pointer of `B` is.
 ///
-/// `A` and `B` are at the same offset of a source and of a target. A pointer of `B` must be
-/// paired with a pointer of `A` whose target it can read ([`Pointer::reads_as`]). Fields are
-/// paired in the order of their declarations, and must be at the same offset. Variants are paired
-/// in the order of their declarations, and must have the same tag. Elements are paired only with
-/// elements of the same size. A variant of `B` whose tag no variant of `A` has needs no pair, if
-/// the variant of `A` at its position holds no pointer.
-/// With `fuel` greater than 0, what two paired pointers aim at is checked as well, by [`behind`]
-/// with one less `fuel`.
+/// `A` and `B` are at the same offset of a source and of a target. A pointer of `B` must be paired
+/// with a pointer of `A` whose target can be reinterpreted as what the pointer of `B` aims at
+/// ([`Pointer::reads_as`]). Fields are paired in the order of their declarations, and must be at
+/// the same offset. Variants are paired in the order of their declarations, and must have the same
+/// tag. Elements are paired only with elements of the same size. A variant of `B` whose tag no
+/// variant of `A` has needs no pair, if the variant of `A` at its position holds no pointer. With
+/// `fuel` greater than 0, what two paired pointers aim at is checked as well, by [`behind`] with
+/// one less `fuel`.
 ///
 /// # Errors
 ///
@@ -427,8 +427,8 @@ pub const fn local<A: ?Sized + Pun, B: ?Sized + Pun>(fuel: usize) -> Option<&'st
   if !b.has_pointers() {
     return None;
   }
-  // This walk, and that of `pair`, are over the lists of the two types: they are what the
-  // layouts hold, which the analysis went by, or a pointer could be missed, or taken for another.
+  // This walk and that of `pair` go over the lists of the two types. The lists must be what the
+  // layouts hold, which the analysis used, or a pointer could be missed, or taken for another.
   if !listed::<A>() || !listed::<B>() {
     return Some(LISTS);
   }

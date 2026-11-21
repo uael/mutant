@@ -64,7 +64,7 @@
 //! the two bases do not prove, which is the same marks where the base is the same, or everything
 //! that bytes do not prove where there is no base. The function of each variant names the functions
 //! of all the variants after it, and the `match` on a constant keeps one. So what is compiled grows
-//! as the square of the number of variants. `benches/checks.rs` counts the instructions of a view.
+//! as the square of the number of variants. `benches/checks.rs` measures the checks of a view.
 
 use core::marker::PhantomData;
 
@@ -512,9 +512,10 @@ where
   (known.state[index], known.taken[index]) = (IS, (ptr::metadata(target), size));
   // SAFETY: `find` returned `target` from `take`, a `D` at the address of `known.bytes`, of size
   // at most their length. The reference is valid, as in `from_head` and `try_pun_ref`:
-  // - It is aligned: `Plan::front_by` and `Plan::try_cast_by` checked the address.
-  // - It is not dangling: it is within `known.bytes`.
-  // - It points to a valid `D`: `validate` found every part that `Choice<V, I>` marks to be
+  // - It is not null, because `known.bytes` is a reference at the same address.
+  // - It is aligned, because `Plan::front_by` and `Plan::try_cast_by` checked the address.
+  // - It is not dangling, because it is within `known.bytes`.
+  // - It points to a valid `D`, because `validate` found every part that `Choice<V, I>` marks to be
   //   valid, and the base of `I`, or bytes, prove the others (`take`, section Safety).
   // The reference has the lifetime `'a` of the shared borrow `known.bytes`, and `D` holds no
   // `UnsafeCell` (`Pun`, section Safety).

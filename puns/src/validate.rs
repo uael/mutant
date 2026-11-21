@@ -128,16 +128,16 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
         validate_fields::<C, P, T, T::Fields>(ptr)
           && (const { !rules_marked::<C, P, T>() } || check_rules(ptr))
       }
-      // `str::from_utf8` where the automaton is that of UTF-8, by its states (an `id` proves
-      // nothing): decided at compile time.
+      // `str::from_utf8` checks the bytes where the automaton is that of UTF-8, by its states,
+      // since an `id` proves nothing. This is decided at compile time.
       Shape::Pattern(_) if const { matches!(T::LAYOUT.kind, Kind::Pattern(dfa) if dfa.is_utf8()) } => {
         Dfa::matches_utf8(ptr.cast(), ptr::metadata(ptr))
       }
       Shape::Pattern(dfa) => dfa.matches(ptr.cast(), ptr::metadata(ptr)),
       Shape::Enum(layout) if layout.union => validate_union::<T, T::Variants>(ptr),
       Shape::Enum(layout) => validate_enum::<T>(ptr, layout),
-      // Only a pointer proves a pointer, which the analysis made sure of: what may be left to
-      // check is that one that may be null is not, where the target has no such value.
+      // The analysis made sure that only a pointer proves a pointer, so what may be left to check
+      // is that a pointer that may be null is not, where the target has no null value.
       Shape::Pointer(pointer) => {
         pointer.nullable || load(ptr.cast(), pointer.width, pointer.endian) != 0
       }
@@ -229,11 +229,11 @@ const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> b
   if const { V::TAG.is_none() } {
     return false;
   }
-  // SAFETY: `V` is in the list of the variants of `T`, by contract on the caller, so `V::Fields`
-  // is the one field of a variant of the layout of the union, at offset 0 (`Variants`, section
-  // Safety). Every byte that its checks read is initialized, by contract on
-  // the caller, as `validate_fields` requires. The requirements of the call for the next fields
-  // are those of this call.
+  // SAFETY: `V` is in the list of the variants of `T`, by contract on the caller, so `V::Fields` is
+  // the one field of a variant of the layout of the union, at offset 0 (`Variants`, section
+  // Safety). Every byte that its checks read is initialized, by contract on the caller, as
+  // `validate_fields` requires. The requirements of the call for the next fields are those of this
+  // call.
   unsafe { validate_fields::<All, Root, T, V::Fields>(ptr) || validate_union::<T, V::Next>(ptr) }
 }
 
@@ -250,9 +250,8 @@ const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> b
 const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: usize) -> bool {
   let mut i = 0;
   // Elements whose checks are a few comparisons are checked a block of about 64 bytes at a time,
-  // without stopping within a block: then the optimizer can vectorise it, which it cannot do of
-  // a loop that may stop at each element. The result is the same, and what is read is in the
-  // slice.
+  // without stopping within a block. The optimizer can then vectorize it, which it cannot do with a
+  // loop that may stop at each element. The result is the same, and what is read is in the slice.
   let block = const { T::LAYOUT.block() };
   if block > 1 {
     while len - i >= block {
@@ -665,8 +664,8 @@ const unsafe fn steps<X: Ops, S: Steps>(
   base: *const u8,
   size: usize,
 ) -> bool {
-  // An operation that `S` says is not a walk is not one: this is what makes every walk applied
-  // by `walk`, which `Machine::apply` does not do.
+  // An operation that `S` says is not a walk must not be one. This makes every walk applied by
+  // `walk`, since `Machine::apply` does not apply walks.
   const {
     assert!(
       S::KIND != ONE || matches!(op_at(X::OPS, S::AT), Some(op) if !matches!(op, Op::Walk { .. })),
@@ -736,11 +735,11 @@ const unsafe fn walk<X: Ops, W: Steps>(
   let Some(Op::Walk { var, .. }) = (const { op_at(X::OPS, W::AT) }) else {
     return false;
   };
-  // Not computed: in a part of the expression that is not computed.
+  // The walk is in a part of the expression that is not computed.
   if !machine.computes(W::AT) {
     return true;
   }
-  // What the state may be, which the optimizer cannot find in a loop: the width it fits.
+  // The width that the state fits, which the optimizer cannot find in a loop.
   let fits = const { Planned::<X>::PLAN.how[W::AT].result };
   let mut state = fit(machine.top(), fits);
   let (mut steps, limit) = (0, walk_limit(size));

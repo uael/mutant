@@ -234,7 +234,7 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///    pointer they are a pointer, handed over.
 ///
 /// Nothing is promised of what the pointers aim at, whether inside `bytes`, at what, or whether two
-/// aim at the same place. That, like the scheme of the pointers, is the business of the visitor.
+/// aim at the same place. That is for the visitor to check, as is the scheme of the pointers.
 /// Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T` at
 /// `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`, for example
 /// by placing the buffer at an address aligned to `align_of::<T>()` and choosing `at` as a multiple
@@ -437,8 +437,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
     unsafe { value::<T, V>(bytes.as_ptr(), at + i * size, visit)? };
     i += 1;
   }
-  // The validation of the elements said that one is not valid, and none was found so: the
-  // verdict is the validation's.
+  // The validation of the elements found one that is not valid, but the walk found none, so the
+  // verdict is that of the validation.
   if const { !T::LAYOUT.has_pointers() } {
     return Err(Invalid::at(at).into());
   }
@@ -672,7 +672,7 @@ unsafe fn follow<T: ?Sized + Pun, V: Visit>(
         let tag = load(base.add(at + layout.tag.offset), spec.size, spec.endian);
         follow_variants::<T::Variants, V>(base, at, tag, visit).unwrap_or(Ok(()))
       }
-      // All zeros, where the pointer may be null: no pointer.
+      // All zeros, where the pointer may be null, is no pointer.
       Shape::Pointer(pointer) => {
         if pointer.nullable && load(base.add(at), pointer.width, pointer.endian) == 0 {
           Ok(())
@@ -797,8 +797,8 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// - The two ranges do not overlap.
 ///
 /// The rules of the structs of `T` and the `valid(..)` restrictions of its fields need not hold,
-/// because none is read, and a restricted field is copied as the scalar of its type that it is. The
-/// bytes that may be uninitialized may be so.
+/// because none is read, and a restricted field is copied as a scalar of its type. The bytes that
+/// may be uninitialized may be so.
 ///
 /// # Compile-time errors
 ///
@@ -859,7 +859,8 @@ const fn whole(layout: &layout::Layout) -> bool {
     Kind::Struct(fields, _) => {
       let (mut i, mut covered) = (0, 0);
       while i < fields.len() {
-        // Sorted by offset: a field after the bytes covered so far leaves a hole.
+        // The fields are sorted by offset, so a field that does not start where the bytes covered
+        // so far end leaves a hole.
         if fields[i].offset != covered || !whole(fields[i].layout) {
           return false;
         }
@@ -938,7 +939,7 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
         core::ptr::copy_nonoverlapping(src.add(place), dst.add(place), spec.size);
         copy_variants::<T::Variants>(src, dst, tag);
       }
-      // All zeros, where the pointer may be null: no pointer, whose bytes are copied; a pointer
+      // All zeros, where the pointer may be null, is no pointer, so its bytes are copied. A pointer
       // is left to the caller.
       Shape::Pointer(pointer) => {
         if pointer.nullable && load(src, pointer.width, pointer.endian) == 0 {
@@ -954,7 +955,7 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
 
 /// Copies the field `F` of the struct or variant at `src`, and the fields after it, to `dst`.
 ///
-/// A field restricted by `valid(..)` is copied as the scalar of its type that it is.
+/// A field restricted by `valid(..)` is copied as a scalar of its type.
 ///
 /// # Safety
 ///
@@ -1072,12 +1073,12 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
   // the caller, so `add(at)` stays in bounds of it, and `at` fits in an `isize`.
   let here = unsafe { base.add(at) };
   if const { !T::LAYOUT.has_pointers() } {
-    // The code of `try_pun_ref` is the verdict; where it fails, the walk tells where, and the
-    // value itself if the walk finds nothing.
-    // SAFETY: `T` is `Sized`: the root of a walk is, and so are its fields and elements. So
-    // `ptr::from_raw_parts` makes a pointer to the `T` at `here`, valid for reads, by contract on
-    // the caller, which `validate` does not need aligned. Every byte of it is initialized, by
-    // contract on the caller, so every byte that a check reads is.
+    // The code of `try_pun_ref` gives the verdict. Where it fails, the walk tells where, or the
+    // error is at the value itself if the walk finds nothing. SAFETY: `T` is `Sized`: the root of a
+    // walk is, and so are its fields and elements. So `ptr::from_raw_parts` makes a pointer to the
+    // `T` at `here`, valid for reads, by contract on the caller, which `validate` does not need
+    // aligned. Every byte of it is initialized, by contract on the caller, so every byte that a
+    // check reads is.
     if unsafe { validate::<All, Root, T>(ptr::from_raw_parts::<T>(here, 0)) } {
       return Ok(());
     }
@@ -1156,8 +1157,9 @@ unsafe fn walk<T: ?Sized + Pun, V: Visit>(
       // Not valid: `validate` said so above (a union holds no pointer, see below).
       Shape::Enum(layout) if layout.union => Err(Invalid::at(at).into()),
       Shape::Enum(layout) => enumeration::<T, V>(base, at, layout, visit),
-      // All zeros: no pointer if it may be null; not a value if its type has none of zeros (a
-      // `NonZero` offset); else a pointer whose offset is zero, which its scheme reads.
+      // All zeros is no pointer if the pointer may be null, and not a value if its type has no
+      // all-zero value (a `NonZero` offset). Otherwise it is a pointer whose offset is zero, which
+      // its scheme reads.
       Shape::Pointer(pointer) => match load(here, pointer.width, pointer.endian) {
         0 if pointer.nullable => Ok(()),
         0 if pointer.nonzero => Err(Invalid::at(at).into()),
