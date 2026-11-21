@@ -36,7 +36,7 @@
 //! | SCTP chunks, padded to 4 bytes                 | `size = (length + 3) / 4 * 4`              |
 //! | an SCTP CRC-32C, with its own field as zeros   | `crc::<32, 0x1edc6f41, ..>(0, .., 8, 12)`  |
 //!
-//! The following is not covered, for the reasons given:
+//! The following are not covered:
 //!
 //! - The option numbers of CoAP are sums of the deltas before them. This is state carried along
 //!   a sequence, which the code that reads the options carries.
@@ -769,6 +769,7 @@ const SCTP: [u8; 32] = [
   0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x01,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- TLS: a record, a handshake message, a ClientHello: a chain of vectors.
   let record: &Record<Handshake<ClientHello>> = try_pun_ref(&CLIENT_HELLO[..]).unwrap();
@@ -905,7 +906,7 @@ pub fn main() {
     (true, 1, &b"Hello"[..], 0)
   );
   assert!(matches!(from_bytes::<ServerFrame>(&PING), Ok(ping) if ping.head.opcode() == 9));
-  // Unmasking is a transformation: use code.
+  // Unmasking makes new bytes, so the code that uses the types does it.
   let unmask = |frame: &ClientFrame| {
     let (key, payload) = (frame.key(), frame.payload());
     payload.iter().enumerate().map(|(i, byte)| byte ^ key[i % 4]).collect::<Vec<u8>>()

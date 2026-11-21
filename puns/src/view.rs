@@ -44,14 +44,13 @@
 //! # Soundness
 //!
 //! Soundness does not rest on the code that the derive writes. The types of the variants form a
-//! balanced tree at the type level ([`List`]), so that what proves a type of it is as deep as the
-//! logarithm of the number of variants. Both the layouts and the types are taken from it, by a
-//! place in it that is a type ([`First`]`<`[`Here`]`>`, an [`Index`]) and is sealed. A state is
-//! written only by [`decide`], for the type of its place, and a variant is decided from its base
-//! only where the state of the base says that the bytes are a value of the base, of the extent
-//! recorded with it. The derive chooses the order in which variants are decided. A variant whose
-//! base was not decided first is not found, which is never unsound, and which the model check would
-//! see.
+//! balanced tree at the type level ([`List`]), so finding a type in it recurses as deep as the
+//! logarithm of the number of variants. A sealed type ([`First`]`<`[`Here`]`>`, an [`Index`]) names
+//! a place in the tree, and selects both the type and the layout at that place. Only [`decide`]
+//! writes the state of a place, for the type at that place. A variant is decided from its base only
+//! where the state of the base says that the bytes are a value of the base, of the extent recorded
+//! with it. The derive chooses the order in which variants are decided. A variant whose base was
+//! not decided first is not found. This is never unsound, and the model check would detect it.
 //!
 //! # Cost
 //!
@@ -510,20 +509,23 @@ where
     return None;
   };
   (known.state[index], known.taken[index]) = (IS, (ptr::metadata(target), size));
-  // SAFETY: `find` returned `target` from `take`, a `D` at the address of `known.bytes`, of size
-  // at most their length. The reference is valid, as in `from_head` and `try_pun_ref`:
+  // SAFETY: `find` returned `target`, a value of the type at `I` at the address of `known.bytes`,
+  // of size at most their length. The reference is valid, as in `from_head` and `try_pun_ref`:
   // - It is not null, because `known.bytes` is a reference at the same address.
   // - It is aligned, because `Plan::front_by` and `Plan::try_cast_by` checked the address.
   // - It is not dangling, because it is within `known.bytes`.
-  // - It points to a valid `D`, because `validate` found every part that `Choice<V, I>` marks to be
-  //   valid, and the base of `I`, or bytes, prove the others (`take`, section Safety).
-  // The reference has the lifetime `'a` of the shared borrow `known.bytes`, and `D` holds no
-  // `UnsafeCell` (`Pun`, section Safety).
+  // - It points to a valid value of the type at `I`, as `find` returns. `validate` found every part
+  //   that `Choice<V, I>` marks to be valid, and the base of `I`, or bytes, prove the others.
+  // The reference has the lifetime `'a` of the shared borrow `known.bytes`, and the type at `I`
+  // holds no `UnsafeCell` (`Pun`, section Safety).
   Some(unsafe { &*target })
 }
 
 /// Returns the variant `I` at the start of the bytes, and its size, if the bytes are one, or
 /// start with one for `from_head`.
+///
+/// A returned pointer is at the address of the bytes, and points to a valid value of the type at
+/// `I`, of the size returned, which is at most the length of the bytes.
 ///
 /// A variant that has a base is decided from it. The derive decides the base before the variant,
 /// with [`open`] and then the function of the base. A variant whose base is not decided is not
@@ -565,12 +567,12 @@ where
   } else {
     usize::MAX
   };
-  // SAFETY: `Choice<V, I>` marks what is not proven of the type of `I`, as `take` requires. If
-  // `I` has a base, its marks include what the base does not prove, and `known.state[base]` is
-  // `IS`: the bytes are a value of the base, or start with one of extent `extent` for
-  // `from_head`. Otherwise its marks include those of `Plan` from bytes. More marks only check
-  // more.
-  unsafe { take::<<V::List as Get<I>>::Type, Choice<V, I>, HEAD>(bytes, extent) }
+  // `Choice<V, I>` marks what is not proven of the type of `I`, so what `take` returns is a valid
+  // value of it. If `I` has a base, its marks include what the base does not prove, and
+  // `known.state[base]` is `IS`: the bytes are a value of the base, or start with one of extent
+  // `extent` for `from_head`. Otherwise its marks include those of `Plan` from bytes. More marks
+  // only check more.
+  take::<<V::List as Get<I>>::Type, Choice<V, I>, HEAD>(bytes, extent)
 }
 
 /// Returns the `D` that `bytes` are, or start with for `from_head`, and its size, after checking
@@ -579,21 +581,17 @@ where
 /// For `from_head`, the value has the extent `extent`, or any extent if `extent` is `usize::MAX`.
 /// Returns `None` if the bytes are not such a `D`.
 ///
-/// # Safety
-///
-/// The caller must ensure that:
-///
-/// - `C` marks everything that the bytes do not prove of `D`. This is so of the marks of [`Plan`]
-///   from bytes. It is so too of the marks from a source of which the first `extent` bytes, or
-///   all of them except for `from_head`, are a valid value.
+/// The returned pointer is a valid `D` only if `C` marks everything that the bytes do not prove of
+/// `D`. This is so of the marks of [`Plan`] from bytes. It is so too of the marks from a source of
+/// which the first `extent` bytes, or all of them except for `from_head`, are a valid value.
 #[inline(always)]
-const unsafe fn take<D: ?Sized + Pun, C: Checks, const HEAD: bool>(
+const fn take<D: ?Sized + Pun, C: Checks, const HEAD: bool>(
   bytes: &[u8],
   extent: usize,
 ) -> Option<(*const D, usize)> {
   // SAFETY: `bytes` is valid for reads of `bytes.len()` initialized bytes, which `front_by`
   // requires of `addr` and `n`, and which makes every byte that `try_cast_by` reads valid for
-  // reads and initialized. `C` marks what the bytes do not prove, by contract on the caller.
+  // reads and initialized.
   let found = unsafe {
     if HEAD {
       Plan::<[u8], D>::front_by::<C>(bytes.as_ptr(), bytes.len(), extent)

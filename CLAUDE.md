@@ -35,10 +35,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is 1.99,
-the first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the layout
-of unsized types needs ("Minimum Rust version" in the crate docs); the CI job "Minimum Rust version"
-builds on it, and a feature newer than 1.99 raises `rust-version` with its reason written there. CI
+The crates build on **stable** Rust 1.100.0, pinned in `rust-toolchain`. `rust-version` is 1.99, the
+first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the layout of
+unsized types needs. The CI job "Minimum Rust version" builds on 1.99. A change that needs a newer
+feature raises `rust-version`, and gives the reason in "Minimum Rust version" in the crate docs. CI
 also builds for two targets without `std`: `thumbv7em-none-eabihf`, and, on the pinned nightly,
 `msp430-none-elf`, whose `usize` has 16 bits. A pinned nightly (`nightly-2026-11-17`) is used by
 `cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by Miri, under which the trybuild test
@@ -50,12 +50,13 @@ passing case (`tests/compile-pass/`) so that trybuild builds instead of checking
 
 Every check that CI runs on a push must take at most a minute, build included, since CI builds the
 crates of the workspace each time. Check what matters, and time a check before adding one. The time
-that counts is the one of the job on GitHub, which this machine does not tell. About 15 seconds of
-each job go to the checkout and the toolchain before anything runs, and the runners are slower and
-vary by a third from one run to the next, so aim at 45 seconds and read the times of the jobs after
-a change of the workflow. The first run after a change of a cache key has nothing cached. With the
-caches, what comes before the work is 15 to 20 seconds, so the work of a job is at most about 20
-seconds, which the build of the tests of `miri_sample` or of `parts` of the model takes alone.
+that counts is the one of the job on GitHub, which cannot be measured on this machine. About 15
+seconds of each job go to the checkout and the toolchain before anything runs, and the runners are
+slower and vary by a third from one run to the next, so aim at 45 seconds and read the times of the
+jobs after a change of the workflow. The first run after a change of a cache key has nothing cached.
+With the caches, what comes before the work is 15 to 20 seconds, so the work of a job is at most
+about 20 seconds, which the build of the tests of `miri_sample` or of `parts` of the model takes
+alone.
 
 This is why `cargo test --all` is twelve jobs there: the tests of `puns` in six, four without the
 `unstable` feature and two with it, and the sample of the model check in six, three each way. It is
@@ -72,7 +73,7 @@ unsafe path, not each value. What is exhaustive, the full model check behind the
 `puns-model`, runs in `.github/workflows/model.yml` every night and on demand, with a check of the
 compiler (an optimized build refuses a wrong view behind pointers). Run it when `rust-toolchain`
 changes. Under Miri, the model check runs a selection of pairs that reaches every unsafe path rather
-than every pair (`puns-model/tests/miri_sample.rs` says which pair is for which, and
+than every pair (`puns-model/tests/miri_sample.rs` names the unsafe path that each pair reaches, and
 `tests/pointers.rs` for pointers), and of the examples only `ethernet` runs, since the others reach
 the same unsafe code of the library. A test file that is not for Miri starts with
 `#![cfg(not(miri))]` and says why. CI gives Miri the other ones by name, since Miri takes a second
@@ -93,13 +94,14 @@ Do not let the machine code of `examples/codegen.rs` regress. The instruction co
 functions are in its module documentation, so compare them before and after a change of the library.
 A count is not a time, though. `puns/benches/checks.rs` times what is checked at run time (IPv4,
 IPv6 behind extension headers, a view enum, slices, CRCs, `sum16`) next to the same check written by
-hand, the best of 7 samples, on an idle machine. Run it on both trees, back to back, before and
-after a change of the evaluator or the validators. It takes minutes to build (release, LTO), and is
-not a check of CI. With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or `hand`), it runs a
-case that many times instead, for `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`,
-which gives a count of instructions per check that a loaded machine does not change. The times
-published in `docs/performance.md` name the machine, the revision and the load, and the output of
-their runs is in `docs/checks-<date>.txt`, so new times come with a new record.
+hand, the best of 7 samples, on an idle machine. Run it on the tree before and the tree after a
+change of the evaluator or the validators, one right after the other. It takes minutes to build
+(release, LTO), and is not a check of CI. With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or
+`hand`), it runs a case that many times instead, for
+`valgrind --tool=callgrind --toggle-collect='*checks*runs*'`, which gives a count of instructions
+per check that a loaded machine does not change. The times published in `docs/performance.md` name
+the machine, the revision and the load, and the output of their runs is in `docs/checks-<date>.txt`,
+so new times come with a new record.
 
 ## Architecture
 
@@ -111,24 +113,24 @@ chose. "The `unstable` feature" in the crate docs (`puns/src/lib.rs`) is the des
 what Rust documents, with where. The default is without it, and so is most of what the tests and CI
 run: every test of `puns` that builds without the feature runs without it (`tests/seeds.rs` needs
 `verdict`), the cases of `compile-fail-kept` included. Only what is about the feature runs with it:
-the targets of `required-features = ["unstable"]`, the files with tests under `#[cfg(feature =
-"unstable")]` (`.github/tests.sh` lists both), and the cases of `compile-fail-unstable`. A test that
-does not compile without the feature is one of these, or relies on what Rust does not keep. The
-model check runs both ways too, since `puns-model` has an `unstable` feature that turns on the one
-of `puns`, and a refusal for what Rust does not keep is counted there as imprecise, by design
-(`hook::Verdict::unspecified`). A change of the analysis that changes a verdict of
-`puns/tests/seeds.txt` is written again with `PUNS_BLESS=1` and read, since the record must be the
-same under every seed (CI runs three).
+the targets of `required-features = ["unstable"]`, the files with tests under
+`#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the cases of
+`compile-fail-unstable`. A test that does not compile without the feature is one of these, or relies
+on a layout that Rust leaves to the compiler. The model check runs both ways too, since `puns-model`
+has an `unstable` feature that turns on the one of `puns`, and a refusal for a layout that Rust
+leaves to the compiler is counted there as imprecise, by design (`hook::Verdict::unspecified`). A
+change of the analysis that changes a verdict of `puns/tests/seeds.txt` is written again with
+`PUNS_BLESS=1` and read, since the record must be the same under every seed (CI runs three).
 
 **puns** is type punning proven at compile time: the layout and the valid values of a type are a
-`const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it
-compiles to nothing), **checked** (only what could not be proven is checked at run time) or
+`const` value (`Pun::LAYOUT`), compared by ordinary `const fn` code. A pun is **proven** (it makes
+no check at run time), **checked** (only what could not be proven is checked at run time) or
 **refused** (it does not compile). **The design is in the rustdoc**: the crate docs (goal,
 soundness, the `unstable` feature, minimum Rust version, portability, limitations) and the module
 docs of each part, private modules included (`cargo doc --document-private-items`).
 **`puns/CLAUDE.md` summarizes it**, with a link to where each part is written, and holds what is not
-done yet: read it, and the module docs of what you change, before changing the library, and keep
-them, the crate docs and `README.md` in step with the code.
+done yet: read it, and the module docs of what you change, before changing the library. Keep them,
+the crate docs and `README.md` consistent with the code.
 
 - **`puns/`**: the library (`#![no_std]`, no dependency but the derive). Self-relative pointers are
   a kind of its own (`layout::Pointer`, `deep.rs`), which a crate declares for its types with
@@ -138,8 +140,8 @@ them, the crate docs and `README.md` in step with the code.
   Miri runs them with stacked borrows too.
 - **`puns-derive/`**: `#[derive(Pun)]`, re-exported as `puns::Pun`.
 - **`puns-model/`**: the model check of the analysis against oracles that do not use it (not
-  published, and using the test-only `verdict` feature of `puns`), with `fakecore/`, a `core` that
-  lies, for what the derive must not trust.
+  published, and using the test-only `verdict` feature of `puns`), with `fakecore/`, a `core` whose
+  items give wrong answers, for what the derive must not trust.
 - **`xtask/`**: dev automation (fmt, lint, build times).
 
 ## Releasing

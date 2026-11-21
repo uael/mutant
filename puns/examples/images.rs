@@ -4,9 +4,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads files in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                     | Declared with                             |
+//! | Specific to these formats                       | Declared with                             |
 //! |-------------------------------------------------|-------------------------------------------|
 //! | a signature                                     | `u64bec<0x8950_4e47_0d0a_1a0a>`           |
 //! | a PNG chunk has a CRC-32 of its type and data   | `assert(crc32(4, 8 + length) == ..)`      |
@@ -181,8 +182,8 @@ pub struct Bmp {
 #[repr(C)]
 #[pun(assert(num_tables >= 1))]
 // `search_range` is 16 times the greatest power of 2 not above the number of tables,
-// `entry_selector` is its log2, `range_shift` what remains: a walk for each (an expression has
-// at most one).
+// `entry_selector` is its log2, and `range_shift` is what remains. Each of the first two is found
+// by a walk.
 #[pun(assert(search_range == 16 * walk(1, |p| p * 2 <= num_tables, |p| p * 2)))]
 #[pun(assert(entry_selector == walk(0, |e| 2 << e <= num_tables, |e| e + 1)))]
 #[pun(assert(range_shift == num_tables * 16 - search_range))]
@@ -270,6 +271,7 @@ const FONT: [u8; 132] = [
   0x00, 0x00, 0x00, 0x00,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- PNG: a file, its typed header, then chunks of any type.
   let png: &Png = try_pun_ref(&PNG[..]).unwrap();

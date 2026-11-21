@@ -4,9 +4,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads messages in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                      | Declared with                             |
+//! | Specific to these formats                        | Declared with                             |
 //! |--------------------------------------------------|-------------------------------------------|
 //! | flags of a few bits (DNS opcode, NTP mode)       | `get(..)`, `assert(..)`                   |
 //! | a DNS name ends with an empty label or a pointer | `size = { let end = walk(..); .. }`       |
@@ -196,8 +197,8 @@ pub struct Label {
   );
   end < size_of_val(self)
 }))]
-// The DHCP message type (option 53) is there, of a known value. A second walk, in another rule:
-// an expression has at most one.
+// The DHCP message type (option 53) is there, of a known value. A second assertion finds it with
+// a walk of its own.
 #[pun(assert({
   let at = walk(
     240,
@@ -636,6 +637,7 @@ const RTCP: [u8; 64] = [
   2, b'h', b'i',
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- DNS: a query, its name, label by label.
   let query: &Dns = try_pun_ref(&QUERY[..]).unwrap();
@@ -644,7 +646,7 @@ pub fn main() {
   let question: &Question = try_pun_ref(&query.body[..]).unwrap();
   assert_eq!(&question.name().unwrap().0, &QUERY[12..25]);
   assert_eq!(question.fixed().unwrap(), &QuestionFixed { kind: 1.into(), class: 1.into() });
-  // The labels: a sequence of things of their own sizes is read by use code.
+  // The labels, items of their own sizes, are read one by one by the code that uses the types.
   let (mut rest, mut labels) = (&question.name().unwrap().0[..], vec![]);
   while let Ok((label, next)) = from_head::<Label>(rest) {
     if label.length == 0 {

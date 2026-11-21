@@ -300,8 +300,10 @@ pub fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<Result
   // - It is aligned. Either the analysis found `D` no more aligned than `S`, or `Plan::try_cast_by`
   //   checked the address.
   // - It is not dangling. Its extent is that of `value`. If `D` is unsized and more aligned than
-  //   `S`, `Plan::try_cast_by` checked that its size is at most the size of `value`. Otherwise its
-  //   size is at most the size of `value`, because it has no greater alignment.
+  //   `S`, `Plan::try_cast_by` checked that its size is at most the size of `value`. Otherwise
+  //   either `D` is sized, and its size is its extent, or `D` is unsized and its extent is rounded
+  //   up to an alignment that divides that of `S`. Either way its size is at most the size of
+  //   `value`.
   // - It points to a valid `D`. `validate` found every part that the analysis marked to be valid.
   //   Every other part is valid in every value of `S`, since the relation records no byte read from
   //   padding, no disjoint part, no pointer, and nothing that Rust leaves to the compiler.

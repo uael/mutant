@@ -27,7 +27,7 @@
 //! | Modbus registers, counted in bytes              | `len = byte_count / 2` on `[u16be]`       |
 //! | SLIP and PPP escapes, and where a frame ends    | `assert(walk(..) == ..)`                  |
 //!
-//! The following is not covered, for the reasons given:
+//! The following are not covered:
 //!
 //! - What a SLIP or PPP frame holds is its bytes unescaped, which is a copy, not a view of the
 //!   bytes. The bytes are checked to be a well-formed escaped frame. What the frame holds (the
@@ -441,6 +441,7 @@ const LCP: [u8; 17] = [
   0x7e,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- 802.11: bit fields, optional fields, the frame check sequence.
   let frame: &DataFrame = try_pun_ref(&QOS_DATA[..]).unwrap();

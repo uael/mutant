@@ -4,9 +4,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads these formats in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                  | Declared with                                |
+//! | Specific to these formats                    | Declared with                                |
 //! |----------------------------------------------|----------------------------------------------|
 //! | a magic of 16 bytes                          | `u128bec<0x5351_4c69_..>`                    |
 //! | an SQLite page size is 2^n, or 1 for 65536   | `valid(1, 512, ..)`, `get(page_bytes: ..)`   |
@@ -414,6 +415,7 @@ const CONFIGURATION: [u8; 41] = [
   1, 0xff, 0, 0, 0, 7, 5, 0x81, 3, 8, 0, 1,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- SQLite: a header of fixed values, and a file of the pages it tells.
   let mut database = SQLITE.to_vec();

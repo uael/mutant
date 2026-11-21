@@ -280,17 +280,18 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 ///
 /// The caller must ensure that:
 ///
-/// - `ptr` is aligned for `E`, and valid for reads of `size_of::<E>()` bytes.
+/// - `ptr` is not null, is aligned for `E`, and is valid for reads of `size_of::<E>()` bytes.
 /// - Unless the call is evaluated at compile time, `ptr` points to a valid `E`.
 const unsafe fn variant<E>(ptr: *const E) -> usize {
-  // SAFETY: A reference must be aligned and not dangling, and point to a valid value [1]. `ptr` is
-  // aligned for `E` and valid for reads of one, by contract on the caller, so it is not dangling.
-  // At run time, it points to a valid `E`, by contract on the caller. At compile time, the bytes
-  // at `ptr` may be no `E`, which is valid only if its tag is the tag of a variant and the fields
-  // of that variant are valid [2]. `rustc` then reports an error if the tag is uninitialized or
-  // not the tag of a variant that has values, and otherwise reads the variant from the tag alone,
-  // without reading the fields (`discover`, module documentation). The Reference promises
-  // neither.
+  // SAFETY: The reference made from `ptr` must meet the requirements of a reference [1]:
+  // - It is not null and aligned for `E`, by contract on the caller.
+  // - It is not dangling, because `ptr` is valid for reads of an `E`, by contract on the caller.
+  // - It points to a valid `E` at run time, by contract on the caller. At compile time, the bytes
+  //   at `ptr` may be no `E`, which is valid only if its tag is the tag of a variant and the
+  //   fields of that variant are valid [2]. `rustc` then reports an error if the tag is
+  //   uninitialized or not the tag of a variant that has values, and otherwise reads the variant
+  //   from the tag alone, without reading the fields (`discover`, module documentation). The
+  //   Reference promises neither.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
   //
@@ -377,9 +378,10 @@ impl<E> Buf<E> {
   /// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation
   /// fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
   const unsafe fn variant(&self) -> usize {
-    // SAFETY: `as_ptr` of the `MaybeUninit<E>` of the buffer is aligned for `E` and valid for
-    // reads of one. This call is evaluated at compile time, by contract on the caller, so the
-    // bytes of the buffer need not be a valid `E`. These are the requirements of `variant`.
+    // SAFETY: `as_ptr` of the `MaybeUninit<E>` of the buffer is not null, is aligned for `E`, and
+    // is valid for reads of one, since it is made from a reference to the buffer. This call is
+    // evaluated at compile time, by contract on the caller, so the bytes of the buffer need not
+    // be a valid `E`. These are the requirements of `variant`.
     unsafe { variant(self.0.as_ptr()) }
   }
 }
@@ -640,8 +642,8 @@ pub const unsafe fn discover<E, const V: usize>(
       // SAFETY: `samples[v]` is the sample of the variant `v`, which has values, as `discover`
       // documents. `Layout::sample` makes it a valid `E`, so its tag is initialized and is the
       // tag of a variant, and the fields of that variant are valid. `as_ptr` of a
-      // `MaybeUninit<E>` is aligned for `E` and valid for reads of one. These are the requirements
-      // of `variant`. With other samples, the tag may be invalid, which `variant` allows only in a
+      // `MaybeUninit<E>` in a slice is not null, is aligned for `E`, and is valid for reads of
+      // one. These are the requirements of `variant`. With other samples, the tag may be invalid, which `variant` allows only in a
       // call evaluated in a constant. By contract on the caller of `discover`, this call is.
       assert!(unsafe { variant(samples[v].as_ptr()) } == v, "the discriminant is not the index");
       let mut i = 0;
@@ -828,8 +830,10 @@ const unsafe fn try_tag<E, const V: usize>(
   // Nothing outside its fields tells the dataful variant either: its gaps, filled with zeros and
   // then with ones, leave it that variant. "One scalar tells the variant", above, says that a niche
   // is told by its scalar alone, so a layout in which another place takes part, such as an encoding
-  // in two levels, is refused here. SAFETY: `try_tag` is evaluated at compile time, by contract on
-  // the caller, so this call is too.
+  // in two levels, is refused here.
+  //
+  // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call is
+  // too, as `decided_by` requires.
   if dataful < V && !unsafe { decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) } {
     return false;
   }

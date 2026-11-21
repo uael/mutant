@@ -4,9 +4,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads files in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                    | Declared with                            |
+//! | Specific to these formats                      | Declared with                            |
 //! |------------------------------------------------|------------------------------------------|
 //! | four-character codes tell what is held         | `tag(FourCc = u32bec<0x666d_7420>)`      |
 //! | a RIFF pad byte, not counted in the length     | `size = 8 + length + (length & 1)`       |
@@ -211,6 +212,7 @@ const MP4: [u8; 57] = [
   b'f', b'r', b'e', b'e', 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- WAVE: chunks, a typed format, data of whole frames.
   let (file, rest) = from_head::<Wave>(&WAVE).unwrap();

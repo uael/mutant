@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The functions are in `target/release/**/codegen*.s`, under their names. The table below records
-//! the machine code of each one. A change of the library must not make any of them longer, so
+//! the machine code of most of them. A change of the library must not make any of them longer, so
 //! compare the assembly before and after it, and update the table.
 //!
 //! The table was measured on `x86_64-unknown-linux-gnu` with `rustc` 1.100.0, the release profile
@@ -328,8 +328,9 @@ pub fn drawing_shape(d: &Drawing) -> Option<&Shape> {
 pub fn bytes_shape(b: &[u8; 4]) -> Option<Shape> {
   try_pun(*b).ok()
 }
-// Enums of the `Rust` representation: a niche, proven both ways (every `u32` is a `Ticket`); a
-// direct tag, checked: the tag, then what its variant requires.
+// Two enums of the `Rust` representation. `Ticket` has a niche, and the pun is proven both ways,
+// since every `u32` is a `Ticket`. `Small` has a direct tag, and the pun is checked: the tag first,
+// then what its variant requires.
 #[derive(Pun, Clone, Copy)]
 pub enum Ticket {
   Free,
@@ -371,7 +372,8 @@ pub fn ipv6(b: &[u8]) -> Option<&Ipv6> {
   try_pun_ref(b).ok()
 }
 
-// Parts: the first bytes of a value are where it is, the last an addition away.
+// Parts. The first bytes of a value start at its address, and the last bytes start at that address
+// plus a constant.
 #[unsafe(no_mangle)]
 pub const fn ipv6_header(p: &Ipv6) -> &[u8; 40] {
   head_ref(p)

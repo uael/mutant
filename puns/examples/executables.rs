@@ -5,32 +5,34 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads files in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                      | Declared with                            |
-//! |--------------------------------------------------|------------------------------------------|
-//! | the ELF class and byte order change all fields   | type parameters, an enum of references   |
-//! | ELF headers, where and as long as it says        | `regions(program_headers: [P] = .., ..)` |
-//! | ELF entry sizes are the sizes of the types       | `assert(e_phentsize == size_of::<P>())`  |
-//! | an alignment that is a power of two              | `assert(p_align & (p_align - 1) == 0)`   |
-//! | PE headers, where the DOS header says            | `regions(stub = e_lfanew - 64, ..)`      |
-//! | a PE magic at a distance tells the kind          | `assert(le(e_lfanew + 24, 2) == MAGIC)`  |
-//! | PE data directories and sections                 | `regions(sections: [..] = .., ..)`       |
-//! | Mach-O commands fill their room, and are counted | a `walk` of an offset and a count        |
-//! | Mach-O sections, counted by their segment        | `len = nsects`                           |
-//! | Java pool entries, of a size their tag tells     | a `walk`, a table of sizes in a constant |
-//! | what follows the Java pool, from its end         | `be(at + 2, 2) < constant_pool_count`    |
-//! | WebAssembly sections, of a size in LEB128        | `size = 1 + leb128_len(1) + leb128(1)`   |
-//! | WebAssembly sections, in order                   | a walk, ranks in a constant              |
-//! | WebAssembly value types                          | an enum without fields                   |
+//! | Specific to these formats                      | Declared with                            |
+//! |------------------------------------------------|------------------------------------------|
+//! | the ELF class and byte order change all fields | type parameters, an enum of references   |
+//! | ELF headers, at the offset and size it gives   | `regions(program_headers: [P] = .., ..)` |
+//! | ELF entry sizes are the sizes of the types     | `assert(e_phentsize == size_of::<P>())`  |
+//! | an alignment that is a power of two            | `assert(p_align & (p_align - 1) == 0)`   |
+//! | PE headers, where the DOS header says          | `regions(stub = e_lfanew - 64, ..)`      |
+//! | a PE magic at a distance tells the kind        | `assert(le(e_lfanew + 24, 2) == MAGIC)`  |
+//! | PE data directories and sections               | `regions(sections: [..] = .., ..)`       |
+//! | counted Mach-O commands fill `sizeofcmds`      | a `walk` of an offset and a count        |
+//! | Mach-O sections, counted by their segment      | `len = nsects`                           |
+//! | Java pool entries, of a size their tag tells   | a `walk`, a table of sizes in a constant |
+//! | what follows the Java pool, from its end       | `be(at + 2, 2) < constant_pool_count`    |
+//! | WebAssembly sections, of a size in LEB128      | `size = 1 + leb128_len(1) + leb128(1)`   |
+//! | WebAssembly sections, in order                 | a walk, ranks in a constant              |
+//! | WebAssembly value types                        | an enum without fields                   |
 //!
 //! The following are not covered:
 //!
 //! - The fields of the ELF header are fields of the file, not of a header struct inside it. An
 //!   expression reads only the integer fields of its own struct, so it cannot name
 //!   `header.e_phoff`. The program headers, then the section headers, must follow the header as
-//!   consecutive regions. Other layouts are valid ELF, but these types reject them. The code that
-//!   uses the types follows the offsets to the segments and the sections.
+//!   consecutive regions. Other layouts are valid ELF, but these types reject them. Code that
+//!   uses the types must follow the offsets to the segments and the sections. `main` reads only
+//!   the regions.
 //! - The checksum of a PE image and its import and export tables are not views of the bytes as
 //!   they are. The tables hold addresses relative to where the sections are loaded, not to the
 //!   file.
@@ -463,7 +465,6 @@ pub const ENTRY_SIZES: u128 = 0x3_3553_4005_5553_3995_5010;
       let at = s & 0xffff_ffff;
       let tag = be(at, 1);
       let size = (ENTRY_SIZES >> (tag * 4)) & 15;
-      // (`2 << 32` is 3 operations, a literal is 1: with shifts, this step is 50.)
       if size == 0 {
         1 / 0
       } else {
@@ -707,8 +708,8 @@ const MACHO: [u8; 200] = [
   0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
 ];
 
-/// The bytes of a Java class file: a constant pool of 6 entries, one of which takes two slots,
-/// then the class.
+/// The bytes of a Java class file: a constant pool of 5 entries in 6 slots, since a `long` takes
+/// two, then the class.
 const CLASS: [u8; 66] = [
   0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x34, 0x00, 0x07, 0x01, 0x00, 0x05, b'H', b'e', b'l',
   b'l', b'o', 0x07, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a, 0x01, 0x00,
@@ -726,6 +727,7 @@ const WASM: [u8; 31] = [
   b'n', b'a', b'm', b'e', 3, 2, 1, 0, 10, 0xc8, 0x01,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- ELF: four kinds of files, one declaration.
   for bytes in [&ELF64_LE[..], &ELF64_BE, &ELF32_LE, &ELF32_BE] {
@@ -828,7 +830,7 @@ pub fn main() {
   let Ok(AnyPe::Pe64(pe)) = AnyPe::from_bytes(&bytes) else { panic!() };
   assert_eq!(pe.headers().err(), Some(Error::Validity));
 
-  // ---- Mach-O: load commands that fill their room.
+  // ---- Mach-O: load commands that fill `sizeofcmds` bytes.
   let file: &MachO64 = try_pun_ref(&MACHO[..]).unwrap();
   assert_eq!((file.ncmds.get(), file.commands().len(), file.rest().len()), (2, 168, 0));
   let (command, rest) = from_head::<LoadCommand>(file.commands()).unwrap();
@@ -858,7 +860,7 @@ pub fn main() {
   let (utf8, _) = from_head::<Utf8Entry>(&class.rest).unwrap();
   assert_eq!(&utf8.bytes, b"Hello");
   // A count that the entries do not reach; a tag that is not one; this class out of the pool; a
-  // `CONSTANT_Long` counted as one entry; a version from the future.
+  // `CONSTANT_Long` counted as one entry; a major version above 70.
   for (at, value) in [(9, 8), (10, 2), (CLASS.len() - 11, 9), (9, 6), (7, 71)] {
     let mut bytes = CLASS;
     bytes[at] = value;

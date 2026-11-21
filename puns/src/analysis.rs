@@ -4,9 +4,10 @@
 //! value of `S` is a [valid] value of `D`. It walks both layouts together, as the product of two
 //! automata, and answers the following questions:
 //!
-//! - **Fit** ([`Fit`]): how the size of a source maps to the size of a target. It is always, for
-//!   some lengths of a slice, never, or truncated. It accounts for the trailing padding of unsized
-//!   structs, and is checked against `size_of_val_raw`.
+//! - **Fit** ([`Fit`]): how the size of a source maps to the size of a target. The sizes fit
+//!   always, for some lengths of a slice, or never, or the source is truncated to the size of the
+//!   target. It accounts for the trailing padding of unsized structs, and is checked against
+//!   `size_of_val_raw`.
 //! - **Uninitialized bytes**: whether a byte that the target requires to be initialized would be
 //!   read from padding. This is always an error.
 //! - **Validity** ([`Relation`]): whether the pun is infallible, fallible, or never valid. Each
@@ -47,9 +48,12 @@
 //! own. A repetition ends as soon as one of its elements leaves the set unchanged. Two patterns are
 //! compared by the product of their automata.
 //!
-//! So the cost of an analysis is proportional to the number of fields of the types, not to their
-//! size. Const evaluation is bounded (see "Minimum Rust version" in the
-//! [crate documentation](crate#minimum-rust-version)), so it could not be otherwise.
+//! So the cost of an analysis grows with the number of fields, variants, ranges of values and
+//! states of automata of the types. Where it would grow with their size, a search stops at a limit:
+//! [`PLACES`] places of fields, a budget of boxes of a scalar, a budget of runs under a pattern,
+//! and [`CUT_ELEMENTS`] elements of a `&mut` to a part. Const evaluation is bounded (see "Minimum
+//! Rust version" in the [crate documentation](crate#minimum-rust-version)), so it could not be
+//! otherwise.
 //!
 //! # Enums and unions
 //!
@@ -709,13 +713,13 @@ pub struct Relation {
   /// The offset of a pointer of the target where the source has no pointer whose target can be
   /// reinterpreted as the target of this one.
   ///
-  /// No check at run time makes up for it, since what a pointer guarantees is not a property of
+  /// No check at run time can replace it, since what a pointer guarantees is not a property of
   /// its bytes.
   pub(crate) pointer: Option<usize>,
   /// The offset of a part of the target that is not proven in every layout that Rust allows,
   /// without the `unstable` feature ([`RunKind::Opaque`]).
   ///
-  /// No check makes up for it, since a check would read at a place that the compiler may move.
+  /// No check can replace it, since a check would read at a place that the compiler may move.
   /// Whatever reads the fields of a relation one by one must read this one too. With it, nothing
   /// is proven.
   pub(crate) unspecified: Option<usize>,
@@ -2617,9 +2621,9 @@ pub const MUTABLE: &str = "some values of the target are not valid for the sourc
                            where the source is not), and could be written through the `&mut`";
 /// Why a `&mut` to a part is refused when it covers a part of the source whose layout Rust leaves
 /// to the compiler, without being of the same type.
-pub const PART_UNSPECIFIED: &str = "the `&mut` covers a part of the source whose layout Rust does \
-                                    not keep from one compilation to the next (a struct, a tuple \
-                                    or an enum of the `Rust` representation), which only a `&mut` \
+pub const PART_UNSPECIFIED: &str = "the `&mut` covers a part of the source whose layout Rust \
+                                    leaves to the compiler (a struct, a tuple or an enum of the \
+                                    `Rust` representation), which only a `&mut` \
                                     to the same type may write.\nAdd `#[repr(C)]` (or \
                                     `#[repr(u8)]` to an enum), or enable the `unstable` feature \
                                     of `puns`";

@@ -44,7 +44,7 @@ verdict.
   what it could not do without, not everything that helped.
 - **Possessives and compound nouns replace chains of "of".** "The tag's position" or "the field
   type", not "the position of the tag of the variant of the enum", where the result stays clear.
-- **Plain technical words replace circumlocutions.** "Zero-terminated string", "variable-length
+- **Plain technical words replace long descriptions.** "Zero-terminated string", "variable-length
   integer" and "pointer method" are clearer than descriptions built from simple words.
 - **Examples are concrete.** A real format, real bytes, a real error message.
 
@@ -118,7 +118,7 @@ Avoid these patterns, each of which is common in generated text:
 - Em dashes and en dashes.
 - Narrating the obvious ("This function does what it says").
 
-## Two registers
+## Two styles
 
 **The README** speaks to a person deciding whether to use the crate. It uses "you", contractions
 ("doesn't", "it's", "can't") and a conversational rhythm, like the READMEs of `anyhow` and

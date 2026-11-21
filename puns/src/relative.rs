@@ -144,8 +144,12 @@ use crate::{Pun, layout::Pointer};
 /// bytes[4..8].copy_from_slice(&4i32.to_ne_bytes());
 /// bytes[8] = 1;
 /// let buffer = Buffer(bytes);
-/// // SAFETY: `buffer` is aligned to 4, as `Old` is. Its bytes at 0 are a valid `Old`: a `bool`
-/// // of 1, padding, and an offset of 4, which aims at the `bool` of 1 at 8 of the same buffer.
+/// // SAFETY: The reference is valid:
+/// // - It is not null, because it is made from `&buffer`.
+/// // - It is aligned, because `Buffer` is aligned to 4, as `Old` is.
+/// // - It is not dangling, because an `Old` is 8 bytes, all within the 12 of `buffer`.
+/// // - It points to a valid `Old`: a `bool` of 1, padding, and an offset of 4, which aims at the
+/// //   `bool` of 1 at 8 of the same buffer.
 /// // `buffer` is not written while `old` lives.
 /// let old: &Old = unsafe { &*core::ptr::from_ref(&buffer).cast::<Old>() };
 ///

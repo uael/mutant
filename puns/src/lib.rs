@@ -33,12 +33,12 @@
 //! - The front or the back is the first or last `size_of::<D>()` bytes. If the target of
 //!   [`head_ref`] or [`head_mut`] is a slice, it holds as many elements as fit. [`tail`],
 //!   [`tail_ref`] and [`tail_mut`] require a sized source.
-//! - The functions in the second row are checked, in this order. [`from_bytes`] and
-//!   [`from_bytes_mut`] check the address, then the size. [`from_head`] and [`from_head_mut`] check
-//!   that the bytes hold the sized part of the target, then the address, then the extent that its
-//!   rules give. [`from_tail`] and [`from_tail_mut`] check the size first, since it decides where
-//!   the last bytes start, then the address. All of them then check whatever the bytes do not prove
-//!   about the target.
+//! - The functions in the second row are checked, and each makes its checks in the order below.
+//!   [`from_bytes`] and [`from_bytes_mut`] check the address, then the size. [`from_head`] and
+//!   [`from_head_mut`] check that the bytes hold the sized part of the target, then the address,
+//!   then the extent that its rules give. [`from_tail`] and [`from_tail_mut`] check the size first,
+//!   since it decides where the last bytes start, then the address. All of them then check whatever
+//!   the bytes do not prove about the target.
 //! - [`from_bytes`], [`from_bytes_mut`] and [`as_bytes`] behave like `try_pun_ref::<[u8], D>`,
 //!   `try_pun_mut::<[u8], D>` and `pun_ref::<S, [u8]>`. Because they fix one side to bytes, they
 //!   take a single type parameter, which also keeps an array of unsuffixed integer literals from
@@ -219,9 +219,9 @@
 //! `rustc` chose. [The `unstable` feature](#the-unstable-feature) states the rule and [what it
 //! rests on](#what-this-rests-on).
 //!
-//! The tests run under [Miri], with tree borrows on x86-64 and with stacked borrows on a 32-bit and
-//! a big-endian target. The analysis itself is checked against oracles that do not use it, both
-//! with and without the `unstable` feature.
+//! The tests run under [Miri], on the targets that [Portability](#portability) names. The analysis
+//! itself is checked against oracles that do not use it, both with and without the `unstable`
+//! feature.
 //!
 //! ## Guarantees and requirements
 //!
@@ -249,8 +249,8 @@
 //! so that it never holds an `UnsafeCell`. As a target, it accepts anything. As a source, it proves
 //! nothing except a target that accepts anything. So a `&mut MaybeUninit<T>` can only be made from
 //! a source that may hold anything there, since whatever is written through it may be
-//! uninitialized. A `&mut T` is never made from a `MaybeUninit<T>`, since a byte that `T` requires
-//! would be read from padding.
+//! uninitialized. A `&mut T` is made from a `MaybeUninit<T>` only if `T` requires no byte to be
+//! initialized, since a byte that `T` requires would be read from padding.
 //!
 //! A rule that reads the bytes of its value (`le`, `be`, a checksum, or `walk` through its
 //! expressions) reads its padding as well. Such a rule is checked when the source does not prove
@@ -427,7 +427,7 @@
 //! ```
 //!
 //! ```text
-//! cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
+//! cannot pun: the pun depends on a part of the source or of the target whose layout Rust leaves to the compiler (a struct, a tuple or an enum of the `Rust` representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
 //! Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
 //! This is at byte 0 of the target.
 //! ```
@@ -544,7 +544,7 @@
 //! ## Enums: what is refused
 //!
 //! A `Shape` is not a `[u8; 4]`, because the byte after the tag of a `Circle` is padding, and
-//! nothing tells a `Circle` from a `Rect` at compile time.
+//! nothing tells a `Circle` from a `Rect` at compile time:
 //!
 //! ```compile_fail,E0080
 //! # use puns::Pun;
@@ -553,7 +553,7 @@
 //! ```
 //!
 //! A `&mut Shape` is not a `&mut Drawing` either, since a `Drawing` written through it could be a
-//! `Nothing`, or a `Rect` whose second field is not a `bool`.
+//! `Nothing`, or a `Rect` whose second field is not a `bool`:
 //!
 //! ```compile_fail,E0080
 //! # use puns::Pun;
@@ -700,13 +700,13 @@
 //! `rustc` places the fields of a struct of the `Rust` representation one after another, each at
 //! the first offset its alignment allows, in an order of its choosing. The sizes it may give are
 //! therefore the sizes of the possible orders of the fields. `puns` tries them all for a struct of
-//! up to 6 fields whose size or alignment is greater than 1, and takes the size of a larger one to
-//! depend on the order. `-Zrandomize-layout` draws the order at random and does nothing else. No
-//! documentation states this. Rust only bounds the offsets ([`r-layout.repr.rust.layout`][rust
-//! layout]), and a compiler could put padding where no alignment needs it. The size that `puns`
-//! reads would then differ from the size it takes to be the same in every layout. The struct would
-//! then no longer count as the same in every layout, so the pun would fail to compile rather than
-//! change what it does.
+//! up to 6 fields that have a size or an alignment greater than 1. With more such fields, it takes
+//! the size to depend on the order, unless the fields need no padding in any order.
+//! `-Zrandomize-layout` draws the order at random and does nothing else. No documentation states
+//! this. Rust only bounds the offsets ([`r-layout.repr.rust.layout`][rust layout]), and a compiler
+//! could put padding where no alignment needs it. In that case the size that `puns` reads would
+//! differ from the size that every order gives. The struct would no longer count as the same in
+//! every layout, so the pun would fail to compile rather than change what it does.
 //!
 //! The alignment of a type is read, not assumed. Rust gives the alignment of each primitive per
 //! platform, and makes a struct at least as aligned as its fields. `-Zrandomize-layout` does not
@@ -748,7 +748,7 @@
 //! | The fields of a union of the `Rust` representation need not be at 0, so such a union is refused | R [`r-type.union.layout`][union layout] |
 //! | `NonZero<T>` is `T`, except zero | C [`NonZero`, "Layout"][nonzero layout] |
 //! | `Option<T>` is `T`, and `None` is zeros, for a `NonZero` and a `repr(transparent)` struct around one | C [`option`, "Representation"][option representation] |
-//! | `Result<T, E>` is the same when the other of `T` and `E` has size 0 and alignment 1 | C [`result`, "Representation"][result representation] |
+//! | `Result<T, E>` has the size of `T`, and `Ok(t)` the bytes of `t`, when `T` is such a type and `E` has size 0 and alignment 1, or the reverse | C [`result`, "Representation"][result representation] |
 //! | `ManuallyDrop<T>` has the layout and the valid values of `T` | C [`ManuallyDrop`] |
 //! | `MaybeUninit<T>` has the size and the alignment of `T`, and any bytes are a value | C [`MaybeUninit`, "Layout"][maybe-uninit layout], [`MaybeUninit`, "Validity"][maybe-uninit validity] |
 //! | `PhantomData<T>` has size 0 and alignment 1 | C [`PhantomData`, "Layout"][phantom layout] |
@@ -815,7 +815,9 @@
 //! Const evaluation is bounded, since the deny-by-default lint [`long_running_const_eval`] stops it
 //! after 2,000,000 basic blocks ([`LINT_TERMINATOR_LIMIT`] in `rustc`). The analysis therefore
 //! cannot take a step for each byte of a type, nor a step or an instance for each element of an
-//! array, and its cost grows with the number of fields of the types, not with their size.
+//! array. Its cost grows with the number of fields, variants, ranges of values and states of
+//! automata of the types, and where it would grow with their size, a search stops at a limit
+//! ([Limits](#limits)).
 //!
 //! # Portability
 //!
@@ -868,6 +870,14 @@
 //!   because validation recurses over the list of variants.
 //! - The analysis follows arrays, slices and structs nested at most 32 deep, and refuses a pun of a
 //!   type nested deeper ("type is nested too deeply").
+//! - Some proofs search a bounded number of cases. Past the bound, what is not proven is checked at
+//!   run time, or the pun is refused where it cannot be checked, and nothing is proven wrongly. A
+//!   struct of the `Rust` representation is proven by another source only if its fields have at
+//!   most 1,024 offsets in all, counting each offset that a field may have in some order. Otherwise
+//!   only the same struct proves it. The values of a scalar made of parts of the source are
+//!   compared in at most 16,384 steps, and a pattern over at most 4,096 runs of the source. A
+//!   `&mut` to a part of an array whose elements have rules looks at no more than 64 elements, and
+//!   is refused past them.
 //! - A packed struct whose unsized field has trailing padding of its own is refused.
 //! - The build time of a view enum whose variants overlap grows with the square of the number of
 //!   variants, or faster.
@@ -875,7 +885,9 @@
 //!   deriving `Pun` means](#what-deriving-pun-means) says which types must not derive `Pun`.
 //! - The evaluator of rules has a stack of 16 values and 8 variables. An expression has at most 256
 //!   operations and at most 4 nested walks, and the derive says when an expression needs more, and
-//!   how much more. A walk takes at most `8 * size + 128` steps.
+//!   how much more. A walk takes at most `8 * size + 128` steps, where `size` is the size of the
+//!   value, or, for a `size` or `len` rule, the number of bytes from the start of the value to the
+//!   end of the input.
 //! - Unions must be `repr(C)`, since the fields of other unions are not known to be at 0. A union
 //!   must not hold a pointer, and as a source it is known as nothing (see [Unions](#unions)).
 //! - An enum of the `Rust` representation cannot hold a self-relative pointer, because a sample of
@@ -1136,7 +1148,9 @@ pub use layout::{crc32, sum16};
 ///   `EXPR` is any Rust expression that a `const fn` may evaluate, in which the name of an unsigned
 ///   integer field, or `self.name`, is the value of that field as a `u128`, unless a `let` or a
 ///   closure declares that name. A field of another type is refused where the method is used. The
-///   field is read by reference, or copied in a packed struct.
+///   field is read by reference, or copied in a packed struct. `EXPR` is evaluated as Rust code, so
+///   the method panics where that code panics, such as on a division by zero. A rule of the struct
+///   does not prevent this, since safe code may change the fields of a value after it is checked.
 /// - `#[pun(tag(Key = Type, ..))]`: implements [`Tag<Key>`](Tag) with `type Tag = Type`, so that a
 ///   tag of kind `Key` next to the struct must be a `Type`.
 ///
@@ -1167,10 +1181,12 @@ pub use layout::{crc32, sum16};
 /// - `#[pun(regions(first = EXPR, second = EXPR, last))]`: the bytes of the field are consecutive
 ///   regions of `EXPR` bytes each. The last region may omit its size, and then takes whatever
 ///   remains. A method with each name, as visible as the field, returns the bytes of its region as
-///   a `&[u8]`. With a type (`first: Type = EXPR`, `last: Type`), the method returns `Result<&Type,
+///   a `&[u8]`. Since safe code may change the fields of a value after it is checked, a region that
+///   does not fit in the field is cut short, and a region whose expression fails takes the rest of
+///   the field. With a type (`first: Type = EXPR`, `last: Type`), the method returns `Result<&Type,
 ///   Error>` instead, the region as a `&Type` if its bytes are one. A type parameter that only a
-///   region names is unused, which Rust refuses (E0392). A `PhantomData<P>`
-///   field, which has no bytes, uses it.
+///   region names is unused, which Rust refuses (E0392). A `PhantomData<P>` field, which has no
+///   bytes, uses it.
 ///
 /// ## Expressions
 ///
@@ -1267,9 +1283,11 @@ pub use layout::{crc32, sum16};
 ///   the first "type, length, value" whose type is 0 is `walk(0, |at| be(at, 1) != 0, |at| at + 2 +
 ///   be(at + 1, 1))`, and the size of a zero-terminated string is `size = walk(0, |at| be(at, 1) !=
 ///   0, |at| at + 1) + 1`. A walk may be in any rule or in another walk, and one expression may
-///   hold several. A walk takes at most `8 * size_of_val(self) + 128` steps, one for each bit of
-///   the value and of a `u128`, and fails beyond that. So a walk always ends, and a walk over the
-///   bits of a field fits whatever the size of the value.
+///   hold several. A walk takes at most `8 * size + 128` steps, one for each bit of the `size`
+///   bytes that it may read and of a `u128`, and fails beyond that. `size` is `size_of_val(self)`,
+///   or, for a `size` or `len` rule, the number of bytes from the start of the value to the end of
+///   the input. So a walk always ends, and a walk over the bits of a field fits whatever the size
+///   of the value.
 ///
 /// The state of a walk is one `u128`. A walk that carries two numbers, such as the kind of a header
 /// and where it starts, packs them into it. Pack them at bit 64, as `(kind << 64) + start`, because
@@ -1352,9 +1370,9 @@ pub use layout::{crc32, sum16};
 ///
 /// # Analysis
 ///
-/// *This section describes what the derive assumes, and what deriving `Pun` gives away. Unsafe code
-/// may rely only on the documented contract of [`Pun`](trait@Pun), never on how this derive meets
-/// it, since the analysis may change.*
+/// *This section describes what the derive assumes, and what deriving `Pun` lets other code do.
+/// Unsafe code may rely only on the documented contract of [`Pun`](trait@Pun), never on how this
+/// derive meets it, since the analysis may change.*
 ///
 /// A pun only gives a value of a type from bytes that are a valid value of it, as
 /// [Soundness](crate#soundness) says. That validity is what the language guarantees, and the
@@ -1412,10 +1430,9 @@ pub use layout::{crc32, sum16};
 /// The rest of `::core` that the derive names (`Option`, `PhantomData`, `usize`, and so on) is
 /// checked by the types of the traits it implements. `::core::ptr::null()` is the probe of a sized
 /// type, which nothing reads, and `::core::panic!` is written only next to a compile error of the
-/// derive. The derive trusts the compiler for what it
-/// parses, such as `repr`. It also trusts that the type of a field is the same type wherever the
-/// derive writes it, which a procedural macro in the type of a field that expands to a different
-/// type at each expansion would break.
+/// derive. The derive trusts the compiler for what it parses, such as `repr`. It also trusts that
+/// the type of a field is the same type wherever the derive writes it, which a procedural macro in
+/// the type of a field that expands to a different type at each expansion would break.
 ///
 /// # Examples
 ///
@@ -1593,10 +1610,11 @@ pub use core as __core;
 ///   of `Self` relies on.
 /// - No byte of `Self` is inside an [`UnsafeCell`](core::cell::UnsafeCell).
 ///
-/// If `T: Scalar`, unsafe code may assume that `T::SPEC` describes the values of `T` exactly.
-/// `puns` makes a `T` from any bytes that `SPEC` accepts, and takes the bytes of every `T` to be
-/// bytes that `SPEC` accepts, unless `SPEC` is made with [`Spec::maybe_uninit`] or
-/// [`Spec::uninit`]. It then takes them to be any bytes, uninitialized ones included.
+/// An implementation by hand leaves the hidden items at their defaults. If `T: Scalar`, unsafe code
+/// may assume that `T::SPEC` describes the values of `T` exactly. `puns` makes a `T` from any bytes
+/// that `SPEC` accepts, and takes the bytes of every `T` to be bytes that `SPEC` accepts, unless
+/// `SPEC` is made with [`Spec::maybe_uninit`] or [`Spec::uninit`]. It then takes them to be any
+/// bytes, uninitialized ones included.
 ///
 /// # Examples
 ///
@@ -1649,7 +1667,7 @@ pub unsafe trait Scalar {
   /// See [`Pun::NULL_OPTIMIZED`].
   #[doc(hidden)]
   const NULL_OPTIMIZED: bool = false;
-  /// The identity of the type (see [`layout::Id`]); none by default.
+  /// The identity of the type (see `layout::Id`); none by default.
   #[doc(hidden)]
   const ID: layout::Id = layout::Id::NONE;
   /// Whether Rust specifies how values of the type are stored. It does not for an enum of the
@@ -1757,12 +1775,12 @@ pub unsafe trait Pun {
   const NULL_OPTIMIZED: bool = false;
 }
 
-/// A type that is carried next to a tag of kind `K`, with the values of that tag that mean it.
+/// A type that is carried next to a tag of kind `K`, and the values of that tag that select it.
 ///
 /// A message carries a payload next to a field that tells its type, and an enum carries a variant
 /// next to its discriminant. `K` names the kind of tag, since a type may be carried by several
 /// things. By convention, `K` is the type of the tag when nothing is known about what it carries.
-/// Bytes go with any `K`, and accept every value of its tag.
+/// Bytes can be carried next to a tag of any kind `K`, and accept every value of that tag.
 ///
 /// `#[pun(tag(K = T))]` implements it (see [`macro@Pun`]). `Tag` is not an `unsafe` trait, because
 /// the tag is a field like any other, whose values `puns` checks or proves.
@@ -2241,8 +2259,9 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
 // so it holds no `UnsafeCell`, since `T: Pun`.
 //
 // Safe code may write uninitialized bytes through a `&mut MaybeUninit<T>`. The analysis makes one
-// from a `&mut S` only if every value of the target, padding included, is a valid `S` (the
-// reverse relation that `mutable` checks), so never from a `&mut T`.
+// from a `&mut S` only if every value of the target, padding included, is a valid `S` (the reverse
+// relation that `mutable` checks), so not from a `&mut T` unless `T` requires no byte to be
+// initialized.
 //
 // Without the `unstable` feature, the layout also records the size of `T`, which is the size of
 // `MaybeUninit<T>`, as a part of what the analysis checks to be the same in every layout that
@@ -2569,9 +2588,9 @@ const POINTER_TARGET: &str = "the target holds a self-relative pointer, and what
                               at is not a property of its bytes.\nUse `view_ref` to read a value \
                               that holds pointers as another type (it proves what they aim at)";
 
-/// A pun that depends on what Rust does not keep from one compilation to the next.
+/// A pun that depends on a layout that Rust leaves to the compiler.
 const UNSPECIFIED: &str = "the pun depends on a part of the source or of the target whose layout \
-  Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` \
+  Rust leaves to the compiler (a struct, a tuple or an enum of the `Rust` \
   representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, \
   could arrange it otherwise. Only the same type at the same place \
   proves it.\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature \
@@ -2580,7 +2599,7 @@ const UNSPECIFIED: &str = "the pun depends on a part of the source or of the tar
 /// A `&mut` whose writes are not known to leave a valid source in every layout that Rust allows.
 const UNSPECIFIED_MUT: &str = "what may be written through the `&mut` is a valid source in the \
   layout that `rustc` chose, not in every layout that Rust allows: the source has a part whose \
-  layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the \
+  layout Rust leaves to the compiler (a struct, a tuple or an enum of the \
   `Rust` representation).\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or \
   enable the `unstable` feature of `puns`";
 
@@ -2618,7 +2637,7 @@ const fn check(analysis: &Analysis, need: Need) -> Option<Message> {
       Message::new(
         "a pointer of the target is not, in the source, a pointer whose target it can read (the \
          same scheme and offset, the same kind of target, not larger nor more aligned): only a \
-         pointer proves a pointer, and no check makes up for it",
+         pointer proves a pointer, and no check can replace that proof",
       )
       .at(offset.saturating_sub(shift)),
     );
@@ -2853,9 +2872,9 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   /// - `source` points to an `S` that is valid for reads.
   /// - Every byte of that `S` that a check marked by `C` reads is initialized.
   ///
-  /// The result is a valid `D` only if `C` marks every part of `D` that the bytes of `source`
-  /// may not be valid for: [`Plan`] itself if `source` is a valid `S`, or the marks of a source
-  /// that the bytes are a valid value of, of the extent of `source`.
+  /// The result is a valid `D` only if `C` marks every part of `D` that the bytes of `source` may
+  /// not be valid for. [`Plan`] itself is such a `C` if `source` is a valid `S`. Otherwise `C` is
+  /// the marks of a source type that the bytes are a valid value of, with the extent of `source`.
   #[inline(always)]
   const unsafe fn try_cast_by<C: Checks>(source: *const S) -> Result<*const D, Error> {
     let (layout, target) = const { (S::LAYOUT, D::LAYOUT) };
@@ -3345,11 +3364,11 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 ///   of a variant of `S` with the same tag, unless `S` has no variant with that tag and the variant
 ///   of `S` at that position holds no pointer. Elements of `D` that hold pointers are elements of
 ///   `S` of the same size.
-/// - For each pair of pointers at the same place, let `X` be the type that the pointer of `S`
-///   aims at, and `Y` the type that the pointer of `D` aims at. `X` is at least as large as `Y`.
-///   Every byte that `Y` requires to be initialized is initialized in every `X`. The first bytes
-///   of every `X` are a valid `Y`. The pointers of `Y` and those of `X` meet the three conditions
-///   above, and their targets this one.
+/// - For each pair of pointers at the same place, let `X` be the type that the pointer of `S` aims
+///   at, and `Y` the type that the pointer of `D` aims at. `X` is at least as large as `Y`. Every
+///   byte that `Y` requires to be initialized is initialized in every `X`. The first bytes of every
+///   `X` are a valid `Y`. The pointers of `Y` and those of `X` meet the three conditions above, and
+///   the types that they aim at meet this condition in turn.
 /// - Without the `unstable` feature, the result, behind pointers too, does not depend on a layout
 ///   that Rust leaves to the compiler.
 ///
@@ -3401,8 +3420,12 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// let mut bytes = [b'7', 0, 0, 0, 0, 0, 0, 0];
 /// bytes[4..].copy_from_slice(&(-4i32).to_ne_bytes());
 /// let buffer = Buffer(bytes);
-/// // SAFETY: `buffer` is aligned to 4, as `Digits` is. Its bytes at 0 are a valid `Digits`: the
-/// // digit 7, padding, and an offset of -4, which aims at these `Digits` of the same buffer.
+/// // SAFETY: The reference is valid:
+/// // - It is not null, because it is made from `&buffer`.
+/// // - It is aligned, because `Buffer` is aligned to 4, as `Digits` is.
+/// // - It is not dangling, because a `Digits` is 8 bytes, all within `buffer`.
+/// // - It points to a valid `Digits`: the digit 7, padding, and an offset of -4, which aims at
+/// //   these `Digits` of the same buffer.
 /// // `buffer` is not written while `digits` lives.
 /// let digits: &Digits = unsafe { &*core::ptr::from_ref(&buffer).cast::<Digits>() };
 ///
@@ -3516,9 +3539,13 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// }
 ///
 /// let (a, b) = (buffer(1), buffer(2));
-/// // SAFETY: `a` and `b` are aligned to 4, as `Loose` is. The bytes at 0 of each are a valid
-/// // `Loose`: a byte, padding, and an offset of 4, which aims at the byte at 8 of the same
-/// // buffer. Neither is written while `one` and `two` live.
+/// // SAFETY: Each reference is valid:
+/// // - It is not null, because it is made from `&a` or `&b`.
+/// // - It is aligned, because `Buffer` is aligned to 4, as `Loose` is.
+/// // - It is not dangling, because a `Loose` is 8 bytes, all within the 12 of its buffer.
+/// // - It points to a valid `Loose`: a byte, padding, and an offset of 4, which aims at the byte
+/// //   at 8 of the same buffer.
+/// // Neither buffer is written while `one` and `two` live.
 /// let one: &Loose = unsafe { &*core::ptr::from_ref(&a).cast::<Loose>() };
 /// let two: &Loose = unsafe { &*core::ptr::from_ref(&b).cast::<Loose>() };
 ///
@@ -3527,7 +3554,7 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// assert_eq!(puns::try_view_ref::<Loose, Strict>(two).err(), Some(puns::Error::Validity));
 /// ```
 ///
-/// What a pointer aims at is not checked, so a `u8` there is never reinterpreted as a `bool`.
+/// What a pointer aims at is not checked, so a `u8` there is never reinterpreted as a `bool`:
 ///
 /// ```compile_fail,E0080
 /// # use core::marker::PhantomData;
@@ -3745,7 +3772,7 @@ pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 ///   Rect(u8, bool),
 /// }
 ///
-/// // The tag of the shape, without what it tells of.
+/// // Only the tag of the shape, without the fields of its variant.
 /// let _: &mut u8 = puns::head_mut(&mut Shape::Rect(1, true));
 /// ```
 #[inline(always)]
@@ -3887,7 +3914,9 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
     //   `Plan::try_cast_by` checked the address.
     // - It is not dangling. Its extent is that of `value`. If `D` is unsized and more aligned than
     //   `S`, `Plan::try_cast_by` checked that its size is at most the size of `value`. Otherwise
-    //   its size is at most the size of `value`, as in `pun_ref`.
+    //   either `D` is sized, and its size is its extent, or `D` is unsized and its extent is
+    //   rounded up to an alignment that divides that of `S`. Either way its size is at most the
+    //   size of `value`.
     // - It points to a valid `D`. `validate` found every part that the analysis marked to be
     //   valid. Every other part is valid in every value of `S`, since the relation records no
     //   byte read from padding, no disjoint part, no pointer, and nothing that Rust leaves to
@@ -4004,7 +4033,7 @@ pub const fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Res
 pub const fn zeroed<T: Pun + Copy>() -> T {
   const {
     assert!(T::LAYOUT.zeroable(), "zero is not a valid value of this type");
-    // No `Copy` type holds one; were there one, it would not be made from nothing.
+    // `SelfRelative` does not forbid a `Copy` pointer type, and a pointer is not made from nothing.
     assert!(!T::LAYOUT.has_pointers(), "this type holds a self-relative pointer");
   };
   // SAFETY: `zeroed` requires that bytes that are all zero are a valid `T` [1]. The assertion above
@@ -4135,13 +4164,13 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 /// assert_eq!(puns::from_bytes::<str>(b"caf\xc3\xa9"), Ok("caf\u{e9}"));
 /// ```
 ///
-/// The source is bytes, whatever the literal:
+/// The source must be bytes, so a literal of another integer type does not compile:
 ///
 /// ```compile_fail,E0308
 /// let _ = puns::from_bytes::<[u8; 2]>(&[7i32, 1]);
 /// ```
 ///
-/// No bytes are a type without values:
+/// No bytes are a value of a type without values:
 ///
 /// ```compile_fail,E0080
 /// let _ = puns::from_bytes::<core::convert::Infallible>(&[]);
@@ -4230,9 +4259,10 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
   /// - `addr` is valid for reads of `n` initialized bytes.
   #[inline(always)]
   const unsafe fn front(addr: *const u8, n: usize) -> Result<(*const D, usize), Error> {
-    // SAFETY: `addr` is valid for reads of `n` initialized bytes, by contract on the caller. `C`
-    // is `Self`, whose marks are those of the analysis of bytes as a `D`: every part of `D` that
-    // some bytes are not valid for. These are the requirements of `front_by`, with any extent.
+    // SAFETY: `addr` is valid for reads of `n` initialized bytes, by contract on the caller, as
+    // `front_by` requires. `C` is `Self`, whose marks are those of the analysis of bytes as a `D`:
+    // every part of `D` that some bytes are not valid for. So a pointer that it returns is a
+    // valid `D`.
     unsafe { Self::front_by::<Self>(addr, n, usize::MAX) }
   }
 
@@ -4247,10 +4277,11 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
   /// The caller must ensure that:
   ///
   /// - `addr` is valid for reads of `n` initialized bytes.
-  /// - `C` marks every part of `D` that the bytes may not be valid for. It does if `C` is
-  ///   [`Plan`] itself, whose marks are those of any bytes as a `D`. It also does if `C` holds the
-  ///   marks of the analysis of a source `S` as a `D`, and the first `extent` bytes at `addr` are a
-  ///   valid `S`.
+  ///
+  /// The returned pointer is a valid `D` only if `C` marks every part of `D` that the bytes may
+  /// not be valid for. It does if `C` is [`Plan`] itself, whose marks are those of any bytes as a
+  /// `D`. It also does if `C` holds the marks of the analysis of a source `S` as a `D`, and the
+  /// first `extent` bytes at `addr` are a valid `S`.
   #[inline(always)]
   const unsafe fn front_by<C: Checks>(
     addr: *const u8,
@@ -4430,7 +4461,7 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Err
 /// A view of one thing or another (an enum of references, see `#[derive(Pun)]`) tests this before
 /// it decides each of its variants (`view::decide`). The same bytes are then compared with what
 /// each variant requires there, which the optimizer merges into one decision, instead of each
-/// conversion computing sizes and rules before it gets there.
+/// conversion computing sizes and rules before it reads that scalar.
 #[doc(hidden)]
 #[inline(always)]
 #[must_use]
@@ -4658,7 +4689,7 @@ pub const fn from_tail_mut<D: ?Sized + Pun>(
 /// struct cuts them (see `#[derive(Pun)]`).
 ///
 /// The type system does not enforce regions. If the fields of `value` give regions that do not fit
-/// in its tail, they are cut short.
+/// in its tail, they are cut short. A region whose expression fails takes the rest of the tail.
 ///
 /// # Panics
 ///

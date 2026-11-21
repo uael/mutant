@@ -64,8 +64,11 @@ union Cast<A: Copy, B: Copy> {
 ///   the size of a `*const [u8]`, and every byte of it is initialized.
 #[inline(always)]
 pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
-  // SAFETY: A `*const T` is represented as a `*const [u8]`, by contract on the caller. So its bytes
-  // are initialized, and are a `*const [u8]` of the same size (see `Cast`).
+  // SAFETY: The read reinterprets the bytes of `ptr` as a `*const [u8]`, which is valid if its
+  // bytes are initialized and of its size (see `Cast`). Both cases of the contract give this.
+  // Either a `*const T` is represented as a `*const [u8]`, or the caller is `verify`, a `*const T`
+  // has the size of a `*const [u8]`, and every byte of `ptr` is initialized. In the second case,
+  // the length read need not be the length of the tail, which `verify` checks.
   unsafe { Cast::<*const T, *const [u8]> { from: ptr }.to }.len()
 }
 
@@ -77,8 +80,11 @@ pub const unsafe fn raw_len<T: ?Sized>(ptr: *const T) -> usize {
 #[inline(always)]
 pub const unsafe fn raw_with_len<T: ?Sized>(ptr: *const T, len: usize) -> *const T {
   let slice = core::ptr::slice_from_raw_parts(ptr.cast::<u8>(), len);
-  // SAFETY: A `*const T` is represented as a `*const [u8]`, by contract on the caller. So the bytes
-  // of `slice`, which are initialized, are a `*const T` of the same size (see `Cast`).
+  // SAFETY: `slice_from_raw_parts` made `slice`, so its bytes are initialized. The read
+  // reinterprets them as a `*const T`, a raw pointer, which is valid if its bytes are initialized
+  // and of its size (see `Cast`). Both cases of the contract give a `*const T` the size of a
+  // `*const [u8]`. In the second case, the caller is `verify`, which checks that the result has
+  // the address of `ptr` and the tail length `len`.
   unsafe { Cast::<*const [u8], *const T> { from: slice }.to }
 }
 
@@ -166,7 +172,9 @@ pub const fn from_raw_parts<T: ?Sized + Pun>(addr: *const u8, len: usize) -> *co
 ///
 /// The caller must ensure that:
 ///
-/// - `ptr` points to an allocation that holds a `T`.
+/// - `ptr` points to the start of a `T`, all of whose bytes are in one allocation. If `T` is
+///   unsized, the length of the tail of `ptr` is the length of the tail of that `T`. The bytes
+///   need not be initialized or a valid `T`.
 /// - `T` has a field of type `F` at `offset`.
 #[inline(always)]
 pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
@@ -176,8 +184,8 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
   // An unsized field is the last one: it shares the slice length of its parent.
   let len = if const { F::LAYOUT.unsized_ } { metadata(ptr) } else { 0 };
   // SAFETY: This satisfies the safety contract of `add` [1]. By contract on the caller, `ptr`
-  // points to an allocation that holds a `T`, and `T` has a field at `offset`. So `offset` is at
-  // most the size of that `T`, and `ptr..ptr + offset` is in bounds of the allocation.
+  // points to the start of a `T` in one allocation, and `T` has a field at `offset`. So `offset`
+  // is at most the size of that `T`, and `ptr..ptr + offset` is in bounds of the allocation.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/core/primitive.pointer.html#method.add:
   //

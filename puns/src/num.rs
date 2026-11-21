@@ -194,7 +194,7 @@ macro_rules! ints {
         value
       }
 
-      /// Returns the bytes of the integer, as they are in memory.
+      /// Returns the bytes of the integer in memory.
       ///
       /// # Examples
       ///
@@ -211,7 +211,7 @@ macro_rules! ints {
         self.0
       }
 
-      /// Creates the integer whose bytes, as they are in memory, are `bytes`.
+      /// Creates the integer whose bytes in memory are `bytes`.
       ///
       /// Any bytes are a valid value.
       ///
@@ -457,7 +457,7 @@ macro_rules! order {
     ""
   };
   ($raw:ident) => {
-    " Two values are ordered as their values are."
+    concat!(" Two values are ordered as the `", stringify!($raw), "` values that they hold.")
   };
 }
 
@@ -532,7 +532,7 @@ macro_rules! numbers {
         endian!($endian, $raw::from_le_bytes(self.0), $raw::from_be_bytes(self.0))
       }
 
-      /// Returns the bytes of the number, as they are in memory.
+      /// Returns the bytes of the number in memory.
       ///
       /// # Examples
       ///
@@ -550,7 +550,7 @@ macro_rules! numbers {
         self.0
       }
 
-      /// Creates the number whose bytes, as they are in memory, are `bytes`.
+      /// Creates the number whose bytes in memory are `bytes`.
       ///
       /// Any bytes are a valid value.
       ///

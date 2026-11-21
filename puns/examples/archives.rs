@@ -4,9 +4,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads archives in place, from bytes.
 //!
-//! The following table lists what is specific to these formats, and what tells it to `puns`:
+//! The following table lists what is specific to these formats, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                    | Declared with                              |
+//! | Specific to these formats                      | Declared with                              |
 //! |------------------------------------------------|--------------------------------------------|
 //! | little-endian signatures                       | `u32lec<0x0403_4b50>`                      |
 //! | a ZIP name, extra fields, data, sized before   | `regions(name = .., extra = .., data)`     |
@@ -27,12 +28,12 @@
 //!   a gzip member are those of the uncompressed data, and so are the ones of a compressed ZIP
 //!   entry. They are not checked. The CRC-32 of a stored ZIP entry is checked.
 //! - A ZIP entry with a data descriptor (bit 3 of its flags) has its sizes after its data, not in
-//!   its header. [`LocalHeader`] does not accept such an entry. The code that uses the types
-//!   finds it from the central directory instead.
+//!   its header. [`LocalHeader`] does not accept such an entry. Code that reads one must take
+//!   its sizes from the central directory, which this example does not do.
 //! - The central directory and the entries of a ZIP file are found from the end record, which a
 //!   walk finds from the end of the file. They could be regions of [`Zip`], sized by the end
-//!   record, but these regions are not written here. The code that uses the types reaches them
-//!   again.
+//!   record, but these regions are not written here. Code that uses the types must find them
+//!   from the end record. `main` reads its samples in order.
 //! - ZIP64, the base-256 numbers of GNU tar and the headers of pax would be more declarations of
 //!   the same kind.
 //!
@@ -291,6 +292,7 @@ const GZIP_ALL: [u8; 53] = [
   0x36, 0x05, 0x00, 0x00, 0x00,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- ZIP: the whole file, then its records one by one.
   assert!(try_pun_ref::<_, Zip>(&ZIP[..]).is_ok());

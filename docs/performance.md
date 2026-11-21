@@ -134,8 +134,8 @@ walk over the extension headers, and the IPv6 case of 1400 bytes computes a chec
 The code written by hand computes CRC-32 and CRC-32C 16 bytes at a time, unless the name of the
 case says a byte at a time, and checks a slice with an iterator, such as `bytes.iter().all(|&b| b
 <= 1)`. It computes the two CRC-16s a byte at a time, with a table, while `puns` computes every CRC
-16 bytes at a time, so these two rows compare two algorithms rather than the cost of the check
-around them.
+16 bytes at a time, so the rows of the CRC-16s compare two algorithms rather than the cost of the
+check around them.
 
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
 without a branch inside a block. A slice of `MaybeFlag`, an enum of the `Rust` representation whose
@@ -179,10 +179,11 @@ release build.
 ## Costs
 
 A check never allocates and never panics. Without nested walks, its time grows with the size of the
-value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
-`walk` multiplies the time by the size, at each level. Each checked pun is code specialized for its
-two types, and it relies on inlining, which a debug build mostly does not do, so measure the checks
-in release.
+value, or, for a `size` or `len` rule, with the number of bytes given. A `walk` takes at most
+`8 * size + 128` steps, where `size` is that number of bytes, so a checksum or another `walk` inside
+a `walk` multiplies the time by the size, at each level. Each checked pun is code specialized for
+its two types, and it relies on inlining, which a debug build mostly does not do, so measure the
+checks in release.
 
 > [!WARNING]
 > Walks nest up to 4 deep, so a checksum inside the deepest one takes time in proportion to the

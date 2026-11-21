@@ -1,9 +1,9 @@
 //! Ethernet frames and the packets they carry, declared with `#[derive(Pun)]` and read in place
 //! from bytes.
 //!
-//! The first half of this file declares types, and these declarations are all there is to Ethernet
-//! here. The file has no `unsafe`, no `impl`, no parsing code, no dispatch and no size computation.
-//! The second half reads frames in place from bytes, in safe Rust.
+//! The first half of this file declares types, and nothing else in it describes Ethernet. The file
+//! has no `unsafe`, no `impl`, no parsing code, no dispatch and no size computation. The second
+//! half reads frames in place from bytes, in safe Rust.
 //!
 //! Another EtherType, protocol or header is one more declaration of the same kind. It says what
 //! the header is made of, and which `tag` comes with it.
@@ -187,10 +187,11 @@ pub struct ServiceVlan<P: ?Sized + Tag<EtherType> = [u8]> {
 // -------------------------------------------------------------------------------------------------
 // ARP
 
+/// The operation of an ARP message, a request or a reply, in network byte order.
 #[derive(Pun, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Operation {
-  // The values an `u16` has in memory when it is big-endian on the wire.
+  // The values that a `u16` has in memory when it is big-endian on the wire.
   Request = 1u16.to_be(),
   Reply = 2u16.to_be(),
 }
@@ -272,9 +273,9 @@ pub struct Ipv4<P: ?Sized + Tag<Protocol> = [u8]> {
 // is not the whole of what is carried, and what is encrypted cannot be read: the walk stops
 // there, on something that has no such checksum.)
 #[pun(assert({
-  // What a header is (the high 64 bits), and where it starts (the low 64 bits: a `u128` is two
-  // registers, which these read without a shift): down to the first one that is not an extension
-  // header.
+  // The state holds the kind of a header in its high 64 bits and its offset in its low 64 bits. A
+  // `u128` is two registers, so each half is read without a shift. The walk stops at the first
+  // header that is not an extension header.
   let upper = walk(
     (next_header << 64) + 40,
     |at| {
@@ -654,6 +655,7 @@ fn frame(ether_type: u16, payload: &[u8]) -> Vec<u8> {
   [&B.0.to_bytes()[..], &A.0.to_bytes()[..], &ether_type.to_be_bytes()[..], payload].concat()
 }
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- A frame, of any payload, then of the payload that its EtherType tells.
   let bytes = frame(0x0800, &UDP);
@@ -749,7 +751,7 @@ pub fn main() {
   wire.extend(puns::crc32(&wire).to_le_bytes());
   let checked: &CheckedFrame = try_pun_ref(&wire[..]).unwrap();
   assert_eq!((checked.payload().len(), checked.fcs().len()), (46, 4));
-  // As anyone would check it: the CRC of a frame with its sequence is a constant.
+  // The usual check: the CRC of a frame followed by its frame check sequence is a constant.
   assert_eq!(puns::crc32(&wire), 0x2144_df1c);
   for at in [0, 30, 59, 60, 63] {
     let mut wire = wire.clone();
@@ -960,8 +962,8 @@ pub fn main() {
   }
   assert_eq!((values, rest.len()), (vec![(1, 7), (2, 2), (3, 2), (0, 0)], 0));
 
-  // ---- One thing or another: the declaration of `AnyFrame` is all there is to telling them
-  // apart. What follows is what is made of each.
+  // ---- One thing or another. The declaration of `AnyFrame` alone tells the kinds apart, and what
+  // follows uses each kind.
   let describe = |bytes: &[u8]| match AnyFrame::from_bytes(bytes) {
     Ok(AnyFrame::Udp(frame)) => match frame.payload.payload() {
       Ok(udp) => format!("UDP to port {}", udp.destination_port),

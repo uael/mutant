@@ -7,9 +7,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads values in place, from bytes.
 //!
-//! The following table lists what is specific to these encodings, and what tells it to `puns`:
+//! The following table lists what is specific to these encodings, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                               | Declared with                                  |
+//! | Specific to these encodings               | Declared with                                  |
 //! |-------------------------------------------|------------------------------------------------|
 //! | a DER length of 1 byte, or of 1 to 4 more | `regions(long_length = .., contents: C)`       |
 //! | the shortest DER long form                | `assert(length != 0x81 \|\| be(2, 1) >= 0x80)` |
@@ -496,9 +497,10 @@ pub struct Utf8Field {
 #[pun(size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1)]
 pub struct CStr(pub [u8]);
 
-/// A C string that is also UTF-8.
+/// A C string whose text is read as UTF-8.
 ///
-/// Its text is a region of type `str`, checked when it is read.
+/// Its text is a region of type `str`, checked when it is read: bytes that are not UTF-8 are a
+/// valid `CText`, whose `text` returns an error.
 #[derive(Pun)]
 #[repr(transparent)]
 #[pun(size = walk(0, |at| be(at, 1) != 0, |at| at + 1) + 1)]
@@ -530,8 +532,7 @@ pub struct Padded32(pub [u8; 32]);
   let end = walk(0, |at| be(at, 1) >= 0x41 && be(at, 1) <= 0x5a, |at| at + 1);
   end > 0 && be(end, 1) == 0x20
 }))]
-// Up to the version: visible ASCII and one space (counted from bit 16). One walk that checks the
-// letters of the method as well would be of 61 operations: there are two walks, in two rules.
+// Up to the version: visible ASCII and one space (counted from bit 16).
 #[pun(assert({
   let s = walk(
     0,
@@ -607,6 +608,7 @@ const MSGPACK: [u8; 18] = [
 const CBOR: [u8; 13] =
   [0x64, 0x49, 0x45, 0x54, 0x46, 0x18, 0x64, 0x1a, 0x00, 0x0f, 0x42, 0x40, 0xf5];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- DER: an SNMP GetRequest, a chain of values of their own sizes.
   // A value from a stream: its length, of the short or the long form, tells where it ends.

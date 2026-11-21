@@ -345,7 +345,10 @@ impl Spec {
   /// ```
   #[must_use]
   pub const fn maybe_uninit(self) -> Self {
-    assert!(matches!(self.valid, Valid::In(_)), "a scalar that may be uninitialized restricts");
+    assert!(
+      matches!(self.valid, Valid::In(_)),
+      "only a scalar that restricts its values may also be uninitialized"
+    );
     Self { known: Valid::Uninit, ..self }
   }
 
@@ -719,7 +722,7 @@ pub(crate) enum Uniform {
 /// Without the `unstable` feature, the analysis does not look into a layout that is not `fixed`
 /// ([`Layout::is_opaque`]). As a source, such a layout is what every choice of it is (initialized
 /// bytes if `init`, and otherwise bytes that may be padding). As a target, it is proven by the same
-/// type at the same place ([`Id`]). A struct whose size is the same in every layout, and that has
+/// type at the same place (`Id`). A struct whose size is the same in every layout, and that has
 /// no rule and no pointer, is also proven field by field, at every offset each field may have.
 #[derive(Copy, Clone, Debug)]
 #[expect(clippy::struct_excessive_bools, reason = "five facts of a layout, each asked alone")]
@@ -952,7 +955,7 @@ pub enum Aim {
 ///
 /// A pointer guarantees that its target is where it says, valid, and its own. This is not a
 /// property of its bytes, so no bytes prove a pointer. Only a pointer at the same place proves one,
-/// if its target can be reinterpreted as the target of the other. No check at run time makes up for
+/// if its target can be reinterpreted as the target of the other. No check at run time can replace
 /// a pointer that is not proven, and `puns` gives no `&mut` to a value that holds a pointer.
 ///
 /// # Examples
@@ -1227,7 +1230,8 @@ impl Pointer {
   /// ```
   /// use puns::layout::{Endian, Pointer};
   ///
-  /// // Not the alignment that the declarer guarantees of the first element: see `aim`.
+  /// // The alignment of a `u16`, not the alignment of 8 that the crate of the pointer guarantees
+  /// // of the first element (see `aim`).
   /// let pointer = Pointer::sequence::<u16>("my crate", 4, Endian::Little, 8);
   /// assert_eq!(pointer.align(), align_of::<u16>());
   /// ```
@@ -1459,7 +1463,7 @@ impl Enum {
   /// it, for `#[derive(Pun)]`.
   ///
   /// The tag is the scalar `tag` at `offset`. The `variants` are in declaration order, as
-  /// [`Variant::discovered`] makes them, and `specified` is the size and alignment of the enum.
+  /// `Variant::discovered` makes them, and `specified` is the size and alignment of the enum.
   /// [`Layout::enumeration`] checks the result against the enum.
   #[doc(hidden)]
   #[must_use]
@@ -2085,8 +2089,8 @@ pub const UNSTABLE: bool = cfg!(feature = "unstable");
 
 /// The message of the compile error of a function of [`Visit`](crate::Visit), for a type that has
 /// something to check, or a pointer, in a part whose layout Rust leaves to the compiler.
-pub(crate) const VISIT_UNSPECIFIED: &str = "the type has a part whose layout Rust does not keep \
-  from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation), \
+pub(crate) const VISIT_UNSPECIFIED: &str = "the type has a part whose layout Rust leaves to the \
+  compiler (a struct, a tuple or an enum of the `Rust` representation), \
   and something to check or a pointer in it, which would be at another place with another \
   compiler.\nAdd `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the \
   `unstable` feature of `puns`";
@@ -2257,7 +2261,7 @@ impl Layout {
   /// const HALF: Layout =
   ///   Layout::scalar::<u16>(Spec::ranges::<u16>(Endian::NATIVE, &[(0, 0x7fff)]));
   /// assert_eq!((HALF.size(), HALF.align()), (size_of::<u16>(), align_of::<u16>()));
-  /// // Some values are not one: they are checked.
+  /// // Some values of a `u16` are not values of `HALF`, so a check is needed.
   /// assert!(!HALF.is_free());
   /// ```
   #[must_use]
@@ -2600,10 +2604,10 @@ impl Layout {
 
   /// Returns whether the validation has nothing to check of a value of the layout.
   ///
-  /// This is so if the layout has nothing that a validation checks: no scalar that accepts only
-  /// some values, no pattern, no pointer, no enum with fields, no union, no type without values,
-  /// and no rule. Any bytes that are initialized wherever the layout is not padding are then a
-  /// valid value, and [`validate_in`](crate::validate_in) reads nothing of such a value.
+  /// This is so if the layout has no scalar that accepts only some values, no pattern, no pointer,
+  /// no enum with fields, no union, no type without values, and no rule. Any bytes that are
+  /// initialized wherever the layout is not padding are then a valid value, and
+  /// [`validate_in`](crate::validate_in) reads nothing of such a value.
   ///
   /// # Examples
   ///
@@ -2880,7 +2884,7 @@ impl Layout {
   ///   unsafe { Layout::structure::<Range>(core::ptr::null(), &FIELDS, &RULES) };
   ///
   /// assert_eq!(RANGE.size(), size_of::<Range>());
-  /// // Any bytes are its fields, not its rule: it is checked.
+  /// // Any bytes are valid fields, but they may break the rule, so a check is needed.
   /// assert!(!RANGE.is_free());
   /// ```
   pub const unsafe fn structure<T: ?Sized>(
@@ -3043,7 +3047,7 @@ impl Layout {
   /// const SQUARE: Layout = Layout::variant::<Shape>(&SQUARE_FIELDS);
   /// # const VARIANTS: [Variant; 2] = [Variant::new(0, &DOT), Variant::new(1, &SQUARE)];
   ///
-  /// // As large as the enum, whose bytes the fields do not cover are padding.
+  /// // As large as the enum. The bytes that the fields do not cover are padding.
   /// assert_eq!(SQUARE.size(), size_of::<Shape>());
   /// assert!(!SQUARE.is_plain());
   /// ```
@@ -3502,6 +3506,7 @@ impl Layout {
   ///   len: u16,
   /// }
   ///
+  /// // `LAYOUT` is hidden, and read here only to show the answer.
   /// // `repr(C)` places the fields in order.
   /// assert!(Header::LAYOUT.is_specified());
   /// // The same bytes in either order of the fields.
@@ -3575,7 +3580,7 @@ impl Layout {
   }
 
   /// Returns the tag of the `variant`th variant of an enum, or its index if the enum is of the
-  /// `Rust` representation ([`Variant::discovered`]), for `#[derive(Pun)]`.
+  /// `Rust` representation (`Variant::discovered`), for `#[derive(Pun)]`.
   ///
   /// # Panics
   ///
@@ -3636,8 +3641,8 @@ impl Layout {
   /// Returns whether a value of the layout can exist.
   ///
   /// A type without values has none, and neither does an enum whose variants have none, nor a
-  /// struct, or an array of at least one element, that holds a type without values. A slice and an
-  /// array of no elements have values, since they may be empty.
+  /// struct, or an array of at least one element, that holds a type without values. A slice has
+  /// values, since it may be empty, and so does an array of no elements, whose one value is empty.
   ///
   /// # Examples
   ///
@@ -5554,8 +5559,9 @@ pub enum Checksum {
   /// The sum of the bytes, not reduced, as the tar header holds it. `% 256` makes it a one-byte
   /// sum.
   Sum,
-  /// Fletcher-16, two sums modulo 255, the second of the first, as `second << 8 | first`. It is 0
-  /// over data that holds its own ISO 8473 checksum, as in OSPF and IS-IS.
+  /// Fletcher-16, two sums modulo 255, the first of the bytes and the second of the successive
+  /// values of the first, as `second << 8 | first`. It is 0 over data that holds its own ISO 8473
+  /// checksum, as in OSPF and IS-IS.
   Fletcher16,
   /// Adler-32, of zlib, two sums modulo 65521, the first starting at 1, as `second << 16 | first`.
   Adler32,

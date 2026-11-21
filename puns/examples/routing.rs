@@ -5,9 +5,10 @@
 //! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
 //! no `impl` and no parsing code, and the second half reads messages in place, from bytes.
 //!
-//! The following table lists what is specific to these protocols, and what tells it to `puns`:
+//! The following table lists what is specific to these protocols, and what in the declarations
+//! expresses it:
 //!
-//! | Specificity                                    | Declared with                               |
+//! | Specific to these protocols                    | Declared with                               |
 //! |------------------------------------------------|---------------------------------------------|
 //! | the BGP marker, 16 bytes of ones               | `[u8c<0xff>; 16]`                           |
 //! | a BGP message tells its type                   | `tag(MessageType = u8c<1>)`                 |
@@ -273,7 +274,7 @@ pub struct Vxlan {
 #[derive(Pun)]
 #[repr(C)]
 #[pun(get(options_length: usize = (version_options & 0x3f) * 4, oam: bool = flags & 0x80 != 0))]
-// The options are made of whole options.
+// The region of options holds whole options.
 #[pun(assert(walk(
   8,
   |at| at < 8 + (version_options & 0x3f) * 4,
@@ -320,7 +321,7 @@ pub struct Igmp2 {
   pub group: [u8; 4],
 }
 
-/// An IGMPv3 membership query, which ends with a list of sources and their count.
+/// An IGMPv3 membership query, which ends with the number of sources, then the sources.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(sum16(0, size_of_val(self)) == 0xffff))]
@@ -337,7 +338,7 @@ pub struct Query3 {
   pub sources: [[u8; 4]],
 }
 
-/// An IGMPv3 membership report, which ends with group records and their count.
+/// An IGMPv3 membership report, which ends with the number of group records, then the records.
 ///
 /// Each record has a size of its own, and the records fill the report.
 #[derive(Pun)]
@@ -536,6 +537,7 @@ const ADVERTISEMENT: [u8; 56] = [
   0, 0, 0, 0, 0, 0, 0,
 ];
 
+/// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- BGP: messages of typed bodies.
   let (open, rest) = from_head::<Message<Open>>(&OPEN).unwrap();

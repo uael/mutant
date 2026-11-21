@@ -37,8 +37,8 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
 - **Self-relative pointers.** [`deep`](src/deep.rs) proves what pointers aim at, by instances of
   functions. [`visit`](src/visit.rs) validates, walks and copies a value in a buffer for the crate
   that has the pointers.
-- **Measurements.** [`examples/codegen.rs`](examples/codegen.rs) records the machine code of each
-  function. [`benches/checks.rs`](benches/checks.rs) times each check next to the same check
+- **Measurements.** [`examples/codegen.rs`](examples/codegen.rs) records the machine code of most of
+  its functions. [`benches/checks.rs`](benches/checks.rs) times each check next to the same check
   written by hand.
 - **The model check.** [`puns-model`](../puns-model/src/lib.rs) compares every verdict with
   oracles that do not use the analysis.
@@ -72,15 +72,15 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
 
 ## Not done yet
 
-What users meet is in "Limitations" of the crate documentation. The following are the ideas and
-their costs, for whoever takes one up.
+The limits that users of the crate face are in "Limitations" of the crate documentation. This
+section lists changes that could lift some of them, and what each would cost.
 
 - **One walk to copy a value and hand over its pointers.** A deep copy is `copy_in` then
   `pointers_in` on the same value, so the tag of an enum is read, and its variant chosen, twice. One
   walk could hand the pointers to the visitor during the copy, but the visitor of a deep copy
-  allocates the targets, which can move the buffer under the copy, so the walk would have to keep
-  the pointers aside until it ends. A prototype that kept them on a stack of its own was twice as
-  slow, with an indirect call, a push and a pop for each pointer.
+  allocates the targets, which can move the buffer while the copy runs, so the walk would have to
+  store the pointers until the copy ends. A prototype that kept them on a stack of its own was twice
+  as slow, with an indirect call, a push and a pop for each pointer.
 - **Checks behind pointers.** Checking behind pointers is a walk of the buffer with the marks of
   each pair of types, which only the crate that has the pointers can make, since it knows the way to
   the targets. The version of `validate_in` for a pair would be a function of its own,
@@ -94,16 +94,17 @@ their costs, for whoever takes one up.
   the two could be made the same, either way.
 - **Ranges from conditions.** A value is narrowed by what it is made of and by the reads that
   succeeded, not by a comparison that held, so the condition of a walk does not narrow its step, nor
-  does the condition of an `if` narrow its branches. The examples have neither case, since their
-  walks move offsets.
+  does the condition of an `if` narrow its branches. The walks of the font example have the first
+  case: their states are a power of two and its exponent, bounded only by their conditions.
 - **Rules implied by other rules.** The analysis proves a rule of the target from the source only
   where the source has the same rule, over the same extent at the same place. A rule that other
   rules of the source imply is checked all the same. This is sound, and the model check does not
   count it as imprecise.
-- **A rule that two variants of a view share, where neither takes the other.** The later variants
-  that have a rule that failed, over the same extent at the same place (`Layout::same_rules`), could
-  be ended at once, and the validation would then report which rule failed. But every check would
-  carry that report, where it is now a `bool` that the optimizer folds.
+- **A rule that two variants of a view share, where neither variant takes every value of the
+  other.** The later variants that have a rule that failed, over the same extent at the same place
+  (`Layout::same_rules`), could be ended at once, and the validation would then report which rule
+  failed. But every check would carry that report, where it is now a `bool` that the optimizer
+  folds.
 - **Precise checks of an enum made from something else.** Only what was not proven could be
   checked, rather than the whole enum.
 - **An enum checked into what is not an enum.** Relating the target to each variant of the source

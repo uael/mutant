@@ -1657,7 +1657,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           || {
             let doc = format!(
               "Returns the bytes of the `{name}` region of the tail, cut short if the fields that \
-               size the regions give more bytes than the tail holds.\n\n# Compile-time errors\n\n\
+               size the regions give more bytes than the tail holds. The region takes the rest of \
+               the tail if its expression fails.\n\n# Compile-time errors\n\n\
                A call compiles only under the compile-time conditions of `puns::region`, which \
                require every byte of the struct, up to the end of its tail, to be initialized."
             );
@@ -1673,7 +1674,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
             let doc = format!(
               "Returns the `{name}` region of the tail as the type it is said to hold, read with \
                `puns::from_bytes`. The region is cut short if the fields that size the regions \
-               give more bytes than the tail holds.\n\n# Errors\n\nReturns the error of \
+               give more bytes than the tail holds, and takes the rest of the tail if its \
+               expression fails.\n\n# Errors\n\nReturns the error of \
                `puns::from_bytes` if the bytes of the region are not a value of that type.\n\n\
                # Compile-time errors\n\nA call compiles only under the compile-time conditions \
                of `puns::region`, which require every byte of the struct, up to the end of its \
@@ -1697,7 +1699,8 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     let (name, ty, vis) = (&getter.name, &getter.ty, &input.vis);
     let expr = rust(&getter.expr, &fields, &root, repr.packed.is_some());
     let doc = format!(
-      "Returns `{}`, computed from the fields of the value, as a `{}`.",
+      "Returns `{}`, computed from the fields of the value, as a `{}`.\n\n# Panics\n\nPanics \
+       where the expression, evaluated as Rust code, panics, such as on a division by zero.",
       getter.expr.to_token_stream(),
       ty.to_token_stream()
     );
@@ -1711,7 +1714,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     });
   }
 
-  // The tags the type goes with.
+  // The tags that the type can be carried next to.
   let tags = options.tags.iter().map(|TagOption { key, tag }| {
     quote! {
       impl #impl_generics #root::Tag<#key> for #this #where_clause {
@@ -2441,10 +2444,13 @@ fn derive_discovered(
         let sample = &<Self as __PunDiscover>::SAMPLES[#i];
         let base = sample.as_ptr();
         if #layout::inhabited_all(&[#(&<#types as #root::Pun>::LAYOUT),*]) {
-          // SAFETY (of the generated code): The variant has values, which is checked above, so
-          // its sample is the variant made of valid fields, a valid `Self`. `base` points to it,
-          // in the constant `SAMPLES`, so it is aligned and not dangling. These are the
-          // requirements of a reference.
+          // SAFETY (of the generated code): The reference made from `base` meets the
+          // requirements of a reference:
+          // - It is not null, aligned, and not dangling, because `base` is `as_ptr` of `sample`,
+          //   a reference to a `MaybeUninit<Self>` in the constant `SAMPLES`.
+          // - It points to a valid `Self`, because the variant has values, which is checked
+          //   above, so its sample is the variant made of valid fields.
+          // `SAMPLES` is a constant, which nothing writes while the reference lives.
           match unsafe { &*base } {
             Self::#name { #(#members: #bindings),* } => [#(
               // SAFETY (of the generated code): Each binding is a reference to a field of the

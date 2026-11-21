@@ -18,10 +18,10 @@ borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). Test file
 the `unsafe` code, such as the examples other than `ethernet`, do not run there.
 
 The model check runs under Miri too, with tree borrows on x86-64 only. It runs a few pairs for each
-`unsafe` path that it reaches instead of every pair, and [`miri_sample.rs`][sample] says which pair
-is for which. Under Miri, it does not check `pun`, `pun_mut`, the `_mut` functions that check, or
-regions, because the tests of `puns` already run these there. It calls `pun_mut` only to fill a
-buffer.
+`unsafe` path that it reaches instead of every pair, and [`miri_sample.rs`][sample] names the unsafe
+path that each pair reaches. Under Miri, it does not check `pun`, `pun_mut`, the `_mut` functions
+that check, or regions, because the tests of `puns` already run these there. It calls `pun_mut` only
+to fill a buffer.
 
 ## Layouts that Rust leaves to the compiler
 

@@ -106,12 +106,13 @@
 //! scheme, the same offset (width and byte order), and the same kind of aim. Its target must be no
 //! larger and need no more alignment. For one value, that is its size and alignment. For a
 //! sequence, the elements must have the same size, and the declared alignment of the target must
-//! not be greater than that of the source. For text, nothing more is needed. The pointer of the
-//! target may not be zero if it is not nullable, or if its offset is a `NonZero`. Where it may not
-//! be zero and the pointer of the source may, `try_view_ref` checks that the pointer of the source
-//! is not zero, and `view_ref` refuses the pun. Anything else sets the `pointer` of the
-//! [`Relation`](crate::analysis::Relation), which no function accepts and no check makes up for. An
-//! enum that holds pointers is proven by an enum, variant by variant, or not at all.
+//! not be greater than that of the source. For text, nothing more is needed. A zero offset in the
+//! source needs a check where the pointer of the target may not be null, and zero is not a pointer
+//! of the target: because zero is null in the source, or because the offset of the target is a
+//! `NonZero`. `try_view_ref` then checks that the offset is not zero, and `view_ref` refuses the
+//! pun. Anything else sets the `pointer` of the [`Relation`](crate::analysis::Relation), which no
+//! function accepts and no check can replace. An enum that holds pointers is proven by an enum,
+//! variant by variant, or not at all.
 //!
 //! ## Only a proof of what pointers aim at makes a value that holds one
 //!
@@ -187,10 +188,12 @@
 //! ## Every unproven pointer is recorded
 //!
 //! The `pointer` of a [`Relation`](crate::analysis::Relation) is set for every pointer of a target
-//! that a pointer of the source does not prove. The two places that give up on proving set it
-//! (`relate_range`, `relate_enums`). `relate_enum_from` relates each variant of an enum in a
-//! `Relation` of its own, and passes on the pointer that it records. Every plan refuses it,
-//! fallible or not (`check` in `lib.rs`).
+//! that a pointer of the source does not prove. `relate_range` sets it in three cases: a pointer of
+//! the target where the source has no pointer whose target can be reinterpreted as its target, a
+//! target that holds a pointer over a pattern of the source, and an enum of the target that holds a
+//! pointer and is checked whole. `relate_enums` and `relate_enum_from` relate each variant in a
+//! `Relation` of its own, and pass on the pointer that it records. Every plan refuses it, fallible
+//! or not (`check` in `lib.rs`).
 //!
 //! ## Only views make a value that holds a pointer
 //!
@@ -246,8 +249,8 @@ use crate::{
 
 const LARGER: &str = "behind a pointer, the target is larger than what it is read from";
 const UNSPECIFIED: &str = "behind a pointer, the pun depends on a part of the source or of the \
-                           target whose layout Rust does not keep from one compilation to the \
-                           next (a struct, a tuple or an enum of the `Rust` representation): \
+                           target whose layout Rust leaves to the compiler (a struct, a tuple or \
+                           an enum of the `Rust` representation): \
                            only the same type at the same place proves it.\nAdd `#[repr(C)]` \
                            (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of \
                            `puns`";
@@ -317,8 +320,8 @@ pub fn proof<S: ?Sized + Pun, D: ?Sized + Pun>() {
 ///
 /// # Compile-time errors
 ///
-/// An instance compiles only if [`behind`] finds that an `X` can be reinterpreted as a `Y`, with no
-/// fuel.
+/// An instance compiles only if `behind::<X, Y>(0)` returns `None`: an `X` can be reinterpreted as
+/// a `Y`, without following their pointers further.
 fn target<X: Pun, Y: Pun>() {
   const { require(behind::<X, Y>(0)) };
   pair::<X, Y>();

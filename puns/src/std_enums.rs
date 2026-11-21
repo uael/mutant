@@ -125,9 +125,11 @@ impl<T: Pun> Found for Option<T> {
     [0, 0]
   } else {
     let sample = &<Self as Found>::SAMPLES[1];
-    // SAFETY: `sample` is `SAMPLES[1]`, `Some` of a valid `T`, so a valid `Option<T>`. It is a
-    // reference to a `MaybeUninit<Option<T>>`, so aligned and not dangling. These are the
-    // requirements of a reference [1].
+    // SAFETY: The reference made from `sample.as_ptr()` meets the requirements of a reference [1]:
+    // - It is not null, aligned, and not dangling, because `sample` is a reference to a
+    //   `MaybeUninit<Option<T>>`, which has the layout of an `Option<T>`.
+    // - It points to a valid `Option<T>`, because `sample` is `SAMPLES[1]`, `Some` of a valid `T`.
+    // `SAMPLES` is a constant, which nothing writes while the reference lives.
     //
     // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
     //
@@ -249,7 +251,7 @@ unsafe impl<T: Pun> Pun for Option<T> {
   type Pointee = T::Pointee;
   const PROBE: *const Self = core::ptr::null();
   const LAYOUT: Layout = if let Some(layout) = T::OPTION {
-    // The declarer of the pointer promises that it is a `NonZero` (see `SelfRelative`).
+    // `Layout::nullable` checked that `Option<T>` has the size of `T` and that `None` is zeros.
     layout
   } else {
     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
@@ -277,9 +279,9 @@ unsafe impl<T: Pun, E: Pun> Pun for Result<T, E> {
     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM })
       .identified(Id::new("Result", &[T::LAYOUT.id, E::LAYOUT.id]));
     // `core` documents the layout where one of `T` and `E` is a type for which it documents
-    // `Option`, and the other has size 0 and alignment 1. What is found is then what it documents:
-    // the variant of the `NonZero` is its value, and the other variant is the one value that is not
-    // a `NonZero`, all zeros.
+    // `Option`, and the other has size 0 and alignment 1: `Result<T, E>` has the size of that type,
+    // and its variant has the bytes of its value. The other variant, if it has a value, is then the
+    // one initialized value that is not a value of that type, all zeros.
     if T::NULL_OPTIMIZED && is_1_zst::<E>() || E::NULL_OPTIMIZED && is_1_zst::<T>() {
       layout
     } else {

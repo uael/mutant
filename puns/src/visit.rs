@@ -770,13 +770,13 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// variant that the tag selects, except a scalar that may be uninitialized, such as a
 /// `MaybeUninit`. A pointer that may be null and whose bytes are all zero is copied, since it is
 /// not a pointer. The other pointers are not written. They are the ones that [`pointers_in`] hands
-/// over, in the same order, and the caller writes their offsets, re-aimed for where the copy is, or
-/// aimed at copies of their targets.
+/// over, in the same order, and the caller writes their offsets, so that each aims at its target
+/// from where the copy is, or at a copy of its target.
 ///
-/// This is for a crate that writes a value into a buffer of initialized bytes, which a copy of the
-/// whole value would not keep initialized, because a typed copy leaves the padding of the
-/// destination uninitialized, and a copy of the bytes copies the padding of the source, which may
-/// be uninitialized.
+/// This is for a crate that writes a value into a buffer of initialized bytes, and must keep every
+/// byte of it initialized. A typed copy of the whole value leaves the padding of the destination
+/// uninitialized, and a copy of its bytes copies the padding of the source, which may be
+/// uninitialized.
 ///
 /// The bytes of a valid `T` that may be uninitialized (padding, the bytes of the variants that the
 /// value is not, and fields that may be uninitialized) are never read from `src` nor written to
@@ -798,8 +798,8 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// - The two ranges do not overlap.
 ///
 /// The rules of the structs of `T` and the `valid(..)` restrictions of its fields need not hold,
-/// because none is read, and a restricted field is copied as a scalar of its type. The bytes that
-/// may be uninitialized may be so.
+/// because none is read, and a restricted field is copied as a scalar of its type. The bytes of
+/// `src` that a valid `T` may leave uninitialized need not be initialized.
 ///
 /// # Compile-time errors
 ///
@@ -1075,11 +1075,12 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
   let here = unsafe { base.add(at) };
   if const { !T::LAYOUT.has_pointers() } {
     // The code of `try_pun_ref` gives the verdict. Where it fails, the walk tells where, or the
-    // error is at the value itself if the walk finds nothing. SAFETY: `T` is `Sized`: the root of a
-    // walk is, and so are its fields and elements. So `ptr::from_raw_parts` makes a pointer to the
-    // `T` at `here`, valid for reads, by contract on the caller, which `validate` does not need
-    // aligned. Every byte of it is initialized, by contract on the caller, so every byte that a
-    // check reads is.
+    // error is at the value itself if the walk finds nothing.
+    //
+    // SAFETY: `T` is `Sized`: the root of a walk is, and so are its fields and elements. So
+    // `ptr::from_raw_parts` makes a pointer to the `T` at `here`, valid for reads, by contract on
+    // the caller, which `validate` does not need aligned. Every byte of it is initialized, by
+    // contract on the caller, so every byte that a check reads is.
     if unsafe { validate::<All, Root, T>(ptr::from_raw_parts::<T>(here, 0)) } {
       return Ok(());
     }

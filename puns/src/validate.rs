@@ -4,9 +4,10 @@
 //! associated types: the element of an array, the list of the fields of a struct. Each call is an
 //! instance of its own, in which the layout of the type and the marks of the analysis are
 //! constants. Each check sits behind an `if const { .. }` on the marks. A check that is not marked
-//! is not compiled, so what the analysis proved never reaches code generation. A check that is
-//! marked comes down to a load and a comparison. `examples/codegen.rs` records the machine code
-//! that this gives.
+//! is not compiled, so what the analysis proved never reaches code generation. A marked check of a
+//! scalar is a load and a comparison. A marked check of a pattern, an enum or a rule runs the
+//! automaton, reads the tag, or computes the rule, with its checksums and walks.
+//! `examples/codegen.rs` records the machine code that this gives.
 //!
 //! `from_head` turns the value of a `size` or `len` rule into a number of elements in a `usize`.
 //! There, the optimizer knows that the value of a field fits a `usize`.
@@ -313,8 +314,10 @@ const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Pun, F: Fields>(
     assert!(<F::Path<P> as Path>::LEAF == leaf, "not where the field is");
   };
   // SAFETY: `F` is a field of `T`, by contract on the caller, and `field` is its place in the
-  // layout of `T`, `F::FIELD` (`Fields`, section Safety). So `ptr` holds a `F::Type` at
-  // `field.offset()`, as `ptr::field` and `add` require, and that field is valid for reads.
+  // layout of `T`, `F::FIELD` (`Fields`, section Safety). `ptr` points to the start of a `T` that
+  // is valid for reads, by the requirements of `validate`, so in one allocation, and `T` has a
+  // field of type `F::Type` at `field.offset()`. These are the requirements of `ptr::field` and
+  // `add`, and that field is valid for reads.
   // - A restricted field is a scalar leaf. It is read only if it is marked, so its bytes are
   //   initialized, as `Spec::matches` requires.
   // - Any other field is a `F::Type` at the place `F::Path<P>`, which the assertion above shows
@@ -626,9 +629,9 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
 ///
 /// # Errors
 ///
-/// Returns `None` if the expression fails, as each [`Op`] documents: for example
-/// an overflow, a division by zero, a shift by 128 or more, a read out of the `size` bytes, or a
-/// walk that does not end.
+/// Returns `None` if the expression fails, as each [`Op`] documents: for example an overflow, a
+/// division by zero, a shift by 128 or more, a read out of the `size` bytes, or a walk that does
+/// not end.
 ///
 /// # Safety
 ///
