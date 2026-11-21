@@ -832,7 +832,8 @@
 //!   the crate that validates it. So does an enum with fields and more than about 120 variants,
 //!   because validation recurses over the list of the variants.
 //! - A packed struct whose unsized field has trailing padding of its own is refused.
-//! - The build of a view enum grows as the square of the number of its variants.
+//! - The build of a view enum whose variants overlap grows as the square of the number of its
+//!   variants, or faster.
 //! - `PhantomData<T>` is a [`Scalar`] for any `T`, and deriving `Pun` exposes private fields. [What
 //!   deriving `Pun` means](#what-deriving-pun-means) says which types must not derive `Pun`.
 //! - The evaluator of rules has a stack of 16 values and 8 variables. An expression has at most 256
