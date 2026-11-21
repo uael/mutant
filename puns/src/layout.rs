@@ -43,18 +43,18 @@
 //!   so the derive computes their layouts from the sizes and alignments of the fields, as `repr(C)`
 //!   lays out a struct, and the result is checked against the size and alignment of the enum. For
 //!   an enum of the `Rust` representation, experiments in const evaluation find the layout that
-//!   `rustc` chose. That layout has either a direct tag or a *niche* in the fields of one variant,
-//!   which then has several tags, the values of the scalar that holds the niche, and holds the tag
-//!   in its fields. A variant that holds a type without values has no tag, since no value of it
-//!   exists.
+//!   `rustc` chose. That layout has either a direct tag or a *niche* in the fields of one variant.
+//!   With a niche, that variant has several tags, the values of the scalar that holds the niche,
+//!   and it holds the tag in its fields. A variant that holds a type without values has no tag,
+//!   since no value of it exists.
 //! - A **union** (`repr(C)`) is an enum without a tag whose variants are its fields, each at offset
 //!   0. A value of it must be one of its fields ([Unions](crate#unions)).
 //! - A type **without values** is an enum without variants ([`Layout::uninhabited`]), such as
 //!   `Infallible`. No value has its layout ([`Layout::is_inhabited`]), so as a source such a type
 //!   proves any target.
 //! - `MaybeUninit<T>` is padding with the size of `T`.
-//! - An **array** is the layout of an element and a count, and a **slice** is the layout of an element
-//!   alone, since its length is not part of its type.
+//! - An **array** is the layout of an element and a count, and a **slice** is the layout of an
+//!   element alone, since its length is not part of its type.
 //! - A **pattern** is a tail of bytes that an automaton ([`Dfa`]) accepts, and `str` is the 8-state
 //!   automaton of UTF-8. An automaton is known by its states and edges. Its `id`, a field that safe
 //!   code can write, only serves to tell two automata apart, and two patterns are the same layout
@@ -63,8 +63,8 @@
 //! - A **self-relative pointer** ([`Pointer`]) is an offset in a byte order. What it aims at is
 //!   not in the layout.
 //!
-//! A layout is an automaton in a compact, hierarchical form, where a position in it is a state, and
-//! the analysis walks the layouts of the source and the target in step.
+//! A layout is an automaton in a compact, hierarchical form, where a position in it is a state. The
+//! analysis walks the layouts of the source and the target together, position by position.
 //!
 //! [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
@@ -593,7 +593,7 @@ impl Spec {
 pub(crate) const fn contains(ranges: &[(u128, u128)], value: u128) -> bool {
   let mut i = 0;
   // A few ranges: a comparison each, without a branch, so that the validation of a slice can be
-  // vectorised (see `validate::validate_elems`).
+  // vectorized (see `validate::validate_elems`).
   if ranges.len() <= 8 {
     let mut found = false;
     while i < ranges.len() {
@@ -712,8 +712,8 @@ pub(crate) enum Uniform {
 ///
 /// Rust leaves part of some layouts to the compiler, which may choose differently in its next
 /// version, or at random under `-Zrandomize-layout`, as [The `unstable`
-/// feature](crate#the-unstable-feature) lists. A `Stable` says which facts about a layout hold under every choice, and is
-/// computed from the layouts of its parts.
+/// feature](crate#the-unstable-feature) lists. A `Stable` says which facts about a layout hold
+/// under every choice. It is computed from the layouts of its parts.
 ///
 /// Without the `unstable` feature, the analysis does not look into a layout that is not `fixed`
 /// ([`Layout::is_opaque`]). As a source, such a layout is what every choice of it is (initialized
@@ -1012,8 +1012,8 @@ impl Pointer {
   ///
   /// Panics if `T` has a size of 0.
   const fn target<T>() -> (usize, usize) {
-    // A target of size 0 could be anywhere, the pointer itself included, and is nothing that
-    // a pointer can be read as: the proof stops at it (`deep::behind`).
+    // A target of size 0 could be anywhere, the pointer itself included, and is nothing that a
+    // pointer can be reinterpreted as, so the proof stops at it (`deep::behind`).
     assert!(size_of::<T>() != 0, "a pointer aims at a type with a size");
     (size_of::<T>(), align_of::<T>())
   }
@@ -1263,8 +1263,8 @@ impl Pointer {
         (Aim::Text, Aim::Text) => true,
         _ => false,
       };
-    // What may be zero (a null, or an offset of zero of a type that has one) is read as what may
-    // not be only when it is not, which is then checked at run time.
+    // What may be zero (a null, or an offset of zero of a type that has one) is reinterpreted as
+    // what may not be only when it is not zero, which is then checked at run time.
     let zero = self.nullable || !self.nonzero;
     if fits { Some(to.nullable || !to.nonzero && !self.nullable || !zero) } else { None }
   }
@@ -2095,10 +2095,10 @@ impl Layout {
   /// crate.
   ///
   /// The generated code names `Rule`, `Op`, `Field`, `Enum` and `Variant` by their path in the
-  /// crate that `#[pun(crate = ..)]` names, which safe code can make lead elsewhere. It calls only
-  /// associated functions of these types, and of `Layout` and `Spec`, which the traits it
+  /// crate that `#[pun(crate = ..)]` names, which safe code can make name something else. It calls
+  /// only associated functions of these types, and of `Layout` and `Spec`, which the traits it
   /// implements name. It also writes this constant with the same paths, as a tuple of `fn` types,
-  /// so a path that leads to another type does not compile, because a `fn` type is not a path, and
+  /// so a path that names another type does not compile, because a `fn` type is not a path, and
   /// nothing can stand in for it.
   #[doc(hidden)]
   #[expect(
@@ -2484,9 +2484,9 @@ impl Layout {
   #[must_use]
   pub const fn pointer<P, T>(pointer: Pointer) -> Self {
     assert!(size_of::<P>() == pointer.width, "a self-relative pointer is its offset");
-    // Whatever the type has no value of zeros: `Option` of it has its size, `None` being zeros (a
-    // `NonZero`). A niche elsewhere would tell of values of the offset that are no pointer, which
-    // nothing here can name: refused.
+    // `P` has no all-zero value if `Option<P>` has the size of `P` and a `None` of zeros, as for a
+    // `NonZero`. A niche anywhere else would mean that some values of the offset are not pointers,
+    // which a `Pointer` cannot describe, so `excludes_zero` refuses it.
     let nonzero = excludes_zero::<P>();
     assert!(
       !(nonzero && pointer.nullable),
@@ -2661,7 +2661,8 @@ impl Layout {
       Kind::Struct(fields, _) => {
         let (mut i, mut covered) = (0, 0);
         while i < fields.len() {
-          // Sorted by offset: a field after the bytes covered so far leaves a hole.
+          // The fields are sorted by offset, so a field that does not start where the bytes covered
+          // so far end leaves a hole.
           if fields[i].offset != covered || !fields[i].layout.is_plain() {
             return false;
           }
@@ -2985,9 +2986,9 @@ impl Layout {
           // SAFETY: `T` is a struct whose last field is a slice, `str`, or a struct whose last
           // field is one of these, and `verify` accepted `probe` above, so a `*const T` is
           // represented as a `*const [u8]`. These are the requirements of `raw_with_len`. The
-          // pointer it returns has a tail of `len` elements, at most 8. A value of `T` whose tail has 8 elements fits in an
-          // `isize`, by contract on the caller, and so does one with fewer. This is the safety
-          // contract of `size_of_val_raw`, quoted above.
+          // pointer it returns has a tail of `len` elements, at most 8. A value of `T` whose tail
+          // has 8 elements fits in an `isize`, by contract on the caller, and so does one with
+          // fewer. This is the safety contract of `size_of_val_raw`, quoted above.
           let size = unsafe { mem::size_of_val_raw(ptr::raw_with_len(probe, len)) };
           assert!(
             matches!(this.size_of_val(len), Some(s) if s == size),
@@ -3261,7 +3262,7 @@ impl Layout {
     let Kind::Struct(fields, _) = self.kind else { panic!("not a struct") };
     let (mut align, mut i) = (1, 0);
     while i < fields.len() {
-      // The alignment of the struct is at most `N`: that of a field, lowered to it.
+      // A field counts with at most the alignment of the struct, which `packed(N)` lowers to `N`.
       let field = fields[i].layout.align;
       let field = if field < self.align { field } else { self.align };
       if field > align {
@@ -3311,10 +3312,11 @@ impl Layout {
     assert!(!self.unsized_, "a struct of the `Rust` representation is sized");
     let parts = Stable::of_parts(fields);
     if !parts.size {
-      // A field whose size is not kept: nor is the size of the struct.
+      // If the size of a field is not the same in every layout, neither is the size of the struct.
       return Self { stable: Stable::opaque(false, false), ..self };
     }
-    // The fields that matter to the order: of a size, or aligned to more than 1.
+    // The fields that matter to the order are those with a size, or with an alignment greater than
+    // 1.
     let (mut sized, mut sum, mut init, mut i) = (0, 0, true, 0);
     let (mut all_any, mut all_same) = (true, true);
     let mut first: Option<&Layout> = None;
@@ -3324,14 +3326,16 @@ impl Layout {
         sized += 1;
         sum += field.size;
         init &= field.always_init();
-        // Of no rule either: one in a field is checked where the field is, which is its order.
+        // A field with rules does not count either, because its rules are checked where the field
+        // is, and that depends on the order.
         all_any &= matches!(field.uniform, Uniform::Any) && !field.has_rules;
         match first {
           None => {
             all_same &= field.stable.deep;
             first = Some(field);
           }
-          // The same layout, which no other build may arrange otherwise.
+          // Every field has the same layout, fixed at any depth, so no other build can arrange it
+          // otherwise.
           Some(first) => all_same &= first.stable.deep && field.stable.deep && first.equals(field),
         }
       }
@@ -3342,7 +3346,8 @@ impl Layout {
     let same_bytes = !self.rules_read_bytes()
       && match sized {
         0 => true,
-        // At 0: nothing of a size is before it.
+        // The one field with a size is at 0 in every layout, since nothing with a size can come
+        // before it.
         1 => {
           let mut i = 0;
           while fields[i].layout.size == 0 {
@@ -3350,12 +3355,13 @@ impl Layout {
           }
           fields[i].offset == 0 && tiled_size == self.size
         }
-        // A rule names fields: which bytes it holds of depends on their order.
+        // A rule names fields, and which bytes a field holds depends on the order.
         _ => rules.is_empty() && tiled && (all_any || all_same) && tiled_size == self.size,
       };
     if same_bytes {
       return Self {
-        // One part of a size is at 0 in every layout; more are in some order.
+        // One field with a size is at 0 in every layout. More are in an order that the compiler
+        // chooses.
         stable: Stable {
           fixed: true,
           ordered: sized <= 1,
@@ -3595,8 +3601,8 @@ impl Layout {
   /// Returns the layout of the type `T`, which has no value, like `Infallible` and an enum without
   /// variants.
   ///
-  /// The layout is an enum without variants. No value of a type that has values is one of it, and
-  /// as a source it proves anything, since no value of it exists.
+  /// The layout is an enum without variants. No value of a type that has values is a value of this
+  /// one. As a source, it proves any target, since it has no value.
   ///
   /// # Examples
   ///
@@ -3795,8 +3801,8 @@ impl Layout {
       Uniform::No => {}
     }
     match self.kind {
-      // What a value holds (`always`) is what is known of it; what is required of one, what is
-      // valid.
+      // With `always`, the answer is what a scalar is known to hold, and otherwise what it
+      // requires.
       Kind::Scalar(spec) => {
         (!matches!(if always { spec.known } else { spec.valid }, Valid::Uninit), self.size)
       }
@@ -3820,7 +3826,8 @@ impl Layout {
         }
         (false, self.size)
       }
-      // Nothing is known of what a union holds; a target may need what any field needs.
+      // Nothing is known of what a union holds. As a target, it may need what any of its fields
+      // needs.
       Kind::Enum(layout) if layout.union && always => (false, self.size),
       Kind::Enum(layout) => {
         let (start, end) = (layout.tag.offset, layout.tag.offset + layout.tag.layout.size);
@@ -4245,9 +4252,6 @@ impl Layout {
   /// struct, since the values of the tag of an enum of the `Rust` representation are not specified.
   /// The fields of a struct are zeros in every order.
   pub(crate) const fn zeroable(&self) -> bool {
-    // Whatever zeros are of an enum of the `Rust` representation (or of `Option<bool>`) is not
-    // kept: which values its tag has is not specified. The fields of a struct are zeros whatever
-    // their order.
     if !UNSTABLE && !self.stable.fixed && !matches!(self.kind, Kind::Struct(..)) {
       return false;
     }
@@ -4354,12 +4358,12 @@ impl Layout {
       return false;
     }
     match (self.kind, other.kind) {
-      // What a scalar requires, and what it is known to be: a layout that only requires what
-      // another guarantees (`valid(..)` on a `u8`, and a `bool`) is not the same.
+      // Both what a scalar requires and what it is known to hold are compared, so a layout that
+      // only requires what another guarantees (`valid(..)` on a `u8`, and a `bool`) is not the
+      // same.
       //
-      // A scalar that may be uninitialized is equal to none: what it is lies between what it
-      // requires and what it is known to be, which two types can have the same of while one has
-      // padding where the other does not.
+      // A scalar that may be uninitialized is equal to none. Two such scalars can require the same
+      // values and be known to hold the same values while one is padding where the other is not.
       (Kind::Scalar(a), Kind::Scalar(b)) => {
         !a.may_be_uninit()
           && a.size == b.size
