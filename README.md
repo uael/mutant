@@ -231,17 +231,23 @@ shortest one, [`media.rs`][media], reads WAVE files and MP4 boxes. Run it with
 
 ## History
 
-I started this crate in November 2023 under the name `mutant`. At the time I worked on Bluetooth,
-which involves a lot of packing and unpacking of protocol data. I was also amazed by how much
-[`typic`][typic] achieves with the type system, and that was a motivation too. Compile-time
-evaluation had recently gained features on stable Rust and inline `const` was being stabilized, so
-I wanted to see how far it could go.
+I started this crate in November 2023 under the name `mutant`. I was working on Bluetooth at the
+time, which involves a lot of packing and unpacking of protocol data, and I was impressed by how
+much crates like [`typic`][typic] or [`typenum`][typenum] do with the type system. Stable Rust had
+just gained more compile-time evaluation and inline `const` was about to be stabilized, so I wanted
+to see how far that could go.
 
-Compile-time evaluation had many limitations, and when I tried types instead I found even more. I
-wrote many prototypes that mixed the two approaches before I stopped the project for a long time.
+But by then compile-time evaluation was too limited, types were worse, and after many prototypes
+that mixed the two I stopped working on the project for a long time.
 
-Recent stabilizations and the progress of AI models made me want to come back to it. The name
-`mutant` was taken so the crate became `puns`, and the [changelog] lists the releases since.
+Recent stabilizations and the progress of AI models made me come back to it. These are the
+stabilizations that `puns` could not do without:
+
+- `&raw const` (Rust 1.82), which gives the place of a field without a macro whose path the user's
+  crate could redefine
+- `size_of_val_raw` and `align_of_val_raw` in `const` (1.99), which give the layout of unsized types
+
+`mutant` was taken, so the crate is now `puns`, and the [changelog] lists everything since.
 
 ## License
 
@@ -280,4 +286,5 @@ additional terms or conditions.
 [deku]: https://crates.io/crates/deku
 [nom]: https://crates.io/crates/nom
 [typic]: https://github.com/jswrenn/typic
+[typenum]: https://github.com/paholg/typenum
 [safe transmute]: https://rust-lang.github.io/rfcs/2835-project-safe-transmute.html
