@@ -410,3 +410,15 @@ fn signed_non_zero() {
   // Every `NonZero<i32>` is a `NonZero<u32>`, and back: the same bit patterns.
   assert_eq!(pun::<NonZero<i32>, NonZero<u32>>(minus).get(), u32::MAX);
 }
+
+/// Checks that `ManuallyDrop` of an unsized type is read as that type: the layout of
+/// `ManuallyDrop<[u8]>` checks that a pointer to it is represented as a pointer to a slice.
+#[test]
+fn manually_drop_of_a_slice() {
+  use core::mem::ManuallyDrop;
+  let bytes = [1u8, 2, 3];
+  let wrapped: &ManuallyDrop<[u8]> = pun_ref::<[u8], _>(&bytes[..]);
+  assert_eq!(&wrapped[..], &bytes[..]);
+  let text: &ManuallyDrop<str> = puns::from_bytes(b"pun").expect("UTF-8");
+  assert_eq!(&**text, "pun");
+}

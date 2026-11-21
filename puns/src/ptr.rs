@@ -127,9 +127,10 @@ pub const fn metadata<T: ?Sized + Pun>(ptr: *const T) -> usize {
   // SAFETY: `T::LAYOUT.unsized_` is `true`. Only `Layout::slice`, `Layout::pattern` and
   // `Layout::structure` of a struct whose last field is unsized make such a layout, and each
   // calls `verify` on the probe of the type. By the `# Safety` of `Pun`, `T::LAYOUT` is the
-  // layout of `T`. `ManuallyDrop<T>` reuses the layout of `T`, and is a struct whose only field
-  // is a `T`. So `T` is a slice, `str`, or a struct whose last field is one of these, and
-  // `verify` accepted a probe of `T`. These are the requirements of `raw_len`.
+  // layout of `T`. `ManuallyDrop<T>` reuses the layout of `T`, is a struct whose only field is a
+  // `T`, and its `LAYOUT` calls `verify` on its own probe. So `T` is a slice, `str`, or a struct
+  // whose last field is one of these, and `verify` accepted a probe of `T`. These are the
+  // requirements of `raw_len`.
   unsafe { raw_len(ptr) }
 }
 

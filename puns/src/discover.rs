@@ -290,12 +290,14 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
     size_of::<mem::Discriminant<E>>() == size_of::<isize>(),
     "the discriminant of an enum without `repr` is not an `isize`"
   );
-  // SAFETY: `read` requires the pointer to be valid for reads, aligned, and to point to an
-  // initialized `isize`. `discriminant` is a local of the size of an `isize`, which is asserted
-  // above, so it is valid for reads. Its alignment, and the initialization of its bytes, are
-  // what `rustc` makes of a `Discriminant<E>`, which holds an `isize` (`discover`, module
-  // documentation). Rust documents neither, and the assertion checks only the size.
-  let index = unsafe { core::ptr::from_ref(&discriminant).cast::<isize>().read() };
+  // SAFETY: `read_unaligned` requires the pointer to be valid for reads, and to point to an
+  // initialized `isize`, at any alignment. `discriminant` is a local of the size of an `isize`,
+  // which is asserted above, so it is valid for reads. The initialization of its bytes is what
+  // `rustc` makes of a `Discriminant<E>`, which holds an `isize` (`discover`, module
+  // documentation). Rust does not document it, and the assertion checks only the size. In const
+  // evaluation, where `discover` runs, `rustc` reports a read of an uninitialized byte as an
+  // error.
+  let index = unsafe { core::ptr::from_ref(&discriminant).cast::<isize>().read_unaligned() };
   index.cast_unsigned()
 }
 

@@ -2150,7 +2150,18 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
   type Rules = T::Rules;
   type Pointee = T::Pointee;
   const PROBE: *const Self = T::PROBE as *const Self;
-  const LAYOUT: Layout = T::LAYOUT;
+  const LAYOUT: Layout = {
+    if T::LAYOUT.unsized_ {
+      // SAFETY: `T::LAYOUT.unsized_` is `true`, so `T` is a slice, `str`, or a struct whose last
+      // field is one of these (see `ptr::metadata`), and so is `ManuallyDrop<T>`, a struct whose
+      // only field is a `T`. `T::PROBE` is `slice_from_raw_parts(null(), PROBE_LEN)`, cast with
+      // `as` casts only, and `Self::PROBE` casts it again with `as`. These are the requirements of
+      // `verify`, which
+      // checks that a pointer to `ManuallyDrop<T>` is represented as a pointer to a slice.
+      unsafe { ptr::verify::<Self>(Self::PROBE) };
+    }
+    T::LAYOUT
+  };
   // `ManuallyDrop<T>` "is subject to the same layout optimizations as `T`".
   const NULL_OPTIMIZED: bool = T::NULL_OPTIMIZED;
 }
