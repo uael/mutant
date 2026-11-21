@@ -383,14 +383,17 @@ pub fn check_pair<S: Model, D: Model>() {
     let verdict = valid(&target, &image(&region), region.root());
     (all, some) = (all && verdict.is_ok(), some || verdict.is_ok());
     let value = || region.show(&region);
-    if let Some(view) = hook::view_ref::<S, D, FUEL>(&*region) {
+    // SAFETY: `FUEL` is more than the number of pairs of types that a pair of the model can meet,
+    // as `hook::view_ref` requires.
+    if let Some(view) = unsafe { hook::view_ref::<S, D, FUEL>(&*region) } {
       if let Err(why) = &verdict {
         panic!("UNSOUND: {pair}: `view_ref` reads {} as a target, but {why}", value());
       }
       // All of it, pointers followed: what Miri is there to see.
       let _ = view.show(&region);
     }
-    match (hook::try_view_ref::<S, D, FUEL>(&*region), &verdict) {
+    // SAFETY: As above, for `hook::try_view_ref`.
+    match (unsafe { hook::try_view_ref::<S, D, FUEL>(&*region) }, &verdict) {
       (Some(Ok(_)), Err(why)) => {
         panic!("UNSOUND: {pair}: `try_view_ref` accepts {}, but {why}", value())
       }

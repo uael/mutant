@@ -2734,15 +2734,28 @@ impl<S: ?Sized + Pun, D: ?Sized + Pun> Plan<S, D> {
   #[inline(always)]
   const fn tail_cast(source: *const S) -> *const D {
     let shift = const { Self::TAIL_ANALYSIS.shift };
-    // SAFETY: `shift` is at most the size of the source, at the end of which the target ends.
-    ptr::from_raw_parts::<D>(unsafe { source.cast::<u8>().add(shift) }, 0)
+    // `wrapping_add` requires nothing of `source`. If `source` points to an `S`, the result is in
+    // it, since `shift` is `size_of::<S>() - size_of::<D>()` (`analyze_tail`).
+    ptr::from_raw_parts::<D>(source.cast::<u8>().wrapping_add(shift), 0)
   }
 
   /// Pointer to the target at `source`, with every check that could not be made at compile
-  /// time (`TRY`, `TRY_REF`).
+  /// time (`TRY_REF`, `TRY_VIEW`).
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that:
+  ///
+  /// - `source` points to a valid `S`, valid for reads.
+  /// - `Plan::<S, D>::TRY_REF` or `Plan::<S, D>::TRY_VIEW` compiles.
   #[inline(always)]
-  const fn try_cast(source: *const S) -> Result<*const D, Error> {
-    // SAFETY: the marks of this pun, of a source that is a valid `S`.
+  const unsafe fn try_cast(source: *const S) -> Result<*const D, Error> {
+    // SAFETY: `source` points to a valid `S`, valid for reads, by contract on the caller. One of
+    // `Plan::<S, D>::TRY_REF` and `Plan::<S, D>::TRY_VIEW` compiles, so `check` found the analysis
+    // to meet a need that is fallible, and no check that it marks reads a byte that may be
+    // padding in `S`. So every byte that such a check reads is initialized. These are the
+    // requirements of `try_cast_by` with the marks of this pun, which are every part of `D` that
+    // a valid `S` may not be valid for.
     unsafe { Self::try_cast_by::<Self>(source) }
   }
 
@@ -3452,7 +3465,9 @@ pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<&D, E
   const { Plan::<S, D>::TRY_VIEW };
   // Everything that the pointers of `D` aim at, proven by the instances that this makes.
   deep::proof::<S, D>();
-  match Plan::<S, D>::try_cast(value) {
+  // SAFETY: `value` is a reference, so it points to a valid `S`, valid for reads.
+  // `Plan::<S, D>::TRY_VIEW` compiled above. These are the requirements of `try_cast`.
+  match unsafe { Plan::<S, D>::try_cast(value) } {
     // SAFETY: `Plan::<S, D>::TRY_VIEW` compiled, so `check` found the analysis to meet
     // `Need::TRY_VIEW`, and `Plan::try_cast` returned `Ok`. As in `try_pun_ref`, `target` is
     // aligned for `D`, is in the allocation of `value`, and the bytes there are a valid `D`, read
@@ -3763,7 +3778,9 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
 #[inline]
 pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<&D, Error> {
   const { Plan::<S, D>::TRY_REF };
-  match Plan::<S, D>::try_cast(value) {
+  // SAFETY: `value` is a reference, so it points to a valid `S`, valid for reads.
+  // `Plan::<S, D>::TRY_REF` compiled above. These are the requirements of `try_cast`.
+  match unsafe { Plan::<S, D>::try_cast(value) } {
     // SAFETY: `Plan::<S, D>::TRY_REF` compiled, so `check` found the analysis to meet
     // `Need::TRY_REF`, and `Plan::try_cast` returned `Ok`. `target` is the address of `value`,
     // with a tail length that gives it the extent of `value`. The reference is valid, as in
@@ -3838,7 +3855,10 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 pub const fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Result<&mut D, Error> {
   const { Plan::<S, D>::TRY_MUT };
   let source: *mut S = value;
-  match Plan::<S, D>::try_cast(source) {
+  // SAFETY: `source` is made from a reference, so it points to a valid `S`, valid for reads.
+  // `Plan::<S, D>::TRY_MUT` compiled above, and it requires `Plan::<S, D>::TRY_REF`. These are the
+  // requirements of `try_cast`.
+  match unsafe { Plan::<S, D>::try_cast(source) } {
     // SAFETY: `Plan::<S, D>::TRY_MUT` compiled, so `Plan::<S, D>::TRY_REF` did too, and
     // `Plan::MUTABLE` is `true`. As in `try_pun_ref`, `target` is aligned for `D`, is within
     // `value`, and points to a valid `D`. It is made from `source`, a pointer that may write. The

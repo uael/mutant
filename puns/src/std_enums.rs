@@ -32,9 +32,23 @@ use crate::{
 
 /// Returns the offset of `field` in `whole`.
 ///
-/// `field` must be a field of the value in `whole`, or the result is meaningless.
-const fn offset<F, E>(field: &F, whole: &MaybeUninit<E>) -> usize {
-  // SAFETY: `field` is in `whole`, after its start: the same allocation.
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - `field` is a field of the value that `whole` holds.
+const unsafe fn offset<F, E>(field: &F, whole: &MaybeUninit<E>) -> usize {
+  // SAFETY: This satisfies the safety contract of `byte_offset_from` [1]. `field` is a field of
+  // the value in `whole`, by contract on the caller. So both pointers are derived from the
+  // reference `whole`, and the bytes between them are in the allocation of `whole`. The distance
+  // is a number of bytes, a multiple of the size of `u8`, and is not negative, so
+  // `cast_unsigned` keeps it.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/core/primitive.pointer.html#method.offset_from:
+  //
+  //     `self` and `origin` must either point to the same address, or both be derived from a
+  //     pointer to the same allocation, and the memory range between the two pointers must be
+  //     in bounds of that object.
   unsafe { core::ptr::from_ref(field).byte_offset_from(whole.as_ptr()) }.cast_unsigned()
 }
 
@@ -120,7 +134,9 @@ impl<T: Pun> Found for Option<T> {
     //     A reference or `Box<T>` must be aligned and non-null, it cannot be dangling, and it must
     //     point to a valid value
     match unsafe { &*sample.as_ptr() } {
-      Some(value) => [0, offset(value, sample)],
+      // SAFETY: `value` is the field of `Some` in the value that `sample` holds, as `offset`
+      // requires.
+      Some(value) => [0, unsafe { offset(value, sample) }],
       // Not the variant: `Layout::discover` finds that the sample is not.
       None => [0, 0],
     }
@@ -167,7 +183,9 @@ impl<T: Pun, E: Pun> Found for Result<T, E> {
       // SAFETY: `ok` is `SAMPLES[0]`, `Ok` of a valid `T`, since `T` has values. So it is a
       // valid `Result<T, E>`, and a reference to it is valid, as for the samples of `Option<T>`.
       match unsafe { &*ok.as_ptr() } {
-        Ok(value) => offset(value, ok),
+        // SAFETY: `value` is the field of `Ok` in the value that `ok` holds, as `offset`
+        // requires.
+        Ok(value) => unsafe { offset(value, ok) },
         // Not the variant: `Layout::discover` finds that the sample is not.
         Err(_) => 0,
       }
@@ -178,7 +196,9 @@ impl<T: Pun, E: Pun> Found for Result<T, E> {
       // SAFETY: `err` is `SAMPLES[1]`, `Err` of a valid `E`, since `E` has values. So it is a
       // valid `Result<T, E>`, and a reference to it is valid, as for the samples of `Option<T>`.
       match unsafe { &*err.as_ptr() } {
-        Err(value) => offset(value, err),
+        // SAFETY: `value` is the field of `Err` in the value that `err` holds, as `offset`
+        // requires.
+        Err(value) => unsafe { offset(value, err) },
         Ok(_) => 0,
       }
     } else {

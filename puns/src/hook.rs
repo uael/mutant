@@ -100,28 +100,45 @@ pub const fn tries_view<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {
 /// Returns what [`view_ref`](crate::view_ref) returns, or `None` if it does not compile.
 ///
 /// `FUEL` is as for [`views`].
+///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - `FUEL` is at least the number of pairs of types that can be met from `S` and `D`, so that
+///   [`views`] is `true` only if `view_ref` compiles.
 #[must_use]
-pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(value: &S) -> Option<&D> {
+pub unsafe fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
+  value: &S,
+) -> Option<&D> {
   if const { !views::<S, D>(FUEL) } {
     return None;
   }
-  // SAFETY: as in `view_ref`, which would compile: `FUEL` follows the pointers as far as the
-  // types of the model go.
+  // SAFETY: `views::<S, D>(FUEL)` is `true`, so `view_ref` compiles, by contract on the caller.
+  // The proof of the block of `crate::view_ref` applies.
   Some(unsafe { &*Plan::<S, D>::cast(value) })
 }
 
 /// Returns what [`try_view_ref`](crate::try_view_ref) returns, or `None` if it does not compile.
 ///
 /// `FUEL` is as for [`views`].
+///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - `FUEL` is at least the number of pairs of types that can be met from `S` and `D`, so that
+///   [`tries_view`] is `true` only if `try_view_ref` compiles.
 #[must_use]
-pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
+pub unsafe fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
   value: &S,
 ) -> Option<Result<&D, Error>> {
   if const { !tries_view::<S, D>(FUEL) } {
     return None;
   }
-  // SAFETY: as in `try_view_ref`, which would compile.
-  Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
+  // SAFETY: `tries_view::<S, D>(FUEL)` is `true`, so `try_view_ref` compiles, by contract on the
+  // caller. The proofs of the blocks of `crate::try_view_ref` apply.
+  Some(unsafe { Plan::<S, D>::try_cast(value) }.map(|target| unsafe { &*target }))
 }
 
 /// Whether each public function that takes a part of a value compiles for a pun from `S` to `D`.
@@ -231,9 +248,9 @@ pub fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Option<Result
     return None;
   }
   // SAFETY: `verdict::<S, D>().try_pun_ref` is `true`, which is `check(Need::TRY_REF)` being
-  // `None`, the condition under which `Plan::<S, D>::TRY_REF` compiles. The proof of the block of
-  // `crate::try_pun_ref` applies.
-  Some(Plan::<S, D>::try_cast(value).map(|target| unsafe { &*target }))
+  // `None`, the condition under which `Plan::<S, D>::TRY_REF` compiles. The proofs of the blocks
+  // of `crate::try_pun_ref` apply.
+  Some(unsafe { Plan::<S, D>::try_cast(value) }.map(|target| unsafe { &*target }))
 }
 
 /// Returns what [`try_pun_mut`](crate::try_pun_mut) returns, or `None` if it does not compile.
@@ -247,8 +264,8 @@ pub fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(
   let source: *mut S = value;
   // SAFETY: `verdict::<S, D>().try_pun_mut` is `true`, which is `check(Need::TRY_REF)` being `None`
   // and `Plan::MUTABLE`, the condition under which `Plan::<S, D>::TRY_MUT` compiles. The proof of
-  // the block of `crate::try_pun_mut` applies.
-  Some(Plan::<S, D>::try_cast(source).map(|target| unsafe { &mut *target.cast_mut() }))
+  // the blocks of `crate::try_pun_mut` apply.
+  Some(unsafe { Plan::<S, D>::try_cast(source) }.map(|target| unsafe { &mut *target.cast_mut() }))
 }
 
 /// Returns what [`pun_ref`](crate::pun_ref) returns, or `None` if it does not compile.

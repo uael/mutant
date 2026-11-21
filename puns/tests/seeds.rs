@@ -196,7 +196,10 @@ fn accepts<D: Pun>() -> String {
       *byte = BYTES[rest % BYTES.len()];
       rest /= BYTES.len();
     }
-    let accepted = matches!(hook::try_view_ref::<[u8], D, 0>(&buffer.0[..size]), Some(Ok(_)));
+    // SAFETY: `[u8]` holds no pointer, so no pointer of `D` is paired with one, and no pair of
+    // types is met behind a pointer. A fuel of 0 is enough, as `hook::try_view_ref` requires.
+    let tried = unsafe { hook::try_view_ref::<[u8], D, 0>(&buffer.0[..size]) };
+    let accepted = matches!(tried, Some(Ok(_)));
     if accepted {
       count += 1;
       hash = (hash ^ index as u64).wrapping_mul(0x0000_0100_0000_01b3);
