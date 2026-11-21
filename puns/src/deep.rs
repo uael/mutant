@@ -178,7 +178,8 @@
 //!
 //! The `pointer` of a [`Relation`](crate::analysis::Relation) is set for every pointer of a target
 //! that a pointer of the source does not prove. The two places that give up on proving set it
-//! (`relate_range`, `relate_enums`). Every plan refuses it,
+//! (`relate_range`, `relate_enums`). `relate_enum_from` relates each variant of an enum in a
+//! `Relation` of its own, and passes on the pointer that it records. Every plan refuses it,
 //! fallible or not (`check` in `lib.rs`).
 //!
 //! ## Only views make a value that holds a pointer
