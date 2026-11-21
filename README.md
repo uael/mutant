@@ -34,9 +34,9 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity))
 `bools` borrows `switches`, and nothing is copied. Each such conversion is a *pun*, of one of three
 kinds:
 
-- **Proven**: `puns` can show that every value of the source is a valid value of the target, with
-  a size that the target can have, at an address aligned for the target. `pun` and `pun_ref`
-  accept only proven puns, and add no check at run time.
+- **Proven**: `puns` can show that every value of the source is a valid value of the target, of
+  a size the target allows, and, for a reference, at an address aligned for the target. `pun` and
+  `pun_ref` accept only proven puns, and add no check at run time.
 - **Checked**: some values of the source may be invalid for the target, or its length or its
   address may not suit the target. `try_pun`, `from_bytes` and the other functions whose names
   start with `try_` or `from_` check at run time what `puns` could not prove, and return a
@@ -66,8 +66,8 @@ them through it.
 cargo add puns
 ```
 
-`puns` is `no_std`, and needs Rust 1.99 or later ([why][msrv]). It is young: the first release
-was in November 2026, and the API may change before 1.0.
+`puns` is `no_std`, never allocates, and needs Rust 1.99 or later ([why][msrv]). It is young: the
+first release was in November 2026, and the API may change before 1.0.
 
 ## When to use it
 
@@ -183,11 +183,11 @@ existing variants.
 
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
 implementation details. Their traits say what each type accepts on its own, and a `bool` does not
-accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and
-returns a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). For a
-single value read by value, the optimizer removes the check of all three. Comparing the valid
-values of the two types is also what proves the version example, and the rules of a format, such
-as lengths and checksums, have no counterpart in their traits.
+accept every byte. So with them, reading a `&[Switch]` as a `&[bool]` checks every byte and returns
+a `Result`. With `puns`, it needs no check ([code and machine code][comparison]). For a single
+`Switch` passed by value, the optimizer removes the check in all three crates. Comparing the valid
+values of the two types is also what proves the version example, and the rules of a format, such as
+lengths and checksums, have no counterpart in their traits.
 
 They also do what `puns` does not. `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and their
 errors are mostly trait bounds, which `cargo check` and editors report. Prefer them for these, for
@@ -198,9 +198,10 @@ available on nightly only.
 ## Performance
 
 [`docs/performance.md`][performance] times the checks of `puns` next to the same checks written
-by hand, on an Apple M4 Max. For Ethernet, IPv4, IPv6 extension headers, UDP and TCP, the median
-of five runs is between 0.55 and 1.13 times the time by hand. The slowest case there, a slice of
-an enum whose layout needs the `unstable` feature, takes 1.5 times as long.
+by hand, on an Apple M4 Max. For Ethernet, IPv4, IPv6 extension headers, UDP and TCP, `puns` takes
+0.55 to 1.13 times as long as the hand-written checks, in the median of five runs. The slowest
+case of the page, a slice of an enum whose layout needs the `unstable` feature, takes 1.5 times as
+long.
 
 Comparing the types takes build time: about 17 ms of a debug build for each struct read from
 bytes, on average over 100 of them. An enum of references that returns the first variant that
@@ -214,12 +215,15 @@ build.
   reports them. In an optimized build, the error may not name the line of your code.
   [Compile-time errors] shows what an error looks like, and how to fix it.
 - **Generic code is checked when it is used.** A generic function that calls `pun_ref` compiles
-  on its own. A call of it with types that do not pun fails at `cargo build`, and the error points
-  inside the generic function, since no trait bound can state that two types pun.
+  on its own. Calling it with two types that `pun_ref` does not accept fails at `cargo build`, and
+  the error points inside the generic function, since no trait bound can state that two types
+  pun.
 - **Give your types a stable layout.** Use `#[repr(C)]` for a struct, and `#[repr(u8)]` or
-  another integer type for an enum, with fields like the integers of [`puns::num`][num]. Without
-  a `repr`, the layout may change with the compiler, and `puns` refuses what depends on it, unless
-  you turn on the [`unstable` feature][unstable] (which works on stable Rust).
+  another integer type for an enum. Without a `repr`, the layout may change with the compiler, and
+  `puns` refuses what depends on it, unless you turn on the [`unstable` feature][unstable] (which
+  works on stable Rust). `repr(C)` fixes the order of the fields, not the byte order of a `u32` or
+  the alignment of a `u64`, which differ between targets. For data that leaves the program, use
+  the integers of [`puns::num`][num], like `u32be`.
 - **Deriving `Pun` bypasses your constructors.** Any code can then make a value of the type from
   bytes, and read or write its fields, private ones included. Do not derive `Pun` on a type with a
   private invariant ([details][deriving]).
@@ -243,8 +247,8 @@ hold pointers, rely on it, and tests check it in debug and optimized builds.
 
 [`docs/testing.md`][testing] describes the tests. One compares the analysis with answers written
 by hand, on every ordered pair of test types of the same size: for every value of the source up to
-2 bytes, and for chosen values beyond. The tests of `puns`, and a selection of those pairs that
-reaches every `unsafe` path, run under Miri, also on 32-bit and big-endian targets. More than 100
+2 bytes, and for chosen values beyond. Under Miri, also on 32-bit and big-endian targets, run the
+tests of `puns` and a few of those pairs for each `unsafe` path that they reach. More than 100
 programs must fail to compile, each with its expected message. If you find a soundness bug, please
 [open an issue][issues].
 
