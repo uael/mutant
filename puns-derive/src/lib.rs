@@ -330,7 +330,8 @@ fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<O
         && ALL_OPTIONS.contains(&name.as_str())
       {
         let of = match name.as_str() {
-          "crate" | "bound" => "the type",
+          "crate" => "the type",
+          "bound" => "a struct, an enum with fields that is not a view, or a union",
           "size" | "assert" | "tag" | "get" => "a struct",
           "valid" => "a field",
           _ => "the last field of a struct",
@@ -1870,7 +1871,25 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 // Enums
 
 fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
-  let options = parse_options(&input.attrs, "an enum", &["crate", "bound"])?;
+  // Only an enum with fields that is not a view has bounds of its own: the others have no field
+  // whose type needs one.
+  let reference = |fields: &Fields| match fields {
+    Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+      matches!(&fields.unnamed[0].ty, Type::Reference(reference) if reference.mutability.is_none())
+    }
+    _ => false,
+  };
+  let place = if data.variants.is_empty() {
+    "an enum without variants"
+  } else if data.variants.iter().all(|variant| reference(&variant.fields)) {
+    "a view"
+  } else if data.variants.iter().all(|variant| matches!(variant.fields, Fields::Unit)) {
+    "an enum without fields"
+  } else {
+    "an enum"
+  };
+  let allowed: &[&str] = if place == "an enum" { &["crate", "bound"] } else { &["crate"] };
+  let options = parse_options(&input.attrs, place, allowed)?;
   let root = options.root.unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();

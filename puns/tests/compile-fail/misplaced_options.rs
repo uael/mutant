@@ -24,4 +24,18 @@ enum AssertOfAnEnum {
   B,
 }
 
+#[derive(puns::Pun, Clone, Copy)]
+#[repr(u8)]
+#[pun(bound(T: Copy))]
+enum BoundOfAnEnumWithoutFields {
+  A,
+}
+
+#[derive(puns::Pun)]
+#[pun(bound(T: puns::Pun))]
+enum BoundOfAView<'a, T> {
+  Bytes(&'a [u8]),
+  Value(&'a T),
+}
+
 fn main() {}

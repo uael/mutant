@@ -10,8 +10,20 @@ error: `size` is an option of a struct, not of a field
 14 |   #[pun(size = 4)]
    |         ^^^^
 
-error: `assert` is an option of a struct, not of an enum
+error: `assert` is an option of a struct, not of an enum without fields
   --> tests/compile-fail/misplaced_options.rs:21:7
    |
 21 | #[pun(assert(true))]
    |       ^^^^^^
+
+error: `bound` is an option of a struct, an enum with fields that is not a view, or a union, not of an enum without fields
+  --> tests/compile-fail/misplaced_options.rs:29:7
+   |
+29 | #[pun(bound(T: Copy))]
+   |       ^^^^^
+
+error: `bound` is an option of a struct, an enum with fields that is not a view, or a union, not of a view
+  --> tests/compile-fail/misplaced_options.rs:35:7
+   |
+35 | #[pun(bound(T: puns::Pun))]
+   |       ^^^^^
