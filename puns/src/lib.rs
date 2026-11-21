@@ -164,6 +164,13 @@
 //! and returns an [`Error`]. Anything that can be neither proven nor checked, such as a byte that
 //! may be padding, does not compile.
 //!
+//! What the derive is told is a requirement, which the type does not enforce ([Guarantees and
+//! requirements](#guarantees-and-requirements)). Where the source has the same requirement at the
+//! same place, `puns` takes it as met and does not check it again. If the source does not meet it,
+//! because safe code wrote its fields or [`zeroed`] made it, the target does not meet it either.
+//! Unsafe code may rely on what a type guarantees, but not on what it requires of a value that it
+//! did not check itself.
+//!
 //! The analysis reads the layout of each type from its implementation of [`Pun`]: its size, its
 //! alignment, the offset of each field, the values each scalar may hold, and its rules.
 //! `#[derive(Pun)]` takes sizes and alignments from the compiler. It computes offsets as the type's
