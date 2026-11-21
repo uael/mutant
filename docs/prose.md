@@ -22,7 +22,8 @@ verdict.
 - **The text has judgment.** It says when to use a thing and when not to, what is a mistake, and
   what is recommended.
 - **The same word names the same thing,** everywhere. A term of art (proven, checked, refused,
-  rule, view, region) keeps its meaning across files.
+  rule, view, region) keeps its meaning across files. A pun *reinterprets* bytes as another type,
+  as `core` says of `transmute`, while a check or a rule *reads* them.
 
 ## How sentences read
 
