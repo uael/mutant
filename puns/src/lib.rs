@@ -186,7 +186,7 @@
 //! `puns` reads the one that `rustc` chose for the build: it measures field offsets on a value, and
 //! finds the tag of an enum of the `Rust` representation by experimenting on a value of each
 //! variant. An experiment that goes wrong is a compile error, never a wrong layout. Beyond that,
-//! `puns` relies on three behaviors of `rustc` that no documentation states:
+//! `puns` relies on four behaviors of `rustc` that no documentation states:
 //!
 //! - A pointer to an unsized type has the representation of a pointer to a slice. This is checked
 //!   at compile time for each unsized type, against a pointer made with an `as` cast.
@@ -200,6 +200,11 @@
 //!   first two, and only run at compile time. The derive relies on the third for an unsized struct
 //!   whose tail is so large that 8 elements overflow an `isize`. Compile-fail tests hold the
 //!   compiler to each of the three errors.
+//! - Const evaluation reads the variant of a value whose tag is the tag of a variant from the tag
+//!   alone, without reading or checking its other bytes, though `mem::discriminant` takes a
+//!   reference to the whole value and the Reference requires a reference to point to a valid
+//!   value. The experiments rely on it when they move the tag of one variant into a value of
+//!   another. The model check holds the layouts that they find to oracles that do not use them.
 //!
 //! Without the `unstable` feature, no result of `puns` depends on a layout that Rust leaves to the
 //! compiler: the order of the fields of a struct or tuple of the `Rust` representation, the tag of

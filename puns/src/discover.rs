@@ -84,6 +84,17 @@
 //! the compiler, which the Reference does not promise for undefined behavior in `const`. The
 //! compile-fail tests `discover_reads_padding` and `discover_invalid_tag` hold the compiler to it.
 //!
+//! ## The variant is read from the tag
+//!
+//! When const evaluation reads the variant of a value whose tag is the tag of a variant that has
+//! values, it reads the tag alone, and neither reads nor checks the other bytes of the value. Yet
+//! `mem::discriminant` takes a reference to the whole value, and the Reference requires a
+//! reference to point to a valid value. [`try_tag`] relies on this behavior of the compiler: the
+//! bytes of the tag of one variant, moved into the sample of another, make a value whose tag is
+//! valid and whose other bytes may be no valid fields of the variant that the tag tells. The model
+//! check holds the layouts that the experiments find to oracles that do not use them, for its
+//! enums of the `Rust` representation.
+//!
 //! ## The discriminant is the index
 //!
 //! `mem::Discriminant<E>` of an enum of the `Rust` representation holds its discriminant, which is
@@ -112,7 +123,7 @@
 //! - The bytes of the tag, moved from the sample of each variant to the sample of another
 //!   ([`try_tag`]), make it that variant. This holds [One scalar tells the variant][one]: the tag
 //!   is there. A wrong candidate changes nothing, and is dropped. A byte that is moved and is
-//!   padding stays padding.
+//!   padding stays padding. The experiment relies on [the variant is read from the tag][tag].
 //! - The gaps of each variant that has one tag, outside the tag, filled with zeros and then with
 //!   ones, leave it that variant ([`decided_by`]). This holds [one]: nothing else tells the
 //!   variant, since a byte of a tag outside would take two values for one variant. The same holds
@@ -128,6 +139,7 @@
 //!
 //! [one]: #one-scalar-tells-the-variant
 //! [fails]: #const-evaluation-fails-on-what-is-not-a-value
+//! [tag]: #the-variant-is-read-from-the-tag
 //! [index]: #the-discriminant-is-the-index
 //! [fresh]: #a-fresh-value-has-uninitialized-padding
 //! [`mem::variant_count`]: https://doc.rust-lang.org/core/mem/fn.variant_count.html
@@ -253,7 +265,9 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 ///
 /// In const evaluation, it fails the build if the tag is not the tag of a variant that has values
 /// ([const evaluation fails on what is not a
-/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)), and otherwise reads the
+/// variant from the tag alone, whatever the other bytes hold ([the variant is read from the
+/// tag](crate::discover#the-variant-is-read-from-the-tag)).
 ///
 /// # Panics
 ///
@@ -264,17 +278,17 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 ///
 /// The caller must ensure that:
 ///
-/// - `ptr` is aligned for `E`, and valid for reads of an `E` whose tag is initialized.
-/// - The fields of the variant that its tag tells, if any, are valid.
-/// - Unless the call is evaluated in a constant, the tag is the tag of a variant that has values.
+/// - `ptr` is aligned for `E`, and valid for reads of `size_of::<E>()` bytes.
+/// - Unless the call is evaluated at compile time, `ptr` points to a valid `E`.
 const unsafe fn variant<E>(ptr: *const E) -> usize {
-  // SAFETY: A reference must point to a valid value [1]. An `E` is valid if its tag is the tag of
-  // a variant and the fields of that variant are valid [2]. By contract on the caller, its tag is
-  // initialized and the fields of its variant are valid. Its tag is the tag of a variant, by
-  // contract on the caller, or else the call is evaluated in a constant, where `rustc` reports
-  // an error instead of making the reference (`discover`, module documentation). The Reference
-  // does not promise that error. `ptr` is aligned and valid for reads of an `E`, by contract on
-  // the caller, so it is not dangling.
+  // SAFETY: A reference must be aligned and not dangling, and point to a valid value [1]. `ptr` is
+  // aligned for `E` and valid for reads of one, by contract on the caller, so it is not dangling.
+  // At run time, it points to a valid `E`, by contract on the caller. At compile time, the bytes
+  // at `ptr` may be no `E`, which is valid only if its tag is the tag of a variant and the fields
+  // of that variant are valid [2]. `rustc` then reports an error if the tag is uninitialized or
+  // not the tag of a variant that has values, and otherwise reads the variant from the tag alone,
+  // without reading the fields (`discover`, module documentation). The Reference promises
+  // neither.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
   //
@@ -361,11 +375,9 @@ impl<E> Buf<E> {
   /// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation
   /// fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
   const unsafe fn variant(&self) -> usize {
-    // SAFETY: The experiments write only over what is not a field of the variant of the sample, or
-    // over a tag that they copy whole, so the fields of that variant are valid. `as_ptr` of the
-    // `MaybeUninit<E>` of the buffer is aligned for `E` and valid for reads of one. The tag may be
-    // uninitialized, or not the tag of a variant, which `variant` allows only in a call evaluated
-    // in a constant. By contract on the caller, this call is.
+    // SAFETY: `as_ptr` of the `MaybeUninit<E>` of the buffer is aligned for `E` and valid for
+    // reads of one. This call is evaluated at compile time, by contract on the caller, so the
+    // bytes of the buffer need not be a valid `E`. These are the requirements of `variant`.
     unsafe { variant(self.0.as_ptr()) }
   }
 }
