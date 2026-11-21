@@ -56,14 +56,14 @@
 //! of a walk start (the variables, the state) is a constant of theirs (`Ops::ENTRY`). Both are made
 //! once at compile time, for each expression.
 //!
-//! The computation is never narrower than a register. On 64 bits, computing everything in 32 bits
-//! where it fits gave as many instructions in all, with one cost. `40 + payload_length` in 32 bits
-//! is not known to be the size that the `size` rule compared in 64 bits, so the bounds of what it
-//! reads were tested again. For the UDP packet behind 3 headers, that was 217 instructions against
-//! 209. A remainder in 32 bits after a sum in 64 bits was worse than either, 243 instructions
-//! against 241 for IPv4. These counts are of `valgrind --tool=callgrind` on `benches/checks.rs`.
-//! The bounds of a read are one comparison of the offset with `size - n`, which does not change in
-//! a walk.
+//! The computation is never narrower than a register. On 64 bits, computing in 32 bits whatever
+//! fits there did not reduce the number of instructions, and added some in one case.
+//! `40 + payload_length` in 32 bits is not known to be the size that the `size` rule compared in 64
+//! bits, so the bounds of what it reads were tested again. For the UDP packet behind 3 headers,
+//! that was 217 instructions against 209. A remainder in 32 bits after a sum in 64 bits was worse
+//! than either, 243 instructions against 241 for IPv4. These counts are of
+//! `valgrind --tool=callgrind` on `benches/checks.rs`. The bounds of a read are one comparison of
+//! the offset with `size - n`, which does not change in a walk.
 //!
 //! # Tests
 //!

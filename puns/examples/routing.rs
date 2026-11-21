@@ -622,7 +622,8 @@ pub fn main() {
   let mut bytes = GRE;
   bytes[30] ^= 1;
   assert_eq!(try_pun_ref::<_, Gre>(&bytes[..]).err(), Some(Error::Validity));
-  // Without a checksum, IPv6 inside: any GRE packet, not one of IPv4.
+  // Without a checksum, and with the EtherType of IPv6 over the same IPv4 bytes: a `Gre`, not a
+  // `Gre<Ipv4>`.
   let plain = [&[0x30, 0x00, 0x86, 0xdd][..], &GRE[8..]].concat();
   let gre: &Gre = try_pun_ref(&plain[..]).unwrap();
   assert_eq!(

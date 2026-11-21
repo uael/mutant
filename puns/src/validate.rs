@@ -22,7 +22,8 @@
 //! (`Pun::Rules`, `RuleAt<RULE, STEPS, NEXT>`). It writes the operations of each rule as a balanced
 //! tree (`steps::One<I>`, `steps::Two<A, B>`), and a walk as `steps::Walk<I, COND, NEXT>`, whose
 //! two expressions are trees of their own at any depth. The recursions down a tree are as deep as
-//! its logarithm. Because the list is a type, a struct without rules costs nothing more to compile.
+//! the logarithm of the number of operations. Because the list is a type, a struct without rules
+//! costs nothing more to compile.
 //!
 //! Nothing that a list says is trusted. Where a list is used, it is checked against the layout
 //! ([`listed`], [`covers`]). Every rule with an expression must be listed once and in order, with
@@ -94,8 +95,11 @@ impl Checks for All {
 /// - `ptr` is valid for reads of a `T`. It need not be aligned.
 /// - Every byte that a check marked by `C` reads is initialized. A marked scalar or self-relative
 ///   pointer reads its own bytes, and a marked pattern its tail. An enum or a union with a marked
-///   leaf reads its tag and what the checks of its variants read, which check every part. A
-///   struct whose rules are marked reads all of its bytes, padding included.
+///   leaf reads its tag and what the checks of its variants read, which check every part. A struct
+///   whose rules are marked reads the fields that its rules load and, if one of its rules reads
+///   bytes by offset ([`Layout::rules_read_bytes`]), all of its bytes, padding included.
+///
+/// [`Layout::rules_read_bytes`]: layout::Layout::rules_read_bytes
 pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T) -> bool {
   if const { !C::MARKS.any(P::LEAF, T::LAYOUT.leaves) } {
     return true;
@@ -110,8 +114,8 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
   //   the other, each valid for reads. Its elements share their leaves, so what is marked in one
   //   is marked in each, as `validate_elems` requires.
   // - A struct meets the requirements of `validate_fields`, since `T::Fields` are its fields. Its
-  //   rules are checked only if they are marked, and then all of its bytes are initialized, as
-  //   `check_rules` requires.
+  //   rules are checked only if they are marked, and then the bytes that they read are
+  //   initialized, as `check_rules` requires.
   // - A pattern is its tail of `ptr::metadata(ptr)` bytes, which are marked, so initialized, as
   //   `Dfa::matches_utf8` and `Dfa::matches` require.
   // - An enum or a union has a marked leaf, so its tag and what the checks of its variants read
@@ -352,18 +356,23 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Pun>() -> bool {
 /// The caller must ensure that:
 ///
 /// - `ptr` is valid for reads of a `T`. It need not be aligned.
-/// - Every byte of that `T` is initialized, padding included.
+/// - The bytes of that `T` that its rules read are initialized: those of the fields that the rules
+///   load and, if one of the rules reads bytes by offset ([`Layout::rules_read_bytes`]), all of
+///   them, padding included.
 ///
 /// # Compile-time errors
 ///
 /// An instance compiles only if `T::Rules` lists every rule of `T` that has an expression, once,
 /// in order, with every operation of each ([`listed`]).
+///
+/// [`Layout::rules_read_bytes`]: layout::Layout::rules_read_bytes
 #[inline(always)]
 pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T) -> bool {
   const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
   let (len, tail, size) = tail_of(ptr);
   // SAFETY: `tail_of` returns `size`, the size of the `T` at `ptr`. That `T` is valid for reads,
-  // and its bytes are initialized, by contract on the caller, as `check_listed` requires.
+  // and the bytes that its rules read are initialized, by contract on the caller, as
+  // `check_listed` requires.
   unsafe { check_listed::<T, T::Rules>(ptr.cast(), size, tail, len, 0) }
 }
 
@@ -377,7 +386,8 @@ pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T) -> bool {
 ///
 /// The caller must ensure that:
 ///
-/// - `base` is valid for reads of the `size` bytes of a `T`, initialized.
+/// - `base` is valid for reads of the `size` bytes of a `T`.
+/// - The bytes of that `T` that its rules read are initialized, as [`check_rules`] requires.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn check_listed<T: ?Sized + Pun, L: Rules>(
   base: *const u8,
@@ -390,8 +400,10 @@ const unsafe fn check_listed<T: ?Sized + Pun, L: Rules>(
     return true;
   }
   // SAFETY: `InRule<T, L>` is the rule `L::RULE` of `T`. `base` is valid for reads of the `size`
-  // bytes of a `T`, initialized, by contract on the caller, and these cover its sized fields. This
-  // is what `eval` requires.
+  // bytes of a `T`, which cover its sized fields, by contract on the caller. The bytes that the
+  // rule reads are initialized, by contract on the caller: those of the fields that it loads and,
+  // if it reads bytes by offset, all `size` bytes, since a rule of `T` then does. This is what
+  // `eval` requires.
   let Some(value) = (unsafe { eval::<InRule<T, L>, L::Expr>(base, size) }) else { return false };
   let regions = match const { T::LAYOUT.rule(L::RULE) } {
     Some(Rule::Size(_)) if value == size as u128 => regions,
@@ -625,7 +637,7 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
 /// be read. Each operation is a constant of an instance of [`steps`] or [`walk`] of its own, in
 /// which it is the only operation compiled. So what is compiled is the arithmetic of the
 /// expression and the loops of its walks, never an interpreter. The recursions go down a
-/// balanced tree of the operations, so they are as deep as its logarithm.
+/// balanced tree of the operations, so they are as deep as the logarithm of their number.
 ///
 /// # Errors
 ///
@@ -637,8 +649,12 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
 ///
 /// The caller must ensure that:
 ///
-/// - `base` is valid for reads of `size` bytes, initialized.
+/// - `base` is valid for reads of `size` bytes.
 /// - These bytes cover the sized fields of the struct of which `X` is a rule.
+/// - The bytes that `X` reads are initialized: those of the fields that it loads and, if it reads
+///   bytes by offset ([`Layout::rules_read_bytes`]), all `size` bytes.
+///
+/// [`Layout::rules_read_bytes`]: layout::Layout::rules_read_bytes
 #[inline(always)]
 const unsafe fn eval<X: Ops, S: Steps>(base: *const u8, size: usize) -> Option<u128> {
   let mut machine = Machine::NEW;
@@ -679,8 +695,9 @@ const unsafe fn steps<X: Ops, S: Steps>(
   // SAFETY: `op` is the operation at `S::AT` of `X::OPS`, the expression of a rule in the layout of
   // a struct, or of a walk in one (`InRule`, `InWalk`). `Layout::structure` accepted these
   // operations (`check_ops`): a load reads 1 to 16 bytes within the sized fields. `base` is valid
-  // for reads of `size` initialized bytes, which cover the sized fields of the struct, by contract
-  // on the caller. These are the requirements of `Machine::apply`. The requirements of the calls
+  // for reads of `size` bytes, which cover the sized fields of the struct, by contract on the
+  // caller. `op` is an operation of `X`, so the bytes that it reads are initialized, by contract on
+  // the caller. These are the requirements of `Machine::apply`. The requirements of the calls
   // for the parts and the walks are those of this call.
   unsafe {
     match const { S::KIND } {

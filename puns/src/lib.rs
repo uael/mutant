@@ -160,8 +160,8 @@
 //! about: a `str` is UTF-8, a type from [`num`] holds one of its values, and a type that derives
 //! `Pun` meets what the derive was told (the values of fields marked `#[pun(valid(..))]`, and its
 //! rules). The analysis either proves this at compile time, or the function checks it at run time
-//! and returns an [`Error`]. A pun with a part that can be neither proven nor checked, such as a
-//! byte that may be padding, does not compile.
+//! and returns an [`Error`] if the check fails. A pun with a part that can be neither proven nor
+//! checked, such as a byte that may be padding, does not compile.
 //!
 //! What the derive is told is a requirement, which the type does not enforce ([Guarantees and
 //! requirements](#guarantees-and-requirements)). Where the source has the same requirement at the
@@ -196,9 +196,9 @@
 //!   variant of a value whose tag is not the tag of a variant, and when it computes the size of a
 //!   slice that is larger than an object can be. The experiments that find the layout of an enum of
 //!   the `Rust` representation, and the check that `None` of a self-relative pointer is zeros, rely
-//!   on the first two, and only run at compile time. The derive relies on the third for an unsized
-//!   struct whose tail is so large that 8 elements overflow an `isize`. Compile-fail tests check
-//!   each of the three errors.
+//!   on the first two, and only run at compile time. The derive relies on the first to refuse an
+//!   enum without fields that has padding, and on the third for an unsized struct whose tail is so
+//!   large that 8 elements overflow an `isize`. Compile-fail tests check each of the three errors.
 //! - Const evaluation reads the variant of a value whose tag is the tag of a variant from the tag
 //!   alone, without reading or checking its other bytes, though `mem::discriminant` takes a
 //!   reference to the whole value and the Reference requires a reference to point to a valid value.
@@ -213,9 +213,10 @@
 //! an address does not compile in a constant. The integer is never made into a pointer again, and
 //! the tests run it under Miri with `-Zmiri-strict-provenance`.
 //!
-//! Without the `unstable` feature, no result of `puns` depends on a layout that Rust leaves to the
-//! compiler: the order of the fields of a struct or tuple of the `Rust` representation, the tag of
-//! an enum of that representation, or niches. With the feature, `puns` also uses the layout that
+//! Without the `unstable` feature, whether a pun compiles, what it checks and which values a check
+//! accepts do not depend on a layout that Rust leaves to the compiler: the order of the fields of a
+//! struct or tuple of the `Rust` representation, the tag of an enum of that representation, or
+//! niches. With the feature, `puns` also uses the layout that
 //! `rustc` chose. [The `unstable` feature](#the-unstable-feature) states the rule and [what it
 //! relies on](#what-this-relies-on).
 //!
@@ -252,10 +253,10 @@
 //! uninitialized. A `&mut T` is made from a `MaybeUninit<T>` only if `T` requires no byte to be
 //! initialized, since a byte that `T` requires would be read from padding.
 //!
-//! A rule that reads the bytes of its value (`le`, `be`, a checksum, or `walk` through its
-//! expressions) reads its padding as well. Such a rule is checked when the source does not prove
-//! it, or when it belongs to a variant of an enum that is checked as a whole. Its struct must then
-//! have no byte that may be padding in the source.
+//! A rule that reads the bytes of its value by offset (`le`, `be`, a variable-length integer, a
+//! checksum, a CRC, `matches`, or a `walk` whose expressions do) reads its padding as well. Such a
+//! rule is checked when the source does not prove it, or when it belongs to a variant of an enum
+//! that is checked as a whole. Its struct must then have no byte that may be padding in the source.
 //!
 //! ## Unions
 //!
@@ -669,8 +670,8 @@
 //! has no rule and no pointer, is proven field by field. Since a field may be anywhere, it must be
 //! proven at every place where it may be. So two `bool`s prove a `(bool, u8)`, four initialized
 //! bytes prove a `(u8, u16)`, and two `NonZero<u16>` prove a `(NonZero<u16>, u16)`. A struct with a
-//! rule, which names fields, or with a pointer, which is matched by its place, proves only itself,
-//! as an enum does. Nothing in a part whose layout Rust leaves to the compiler is checked at run
+//! rule, which names fields, or with a pointer, which is matched by its place, is proven only by
+//! itself, as an enum is. Nothing in a part whose layout Rust leaves to the compiler is checked at run
 //! time, because the check would read where the compiler may not have put the field, so whatever
 //! is not proven there does not compile.
 //!
@@ -686,7 +687,8 @@
 //! So `puns` identifies a type by a name, together with the identities of the types it is made of.
 //! The primitive types, the types of [`num`], arrays, slices, tuples, `Option`, `Result` and
 //! `MaybeUninit` have identities, and `ManuallyDrop<T>` is `T`. A type that derives `Pun` is named
-//! by where it is declared (the module, file, line and column) and by its name. A generic type that
+//! by where it is declared (the module, file, line and column), by its name, and by the number of
+//! its derive in its crate. A generic type that
 //! derives `Pun`, a `PhantomData`, a [`Scalar`] implemented by hand, and a self-relative pointer
 //! have no identity. A part whose layout Rust leaves to the compiler and that holds one of them
 //! therefore proves itself only with the feature, unless it is proven field by field. A type whose
@@ -1089,14 +1091,16 @@ pub use layout::{crc32, sum16};
 /// choose the order of the fields, so without the `unstable` feature, a pun relies only on what
 /// every order has in common (see [`layout::UNSTABLE`]). If every order makes the same bytes, as
 /// for `(u8, [u8; 3])` or `(bool, bool)`, a pun may rely on every byte of the struct. Otherwise,
-/// its bytes are known to be initialized if they are in every order, and the struct proves only the
-/// same type, and only the same type proves it. A struct may also have rules, which its attributes
-/// state (see "Attributes").
+/// as a source, the struct is known to hold initialized bytes if it does in every order, and
+/// nothing more. As a target, a struct whose size is the same in every order, without rules or
+/// pointers, is proven field by field, each field at every place where it may be, and any other is
+/// proven only by the same type ([Puns without the feature](crate#puns-without-the-feature)). A
+/// struct may also have rules, which its attributes state (see "Attributes").
 ///
-/// **Enums without fields.** An enum without fields may have any representation. Its valid values
-/// are its discriminants, as the compiler stores them. Rust does not specify how they are stored
-/// with the `Rust` representation, so without the `unstable` feature, such an enum is known only as
-/// itself.
+/// **Enums without fields.** An enum without fields may have any representation, but no padding.
+/// Its valid values are its discriminants, as the compiler stores them. Rust does not specify how
+/// they are stored with the `Rust` representation, so without the `unstable` feature, such an enum
+/// is known only as itself.
 ///
 /// **Enums with fields.** An enum with fields may be `repr(C)`, `repr(u8)` or another integer,
 /// both, or of the `Rust` representation. With `repr(C)` or an integer, its layout is the one that
@@ -1184,7 +1188,9 @@ pub use layout::{crc32, sum16};
 ///
 /// On the last field of a struct:
 ///
-/// - `#[pun(len = EXPR)]`: the slice or array of the field has `EXPR` elements.
+/// - `#[pun(len = EXPR)]`: the tail of the field has `EXPR` elements. The tail is the field if it
+///   is an array, a slice or a `str`, whose elements are bytes, and otherwise the slice or `str`
+///   that ends the unsized struct of the field.
 /// - `#[pun(regions(first = EXPR, second = EXPR, last))]`: the bytes of the field are consecutive
 ///   regions of `EXPR` bytes each. The last region may omit its size, and then takes whatever
 ///   remains. A method with each name, as visible as the field, returns the bytes of its region as
@@ -1336,8 +1342,8 @@ pub use layout::{crc32, sum16};
 /// - A struct whose last field is unsized is `repr(C)` or `repr(transparent)`.
 /// - A `packed` struct does not end with an unsized field whose alignment is greater than the
 ///   packing.
-/// - `len` and `regions` are on the last field, the last field of a struct with `len` is a slice or
-///   an array, and only the last region of `regions` omits its size.
+/// - `len` and `regions` are on the last field, the last field of a struct with `len` is an array
+///   or unsized, and only the last region of `regions` omits its size.
 /// - Every rule is an expression as described in "Expressions", of the type that its option
 ///   requires, and each field it names is an unsigned integer, as above.
 /// - A rule has at most 256 operations, needs a stack of at most 16 values, and has at most 8 names
@@ -1354,6 +1360,8 @@ pub use layout::{crc32, sum16};
 ///
 /// For an enum:
 ///
+/// - An enum without fields is at most 16 bytes, and has no padding, which an `align` greater than
+///   the size of its discriminant adds.
 /// - The variants of a view all hold a reference with the same named lifetime, `&'a T`.
 /// - The type of each variant of a view meets the compile-time conditions of [`from_bytes`], where
 ///   `from_head` or `from_bytes` of the view is used.
@@ -2995,8 +3003,8 @@ impl Message {
 /// - `size_of::<S>() == size_of::<D>()`.
 /// - Every byte that `D` requires to be initialized is initialized in every value of `S`.
 /// - Every value of `S` is a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3036,8 +3044,8 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 /// - Every byte that `D` requires to be initialized is initialized in the first
 ///   `size_of::<D>()` bytes of every value of `S`.
 /// - The first `size_of::<D>()` bytes of every value of `S` are a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3078,8 +3086,8 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 /// - Every byte that `D` requires to be initialized is initialized in the last `size_of::<D>()`
 ///   bytes of every value of `S`.
 /// - The last `size_of::<D>()` bytes of every value of `S` are a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3150,8 +3158,8 @@ pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 /// - Each part of `D` (each scalar that is not in an enum or a union, some variant of each enum,
 ///   and some field of each union) accepts what some value of `S` holds at its place. `D` is
 ///   [inhabited] if `S` is.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3236,8 +3244,8 @@ const unsafe fn pun_unchecked<S: Copy, D: Copy>(value: S) -> D {
 ///   time.
 /// - Every byte that `D` requires to be initialized is initialized in every value of `S`.
 /// - Every value of `S` is a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3302,8 +3310,8 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 ///   reference may break a rule of `S`, as a write to a field of `S` may, since a rule is a
 ///   [requirement](crate#guarantees-and-requirements). In particular, every byte that `S` requires
 ///   to be initialized is initialized in every value of `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3631,8 +3639,8 @@ pub fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<&D, E
 /// - Every byte that `D` requires to be initialized is initialized in the bytes that it covers
 ///   in every value of `S`.
 /// - The bytes that `D` covers in every value of `S` are a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3686,8 +3694,8 @@ pub const fn head_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// - Every byte that `D` requires to be initialized is initialized in the last `size_of::<D>()`
 ///   bytes of every value of `S`.
 /// - The last `size_of::<D>()` bytes of every value of `S` are a [valid](crate#soundness) `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3751,8 +3759,8 @@ pub const fn tail_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// - Each enum of `S` lies either wholly within the covered bytes or wholly outside them,
 ///   whatever the length of the slice of `S`.
 /// - No `str` of `S` overlaps the covered bytes, unless both `S` and `D` end with a slice.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3823,8 +3831,8 @@ pub const fn head_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
 ///   covered bytes, unless that struct is in no enum, lies within the covered bytes, and is in `D`
 ///   at the same place with the same rules.
 /// - Each enum of `S` lies either wholly within the covered bytes or wholly outside them.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3891,8 +3899,8 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
 /// - Each part of `D` (each scalar that is not in an enum or a union, some variant of each enum,
 ///   and some field of each union) accepts what some value of `S` holds at its place. `D` is
 ///   [inhabited] if `S` is.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -3971,8 +3979,8 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 ///   reference may break a rule of `S`, as a write to a field of `S` may, since a rule is a
 ///   [requirement](crate#guarantees-and-requirements). In particular, every byte that `S` requires
 ///   to be initialized is initialized in every value of `D`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4024,8 +4032,8 @@ pub const fn try_pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> Res
 ///
 /// - `T` holds no [self-relative pointer](SelfRelative).
 /// - A `T` whose bytes are all zero is a [valid](crate#soundness) `T`, apart from its rules.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4101,8 +4109,8 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 /// A call compiles only if all of the following hold:
 ///
 /// - Every byte that the result covers is initialized in every value of `S`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4152,8 +4160,8 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 ///
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4223,8 +4231,8 @@ pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
 /// - Every byte of every value of `D` is initialized.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4419,8 +4427,8 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
 ///
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4513,8 +4521,8 @@ pub const fn rejects<D: ?Sized + Pun>(bytes: &[u8]) -> bool {
 ///   Use [`from_head`] or [`from_bytes`].
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4584,8 +4592,8 @@ pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&[u8], &D), Err
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
 /// - Every byte of every value of `D` is initialized.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.
@@ -4655,8 +4663,8 @@ pub const fn from_head_mut<D: ?Sized + Pun>(
 /// - `D` holds no [self-relative pointer](SelfRelative).
 /// - `D` is [inhabited].
 /// - Every byte of every value of `D` is initialized.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as
 /// [the crate documentation](crate#compile-time-errors) explains.

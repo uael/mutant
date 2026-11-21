@@ -2,8 +2,9 @@
 //! (32 and 64 bits, of either byte order), PE/COFF, Mach-O, Java class files and WebAssembly
 //! modules.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
-//! no `impl` and no parsing code, and the second half reads files in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only declarations of types and of two
+//! constants, with no `unsafe`, no `impl` and no parsing code, and the second half reads files in
+//! place, from bytes.
 //!
 //! The following table lists what is specific to these formats, and what in the declarations
 //! expresses it:

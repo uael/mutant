@@ -179,12 +179,12 @@ in a release build.
 
 ## Costs
 
-A check never allocates and never panics. Without nested walks, its time grows with the size of the
-value, or, for a `size` or `len` rule, with the number of bytes given. A `walk` takes at most
-`8 * size + 128` steps, where `size` is that number of bytes, so a checksum or another `walk` inside
-a `walk` multiplies the time by the size, at each level. Each checked pun is code specialized for
-its two types, and it relies on inlining, which a debug build mostly does not do, so measure the
-checks in release.
+A check never allocates and never panics. Without a checksum or a walk inside a walk, its time grows
+with the size of the value, or, for a `size` or `len` rule, with the number of bytes given. A `walk`
+takes at most `8 * size + 128` steps, where `size` is that number of bytes, so a checksum or another
+`walk` inside a `walk` multiplies the time by the size, at each level. Each checked pun is code
+specialized for its two types, and it relies on inlining, which a debug build mostly does not do, so
+measure the checks in release.
 
 > [!WARNING]
 > Walks nest up to 4 deep, so a checksum inside the deepest one takes time in proportion to the

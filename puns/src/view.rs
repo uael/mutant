@@ -62,8 +62,9 @@
 //! their extent. One instance of the validation serves a variant for both functions. It checks what
 //! the two bases do not prove, which is the same marks where the base is the same, or everything
 //! that bytes do not prove where there is no base. The function of each variant names the functions
-//! of all the variants after it, and the `match` on a constant keeps one. So what is compiled grows
-//! as the square of the number of variants. `benches/checks.rs` measures the checks of a view.
+//! of all the variants after it, so what the derive writes grows as the square of the number of
+//! variants, and the `match` on a constant keeps one of them. `benches/checks.rs` measures the
+//! checks of a view.
 
 use core::marker::PhantomData;
 
@@ -426,6 +427,10 @@ impl<'a, V: ?Sized + Views, const N: usize, const HEAD: bool> Known<'a, V, N, HE
 
   /// Returns the bytes after the value of the variant at `index`, for `from_head`, if the bytes
   /// start with one.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `index` is not less than `N`, the number of variants.
   #[doc(hidden)]
   #[inline(always)]
   #[must_use]
@@ -478,8 +483,8 @@ where
 ///
 /// - The type of `I` holds no self-relative pointer.
 /// - Some bytes are a valid value of the type of `I`.
-/// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
-///   the compiler.
+/// - Without the `unstable` feature, whether the call compiles, what it checks and which values a
+///   check accepts do not depend on a layout that Rust leaves to the compiler.
 ///
 /// These conditions are checked after monomorphization, as [the crate
 /// documentation](crate#compile-time-errors) explains.

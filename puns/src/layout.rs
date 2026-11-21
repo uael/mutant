@@ -460,7 +460,7 @@ impl Spec {
   /// - Every byte of `value` is initialized.
   #[doc(hidden)]
   #[must_use]
-  pub const unsafe fn bits_of<T>(value: &T) -> u128 {
+  pub const unsafe fn bits_of<T>(value: T) -> u128 {
     // SAFETY: Every byte of `value` is initialized, by contract on the caller. This is the
     // requirement of `bits_of`.
     unsafe { bits_of(value) }
@@ -2149,7 +2149,8 @@ impl Layout {
     unsafe { crate::discover::discover(samples, fields) }
   }
 
-  /// Returns a valid `T`, made from its layout alone, for the variant samples of an enum of the
+  /// Returns a `T` that is valid in the sense of the Reference, whose rules may not hold, made from
+  /// its layout alone, for the variant samples of an enum of the
   /// `Rust` representation ([`Layout::discover`]).
   ///
   /// Every scalar holds the least of its values, and padding is uninitialized.
@@ -2533,10 +2534,11 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `pointer` may already be null, if `Option<P>` is larger than `P`, or if the bytes of
-  /// `None` are not all zero. Also panics if `P` does not have the size of the offset, or if
-  /// `pointer` was not made for a `T` (with its size and alignment). The bytes of `None` are read
-  /// at compile time, so an uninitialized one fails to compile.
+  /// Panics if `pointer` may already be null, if `Option<P>` is larger than `P`, if the bytes of
+  /// `None` are not all zero, or if `Option<Option<P>>` has the size of `Option<P>`, since the
+  /// offset then has a niche other than zero. Also panics if `P` does not have the size of the
+  /// offset, or if `pointer` was not made for a `T` (with its size and alignment). The bytes of
+  /// `None` are read at compile time, so an uninitialized one fails to compile.
   ///
   /// # Examples
   ///
@@ -2838,9 +2840,10 @@ impl Layout {
   /// - A rule is not well formed, as `#[derive(Pun)]` writes it: it reads a field past the sized
   ///   fields, has too many operations or variables, nests its walks too deeply, needs too deep a
   ///   stack, or is a size or a length that reads the size of the value.
-  /// - A `len` rule is not about a last field that is a slice or an array.
+  /// - `T` is sized, has a `len` rule, and its last field is not an array.
   /// - The size of `T` is not the one that the layout computes, as for a `packed` struct that ends
   ///   with an aligned unsized field.
+  /// - `T` is unsized, and pointers to `T` are not represented as `probe` says.
   ///
   /// # Safety
   ///
@@ -5763,7 +5766,8 @@ pub enum Rule {
   /// The extent of the value in bytes, up to the end of its slice and without the padding that may
   /// follow it, is the value of the expression.
   Size(&'static [Op]),
-  /// The length of the tail of the value, a slice or an array, is the value of the expression.
+  /// The length of the tail of the value, an array, a slice or a `str`, is the value of the
+  /// expression.
   Len(&'static [Op]),
   /// The value of the expression is not 0.
   Assert(&'static [Op]),
@@ -6183,7 +6187,9 @@ impl Machine {
   ///   struct, which [`check_rules`] accepted, so that a [`Op::Load`] reads within the sized fields
   ///   of the struct.
   /// - `base` is valid for reads of the bytes of the sized fields of the struct, and of `size`
-  ///   bytes, which are all initialized.
+  ///   bytes.
+  /// - The bytes that `op` reads are initialized: those of the field of an [`Op::Load`] and, for
+  ///   an operation that reads bytes by offset ([`Layout::rules_read_bytes`]), all `size` bytes.
   // Not in debug builds, where this would only make every struct that has rules slow to build.
   #[must_use]
   #[cfg_attr(not(debug_assertions), inline(always))]
@@ -6205,8 +6211,8 @@ impl Machine {
         let endian = if big { Endian::Big } else { Endian::Little };
         // SAFETY: `op` is an operation of a rule that `Layout::structure` accepted, by contract on
         // the caller. `check_ops` asserted that a load reads 1 to 16 bytes within the sized
-        // fields of the struct. `base` is valid for reads of these bytes, initialized, by
-        // contract on the caller. So `add(offset)` stays within them, and they meet the
+        // fields of the struct. `base` is valid for reads of these bytes, which are initialized,
+        // by contract on the caller. So `add(offset)` stays within them, and they meet the
         // requirements of `load`.
         self.push(unsafe { load(base.add(offset), size as usize, endian) });
       }
@@ -6221,9 +6227,9 @@ impl Machine {
         let offset = self.get(depth - 1);
         let value = if offset <= size as u128 {
           // SAFETY: `offset <= size`, which is checked above, and `base` is valid for reads of
-          // `size` initialized bytes, by contract on the caller. So `add(offset)` stays within
-          // them, and the `size - offset` bytes from there meet the requirements of
-          // `Varint::read`.
+          // `size` bytes, initialized since `op` reads bytes by offset, by contract on the caller.
+          // So `add(offset)` stays within them, and the `size - offset` bytes from there meet the
+          // requirements of `Varint::read`.
           match unsafe { form.read(base.add(offset as usize), size - offset as usize) } {
             Some((value, bytes)) => Some(if length { bytes as u128 } else { value }),
             None => None,
@@ -6239,7 +6245,8 @@ impl Machine {
         // In the value: one comparison of the offset, with what does not change in a walk.
         if size >= width as usize && offset <= (size - width as usize) as u128 {
           // SAFETY: `offset + width <= size`, which is checked above, and `base` is valid for
-          // reads of `size` initialized bytes, by contract on the caller. `check_ops` asserted
+          // reads of `size` bytes, initialized since `op` reads bytes by offset, by contract on
+          // the caller. `check_ops` asserted
           // that `width` is 1 to 16. These are the requirements of `add` and of `load`.
           self.set(depth - 1, unsafe { load(base.add(offset as usize), width as usize, endian) });
         } else {
@@ -6260,7 +6267,8 @@ impl Machine {
         self.depth -= operands - 1;
         if start <= end && end <= size as u128 && zeros <= to && to <= size as u128 {
           // SAFETY: `start <= end <= size`, which is checked above, and `base` is valid for reads
-          // of `size` initialized bytes, by contract on the caller. So `add(start)` stays within
+          // of `size` bytes, initialized since `op` reads bytes by offset, by contract on the
+          // caller. So `add(start)` stays within
           // them, and the `end - start` bytes from there meet the requirements of
           // `slice::from_raw_parts`, as in `Dfa::matches`. The slice lives only during this
           // call, which writes no memory but `self`.
@@ -6621,10 +6629,18 @@ pub const fn merge_ranges<const N: usize>(
 ///
 /// - Every byte of `value` is initialized.
 #[doc(hidden)]
-pub const unsafe fn bits_of<T>(value: &T) -> u128 {
+pub const unsafe fn bits_of<T>(value: T) -> u128 {
   assert!(size_of::<T>() <= 16, "an enum without fields cannot be larger than 16 bytes");
-  // SAFETY: `size_of::<T>() <= 16`, which is asserted above. `value` is a reference, so valid for
-  // reads of `size_of::<T>()` bytes, which are initialized, by contract on the caller. These are
-  // the requirements of `load`.
-  unsafe { load(core::ptr::from_ref::<T>(value).cast(), size_of::<T>(), Endian::NATIVE) }
+  // Not dropped: a `const fn` cannot drop a value of a generic type.
+  let value = core::mem::ManuallyDrop::new(value);
+  // SAFETY: `size_of::<T>() <= 16`, which is asserted above. `value` is a local of this function,
+  // a `ManuallyDrop<T>`, which has the layout of a `T` [1]. So it is valid for reads of
+  // `size_of::<T>()` bytes, and no other code writes it. These bytes are initialized, by contract
+  // on the caller. These are the requirements of `load`.
+  //
+  // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/struct.ManuallyDrop.html:
+  //
+  //     `ManuallyDrop<T>` is guaranteed to have the same layout and bit validity as `T`, and is
+  //     subject to the same layout optimizations as `T`.
+  unsafe { load((&raw const value).cast(), size_of::<T>(), Endian::NATIVE) }
 }

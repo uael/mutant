@@ -1333,7 +1333,7 @@ fn expression(
 /// Each leaf is `One<INDEX>`, or `Walk<INDEX, COND, NEXT>` for a walk, where `COND` and `NEXT` are
 /// its expressions as types. `walks` holds them, in the order of the walks of `ops`. The
 /// validation applies each operation in an instance of its own, down this tree. The tree is
-/// balanced, so the recursion is as deep as its logarithm.
+/// balanced, so the recursion is as deep as the logarithm of the number of operations.
 ///
 /// # Panics
 ///
@@ -2073,10 +2073,12 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   for variant in &data.variants {
     let variant = &variant.ident;
     // SAFETY (of the generated code): `bits_of` requires every byte of the value to be
-    // initialized. A value of an enum without fields is its discriminant, which `rustc` stores
-    // in every byte of it. The call is evaluated in the constant `SPEC`, where `rustc` reports
-    // an error for a read of an uninitialized byte.
-    variants.push(quote!(unsafe { #root::layout::Spec::bits_of(&Self::#variant) }));
+    // initialized, which is not established: `align` may add padding after the discriminant, and
+    // with the `Rust` representation, Rust does not say how the discriminant is stored. The call
+    // is evaluated in the constant `SPEC`, where `rustc` reports an error instead of reading an
+    // uninitialized byte. No documentation promises this behavior, which the crate documentation
+    // discloses (section Soundness).
+    variants.push(quote!(unsafe { #root::layout::Spec::bits_of(Self::#variant) }));
   }
   let count = variants.len();
   let repr = parse_repr(&input.attrs)?;
@@ -2131,10 +2133,12 @@ fn needs_bound(ty: &Type, input: &DeriveInput) -> bool {
   names(ty.to_token_stream(), &parameters) && !names(ty.to_token_stream(), &this)
 }
 
-/// Derives `Pun` for an enum with fields of a layout that Rust specifies (RFC 2195).
+/// Derives `Pun` for an enum with fields, and passes one of the `Rust` representation to
+/// [`derive_discovered`].
 ///
-/// The offsets of the fields are those of `repr(C)` structs, computed from the sizes and the
-/// alignments of the fields (`Layout::repr_c`).
+/// With `repr(C)` or an integer, Rust specifies the layout (RFC 2195): the offsets of the fields
+/// are those of `repr(C)` structs, computed from the sizes and the alignments of the fields
+/// (`Layout::repr_c`).
 fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Result<TokenStream> {
   let repr = parse_repr(&input.attrs)?;
   if !repr.c && repr.int.is_none() {
@@ -2268,9 +2272,11 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       }
     });
     variants.push(quote!(#root::layout::Variant::new(
-      // SAFETY (of the generated code): As for an enum without fields: `#tag` is one, whose
-      // value is its discriminant, and the call is evaluated in a constant.
-      unsafe { #root::layout::Spec::bits_of(&#tag::#name) },
+      // SAFETY (of the generated code): `bits_of` requires every byte of the value to be
+      // initialized. `#tag` is an enum without fields, `repr(C)` or of a primitive representation,
+      // without `align`. Such an enum is an integer that holds its discriminant (the crate
+      // documentation, "What Rust documents"), so every byte of it is initialized.
+      unsafe { #root::layout::Spec::bits_of(#tag::#name) },
       const {
         &#root::layout::Layout::variant::<Self>(
           const { &#root::layout::Layout::sort_fields([#(#layouts),*]) },
@@ -2302,10 +2308,10 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       unsafe impl #root::Scalar for #tag {
         const SPEC: #root::layout::Spec = {
           let merged: &'static ([(u128, u128); #count], usize) = const {
-            // SAFETY: As for an enum without fields: `#tag` is one, whose value is its
-            // discriminant, and the calls are evaluated in a constant.
+            // SAFETY: As for `Variant::new` above, every byte of a value of `#tag` is
+            // initialized, which is what `bits_of` requires.
             &#root::layout::Spec::sorted_ranges([
-              #(unsafe { #root::layout::Spec::bits_of(&#tag::#names) }),*
+              #(unsafe { #root::layout::Spec::bits_of(#tag::#names) }),*
             ])
           };
           #root::layout::Spec::native_ranges::<Self>(merged.0.split_at(merged.1).0)
