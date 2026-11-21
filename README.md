@@ -9,8 +9,13 @@ Type punning proven at compile time: a safe alternative to `transmute` and to ha
 of bytes.
 
 `puns` reads a value of one type as a value of another type. It compares the two types at compile
-time. Each pun is then proven (nothing is checked), checked at run time, or refused (it does not
-compile).
+time:
+
+- A pun is proven if every value of the source is a valid value of the target. It compiles to no
+  check.
+- A pun is checked if it holds for some values of the source only. The `try_` and `from_`
+  functions check it at run time, and the other functions refuse it.
+- Any other pun is refused: it does not compile.
 
 ```toml
 [dependencies]
@@ -58,9 +63,14 @@ little-endian `u16` with an alignment of 1, so `Lamp` has no padding.
 
 Two notes on the derive:
 
-- Give your types a `repr`. Without one, Rust may reorder the fields, and `puns` refuses a pun
-  whose checks depend on the field order. The [`unstable` feature][unstable] removes this
-  restriction.
+- Prefer a stable representation: `#[repr(C)]` for a struct, `#[repr(u8)]` or another integer
+  for an enum. The default representation, `repr(Rust)`, guarantees little about the layout, so
+  that the compiler can optimize it. The order of the fields, the tag of an enum and its niches
+  may change with the next version of the compiler, or at random with
+  [`-Zrandomize-layout`][randomize]. By default, `puns` accepts a pun of such a type only if no
+  such change can change what the pun does. The [`unstable` feature][unstable] accepts the other
+  puns too, from the layout that the compiler chose. They are sound in the build that compiles
+  them, but another version of the compiler may refuse them, or check other bytes.
 - Deriving `Pun` lets any code read and write every field through bytes, as if the fields were
   public. Do not derive it on a type that has a private invariant. See
   [What deriving `Pun` means][deriving].
@@ -85,8 +95,8 @@ enum OldItem {
   Potion { heal: u8, cursed: bool } = 1,
 }
 
-// Version 2 adds keys. A sword and a potion keep their tag and their fields, and a key is also
-// 3 bytes. So every `OldItem` is a valid `Item`.
+// Version 2 adds keys. A sword and a potion keep their tag and their fields. A key is 3 bytes
+// too, so an `Item` has the size of an `OldItem`, and every `OldItem` is a valid `Item`.
 #[derive(Pun, Debug, PartialEq)]
 #[repr(u8)]
 enum Item {
@@ -99,7 +109,7 @@ enum Item {
 // of the bag. By default, a `Save` has any version and a bag of `Item`s.
 #[derive(Pun)]
 #[repr(C)]
-#[pun(assert(hp <= level * 10))] // a rule, checked when bytes are read as a `Save`
+#[pun(assert(hp <= level * 10))] // a rule that the bytes of a `Save` must meet
 struct Save<V = u8, B: ?Sized = [Item]> {
   magic: u32bec<0x5341_5645>, // a big-endian `u32` that is always "SAVE"
   version: V,
@@ -135,24 +145,23 @@ file[4] = 2;
 file.extend_from_slice(&[2, 3, 0]);
 assert_eq!(load(&file).unwrap().bag[2], Item::Key { floor: 3, door: 0 });
 
-// Set hp to 999. A write to a field is not checked. It breaks the rule here, so `load` now
-// fails.
+// Set hp to 999. The write does not check the rule, so the file now breaks it, and `load` fails.
 puns::from_bytes_mut::<Save>(&mut file).unwrap().hp = 999.into();
 assert_eq!(load(&file).err(), Some(puns::Error::Validity));
 ```
 
-A rule such as `assert` is checked when bytes are read as the type. A write to a field does not
-check it. See [Guarantees and requirements][guarantees].
+A rule is checked when bytes are read as the type, not when a field is written. See
+[Guarantees and requirements][guarantees].
 
 The derive has other attributes, for valid ranges, sizes stored in the data, checksums and tags.
 The [examples](#examples) use them, and the [documentation of the derive][derive] describes them.
 
 ## How it works
 
-`#[derive(Pun)]` gives each type a constant that describes its layout: its size, its alignment,
-its padding, and the valid values of each field. Each function in `puns` compares the constants of
-its two types in a `const` block. The compiler evaluates this block for each pair of types that
-the function is used with.
+`#[derive(Pun)]` gives each type a constant that describes its layout: its size, its alignment, its
+padding, the valid values of each field, and its rules. Each function of `puns` compares the
+constants of its two types in a `const` block. The compiler evaluates this block for each pair of
+types that the function is used with.
 
 `pun`, `pun_ref`, `pun_mut` and `as_bytes` accept only a proven pun. The `try_` and `from_`
 functions also accept a checked pun, and return an [`Error`] when the check fails:
@@ -188,10 +197,11 @@ Some puns are refused by the `try_` functions too, such as a pun that would read
 
 ## Caveats
 
-- `cargo check` does not report a refused pun. `cargo build` does. The error comes from code
-  generation.
-- For the same reason, a generic function cannot require in its bounds that two types pun. The
-  error appears where the function is instantiated.
+- `cargo check` does not report a refused pun. `cargo build` does. A refusal is a panic in a
+  `const` block, which the compiler evaluates when it instantiates the function, and `cargo check`
+  does not instantiate functions.
+- A generic function cannot require in its bounds that two types pun, since the analysis is a
+  constant, not a trait. The error appears where the function is instantiated.
 - The analysis takes build time for each new pair of types. The cost of a view enum grows with
   the square of its number of variants.
 - An [`Error`] says whether the size, the alignment or a value is wrong. It does not say where.
@@ -238,8 +248,8 @@ A proven pun compiles to no check. For example, `pun::<[bool; 4], u32>` compiles
 [`docs/performance.md`][performance] has the machine code of more functions, and benchmarks
 against the same checks written by hand.
 
-The time of a check can grow with the square of the size of the value. This happens when a `walk`
-(a loop in a rule) contains a checksum or another `walk`.
+The time of a check grows with the size of the value. A checksum or a `walk` (a loop in a rule)
+inside a `walk` multiplies it by the size, at each level, and walks nest up to 4 deep.
 
 ## Related crates
 
@@ -266,7 +276,8 @@ Recent stabilizations and the progress of AI models made me want to come back to
 
 ## Documentation
 
-- [Reference][reference]: every function, by what it reads and how much of it.
+- [Reference][reference]: the functions, by what they read (a typed value or bytes) and how much
+  of it (the whole, its front or its back).
 - [`#[derive(Pun)]`][derive] and its attributes, and the integer types of [`puns::num`][num].
 - [Compile-time errors], [Soundness], [Cargo features][features],
   [Minimum Rust version][msrv], [Limitations].
@@ -292,6 +303,7 @@ additional terms or conditions.
 [Compile-time errors]: https://docs.rs/puns/latest/puns/#compile-time-errors
 [features]: https://docs.rs/puns/latest/puns/#cargo-features
 [unstable]: https://docs.rs/puns/latest/puns/#the-unstable-feature
+[randomize]: https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/randomize-layout.html
 [msrv]: https://docs.rs/puns/latest/puns/#minimum-rust-version
 [Limitations]: https://docs.rs/puns/latest/puns/#limitations
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
