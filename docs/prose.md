@@ -7,6 +7,10 @@ documentation measures it against these rules. The model is the documentation of
 `core::slice::from_raw_parts`, `core::mem::transmute`, `zerocopy::TryFromBytes` and
 `FromBytes::ref_from_bytes`.
 
+A review reads each text whole and checks it against every rule of this file. A script that counts
+colons, short sentences or contractions only points at places to read, and its numbers are not a
+verdict.
+
 ## What every text does
 
 - **Each claim is true of the code.** A sentence that the code does not support is a defect,
@@ -51,7 +55,8 @@ Avoid these patterns, each of which is common in generated text:
 
 **The README** speaks to a person deciding whether to use the crate. It uses "you", contractions
 ("doesn't", "it's", "can't") and a conversational rhythm, like the READMEs of `anyhow` and
-`serde_json`. The History section is the author's voice and is not edited.
+`serde_json`. The History section is the author's account, and its facts are the author's: an
+edit changes how it reads, never what it says.
 
 **The reference documentation** (`///`, `//!`, `docs/*.md`) speaks as `core` and `zerocopy` do:
 
