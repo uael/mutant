@@ -83,18 +83,18 @@ By hand, a CRC is computed 16 bytes at a time, unless the name says a byte at a 
 is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`.
 
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
-without a branch inside a block. A slice of `MaybeFlag`, an enum without `repr` whose tag is a niche in
-a `bool`, is not checked this way, and is slower than by hand. In a view enum, a variant
-whose values are all values of a later variant is checked from that variant. So a wrong checksum
-of UDP over IPv4 is computed once, for the IPv4 variant.
+without a branch inside a block. A slice of `MaybeFlag`, an enum without `repr` whose tag is a niche
+in a `bool`, is not checked this way, and is slower than by hand. In a view enum, a variant whose
+values are all values of a later variant is checked from that variant. So a wrong checksum of UDP
+over IPv4 is computed once, for the IPv4 variant.
 
 ## Costs
 
-A check never allocates and never panics. Its time grows with the size of the value. A `walk`
-takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a `walk` makes the
-time grow with the square of the size. Keep this in mind before you give such a type untrusted
-bytes. Each checked pun is code specialized for its two types. Measure the checks in release. They
-rely on inlining, which a debug build mostly does not do.
+A check never allocates and never panics. Its time grows with the size of the value. A `walk` takes
+at most `8 * size + 128` steps, so a checksum or another `walk` inside a `walk` multiplies the time
+by the size, at each level. Walks nest up to 4 deep. Keep this in mind before you give such a type
+untrusted bytes. Each checked pun is code specialized for its two types. Measure the checks in
+release. They rely on inlining, which a debug build mostly does not do.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
