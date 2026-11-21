@@ -8,7 +8,7 @@
 Type punning proven at compile time: a safe alternative to `transmute` and to hand-written parsing
 of bytes.
 
-`puns` lets you read a value as another type, or bytes as a typed value, without writing
+`puns` lets you reinterpret a value as another type, or bytes as a typed value, without writing
 `unsafe`. It compares the layouts and valid values of the two types while your code compiles, and
 whatever it can prove, it doesn't check at run time:
 
@@ -129,7 +129,7 @@ reads Bluetooth HCI packets this way.
 ## Reading an old version of a format
 
 If every value of an old version of a format is also a valid value of the new one, `puns` can
-prove it, and you can read old data as the new version without any check. Nothing is moved or
+prove it, and you can reinterpret old data as the new version without any check. Nothing is moved or
 converted, so whatever the two versions share must keep the same layout:
 
 ```rust
@@ -164,15 +164,16 @@ assert_eq!(items[1], Item::Potion { heal: 25, cursed: false });
 If version 2 ever drops a variant or narrows a field, this stops compiling. (`pun_mut` won't accept
 it, since you could then write a key into an `OldItem`.) `puns` can't check what a variant means,
 because it matches variants by their tag. If version 2 gave tag 1 to the key, this would still
-compile and read the old potion as a key, so keep the tags of existing variants.
+compile and reinterpret the old potion as a key, so keep the tags of existing variants.
 
 ## Compared with other crates
 
 `puns` takes many ideas and implementation details from [`zerocopy`][zerocopy] and
 [`bytemuck`][bytemuck]. Their traits describe what each type accepts on its own. A `bool` doesn't
-accept every byte, so with them, reading a `&[Switch]` as a `&[bool]` checks every byte and returns
-a `Result`. With `puns`, it's free ([code and machine code][comparison]). Both can check conditions
-like a checksum at run time, but neither uses the rules of one type to prove those of another.
+accept every byte, so with them, reinterpreting a `&[Switch]` as a `&[bool]` checks every byte and
+returns a `Result`. With `puns`, it's free ([code and machine code][comparison]). Both can check
+conditions like a checksum at run time, but neither uses the rules of one type to prove those of
+another.
 
 They also do things that `puns` doesn't: `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and
 their errors are mostly trait bounds that your editor reports right away. Use them for these, for an
