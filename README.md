@@ -8,16 +8,21 @@
 Type punning proven at compile time: a safe alternative to `transmute` and to hand-written parsing
 of bytes.
 
-`puns` reads a value as another type, or bytes as a typed value, without `unsafe`. At compile time,
-it compares the source type with the target type.
+`puns` reads a value as another type, or bytes as a typed value, in place and without `unsafe`.
+`#[derive(Pun)]` describes the layout and the valid values of a type as a constant. When the
+compiler builds a conversion, `puns` compares the constant of the source type with the one of the
+target type, and the conversion is one of three kinds:
 
-- When `puns` can prove that every value of the source is a valid value of the target, the
-  conversion compiles to no check. `pun`, `pun_ref` and the other functions without a prefix
-  accept only these conversions.
-- When some values may be invalid, or the address may be misaligned, the `try_` and `from_`
-  functions check at run time what `puns` could not prove.
-- When the conversion can never be valid, or needs something that `puns` can neither prove nor
-  check, such as reading padding, it does not compile.
+- **Proven**: `puns` can show that every value of the source is a valid value of the target. The
+  conversion needs no check at run time. `pun`, `pun_ref`, `pun_mut`, and the `head` and `tail`
+  functions accept only proven conversions.
+- **Checked**: some values of the source may be invalid for the target, or the address may be
+  misaligned. The `try_` and `from_` functions check at run time what `puns` could not prove.
+- **Refused**: the conversion can never be valid, or needs something that `puns` can neither prove
+  nor check, such as reading padding. It does not compile.
+
+The comparison runs when the compiler generates code, so `cargo build` reports a refusal, but
+`cargo check` and editors do not.
 
 ```rust
 use puns::Pun;
@@ -29,18 +34,19 @@ enum Switch {
   On = 1,
 }
 
-// A `Switch` is 0 or 1, and both are valid `bool`s. `pun` compiles to no check.
+// Proven: a `Switch` is 0 or 1, and both are valid `bool`s.
 let on: bool = puns::pun(Switch::On);
 assert!(on);
 
-// A `u8` is a `bool` only if it is 0 or 1. `try_pun` checks it, and `pun` would not compile.
+// Checked: a `u8` is a `bool` only if it is 0 or 1. `pun::<u8, bool>` would not compile.
 assert_eq!(puns::try_pun::<u8, bool>(2), Err(puns::Error::Validity));
 assert_eq!(puns::try_pun::<u8, bool>(1), Ok(true));
 ```
 
-`puns` works with plain data. That includes integers, floats, `bool`, `char`, `NonZero`, `Option`,
-arrays, slices, `str`, tuples and `MaybeUninit`, and the structs, enums and unions that derive
-`Pun`.
+`puns` works with plain data: integers, floats, `bool`, `char`, `NonZero`, arrays, slices, `str`,
+`MaybeUninit`, tuples, `Option`, and the structs, enums and unions that derive `Pun`. Rust leaves
+part of the layout of tuples and of most `Option`s to the compiler, which limits what `puns`
+accepts of them by default (see [Representation](#representation)).
 
 ```sh
 cargo add puns
@@ -52,11 +58,12 @@ in November 2026, and the API may change before 1.0.
 ## Reading a packet
 
 Formats store their own lengths and checksums. The derive declares them as *rules*, which the
-`from_` and `try_` functions check along with the types of the fields:
+`from_` and `try_` functions check along with the fields:
 
 ```rust
 use puns::{Pun, num::{u16be, u32be}};
 
+// `repr(u8)` makes the tag of `Kind` one byte, with the values given.
 #[derive(Pun, Debug, PartialEq)]
 #[repr(u8)]
 enum Kind {
@@ -64,9 +71,11 @@ enum Kind {
   Pong = 2,
 }
 
-// A 4-byte header, the CRC-32 of the payload, then `length` bytes of payload. `u16be` and `u32be`
-// are big-endian integers with an alignment of 1, so `Packet` has no padding, and can be read at
-// any address.
+// `repr(C)` keeps the fields in this order. `u16be` and `u32be` are big-endian integers with an
+// alignment of 1, so `Packet` has no padding, and can be read at any address.
+//
+// `size` is the size of the whole packet: 8 bytes of fields, then `length` bytes of payload.
+// `assert` compares the CRC-32 of the payload, from byte 8 to the end, with the field `crc`.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(size = 8 + length)]
@@ -79,6 +88,7 @@ struct Packet {
   payload: [u8],
 }
 
+// A ping with a payload of 3 bytes, "abc", then one more byte.
 let bytes = [1, 64, 0, 3, 0x35, 0x24, 0x41, 0xc2, b'a', b'b', b'c', 0xff];
 
 // `from_head` reads one packet from the front of the bytes, and returns the bytes after it.
@@ -94,28 +104,27 @@ assert_eq!(error(&[1, 64, 0, 0, 0, 0, 0, 1]), Some(puns::Error::Validity));
 assert_eq!(error(&[9, 64, 0, 0, 0, 0, 0, 0]), Some(puns::Error::Validity));
 ```
 
-`packet` and `rest` borrow `bytes`, and nothing is copied. A rule is a Rust expression over the
-integer fields, limited to operators and the functions that the derive provides, such as `crc32`,
-`le`, `sum16` or `leb128`. Other attributes give the valid values of a field, the length of a
-slice, regions of bytes whose sizes are in the data, and getters for values packed into a field,
-such as flags. The [documentation of the derive][derive] lists them all.
+`packet` and `rest` borrow `bytes`, and nothing is copied. A rule is an expression over the
+unsigned integer fields, with operators and the functions that the derive provides, such as
+`crc32`. The derive also declares the valid values of a field, the length of a slice, and getters
+for flags packed into a field. Its [documentation][derive] lists every attribute and function.
 
-A rule is checked when bytes are read. It is not an invariant of the type. Code that holds a
+A rule is checked when bytes are read. It is not an invariant of the type: code that holds a
 `&mut Packet` can still change `length` and break it.
 
 ## When to use it
 
 Use `puns` to read data in place: network packets, file headers and records, or a value of one of
-your types as another. It is at its best when the types say a lot. It checks lengths and checksums
-that the derive declares, proves an enum of an old format to be valid in the new one, and lets you
-write through a `&mut` only when every value that you can write is valid for both types. Its
-functions are `const fn`, and need no allocator.
+your types as another. It checks the lengths and checksums that the derive declares. It proves
+that an enum of an old format is valid in the new one, as the next section shows. And it lets you
+write through a `&mut` only when every value that you can write is valid for both types.
 
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
-implementation details. They decide what a conversion needs from each type on its own. For
-example, a `bool` accepts only some bytes, so they check every conversion to a `bool`, even from a
-`Switch`. Prefer them when you need an older version of Rust, or years of use and review behind
-your `unsafe` code. Their errors are mostly trait bounds, which `cargo check` and editors report.
+implementation details. They decide what a conversion needs from each type on its own. A `bool`
+does not accept every byte, so with them, a `Switch` becomes a `bool` through a checked
+conversion, whose check the optimizer may or may not remove. `puns` proves it from the two types.
+Prefer them when you need an older version of Rust, or years of use and review behind your
+`unsafe` code. Their errors are mostly trait bounds, which `cargo check` and editors report.
 Rust's [Safe Transmute][safe transmute] project also compares the two types, in the compiler, and
 is available on nightly only.
 
@@ -152,7 +161,7 @@ enum Item {
 let file = [0, 0x2c, 0x01, 1, 25, 0];
 let old: &[OldItem] = puns::from_bytes(&file).unwrap();
 
-// An `OldItem` is always a valid `Item`. `pun_ref` compiles to no check.
+// Proven: an `OldItem` is always a valid `Item`.
 let items: &[Item] = puns::pun_ref(old);
 assert_eq!(items[1], Item::Potion { heal: 25, cursed: false });
 ```
@@ -162,22 +171,30 @@ this would still compile, and would read an old potion as a key, since its bytes
 Keep the tags of existing variants.
 
 To read either version from the same file, the derive also accepts an enum of references, called a
-*view enum*, whose `from_bytes` returns the first variant that the bytes match. The [documentation
-of the derive][derive] shows one that chooses by a version byte.
+*view enum*. Its `from_bytes` returns the first variant that the bytes match, so a variant can
+require a version byte of 1, and another a version byte of 2. The [documentation of the
+derive][derive] has an example.
 
-## Functions and errors
+## Functions
 
-| Reads | The whole | The front | The back |
+| | Whole | Front | Back |
 |---|---|---|---|
-| A value as another type | `pun`, `pun_ref`, `pun_mut` | `head`, `head_ref`, `head_mut` | `tail`, `tail_ref`, `tail_mut` |
-| The same, checked | `try_pun`, `try_pun_ref`, `try_pun_mut` | | |
-| Bytes as a type, checked | `from_bytes`, `from_bytes_mut` | `from_head`, `from_head_mut` | `from_tail`, `from_tail_mut` |
+| Proven | [`pun`][pun], [`pun_ref`][pun_ref], [`pun_mut`][pun_mut] | [`head`][head], [`head_ref`][head_ref], [`head_mut`][head_mut] | [`tail`][tail], [`tail_ref`][tail_ref], [`tail_mut`][tail_mut] |
+| Checked | [`try_pun`][try_pun], [`try_pun_ref`][try_pun_ref], [`try_pun_mut`][try_pun_mut] | none | none |
+| Bytes, checked | [`from_bytes`][from_bytes], [`from_bytes_mut`][from_bytes_mut] | [`from_head`][from_head], [`from_head_mut`][from_head_mut] | [`from_tail`][from_tail], [`from_tail_mut`][from_tail_mut] |
 
-`as_bytes` reads a value as its bytes. The functions that take a value, such as `pun`, need `Copy`
-types. A `&mut` needs the conversion to be proven in both directions, since you can write any
-value of the target through it: a `&mut bool` can become a `&mut Switch`, but not a `&mut u8`.
+The functions of the first two rows read a value as another type: all of it, or its first or last
+bytes. Those of the last row read bytes as a type. A function ending in `_ref` or `_mut` takes and
+returns a reference, and one without either takes a value of a `Copy` type. [`as_bytes`][as_bytes]
+reads a value as its bytes, and is proven. All of them are `const fn`.
 
-A conversion that `puns` refuses is a compile error:
+Through a `&mut`, you can write any value of the target, so every value of the target must also be
+a valid value of the source, and `puns` must prove it. A `&mut bool` can become a `&mut Switch`,
+but not a `&mut u8`, even with `try_pun_mut`.
+
+## Errors
+
+A refused conversion is a compile error:
 
 ```rust,compile_fail,E0080
 let flag: bool = puns::pun(1u8);
@@ -196,19 +213,19 @@ note: the above error was encountered while instantiating `fn pun::<u8, bool>`
   |                    ^^^^^^^^^^^^^^
 ```
 
-The first lines say what is wrong and at which byte of the target. The last note gives the line
+The first lines say what is wrong, and at which byte of the target. The last note gives the line
 of your code. The `...` stands for about 30 lines inside `puns`, which you can skip.
 [Compile-time errors] explains the common messages and how to fix them.
 
-The compiler reports these errors when it generates code, which `cargo check` does not do. Run
-`cargo build` to see them.
+At run time, an [`Error`][error-type] says whether the size, the alignment or a value was
+wrong, not which field.
 
 ## Representation
 
-Give your types a stable representation, `#[repr(C)]` for a struct and `#[repr(u8)]` or another
+Give your types a stable representation: `#[repr(C)]` for a struct, and `#[repr(u8)]` or another
 integer for an enum. Even then, a field of an ordinary integer type has the byte order of the
-machine, and may leave padding before it. The integers of [`puns::num`][num], such as `u16be`, have
-a fixed byte order and an alignment of 1.
+machine, and may leave padding before it. The integers of [`puns::num`][num], such as `u16be`,
+have a fixed byte order and an alignment of 1.
 
 The default representation, `repr(Rust)`, guarantees little about the layout, so that the
 compiler can optimize it. The order of the fields, the tag of an enum and its niches may change
@@ -221,18 +238,15 @@ accepts more conversions. The next version of the compiler may change what they 
 
 ## Caveats
 
+- `cargo check` and editors do not show refused conversions. Run `cargo build`.
 - Deriving `Pun` lets any code read and write every field through bytes, as if the fields were
   public. Do not derive it on a type with a private invariant ([why][deriving]).
 - A generic function cannot require in its bounds that a conversion is possible, since the
   analysis is a constant, not a trait. The error then points inside the generic function.
-- An [`Error`] says whether the size, the alignment or a value was wrong, not which field.
-- A check never allocates or panics. Its time grows in proportion to the length of the data,
-  unless a rule nests a checksum or a `walk` inside a `walk`. Each level of nesting multiplies the
-  time by the length, so limit the length of untrusted input for such a type.
+- A check never allocates or panics. Its time grows with the length of the data, and faster when a
+  rule nests loops over the data. [`docs/performance.md`][performance] gives the bounds.
 - The analysis costs build time. On an Apple M4 Max, reading a struct of five fields from bytes
-  added about 17 ms to a debug build. View enums with many overlapping variants take longer:
-  64 of them took 10 s in debug and 25 s in release. [`docs/performance.md`][performance] has
-  the measurements.
+  added about 17 ms to a debug build, and a view enum of 64 overlapping variants took 10 s.
 
 ## Learn more
 
@@ -274,13 +288,32 @@ additional terms or conditions.
 [msrv]: https://docs.rs/puns/latest/puns/#minimum-rust-version
 [api]: https://docs.rs/puns/latest/puns/#reference
 [Limitations]: https://docs.rs/puns/latest/puns/#limitations
-[`Error`]: https://docs.rs/puns/latest/puns/enum.Error.html
+[error-type]: https://docs.rs/puns/latest/puns/enum.Error.html
 [num]: https://docs.rs/puns/latest/puns/num/index.html
 [derive]: https://docs.rs/puns/latest/puns/derive.Pun.html
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
 [deriving]: https://docs.rs/puns/latest/puns/#what-deriving-pun-means
 [Compile-time errors]: https://docs.rs/puns/latest/puns/#compile-time-errors
 [unstable]: https://docs.rs/puns/latest/puns/#the-unstable-feature
+[pun]: https://docs.rs/puns/latest/puns/fn.pun.html
+[pun_ref]: https://docs.rs/puns/latest/puns/fn.pun_ref.html
+[pun_mut]: https://docs.rs/puns/latest/puns/fn.pun_mut.html
+[head]: https://docs.rs/puns/latest/puns/fn.head.html
+[head_ref]: https://docs.rs/puns/latest/puns/fn.head_ref.html
+[head_mut]: https://docs.rs/puns/latest/puns/fn.head_mut.html
+[tail]: https://docs.rs/puns/latest/puns/fn.tail.html
+[tail_ref]: https://docs.rs/puns/latest/puns/fn.tail_ref.html
+[tail_mut]: https://docs.rs/puns/latest/puns/fn.tail_mut.html
+[try_pun]: https://docs.rs/puns/latest/puns/fn.try_pun.html
+[try_pun_ref]: https://docs.rs/puns/latest/puns/fn.try_pun_ref.html
+[try_pun_mut]: https://docs.rs/puns/latest/puns/fn.try_pun_mut.html
+[from_bytes]: https://docs.rs/puns/latest/puns/fn.from_bytes.html
+[from_bytes_mut]: https://docs.rs/puns/latest/puns/fn.from_bytes_mut.html
+[from_head]: https://docs.rs/puns/latest/puns/fn.from_head.html
+[from_head_mut]: https://docs.rs/puns/latest/puns/fn.from_head_mut.html
+[from_tail]: https://docs.rs/puns/latest/puns/fn.from_tail.html
+[from_tail_mut]: https://docs.rs/puns/latest/puns/fn.from_tail_mut.html
+[as_bytes]: https://docs.rs/puns/latest/puns/fn.as_bytes.html
 [randomize]: https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/randomize-layout.html
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
 [testing]: https://github.com/uael/puns/blob/main/docs/testing.md
