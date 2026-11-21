@@ -114,7 +114,8 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
   // - A pattern is its tail of `ptr::metadata(ptr)` bytes, which are marked, so initialized, as
   //   `Dfa::matches_utf8` and `Dfa::matches` require.
   // - An enum or a union with a marked leaf meets the requirements of `validate_union` and
-  //   `validate_enum`, and `layout` is the layout of `T`.
+  //   `validate_enum`, and `layout` is the layout of `T`. `T::Variants` is the list of its
+  //   variants, as `validate_union` requires.
   // - A pointer is marked, so its bytes are initialized. `load` requires its width to be at most
   //   16, which `Pointer::new` asserts.
   unsafe {
@@ -165,7 +166,8 @@ const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> 
   // accepts, so of at most 16 bytes, at `layout.tag.offset` within the size of `T`. So `add`
   // stays within the `T` at `ptr`, and the tag is valid for reads. A leaf of the enum is marked,
   // so its tag and what the checks of its variants read are initialized, by contract on the
-  // caller. These are the requirements of `load` and of `validate_variants`.
+  // caller. These are the requirements of `load` and of `validate_variants`, with `T::Variants`
+  // the list of the variants of `T`.
   unsafe {
     let tag = load(ptr.cast::<u8>().add(layout.tag.offset), spec.size, spec.endian);
     validate_variants::<T, T::Variants>(ptr, tag)
@@ -183,6 +185,7 @@ const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> 
 /// The caller must ensure that:
 ///
 /// - `ptr` is valid for reads of a `T`.
+/// - `V` is `T::Variants`, or a list that `Variants::Next` reaches from it.
 /// - If a variant has the tag `tag`, every byte that the checks of its fields read, which check
 ///   every part, is initialized.
 const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, tag: u128) -> bool {
@@ -192,8 +195,9 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
     // The variant of a niche, or one that no value is (no range).
     Some(ranges) => layout::contains(ranges, tag),
   };
-  // SAFETY: `ptr` is valid for reads of a `T`, by contract on the caller. If `this`, `V` has the
-  // tag `tag`, and `V::Fields` are its fields (`Variants`, section Safety). What their checks
+  // SAFETY: `ptr` is valid for reads of a `T`, and `V` is in the list of the variants of `T`, by
+  // contract on the caller. If `this`, `V` has the tag `tag`, and `V::Fields` are its fields
+  // (`Variants`, section Safety). What their checks
   // read is initialized, by contract on the caller, as `validate_fields` requires. Otherwise the
   // requirements of the call for the next variants are the ones of this call.
   unsafe {
@@ -214,14 +218,16 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
 /// The caller must ensure that:
 ///
 /// - The requirements of [`validate`] hold.
+/// - `V` is `T::Variants`, or a list that `Variants::Next` reaches from it.
 /// - Every byte that one of the fields requires to be initialized is initialized. The analysis
 ///   refuses a union of which a field would read a byte that may be padding in the source.
 const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> bool {
   if const { V::TAG.is_none() } {
     return false;
   }
-  // SAFETY: `V::Fields` is the one field of a variant of the layout of the union, at offset 0
-  // (`Variants`, section Safety). Every byte that its checks read is initialized, by contract on
+  // SAFETY: `V` is in the list of the variants of `T`, by contract on the caller, so `V::Fields`
+  // is the one field of a variant of the layout of the union, at offset 0 (`Variants`, section
+  // Safety). Every byte that its checks read is initialized, by contract on
   // the caller, as `validate_fields` requires. The requirements of the call for the next fields
   // are the ones of this call.
   unsafe { validate_fields::<All, Root, T, V::Fields>(ptr) || validate_union::<T, V::Next>(ptr) }

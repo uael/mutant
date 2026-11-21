@@ -652,11 +652,13 @@ unsafe fn follow<T: ?Sized + Pun, V: Visit>(
   // layout. For each shape:
   // - Each element of an array is a `T::Elem` within the `T`, `size` apart, and meets the same
   //   requirements, as `follow` requires.
-  // - The fields of a struct are within the `T`, as `follow_fields` requires.
+  // - The fields of a struct are within the `T`, and `T::Fields` is their list, as
+  //   `follow_fields` requires.
   // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration`
   //   asserts that it is within the enum, and of at most 16 bytes (`Spec::is_integer`), so
   //   `add` stays within the `T`, and the tag meets the requirements of `load`. It selects a
-  //   variant, whose fields meet the requirements, as `follow_variants` requires.
+  //   variant, whose fields meet the requirements, and `T::Variants` is the list of the
+  //   variants and `tag` the tag, as `follow_variants` requires.
   // - The offset of a pointer is initialized, by contract on the caller, and of at most 16
   //   bytes (`Pointer::new`), as `load` requires.
   unsafe {
@@ -704,7 +706,9 @@ unsafe fn follow<T: ?Sized + Pun, V: Visit>(
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`pointers_in`] hold for the struct or the enum that `F` is a field of.
+/// - The requirements of [`pointers_in`] hold for the struct or the enum at `at`.
+/// - `F` is the list of its fields, or of the fields of the variant that its tag selects, or a
+///   list that `Fields::Next` reaches from it.
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn follow_fields<F: Fields, V: Visit>(
   base: *const u8,
@@ -739,6 +743,8 @@ unsafe fn follow_fields<F: Fields, V: Visit>(
 /// The caller must ensure that:
 ///
 /// - The requirements of [`pointers_in`] hold for the enum at `at`.
+/// - `W` is the list of its variants, or a list that `Variants::Next` reaches from it.
+/// - `tag` is the value of its tag.
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn follow_variants<W: Variants, V: Visit>(
   base: *const u8,
@@ -749,7 +755,8 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
   let expected = const { W::TAG }?;
   // As `variants`: the variant of a niche, or one that no value is, has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: If `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
+  // SAFETY: `W` is in the list of the variants of the enum, and `tag` is its tag, by contract on
+  // the caller. So if `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
   // (`Variants`, section Safety). They meet the requirements of `pointers_in`, by contract on the
   // caller, as `follow_fields` requires. Otherwise the requirements of the call for the next
   // variants are the ones of this call.
@@ -910,12 +917,14 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
   // are those of the layout. For each shape:
   // - Each element of an array is within both ranges, `size` apart, and meets the same
   //   requirements, as `copy` requires.
-  // - The fields of a struct are within both ranges, as `copy_fields` requires.
+  // - The fields of a struct are within both ranges, and `T::Fields` is their list, as
+  //   `copy_fields` requires.
   // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration`
   //   asserts that it is within the enum, and of at most 16 bytes, so `add` stays within both
   //   ranges, and the tag meets the requirements of `load`. Its `spec.size` bytes are valid for
   //   reads at `src` and writes at `dst`, which do not overlap, as `copy_nonoverlapping`
-  //   requires. It selects a variant, whose fields meet the requirements of `copy_variants`.
+  //   requires. It selects a variant, whose fields meet the requirements of `copy_variants`, with
+  //   `T::Variants` the list of the variants and `tag` the tag.
   // - The offset of a pointer is initialized, by contract on the caller, and of at most 16
   //   bytes, as `load` requires. Its `size` bytes are copied as the tag is.
   unsafe {
@@ -959,7 +968,9 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`copy_in`] hold for the struct or the enum that `F` is a field of.
+/// - The requirements of [`copy_in`] hold for the struct or the enum at `src`.
+/// - `F` is the list of its fields, or of the fields of the variant that its tag selects, or a
+///   list that `Fields::Next` reaches from it.
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn copy_fields<F: Fields>(src: *const u8, dst: *mut u8) {
   let Some(field) = (const { F::FIELD }) else { return };
@@ -985,15 +996,18 @@ unsafe fn copy_fields<F: Fields>(src: *const u8, dst: *mut u8) {
 /// The caller must ensure that:
 ///
 /// - The requirements of [`copy_in`] hold for the enum at `src`.
+/// - `W` is the list of its variants, or a list that `Variants::Next` reaches from it.
+/// - `tag` is the value of its tag.
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn copy_variants<W: Variants>(src: *const u8, dst: *mut u8, tag: u128) {
   let Some(expected) = (const { W::TAG }) else { return };
   // As `variants`: the variant of a niche, or one that no value is, has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: If `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
+  // SAFETY: `W` is in the list of the variants of the enum, and `tag` is its tag, by contract on
+  // the caller. So if `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
   // (`Variants`, section Safety). They meet the requirements of `copy_in`, by contract on the
-  // caller, as `copy_fields` requires. Otherwise the requirements of the call for the next
-  // variants are the ones of this call.
+  // caller, as `copy_fields` requires. Otherwise the requirements of the call for the next variants
+  // are the ones of this call.
   unsafe {
     if this {
       copy_fields::<W::Fields>(src, dst);
@@ -1114,9 +1128,9 @@ unsafe fn walk<T: ?Sized + Pun, V: Visit>(
   // layout. For each shape:
   // - A scalar is the `spec.size` bytes at `here`, as `Spec::matches` requires.
   // - Each element of an array is within the `T`, `size` apart, as `value` requires.
-  // - The fields of a struct are within it, as `fields` requires. `check_rules` requires a `T`
-  //   valid for reads, all of whose bytes are initialized, at `here`. `T` is `Sized`, as in
-  //   `value`, so `ptr::from_raw_parts` makes a pointer to it.
+  // - The fields of a struct are within it, and `T::Fields` is their list, as `fields` requires.
+  //   `check_rules` requires a `T` valid for reads, all of whose bytes are initialized, at `here`.
+  //   `T` is `Sized`, as in `value`, so `ptr::from_raw_parts` makes a pointer to it.
   // - An enum meets the requirements of `enumeration`, and `layout` is the layout of `T`.
   // - The offset of a pointer is initialized, and of at most 16 bytes (`Pointer::new`), as
   //   `load` requires.
@@ -1256,7 +1270,9 @@ const fn same_ranges(a: Option<&[(u128, u128)]>, b: Option<&[(u128, u128)]>) -> 
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`value`] hold for the struct or the enum that `F` is a field of.
+/// - The requirements of [`value`] hold for the struct or the enum at `at`.
+/// - `F` is the list of its fields, or of the fields of the variant that its tag selects, or a
+///   list that `Fields::Next` reaches from it.
 #[inline(always)]
 unsafe fn fields<F: Fields, V: Visit>(
   base: *const u8,
@@ -1311,7 +1327,8 @@ unsafe fn enumeration<T: ?Sized + Pun, V: Visit>(
   // bytes of the enum are valid for reads and initialized, by contract on the caller. So `add`
   // stays within them, and the tag meets the requirements of `load`.
   let tag = unsafe { load(base.add(place), spec.size, spec.endian) };
-  // SAFETY: The requirements of `variants` are the ones of this function.
+  // SAFETY: The requirements of `value` hold for the enum at `at`, by contract on the caller.
+  // `T::Variants` is the list of its variants, and `tag` its tag, as `variants` requires.
   unsafe { variants::<T::Variants, V>(base, at, tag, visit) }
     .unwrap_or_else(|| Err(Invalid::at(place).into()))
 }
@@ -1330,6 +1347,8 @@ unsafe fn enumeration<T: ?Sized + Pun, V: Visit>(
 /// The caller must ensure that:
 ///
 /// - The requirements of [`value`] hold for the enum at `at`.
+/// - `W` is the list of its variants, or a list that `Variants::Next` reaches from it.
+/// - `tag` is the value of its tag.
 #[inline(always)]
 unsafe fn variants<W: Variants, V: Visit>(
   base: *const u8,
@@ -1340,7 +1359,8 @@ unsafe fn variants<W: Variants, V: Visit>(
   let expected = const { W::TAG }?;
   // The variant of a niche, or one that no value is (no range), has ranges of tags.
   let this = (const { W::RANGES }).map_or(tag == expected, |ranges| layout::contains(ranges, tag));
-  // SAFETY: If `this`, `W::Fields` are the fields of the variant `W` of the enum at `at`
+  // SAFETY: `W` is in the list of the variants of the enum at `at`, and `tag` is its tag, by
+  // contract on the caller. So if `this`, `W::Fields` are the fields of the variant `W`
   // (`Variants`, section Safety), whose bytes are valid for reads and initialized, by contract on
   // the caller, as `fields` requires. Otherwise the requirements of the call for the next
   // variants are the ones of this call.
