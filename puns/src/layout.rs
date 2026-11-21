@@ -3748,11 +3748,11 @@ impl Layout {
   /// before the point where the answer changes.
   ///
   /// The function does not look into an array whose bytes are not all initialized or all padding.
-  /// With `always`, its bytes are not known to be initialized. Without, they are all taken to be
-  /// required.
+  /// With `always`, its bytes are not known to be initialized, and without it, they are all taken
+  /// to be required.
   ///
-  /// With `checked`, and without `always`, the padding of a struct whose rules read the bytes of
-  /// its value counts as required to be initialized, since these rules may be checked.
+  /// With `checked` and without `always`, the padding of a struct whose rules read the bytes of its
+  /// value counts as required to be initialized, since these rules may be checked.
   ///
   /// # Panics
   ///
@@ -3820,12 +3820,11 @@ impl Layout {
     }
   }
 
-  /// Returns the fields of a struct, given in the order of their declarations, numbered and sorted
-  /// by offset.
+  /// Returns the fields of a struct, given in declaration order, numbered and sorted by offset.
   ///
-  /// Each field gets its index in the order of declarations, and the number of leaves of the fields
-  /// declared before it. The sort is stable: fields at the same offset, which have a size of 0
-  /// except for one, keep the order of their declarations.
+  /// Each field gets its index in declaration order, and the number of leaves of the fields
+  /// declared before it. The sort is stable: fields at the same offset, which all have a size of 0
+  /// except for one, keep their declaration order.
   ///
   /// # Examples
   ///
@@ -3890,7 +3889,7 @@ impl Layout {
     self.align
   }
 
-  /// Returns the size of the type if it is `Sized`, otherwise the offset of its tail.
+  /// Returns the size of the type if it is `Sized`, and otherwise the offset of its tail.
   ///
   /// The size of an unsized value is this offset, plus the size of its tail, rounded up to the
   /// alignment of the type.
@@ -3927,7 +3926,7 @@ impl Layout {
     self.unsized_ && self.tail > 0
   }
 
-  /// Returns the size of an element of the tail if the type is unsized, else 0.
+  /// Returns the size of an element of the tail if the type is unsized, and 0 otherwise.
   #[inline]
   pub(crate) const fn stride(&self) -> usize {
     if self.unsized_ { self.tail } else { 0 }
@@ -3949,11 +3948,11 @@ impl Layout {
     }
   }
 
-  /// Returns the field of a struct declared `index`th.
+  /// Returns the `index`th declared field of a struct.
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a struct, or has no field declared `index`th.
+  /// Panics if `self` is not a struct, or has no `index`th declared field.
   #[doc(hidden)]
   #[must_use]
   pub const fn field(&self, index: usize) -> &Field {
@@ -3968,23 +3967,23 @@ impl Layout {
     panic!("no such field")
   }
 
-  /// Returns the offset of the field of a struct declared `index`th.
+  /// Returns the offset of the `index`th declared field of a struct.
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a struct, or has no field declared `index`th.
+  /// Panics if `self` is not a struct, or has no `index`th declared field.
   #[doc(hidden)]
   #[must_use]
   pub const fn field_offset(&self, index: usize) -> usize {
     self.field(index).offset
   }
 
-  /// Returns the number of leaves of the fields of a struct declared before the one declared
-  /// `index`th ([`Field::leaf`]).
+  /// Returns the number of leaves of the fields of a struct declared before the `index`th declared
+  /// field ([`Field::leaf`]).
   ///
   /// # Panics
   ///
-  /// Panics if `self` is not a struct, or has no field declared `index`th.
+  /// Panics if `self` is not a struct, or has no `index`th declared field.
   #[doc(hidden)]
   #[must_use]
   pub const fn field_leaf(&self, index: usize) -> usize {
@@ -4006,10 +4005,10 @@ impl Layout {
   }
 
   /// Returns whether a rule of the struct reads the bytes of its value by offset, rather than its
-  /// fields: `le`, `be`, a variable-length integer, a checksum, a CRC, `matches`, or a walk that
-  /// does one of these.
+  /// fields: with `le`, `be`, a variable-length integer, a checksum, a CRC, `matches`, or a walk
+  /// that does one of these.
   ///
-  /// The padding of the struct, if it has any, is then read when the rule is checked.
+  /// The padding of the struct, if any, is then read when the rule is checked.
   pub(crate) const fn rules_read_bytes(&self) -> bool {
     let (rules, mut i) = (self.rules(), 0);
     while i < rules.len() {
@@ -4023,11 +4022,12 @@ impl Layout {
     false
   }
 
-  /// Returns the first scalar, by offset, of the sized part of the layout that accepts only some
-  /// values, as the EtherType of a frame or the version of a header: its offset, and the scalar.
+  /// Returns the first scalar, by offset, in the sized part of the layout that accepts only some
+  /// values, such as the EtherType of a frame or the version of a header: its offset, and the
+  /// scalar.
   ///
   /// Whatever bytes a value of the layout is made from, the validation checks them there. The
-  /// function looks into structs and arrays, not into enums.
+  /// function looks into structs and arrays, but not into enums.
   pub(crate) const fn key(&self) -> Option<(usize, Spec)> {
     match self.kind {
       Kind::Scalar(spec) if spec.is_constrained() => Some((0, spec)),
@@ -4052,8 +4052,8 @@ impl Layout {
   /// Returns how many elements of this layout the validation of a slice checks at a time, without
   /// stopping between them (`validate::validate_elems`).
   ///
-  /// This is as many as fit in 64 bytes, if an element is 1 to 16 bytes and checking one is a few
-  /// comparisons ([`Layout::is_cheap`]), else 1.
+  /// This is as many as fit in 64 bytes, if an element is 1 to 16 bytes and checking one takes a
+  /// few comparisons ([`Layout::is_cheap`]), and 1 otherwise.
   pub(crate) const fn block(&self) -> usize {
     if self.size == 0 || self.size > 16 || self.unsized_ || !self.is_cheap() {
       return 1;
@@ -4061,9 +4061,9 @@ impl Layout {
     64 / self.size
   }
 
-  /// Returns whether checking a value of this layout is a few comparisons.
+  /// Returns whether checking a value of this layout takes a few comparisons.
   ///
-  /// This is so of a scalar, of an array of at most 16 such elements, and of a struct of such
+  /// This is so for a scalar, for an array of at most 16 such elements, and for a struct of such
   /// fields whose rules compute on its fields alone ([`cheap_ops`]).
   const fn is_cheap(&self) -> bool {
     match self.kind {
@@ -4109,8 +4109,8 @@ impl Layout {
     }
   }
 
-  /// Returns whether the last rule of a struct is a region without an expression, which takes what
-  /// remains of the tail.
+  /// Returns whether the last rule of a struct is a region without an expression, which takes
+  /// whatever remains of the tail.
   pub(crate) const fn has_last_region(&self) -> bool {
     matches!(self.rules().last(), Some(Rule::Region(None)))
   }
@@ -4143,8 +4143,8 @@ impl Layout {
   /// Returns the scalar of the unsigned integer that the layout is, if it is one.
   ///
   /// This is a scalar of 1 to 16 bytes, always initialized, whose value is a number
-  /// ([`Spec::not_a_number`]), or a sized struct whose only field with a size is one, at offset 0
-  /// and of the size of the struct. Rules read such a field.
+  /// ([`Spec::not_a_number`]), or a sized struct whose only field with a size is such a scalar, at
+  /// offset 0 and with the size of the struct. Rules read such a field.
   #[doc(hidden)]
   #[must_use]
   pub const fn as_integer(&self) -> Option<Spec> {
@@ -4171,8 +4171,8 @@ impl Layout {
     }
   }
 
-  /// Returns the tail of a struct, as rules see it: its slice if it is unsized, else its last field
-  /// in the order of declarations, and the array that this field ends with, if any.
+  /// Returns the tail of a struct, as rules see it: its slice if it is unsized, and otherwise its
+  /// last declared field, along with the array that this field ends with, if any.
   ///
   /// The tail of a layout that is not a struct, or of a struct without fields, is empty and starts
   /// at its size.
@@ -4213,7 +4213,7 @@ impl Layout {
 
   /// Returns whether bytes that are all zero are a valid value of the layout.
   ///
-  /// Without the `unstable` feature, this is `false` for a layout that is not `fixed` except for a
+  /// Without the `unstable` feature, this is `false` for a layout that is not `fixed`, except for a
   /// struct, since the values of the tag of an enum of the `Rust` representation are not specified.
   /// The fields of a struct are zeros in every order.
   pub(crate) const fn zeroable(&self) -> bool {
@@ -4278,8 +4278,8 @@ impl Layout {
   /// rule), of the number of elements of its tail (a `len` rule), and of the bytes of its tail
   /// (regions). So two structs compute the same rules over the same bytes, whatever their fields,
   /// if they have at least one rule, the same rules in the same order ([`Rule::equals`]), the same
-  /// sized part, and the same tail: where it starts, the size of an element, and for a sized struct
-  /// the size of the tail and the length of the array that it ends with.
+  /// sized part, and the same tail: where it starts, the size of an element, and, for a sized
+  /// struct, the size of the tail and the length of the array it ends with.
   pub(crate) const fn same_rules(&self, other: &Layout) -> bool {
     let (Kind::Struct(_, mine), Kind::Struct(_, theirs)) = (self.kind, other.kind) else {
       return false;
@@ -4307,8 +4307,8 @@ impl Layout {
     true
   }
 
-  /// Returns whether two layouts are the same: they require the same values, and guarantee the same
-  /// values, at the same places.
+  /// Returns whether two layouts are the same: whether they require the same values, and guarantee
+  /// the same values, at the same places.
   ///
   /// Identities are not compared. A scalar that may be uninitialized is equal to none. Two patterns
   /// are equal only if their automata are, state by state, and two pointers only if their
@@ -4415,11 +4415,12 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 
 /// A deterministic finite automaton over bytes: the values of an unsized type such as `str`.
 ///
-/// An automaton has 1 to 64 states, of which the first is the initial one. It accepts bytes if,
+/// An automaton has 1 to 64 states, the first of which is the initial one. It accepts bytes if,
 /// from the initial state, each byte leads by an edge to a next state, and the state reached after
 /// the last byte accepts. [`Layout::pattern`] makes the layout of a type whose values are the bytes
 /// that an automaton accepts. A rule of `#[derive(Pun)]` can require bytes of a struct to be
-/// accepted by one, with `matches(DFA, start, end)`, which proves nothing of them, as any rule.
+/// accepted by one, with `matches(DFA, start, end)`, which, like any rule, proves nothing about
+/// them.
 ///
 /// # Examples
 ///
@@ -4452,14 +4453,14 @@ const fn same_valid(a: Valid, b: Valid, endian_a: Endian, endian_b: Endian) -> b
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct Dfa {
-  /// A number that tells automata apart. The automata of this crate are 1 to 6.
+  /// A number that tells automata apart. The automata of this crate are numbered 1 to 6.
   ///
   /// Two pattern types whose automata have different `id`s are different layouts, which saves
-  /// comparing their states. Nothing else is taken of the `id`. Two automata are the same only if
-  /// their states and edges are. Bytes are checked as UTF-8 by `str::from_utf8` only for an
-  /// automaton of the `id` of [`Dfa::UTF8`] and of its states and edges.
+  /// comparing their states. Nothing else is taken from the `id`: two automata are the same only if
+  /// their states and edges are, and bytes are checked as UTF-8 by `str::from_utf8` only for an
+  /// automaton with the `id`, states and edges of [`Dfa::UTF8`].
   pub id: u32,
-  /// The states, of which the first is the initial one. An edge leads to the index of a state in
+  /// The states, the first of which is the initial one. An edge leads to the index of a state in
   /// this slice.
   pub states: &'static [DfaState],
 }
@@ -4636,7 +4637,7 @@ impl Dfa {
   /// Returns the states reached from the states of `set` by a byte of `lo..=hi`, and whether every
   /// such byte leads somewhere from every state of `set`.
   ///
-  /// A set of states has a bit for each, the bit `1 << i` for the state `i`.
+  /// A set of states has one bit per state, the bit `1 << i` for the state `i`.
   pub(crate) const fn step(&self, set: u64, lo: u8, hi: u8) -> (u64, bool) {
     let (mut next, mut total, mut state) = (0, true, 0);
     while state < self.states.len() {
@@ -4685,7 +4686,7 @@ impl Dfa {
 
   /// Returns whether the automaton is [`Dfa::UTF8`]: its `id`, its states and its edges.
   ///
-  /// It is meant to be asked in a `const`, where it costs nothing at run time.
+  /// It is meant to be called in a `const`, where it costs nothing at run time.
   pub(crate) const fn is_utf8(&self) -> bool {
     self.id == Self::UTF8.id && self.same(Self::UTF8)
   }
@@ -4723,7 +4724,7 @@ impl Dfa {
     self.accepts_bytes(unsafe { core::slice::from_raw_parts(ptr, len) })
   }
 
-  /// Returns whether the `len` bytes at `ptr` are UTF-8, by `str::from_utf8`: what [`Dfa::UTF8`]
+  /// Returns whether the `len` bytes at `ptr` are UTF-8, using `str::from_utf8`: what [`Dfa::UTF8`]
   /// accepts, faster than by its states.
   ///
   /// # Safety
@@ -4745,20 +4746,20 @@ impl Dfa {
 /// An operation of the expression of a [`Rule`], in postfix order.
 ///
 /// An expression is a sequence of operations over a stack of values and a set of variables. It
-/// means what the same Rust expression means where every integer is a `u128`. Where every value is
-/// known to fit a register, it is computed there, with the same results. A binary operation
-/// replaces the two values at the top of the stack by its result, with the value pushed first on
-/// its left side. A comparison gives 1 if it holds, else 0.
+/// means what the same Rust expression would mean if every integer were a `u128`, and where every
+/// value is known to fit in a register, it is computed there, with the same results. A binary
+/// operation replaces the two values at the top of the stack with its result, the value pushed
+/// first being its left side. A comparison gives 1 if it holds, and 0 otherwise.
 ///
-/// Where Rust would panic, the rule that holds the expression fails. This is so of an overflow, a
-/// difference below zero, a division or a remainder by zero, a shift by 128 or more, and a read out
-/// of the value. What Rust does not compute is not computed: the right side of a `&&` or of a `||`
-/// that the left side decides, and the branch of an `if` that is not taken ([`Op::Shortcut`],
-/// [`Op::Then`], [`Op::Else`]). So `kind != 7 || be(40, 2) == 0` holds of a value that is not of
-/// kind 7, however short, and `be(40, 2) == 0 || kind != 7` fails for one that is too short.
-/// Nothing that is computed is then left out of the value of the expression, so its first failure
-/// is the failure of the expression, and the evaluation stops there. `<<` drops the bits that it
-/// shifts out, as in Rust.
+/// Where Rust would panic, the rule that holds the expression fails: on an overflow, a difference
+/// below zero, a division or remainder by zero, a shift by 128 or more, and a read outside the
+/// value. What Rust does not compute is not computed either: the right side of a `&&` or `||` that
+/// the left side decides, and the branch of an `if` that is not taken ([`Op::Shortcut`],
+/// [`Op::Then`], [`Op::Else`]). So `kind != 7 || be(40, 2) == 0` holds for a value that is not of
+/// kind 7, however short, while `be(40, 2) == 0 || kind != 7` fails for one that is too short.
+/// Everything that is computed counts toward the value of the expression, so its first failure is
+/// the failure of the expression, and the evaluation stops there. `<<` drops the bits it shifts
+/// out, as in Rust.
 ///
 /// An expression has at most 256 operations, needs a stack of at most 16 values, has at most 8
 /// variables, and nests at most 4 walks. [`Layout::structure`] checks that the expressions of its
@@ -4798,46 +4799,46 @@ pub enum Op {
     /// `true` if it is big-endian, `false` if little-endian.
     big: bool,
   },
-  /// Pushes the size in bytes of the value, `size_of_val(self)`. A `size` or a `len` rule, which
-  /// defines it, does not read it.
+  /// Pushes the size in bytes of the value, `size_of_val(self)`. A `size` or `len` rule, which
+  /// defines that size, does not read it.
   Size,
-  /// Replaces an offset by the unsigned integer of `size` bytes at that offset in the value. Fails
-  /// if these bytes are not all in the value.
+  /// Replaces an offset with the unsigned integer of `size` bytes at that offset in the value.
+  /// Fails if these bytes are not all within the value.
   At {
     /// The size in bytes of the integer.
     size: u8,
     /// `true` if it is big-endian, `false` if little-endian.
     big: bool,
   },
-  /// Replaces an offset by the variable-length integer of the form `form` at that offset in the
-  /// value, or with `length`, by its number of bytes. Fails if the integer does not end within the
-  /// value, or does not fit in a `u128`.
+  /// Replaces an offset with the variable-length integer of the form `form` at that offset in the
+  /// value or, with `length`, with its length in bytes. Fails if the integer does not end within
+  /// the value, or does not fit in a `u128`.
   Varint {
     /// The form of the integer.
     form: Varint,
-    /// `true` for its number of bytes, `false` for its value.
+    /// `true` for its length in bytes, `false` for its value.
     length: bool,
   },
-  /// Replaces two offsets, a start and an end, by the CRC-32 of Ethernet ([`crc32`]) of the bytes
+  /// Replaces two offsets, a start and an end, with the Ethernet CRC-32 ([`crc32`]) of the bytes
   /// between them. Fails if the start is after the end, or the end is past the value.
   Crc32,
-  /// Replaces two offsets, a start and an end, by the ones' complement sum of the big-endian 16-bit
-  /// words between them ([`sum16`]): the checksum of IP, before it is complemented. Fails as
-  /// [`Op::Crc32`] does.
+  /// Replaces two offsets, a start and an end, with the ones' complement sum of the big-endian
+  /// 16-bit words between them ([`sum16`]), which is the IP checksum before it is complemented.
+  /// Fails as [`Op::Crc32`] does.
   Sum16,
-  /// Replaces two offsets, a start and an end, by this CRC of the bytes between them. Fails as
+  /// Replaces two offsets, a start and an end, with this CRC of the bytes between them. Fails as
   /// [`Op::Crc32`] does.
   Crc(&'static Crc),
-  /// Replaces four offsets by this CRC of the bytes between the first two, the bytes between the
-  /// last two taken as zeros: a CRC that covers the field that holds it. Fails as [`Op::Crc32`]
+  /// Replaces four offsets with this CRC of the bytes between the first two, with the bytes between
+  /// the last two read as zeros: a CRC that covers the field that holds it. Fails as [`Op::Crc32`]
   /// does, for either pair.
   CrcZeros(&'static Crc),
-  /// Replaces two offsets, a start and an end, by this checksum of the bytes between them. Fails as
-  /// [`Op::Crc32`] does.
+  /// Replaces two offsets, a start and an end, with this checksum of the bytes between them. Fails
+  /// as [`Op::Crc32`] does.
   Checksum(Checksum),
-  /// Replaces two offsets, a start and an end, by 1 if the automaton accepts the bytes between
-  /// them, else 0. Fails as [`Op::Crc32`] does. This is a pattern that the struct requires of these
-  /// bytes, which proves nothing of them, as any rule.
+  /// Replaces two offsets, a start and an end, with 1 if the automaton accepts the bytes between
+  /// them, and 0 otherwise. Fails as [`Op::Crc32`] does. This is a pattern that the struct requires
+  /// of these bytes, which, like any rule, proves nothing about them.
   Matches(&'static Dfa),
   /// `+`. Fails if the sum overflows.
   Add,
@@ -4855,7 +4856,7 @@ pub enum Op {
   Or,
   /// `^`, bitwise.
   Xor,
-  /// `<<`, which drops the bits that it shifts out. Fails if the right side is 128 or more.
+  /// `<<`, which drops the bits it shifts out. Fails if the right side is 128 or more.
   Shl,
   /// `>>`. Fails if the right side is 128 or more.
   Shr,
@@ -4872,7 +4873,7 @@ pub enum Op {
   /// `>=`.
   Ge,
   /// `&&`, after its [`Op::Shortcut`] and its right side. Replaces the left side, which did not
-  /// decide, and the right side by the right side, as 1 or 0.
+  /// decide, and the right side with the right side, as 1 or 0.
   Both,
   /// `||`, after its [`Op::Shortcut`] and its right side, as [`Op::Both`].
   Either,
@@ -4885,8 +4886,8 @@ pub enum Op {
     /// The number of operations that follow, and that are not computed if the left side decides.
     len: u16,
   },
-  /// `!` on a `bool`: replaces 0 by 1, and any other value by 0. `#[derive(Pun)]` writes `!` on an
-  /// integer, which is bitwise, as an [`Op::Xor`] with `u128::MAX`.
+  /// `!` on a `bool`: replaces 0 with 1, and any other value with 0. `#[derive(Pun)]` writes `!` on
+  /// an integer, which is bitwise, as an [`Op::Xor`] with `u128::MAX`.
   Not,
   /// Follows the condition of an `if`. If the condition is false, the operations that follow, as
   /// many as the `u16`, are not computed: the branch of the `if` and its [`Op::Else`]. A
