@@ -34,14 +34,15 @@
 //! - DER tags of more than one byte (numbers above 30) are left out. They are base-128 integers
 //!   (`vlq`), which would move every offset after them. Each `OPTIONAL` element and each
 //!   `CHOICE` needs a type of its own, since a chain of [`Then`] is one sequence of types.
-//! - A Protocol Buffers [`Message`] is checked whole, by a walk over fields of any form. A getter
-//!   reads fields, not bytes. So to read values, each form of a field is a struct whose getters
-//!   decode it (varints of 1 or 2 bytes, lengths of 1 or 2 bytes), and an enum of references
-//!   ([`Field`]) tells the forms apart. Nested messages are bytes.
-//! - A MessagePack or CBOR item has a head of one of a few forms. Each form is a struct, and an
-//!   enum of references tells them apart. Arrays and maps are counts of nested items of their own
-//!   sizes. Declaring them would need recursion and a count, so only their heads are declared. An
-//!   enum of references does not implement `Pun`, so it cannot be the type of a field.
+//! - The values of a Protocol Buffers message are read only where a varint or a length takes 1 or 2
+//!   bytes, and nested messages are left as bytes. A [`Message`] is checked whole, by a walk over
+//!   fields of any form. But a getter reads fields, not bytes, so each form of a field is a struct
+//!   whose getters decode it, and an enum of references ([`Field`]) tells the forms apart.
+//! - The items of the arrays and maps of MessagePack and CBOR are not declared, only the head of
+//!   each item. A head has one of a few forms. Each form is a struct, and an enum of references
+//!   tells them apart. Arrays and maps are counts of nested items of their own sizes, and declaring
+//!   them would need recursion and a count. An enum of references does not implement `Pun`, so it
+//!   cannot be the type of a field.
 //! - This file declares text only as `str`. A struct can require a pattern of other text with a
 //!   rule: `matches(Dfa::ASCII, ..)` for ASCII, or `matches(Dfa::UTF8_NO_NUL, ..)` for UTF-8
 //!   without U+0000 (MQTT). The crate has no automaton for printable ASCII (`0x20` to `0x7e`),
@@ -611,7 +612,7 @@ const CBOR: [u8; 13] =
 /// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
   // ---- DER: an SNMP GetRequest, a chain of values of their own sizes.
-  // A value from a stream: its length, of the short or the long form, tells where it ends.
+  // A value from a stream: its length, of the short or the long form, says where it ends.
   let mut stream = vec![0x04, 0x81, 0x80];
   stream.resize(3 + 128 + 2, 7);
   let (value, rest) = from_head::<Der<u8c<0x04>>>(&stream).unwrap();
@@ -683,7 +684,7 @@ pub fn main() {
 
   // ---- Protocol Buffers: a message, then its fields, of their own forms.
   assert!(try_pun_ref::<_, Message>(&PROTOBUF[..]).is_ok());
-  // A varint that runs into the next field; wire type 3; a length past the end.
+  // A varint that extends into the next field; wire type 3; a length past the end.
   for (at, value) in [(13, 0x83), (12, 0x1b), (4, 0x30)] {
     let mut bytes = PROTOBUF;
     bytes[at] = value;

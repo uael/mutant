@@ -12,7 +12,7 @@
 //! | a signature                                     | `u64bec<0x8950_4e47_0d0a_1a0a>`           |
 //! | a PNG chunk has a CRC-32 of its type and data   | `assert(crc32(4, 8 + length) == ..)`      |
 //! | a chunk type is letters, whose case is a flag   | `assert(..)`, `get(critical: bool = ..)`  |
-//! | the type of a chunk tells what its data is      | `tag(ChunkType = u32bec<0x4948_4452>)`    |
+//! | the type of a chunk says what its data is       | `tag(ChunkType = u32bec<0x4948_4452>)`    |
 //! | the bit depths that each color type allows      | `assert((color_type == 0 && ..) \|\| ..)` |
 //! | a PNG file has IHDR first, IEND last, good CRCs | `assert(walk(8, ..) == ..)`               |
 //! | a BMP height is signed, negative for top-down   | `i32le`, `valid(1..=0x7fff_ffff, ..)`     |
@@ -24,8 +24,8 @@
 //! The following are not covered:
 //!
 //! - The image data of PNG is compressed with zlib, and the image data of BMP may be compressed.
-//!   Decompression is not a view of the bytes. The CRCs of PNG chunks are checked. The Adler-32
-//!   at the end of the zlib stream is part of the compressed data, and is not checked.
+//!   Decompression makes a copy, not a view of the bytes. The CRCs of PNG chunks are checked. The
+//!   Adler-32 at the end of the zlib stream is part of the compressed data, and is not checked.
 //! - The checksum of each font table is a sum of 32-bit words over the table that a record points
 //!   to, with one field of `head` taken as 0. It needs a walk over the records with a walk over
 //!   each table inside it, which is not written here. The tables themselves are not declared
@@ -296,8 +296,8 @@ pub fn main() {
   }
   // No IEND at the end.
   assert_eq!(try_pun_ref::<_, Png>(&PNG[..80]).err(), Some(Error::Validity));
-  // An IHDR of a bit depth that its color type does not allow (and its CRC right): the file is
-  // made of right chunks, but its header is not one when read.
+  // An IHDR chunk with a correct CRC and a bit depth that its color type does not allow. The file
+  // is a valid `Png`, but reading its header returns an error.
   let bad = [&PNG[..8], &IHDR_4_BITS[..], &PNG[33..]].concat();
   let png: &Png = try_pun_ref(&bad[..]).unwrap();
   assert_eq!(png.header().unwrap().data().err(), Some(Error::Validity));

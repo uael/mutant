@@ -299,7 +299,7 @@ fn part_mut<S: ?Sized + Pun, D: ?Sized + Pun>(tail: bool) -> String {
   let Some(message) = message else { return "ok".into() };
   let text = core::str::from_utf8(&message.bytes[..message.len]).unwrap();
   let word = match () {
-    () if text.contains("a rule of the source") => "rule",
+    () if text.contains(crate::analysis::PART_RULE) => "rule",
     () if text.contains("an enum of the source") => "enum",
     () if text.contains("a string of the source") => "string",
     () if text.contains("could be written through") => "written",

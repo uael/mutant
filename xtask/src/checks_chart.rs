@@ -170,11 +170,13 @@ fn ratio_number(ratio: f64) -> String {
 }
 
 /// Returns the Markdown image of the chart, whose text says what it shows.
+///
+/// The text is on two lines, since the lines of the document are at most 100 columns.
 fn image(cases: &[Case]) -> String {
   let (lo, hi) = range(cases);
   let faster = cases.iter().filter(|case| case.ratio() < 1.0).count();
   format!(
-    "![The time of each check by puns relative to the same check by hand: from {} to {} times, \
+    "![The time of each check by puns relative to the same check by hand: from {} to {} times,\n\
      below 1 for {faster} of the {} cases](charts/checks.svg)",
     ratio_number(lo),
     ratio_number(hi),

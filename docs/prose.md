@@ -145,6 +145,11 @@ edit changes how it reads, never what it says.
 - **A `// SAFETY:` comment states why each precondition of the unsafe operation holds,** one by
   one, as `zerocopy` does. It names the operation's preconditions, not the general purpose of the
   code.
+- **A precondition that the code cannot establish is named as such.** A few operations run only
+  in const evaluation, and rely on a behavior of `rustc` that no documentation promises, such as
+  an error on a read of an uninitialized byte. Their comment says which precondition is not
+  established, names the behavior relied on, and points to where the crate documentation
+  discloses it (section Soundness).
 - **A guarantee of Rust is cited, not paraphrased.** Cite the Reference or the documentation of
   `core` by a versioned link and quote the sentence:
 

@@ -417,7 +417,7 @@ const CONFIGURATION: [u8; 41] = [
 
 /// Reads the samples of this file through its types, and asserts the results.
 pub fn main() {
-  // ---- SQLite: a header of fixed values, and a file of the pages it tells.
+  // ---- SQLite: a header of fixed values, and a file of the pages that it counts.
   let mut database = SQLITE.to_vec();
   database.resize(2 * 4096, 0);
   let header: &SqliteHeader = try_pun_ref(&database[..100]).unwrap();
@@ -434,7 +434,7 @@ pub fn main() {
     bytes[at] = value;
     assert_eq!(try_pun_ref::<_, SqliteHeader>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // Two pages are told, one is there; half a page.
+  // The header counts two pages, one is there; half a page.
   assert_eq!(try_pun_ref::<_, Sqlite>(&database[..4096]).err(), Some(Error::Validity));
   assert_eq!(try_pun_ref::<_, Sqlite>(&database[..6000]).err(), Some(Error::Validity));
   // A page size of 1 means 65536.
@@ -530,8 +530,8 @@ pub fn main() {
     descriptors = rest;
   }
   assert_eq!(endpoints, [(0, true, 2, 512), (1, true, 3, 8)]);
-  // Two interfaces are told, one is there; not bus powered; a descriptor of a length of 1; a
-  // total length that is not the one of the descriptors.
+  // The descriptor counts two interfaces, one is there; not bus powered; a descriptor of a length
+  // of 1; a total length that is not the one of the descriptors.
   for (at, value) in [(4, 2), (7, 0x40), (9, 1), (2, 40)] {
     let mut bytes = CONFIGURATION;
     bytes[at] = value;

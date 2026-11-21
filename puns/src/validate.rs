@@ -49,11 +49,11 @@
 //! packet that is not UDP, however short, and costs nothing more for it.
 //!
 //! What is not computed is told by an index (the `skip` of [`Machine`]). The operations before it
-//! are not applied. A `Shortcut` that decides sets the index past the right side, and a failure
-//! sets it to the end. Where the operations are constants, so is the index on each path through
-//! the code, and the optimizer makes jumps of it. No test is left where nothing is skipped. The
-//! alternative, a flag on each value of the stack that tells whether it failed, makes every
-//! operation carry failures along, and computes the side of a `||` that is not needed.
+//! are not applied. A `Shortcut` that decides sets the index past the right side. Where the
+//! operations are constants, so is the index on each path through the code, and the optimizer makes
+//! jumps of it. No test is left where nothing is skipped. The alternative, a flag on each value of
+//! the stack that tells whether it failed, makes every operation carry failures along, and computes
+//! the side of a `||` that is not needed.
 //!
 //! Nothing that is computed can be left out of the value of an expression, so its first failure is
 //! its failure: the evaluator stops there, and what follows is compiled knowing that nothing
@@ -288,11 +288,6 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: u
 /// A field restricted by `#[pun(valid(..))]` is checked against its restriction, not against its
 /// type.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `F::Path<P>` is the leaf of the field in the layout. The derive
-/// writes the list with paths that the user may redefine, so this is checked.
-///
 /// # Safety
 ///
 /// The caller must ensure that:
@@ -300,6 +295,11 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: u
 /// - The requirements of [`validate`] hold, with the same `C`, `P` and `T`.
 /// - `F` is a field of `T`: of the struct, or of the variant of the enum that the value at `ptr`
 ///   is.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `F::Path<P>` is the leaf of the field in the layout. The derive
+/// writes the list with paths that the user may redefine, so this is checked.
 const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Pun, F: Fields>(
   ptr: *const T,
 ) -> bool {
@@ -347,17 +347,17 @@ const fn rules_marked<C: Checks, P: Path, T: ?Sized + Pun>() -> bool {
 
 /// Returns whether the struct at `ptr` meets the rules of the layout of `T`.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T::Rules` lists every rule of `T` that has an expression, once,
-/// in order, with every operation of each ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - `ptr` is valid for reads of a `T`. It need not be aligned.
 /// - Every byte of that `T` is initialized, padding included.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T::Rules` lists every rule of `T` that has an expression, once,
+/// in order, with every operation of each ([`listed`]).
 #[inline(always)]
 pub const unsafe fn check_rules<T: ?Sized + Pun>(ptr: *const T) -> bool {
   const { assert!(listed::<T, T::Rules>(0), "not the rules of the struct") };
@@ -437,11 +437,6 @@ const fn covers<X: Ops, S: Steps>() -> bool {
 ///
 /// Returns `None` if the expression of the rule fails, as when it reads beyond the `n` bytes.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if, where the rule is not that of `T`, the last field of
-/// `T::Fields` is the last field of the layout, and has that rule.
-///
 /// # Safety
 ///
 /// The caller must ensure that:
@@ -449,6 +444,11 @@ const fn covers<X: Ops, S: Steps>() -> bool {
 /// - `base` is valid for reads of `n` bytes, initialized.
 /// - These bytes cover the sized fields of the struct that has the rule.
 /// - `T` has such a rule, by `length_rule`.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if, where the rule is not that of `T`, the last field of
+/// `T::Fields` is the last field of the layout, and has that rule.
 #[inline(always)]
 pub const unsafe fn length<T: ?Sized + Pun>(base: *const u8, n: usize) -> Option<u128> {
   // The rule is the struct's own, or of its last field: the one that `length_rule` finds.
@@ -504,15 +504,15 @@ const fn sizing<T: ?Sized + Pun, L: Rules>() -> usize {
 ///
 /// Returns `None` if there is no such rule or if its expression fails.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T::Rules` lists the rules of `T` ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - The requirements of [`length`] hold.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T::Rules` lists the rules of `T` ([`listed`]).
 #[inline(always)]
 const unsafe fn length_listed<T: ?Sized + Pun, L: Rules>(
   base: *const u8,
@@ -544,17 +544,17 @@ const unsafe fn length_listed<T: ?Sized + Pun, L: Rules>(
 ///
 /// Panics if `T` has no `index`th region.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T::Rules` lists the rules of `T` ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
-/// - `base` is valid for reads of the `size` bytes of a `T`, initialized.
+/// - `base` is valid for reads of the `size` bytes of a `T`, initialized, for `'a`.
 /// - These bytes are not written for `'a`.
 /// - `head + tail` is at most `size`, and `start` is at most `tail`.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T::Rules` lists the rules of `T` ([`listed`]).
 #[inline(always)]
 pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
   base: *const u8,
@@ -568,12 +568,12 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
   // The last region, which takes what remains, has no expression: it is not in the list.
   if const { L::RULE == usize::MAX } {
     assert!(count == index && T::LAYOUT.has_last_region(), "no such region");
-    // SAFETY: `head + start + rest` is `head + tail`, at most `size`, by contract on the caller.
-    // So `add(head + start)` stays within the `size` bytes at `base`. This satisfies the safety
+    // SAFETY: `head + start + rest` is `head + tail`, at most `size`, by contract on the caller. So
+    // `add(head + start)` stays within the `size` bytes at `base`. This satisfies the safety
     // contract of `slice::from_raw_parts` [1]: the `rest` bytes from there are in one allocation,
-    // valid for reads, so non-null [2], initialized, and not written for `'a`, by contract on the
-    // caller. A `u8` is aligned at any address, and `rest` bytes fit in an `isize`, since they
-    // are in an allocation.
+    // valid for reads for `'a`, so non-null [2], initialized, and not written for `'a`, by contract
+    // on the caller. A `u8` is aligned at any address, and `rest` bytes fit in an `isize`, since
+    // they are in an allocation.
     //
     // [1] Per https://doc.rust-lang.org/1.99.0/core/slice/fn.from_raw_parts.html:
     //
@@ -597,7 +597,7 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
     // SAFETY: The requirements of the call for the next rules are those of this call.
     return unsafe { region_at::<T, L::Next>(base, size, (head, tail), index, (start, count)) };
   }
-  // A region that does not fit is cut short: the fields that size it are not trusted.
+  // A region that does not fit is truncated: the fields that size it are not trusted.
   // SAFETY: `InRule<T, L>` is a rule of `T`. `base` is valid for reads of the `size` bytes of a
   // `T`, initialized, by contract on the caller, and these cover its sized fields. This is what
   // `eval` requires.
@@ -653,15 +653,15 @@ const unsafe fn eval<X: Ops, S: Steps>(base: *const u8, size: usize) -> Option<u
 /// Returns `false` if one of the operations fails. That failure is the failure of the
 /// expression.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `S` is a walk exactly where `X` has an [`Op::Walk`].
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - The requirements of [`eval`] hold.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `S` is a walk exactly where `X` has an [`Op::Walk`].
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn steps<X: Ops, S: Steps>(
   machine: &mut Machine,
@@ -710,16 +710,16 @@ const unsafe fn steps<X: Ops, S: Steps>(
 /// Returns `false` if the condition or the next expression fails, or if the walk takes more steps
 /// than [`walk_limit`] allows for `size`.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `X` has an [`Op::Walk`] where `W` is a walk, and `W` spans every
-/// operation of its two expressions.
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - The requirements of [`eval`] hold.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `X` has an [`Op::Walk`] where `W` is a walk, and `W` spans every
+/// operation of its two expressions.
 #[cfg_attr(not(debug_assertions), inline(always))]
 const unsafe fn walk<X: Ops, W: Steps>(
   machine: &mut Machine,

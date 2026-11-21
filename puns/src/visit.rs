@@ -1,9 +1,10 @@
 //! Validation, walk and copy of a value in a buffer that holds self-relative pointers, for the
 //! crate that declares the pointers.
 //!
-//! [`validate_in`] and [`validate_elems_in`] validate values and hand each pointer to a [`Visit`].
-//! [`pointers_in`] and [`pointers_elems_in`] hand over the pointers of values known to be valid,
-//! and check nothing. [`copy_in`] copies the initialized bytes of a valid value.
+//! [`validate_in`] and [`validate_elems_in`] validate values and hand each pointer to a [`Visit`]:
+//! they call its `pointer` method with the type and the position of the pointer. [`pointers_in`]
+//! and [`pointers_elems_in`] hand over the pointers of values known to be valid, and check nothing.
+//! [`copy_in`] copies the initialized bytes of a valid value.
 //!
 //! Like `validate`, the functions recurse over types, so the layout is a constant in each instance
 //! and no code is compiled for what cannot be invalid.
@@ -14,8 +15,8 @@
 //! is the verdict. Where it fails, the walk by position ([`value`], [`fields`], [`enumeration`])
 //! goes over the value again to find where. If that walk finds nothing, the error is reported at
 //! the value itself, which is less precise but never wrong. The elements of [`validate_elems_in`]
-//! are validated the same way, and the test `the_verdict_is_the_one_of_try_pun_ref` holds the two
-//! to the same answers.
+//! are validated the same way, and the test `the_verdict_is_the_one_of_try_pun_ref` checks that the
+//! two give the same answers.
 //!
 //! The walk follows the lists of types that the derive writes (`Fields`, `Variants`, `Elem`,
 //! `Pointee`), and checks them against the layout of every type that it goes through ([`listed`]),
@@ -29,10 +30,10 @@
 //! nothing outside the bytes, since each read follows a `get` and checked arithmetic, at a position
 //! in bounds.
 //!
-//! The bytes are a `&[u8]`, so they are initialized, and a `MaybeUninit` or padding holds whatever
-//! it holds. A `MaybeUninit` of a pointer is not a pointer, and nothing in it is handed over. A
-//! union that holds a pointer does not compile, because which field the union holds cannot be told,
-//! and so neither can whether it holds the pointer.
+//! The bytes are a `&[u8]`, so they are initialized, and a `MaybeUninit` or padding may hold any
+//! bytes. A `MaybeUninit` of a pointer is not a pointer, and nothing in it is handed over. A union
+//! that holds a pointer does not compile, because which field the union holds cannot be told, and
+//! so neither can whether it holds the pointer.
 //!
 //! [`pointers_in`] makes the same calls as [`validate_in`] on the same bytes, in the same order,
 //! because [`variants`] and [`follow_variants`] choose the variant of an enum by the same test on
@@ -60,8 +61,8 @@
 //! accepts again. Last, `rules_need_not_hold_for_pointers_in_and_copy_in` breaks the `assert` of a
 //! value with pointers and the `valid(..)` of one of its fields, in a buffer. `validate_in` refuses
 //! the value, while `pointers_in` hands over its pointers and `copy_in` copies its scalars and its
-//! null pointer, as for a value that meets them. The model check holds these functions to an oracle
-//! of pointers (`puns-model`, "Self-relative pointers").
+//! null pointer, as for a value that meets them. The model check compares these functions with an
+//! oracle of pointers (`puns-model`, "Self-relative pointers").
 
 use core::fmt;
 
@@ -78,7 +79,7 @@ use crate::{
 /// visitor, which belongs to the crate that declares the pointers. The visitor follows each pointer
 /// as its scheme says, and validates the target in turn or queues it. [`pointers_in`] and
 /// [`pointers_elems_in`] hand over the same pointers of a value already known to be valid, without
-/// checking anything, so that a crate can copy what the pointers aim at, or re-aim them when the
+/// checking anything, so that a crate can copy what the pointers aim at, or update them when the
 /// value moves.
 ///
 /// The walk calls `pointer::<P>(at)` once for each pointer that the value holds, in its fields, in
@@ -213,8 +214,8 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// each of its self-relative pointers to `visit`.
 ///
 /// The function is safe for any bytes and any `at`. It reads nothing outside `bytes`, and does not
-/// panic unless `visit` does. It does not follow pointers, which the visitor follows, or does not.
-/// The bytes may be at any address.
+/// panic unless `visit` does. It does not follow pointers. The visitor decides whether to follow
+/// them. The bytes may be at any address.
 ///
 /// After `Ok(())`, unsafe code may rely on the following, and on nothing more:
 ///
@@ -233,12 +234,13 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///    see "The type is its offset" in [`SelfRelative`](crate::SelfRelative#safety)). For any other
 ///    pointer they are a pointer, handed over.
 ///
-/// Nothing is promised of what the pointers aim at, whether inside `bytes`, at what, or whether two
-/// aim at the same place. That is for the visitor to check, as is the scheme of the pointers.
-/// Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T` at
-/// `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`, for example
-/// by placing the buffer at an address aligned to `align_of::<T>()` and choosing `at` as a multiple
-/// of it. The same holds for what the pointers aim at, which their scheme places.
+/// Nothing is promised about the targets of the pointers: not that a target is inside `bytes`, not
+/// what it holds, and not that two pointers have different targets. That is for the visitor to
+/// check, as is the scheme of the pointers. Nothing is promised of addresses either, only of
+/// positions in `bytes`. To make a `&T` at `bytes.as_ptr() + at`, the caller must ensure that this
+/// address is aligned for `T`, for example by placing the buffer at an address aligned to
+/// `align_of::<T>()` and choosing `at` as a multiple of it. The same holds for what the pointers
+/// aim at, which their scheme places.
 ///
 /// A `T` of size 0 has no bytes to check, so it is valid if it has a value and its rules hold. `T`
 /// is `Sized`, because a value whose size its bytes tell (a slice tail, `str`) is not one that a
@@ -258,10 +260,10 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// A call compiles only if all of the following hold:
 ///
 /// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
-///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
-///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
-///   places the same bytes is exempt.
+///   compiler. No part of `T` whose layout Rust leaves to the compiler (such as a struct, a tuple
+///   or an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
+///   scalar with invalid bit patterns, an enum, or a rule). A part is exempt if every order of its
+///   fields makes the same bytes.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
 /// - Every implementation of `Pun` that the walk goes through lists the fields, variants,
@@ -290,9 +292,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. Its scheme is its own. No `Rel` is followed in this
-/// // example, so nothing relies on more.
+/// // SAFETY: Each requirement of `SelfRelative` holds, as its example proves for this type:
+/// // `Rel<T>` is `repr(transparent)` over an `i32`, its scheme is its own, and `POINTER` is made
+/// // for `Target`. This example makes no `Rel`, only bytes, so no pointer is followed.
 /// unsafe impl<T: Pun> SelfRelative for Rel<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
@@ -449,7 +451,7 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// `visit`, as [`validate_in`] would, and checks nothing.
 ///
 /// This is for a value already known to be valid, such as one being copied or moved in its buffer,
-/// where validating it again would check every scalar for nothing. The calls of
+/// where validating it again would only repeat the check of every scalar. The calls of
 /// `visit.pointer::<P>(at)` are those that [`validate_in`] makes on the same bytes, in the same
 /// order (see [`Visit`]), so a pointer whose bytes are all zero is not handed over if the pointer
 /// may be null, and is handed over otherwise. The function reads only the tags of enums, niches
@@ -503,9 +505,9 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// #   target: PhantomData<T>,
 /// # }
 /// #
-/// # // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// # // buffer, at an address aligned for it. Its scheme is its own. No `Rel` is followed in this
-/// # // example, so nothing relies on more.
+/// # // SAFETY: Each requirement of `SelfRelative` holds, as its example proves for this type:
+/// # // `Rel<T>` is `repr(transparent)` over an `i32`, its scheme is its own, and `POINTER` is made
+/// # // for `Target`. This example makes no `Rel`, only bytes, so no pointer is followed.
 /// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
 /// #   type Target = T;
 /// #   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
@@ -576,6 +578,66 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 /// [compile-time errors](validate_in#compile-time-errors) list, except that the rules are not
 /// compared with their list, since this walk does not read them. A generic function that calls
 /// `pointers_elems_in` compiles until it is instantiated with types that violate them.
+///
+/// # Examples
+///
+/// ```
+/// # use core::marker::PhantomData;
+/// #
+/// # use puns::{
+/// #   Invalid, Pun, SelfRelative, Visit,
+/// #   layout::{Endian, Pointer},
+/// # };
+/// #
+/// # /// A pointer to a `T` in the same buffer: the distance from its own address.
+/// # #[repr(transparent)]
+/// # pub struct Rel<T> {
+/// #   offset: i32,
+/// #   target: PhantomData<T>,
+/// # }
+/// #
+/// # // SAFETY: Each requirement of `SelfRelative` holds, as its example proves for this type:
+/// # // `Rel<T>` is `repr(transparent)` over an `i32`, its scheme is its own, and `POINTER` is made
+/// # // for `Target`. This example makes no `Rel`, only bytes, so no pointer is followed.
+/// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
+/// #   type Target = T;
+/// #   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
+/// # }
+/// #
+/// # puns::self_relative!(impl[T: Pun] Rel<T>);
+/// #
+/// # /// Records the position of each pointer.
+/// # struct Positions(Vec<usize>);
+/// #
+/// # impl Visit for Positions {
+/// #   type Error = Invalid;
+/// #   fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Invalid> {
+/// #     self.0.push(at);
+/// #     Ok(())
+/// #   }
+/// # }
+/// #
+/// # #[derive(Pun)]
+/// # #[repr(C)]
+/// # struct Pair {
+/// #   on: bool,
+/// #   first: Rel<u8>,
+/// #   second: Rel<u8>,
+/// # }
+/// // Two `Pair`s, one after the other. Their offsets are zero: pointers to themselves.
+/// let mut bytes = [0; 2 * size_of::<Pair>()];
+/// bytes[0] = 1;
+/// bytes[size_of::<Pair>()] = 1;
+/// let mut checked = Positions(Vec::new());
+/// puns::validate_elems_in::<Pair, _>(&bytes, 0, 2, &mut checked).unwrap();
+///
+/// let mut walked = Positions(Vec::new());
+/// // SAFETY: `bytes` is valid for reads, and `validate_elems_in` accepted it as two `Pair`s,
+/// // each of which meets the requirements of `pointers_in`.
+/// unsafe { puns::pointers_elems_in::<Pair, _>(bytes.as_ptr(), 0, 2, &mut walked) }.unwrap();
+/// assert_eq!(walked.0, checked.0);
+/// assert_eq!(walked.0.len(), 4);
+/// ```
 #[inline]
 pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
   base: *const u8,
@@ -913,12 +975,12 @@ unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
   //   requirements, as `copy` requires.
   // - The fields of a struct are within both ranges, and `T::Fields` is their list, as
   //   `copy_fields` requires.
-  // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration`
-  //   asserts that it is within the enum, and of at most 16 bytes, so `add` stays within both
-  //   ranges, and the tag meets the requirements of `load`. Its `spec.size` bytes are valid for
-  //   reads at `src` and writes at `dst`, which do not overlap, as `copy_nonoverlapping`
-  //   requires. It selects a variant, whose fields meet the requirements of `copy_variants`, with
-  //   `T::Variants` the list of the variants and `tag` the tag.
+  // - The tag of an enum is initialized, by contract on the caller. `Layout::enumeration` asserts
+  //   that it is within the enum, and of at most 16 bytes, so `add` stays within both ranges, and
+  //   the tag meets the requirements of `load`. Its `spec.size` bytes are valid for reads at `src`
+  //   and writes at `dst`, which do not overlap, and a `u8` is aligned at any address, as
+  //   `copy_nonoverlapping` requires. It selects a variant, whose fields meet the requirements of
+  //   `copy_variants`, with `T::Variants` the list of the variants and `tag` the tag.
   // - The offset of a pointer is initialized, by contract on the caller, and of at most 16
   //   bytes, as `load` requires. Its `size` bytes are copied as the tag is.
   unsafe {

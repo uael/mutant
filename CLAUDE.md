@@ -24,13 +24,15 @@ cargo test -p puns --features verdict  # Without the `unstable` feature, the def
 cargo test -p puns --features unstable  # With it: the targets that need it too (`required-features`), the cases of `compile-fail-unstable`
 PUNS_BLESS=1 cargo test -p puns --features verdict --test seeds  # Write the record of verdicts again (`puns/tests/seeds.txt`)
 RUSTFLAGS="-Zrandomize-layout -Zlayout-seed=1" cargo +nightly-2026-11-17 test -p puns --features verdict --test seeds  # The same record, with another layout
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p puns-model  # A selection of the model check: the unsafe paths it reaches
 cargo build -p puns --target thumbv7em-none-eabihf  # A target without std
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings), without `unstable` then with it, + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
 cargo xtask build-time               # Build times of the analysis, for docs/performance.md (minutes)
+cargo xtask checks-chart             # Write the table and the chart of check times of docs/performance.md from the record
+cargo xtask checks-chart --check     # Fail if the table or the chart is not what the record gives
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
@@ -54,32 +56,31 @@ that counts is the one of the job on GitHub, which cannot be measured on this ma
 seconds of each job go to the checkout and the toolchain before anything runs, and the runners are
 slower and vary by a third from one run to the next, so aim at 45 seconds and read the times of the
 jobs after a change of the workflow. The first run after a change of a cache key has nothing cached.
-With the caches, what comes before the work is 15 to 20 seconds, so the work of a job is at most
-about 20 seconds, which the build of the tests of `miri_sample` or of `parts` of the model takes
-alone.
+With the caches, a job takes 15 to 20 seconds before its work starts, so the work is at most about
+20 seconds. Building the model's `miri_sample` tests, or its `parts` tests, already takes that long.
 
 This is why `cargo test --all` is twelve jobs there: the tests of `puns` in six, four without the
 `unstable` feature and two with it, and the sample of the model check in six, three each way. It is
-also why each Miri run of the tests of `puns` is five jobs. Without the feature, they are three
-parts of about the same time, two named and one with every other file, and with it, the files about
-it are in two. Split a job again rather than let it pass 45 seconds. These jobs have a cache of the
-standard library that Miri builds and of the sources it builds it from, and Miri builds it again
-when the modification time of a source changes, which a fresh install of the toolchain does. Balance
-the parts by the time that passes for each test binary in the log of the job, since the time that
-Miri reports for a test is not that one.
+also why each Miri run of the tests of `puns` is five jobs. Without the feature, there are three
+parts of about the same time: two name their files, and the third takes all the remaining files.
+With the feature, the files that test it are split in two. Split a job again rather than let it pass
+45 seconds. These jobs have a cache of the standard library that Miri builds and of the sources it
+builds it from, and Miri builds it again when the modification time of a source changes, which a
+fresh install of the toolchain does. Balance the parts by the time that passes for each test binary
+in the log of the job, since the time that Miri reports for a test is not that one.
 
-Under Miri, a test that loops is a fraction of its size (`cfg!(miri)`), since Miri is there for each
-unsafe path, not each value. What is exhaustive, the full model check behind the `full` feature of
-`puns-model`, runs in `.github/workflows/model.yml` every night and on demand, with a check of the
-compiler (an optimized build refuses a wrong view behind pointers). Run it when `rust-toolchain`
-changes. Under Miri, the model check runs a selection of pairs that reaches every unsafe path rather
-than every pair (`puns-model/tests/miri_sample.rs` names the unsafe path that each pair reaches, and
-`tests/pointers.rs` for pointers), and of the examples only `ethernet` runs, since the others reach
-the same unsafe code of the library. A test file that is not for Miri starts with
-`#![cfg(not(miri))]` and says why. CI gives Miri the other ones by name, since Miri takes a second
-to start each test binary, even one that runs nothing. Each pair of types in a test of the model is
-an instance of the analysis, about a tenth of a second of build, so keep the tests that every push
-builds small.
+Under Miri, a test that loops runs a fraction of its iterations (`cfg!(miri)`), since Miri is there
+for each unsafe path, not each value. The full model check is exhaustive. It is behind the `full`
+feature of `puns-model`, and runs in `.github/workflows/model.yml` every night and on demand, with a
+check of the compiler (an optimized build refuses a wrong view behind pointers). Run it when
+`rust-toolchain` changes. Under Miri, the model check runs a selection of pairs that reaches every
+unsafe path, not every pair. `puns-model/tests/miri_sample.rs` names the unsafe path that each pair
+reaches, and `tests/pointers.rs` does so for pointers. Of the examples, only `ethernet` runs under
+Miri, since the others reach the same unsafe code of the library. A test file that is not for Miri
+starts with `#![cfg(not(miri))]` and says why. CI gives Miri the other ones by name, since Miri
+takes a second to start each test binary, even one that runs nothing. Each pair of types in a test
+of the model is an instance of the analysis, about a tenth of a second of build, so keep the tests
+that every push builds small.
 
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and of
 `isize`, the byte order) is asserted in a `const` where it is used, or derived from the target, and
@@ -105,13 +106,13 @@ so new times come with a new record.
 
 ## Architecture
 
-**The `unstable` feature.** Without it, nothing that `puns` does depends on what Rust lets `rustc`
-lay out otherwise (the order of the fields of a struct or a tuple of the `Rust` representation, the
-tag of an enum of that representation, niches), so `-Zrandomize-layout` must change no verdict and
-no check, though the message of a refusal may differ. With it, `puns` takes the layout that `rustc`
-chose. "The `unstable` feature" in the crate docs (`puns/src/lib.rs`) is the design and the list of
-what Rust documents, with where. The default is without it, and so is most of what the tests and CI
-run: every test of `puns` that builds without the feature runs without it (`tests/seeds.rs` needs
+**The `unstable` feature.** Without it, nothing that `puns` does depends on a layout that Rust
+leaves to the compiler (the order of the fields of a struct or a tuple of the `Rust` representation,
+the tag of an enum of that representation, niches), so `-Zrandomize-layout` must change no verdict
+and no check, though the message of a refusal may differ. With it, `puns` takes the layout that
+`rustc` chose. "The `unstable` feature" in the crate docs (`puns/src/lib.rs`) states the design, and
+lists what Rust documents and where. The default is without it, and so is most of what the tests and
+CI run: every test of `puns` that builds without the feature runs without it (`tests/seeds.rs` needs
 `verdict`), the cases of `compile-fail-kept` included. Only what is about the feature runs with it:
 the targets of `required-features = ["unstable"]`, the files with tests under
 `#[cfg(feature = "unstable")]` (`.github/tests.sh` lists both), and the cases of
@@ -136,13 +137,13 @@ the crate docs and `README.md` consistent with the code.
   a kind of its own (`layout::Pointer`, `deep.rs`), which a crate declares for its types with
   `SelfRelative` (`src/relative.rs`), so `nearest` depends on `puns`, not the reverse. The tests
   declare pointers of their own through that API only (`tests/support/relative.rs`, shared by
-  `#[path]` with the model check and the compile-fail cases), followed through their buffer, so that
-  Miri runs them with stacked borrows too.
+  `#[path]` with the model check and the compile-fail cases). These pointers are followed through
+  their buffer, so Miri can run them with stacked borrows too.
 - **`puns-derive/`**: `#[derive(Pun)]`, re-exported as `puns::Pun`.
 - **`puns-model/`**: the model check of the analysis against oracles that do not use it (not
   published, and using the test-only `verdict` feature of `puns`), with `fakecore/`, a `core` whose
   items give wrong answers, for what the derive must not trust.
-- **`xtask/`**: dev automation (fmt, lint, build times).
+- **`xtask/`**: dev automation (fmt, lint, build times, the chart of check times).
 
 ## Releasing
 

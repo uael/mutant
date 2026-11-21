@@ -24,9 +24,9 @@
 //!
 //! The following are not covered:
 //!
-//! - Compressed data (deflate) is not a view of the bytes. The CRC-32 and the size at the end of
-//!   a gzip member are those of the uncompressed data, and so are the ones of a compressed ZIP
-//!   entry. They are not checked. The CRC-32 of a stored ZIP entry is checked.
+//! - Decompressing data (deflate) makes a copy, not a view of the bytes. The CRC-32 and the size at
+//!   the end of a gzip member are those of the uncompressed data, and so are the ones of a
+//!   compressed ZIP entry. They are not checked. The CRC-32 of a stored ZIP entry is checked.
 //! - A ZIP entry with a data descriptor (bit 3 of its flags) has its sizes after its data, not in
 //!   its header. [`LocalHeader`] does not accept such an entry. Code that reads one must take
 //!   its sizes from the central directory, which this example does not do.
@@ -204,8 +204,7 @@ pub struct TarEntry {
     |s| s >> 32 != 0,
     |s| if be(s & 0xffff_ffff, 1) == 0 { s + 1 - 0x1_0000_0000 } else { s + 1 },
   );
-  // The strings end before the CRC-32 and the size of the data. (Without this, a walk that runs
-  // out of the member would only fail the rule where its result is needed: with FHCRC.)
+  // The strings end before the CRC-32 and the size of the data, the last 8 bytes.
   end + 8 <= size_of_val(self) && (flags & 2 == 0 || crc32(0, end) & 0xffff == le(end, 2))
 }))]
 pub struct Gzip {
@@ -341,7 +340,7 @@ pub fn main() {
   let (entry, _) = from_head::<TarEntry>(&large).unwrap();
   assert_eq!((entry.data().len(), entry.padding().len()), (1000, 24));
   // A digit `8` in the size; a byte of the name or of the checksum (the checksum then does not
-  // agree); a type; the magic; the data cut short.
+  // agree); a type; the magic; truncated data.
   for (at, value) in [(134, b'8'), (0, b'H'), (150, b'5'), (156, b'9'), (258, b'S')] {
     let mut bytes = tar;
     bytes[at] = value;
@@ -349,7 +348,7 @@ pub fn main() {
   }
   assert_eq!(from_head::<TarEntry>(&tar[..1000]).err(), Some(Error::Size));
 
-  // ---- gzip: optional fields told by flags, the CRC of the header.
+  // ---- gzip: optional fields that the flags announce, the CRC of the header.
   for bytes in [&GZIP[..], &GZIP_NAMED, &GZIP_ALL] {
     let member: &Gzip = try_pun_ref(bytes).unwrap();
     assert_eq!(
@@ -365,7 +364,7 @@ pub fn main() {
     bytes[at] = value;
     assert_eq!(try_pun_ref::<_, Gzip>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // Not deflate; a name without its NUL, which runs out of the member.
+  // Not deflate; a name without its NUL, which extends beyond the member.
   let mut bytes = GZIP;
   bytes[2] = 9;
   assert_eq!(try_pun_ref::<_, Gzip>(&bytes[..]).err(), Some(Error::Validity));

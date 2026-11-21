@@ -11,7 +11,7 @@
 //! | Specific to these protocols                    | Declared with                               |
 //! |------------------------------------------------|---------------------------------------------|
 //! | the BGP marker, 16 bytes of ones               | `[u8c<0xff>; 16]`                           |
-//! | a BGP message tells its type                   | `tag(MessageType = u8c<1>)`                 |
+//! | a BGP message gives its type                   | `tag(MessageType = u8c<1>)`                 |
 //! | BGP UPDATE parts, each sized before it         | `regions(withdrawn = .., attributes = ..)`  |
 //! | a BGP attribute has a length of 1 or 2 bytes   | `size = if .. { 3 + be(2, 1) } else { .. }` |
 //! | a BGP prefix has a length in bits              | `size = (bits + 7) / 8 + 1`                 |
@@ -19,7 +19,7 @@
 //! | the Fletcher checksum of OSPF LSAs             | `assert(fletcher16(2, ..) == 0)`            |
 //! | GRE optional fields, announced by its flags    | `regions(key = if .. { 4 } else { 0 }, ..)` |
 //! | the GRE checksum, when there is one            | `assert(.. \|\| sum16(..) == 0xffff)`       |
-//! | GRE and Geneve tell what they carry            | `tag(EtherType = u16bec<0x0800>)`           |
+//! | GRE and Geneve say what they carry             | `tag(EtherType = u16bec<0x0800>)`           |
 //! | VXLAN flags and reserved bytes are fixed       | `u8c<0x08>`, `[u8c<0>; 3]`                  |
 //! | Geneve options, in 4-byte words, fill a region | `assert(walk(8, ..) == ..)`                 |
 //! | IGMP checksums cover the whole message         | `assert(sum16(0, size_of_val(self)) ..)`    |
@@ -203,7 +203,7 @@ pub struct Lsa {
 // -------------------------------------------------------------------------------------------------
 // Tunnels
 
-/// The EtherType by which GRE and Geneve tell what they carry, when it is not known.
+/// The EtherType by which GRE and Geneve say what they carry, when it is not known.
 #[derive(Pun, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct EtherType(pub u16be);
@@ -234,7 +234,7 @@ pub struct Ethernet {
 
 /// A GRE packet (RFC 2784, 2890) of version 0.
 ///
-/// The flags tell whether a checksum (flag C), a key (flag K) and a sequence number (flag S) are
+/// The flags say whether a checksum (flag C), a key (flag K) and a sequence number (flag S) are
 /// present. Each of these optional fields is a region of 0 or 4 bytes.
 #[derive(Pun)]
 #[repr(C)]
@@ -270,7 +270,7 @@ pub struct Vxlan {
 }
 
 /// A Geneve packet (RFC 8926): options whose size is in 4-byte words, then a payload whose type
-/// the protocol field tells.
+/// the protocol field gives.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(get(options_length: usize = (version_options & 0x3f) * 4, oam: bool = flags & 0x80 != 0))]
@@ -665,7 +665,7 @@ pub fn main() {
     (0x0102, 0x80, &[1, 2, 3, 4][..], 0)
   );
   assert!(header.payload().is_ok());
-  // An option that runs past the options; version 1.
+  // An option that extends beyond the options; version 1.
   for (at, value) in [(11, 2), (0, 0x42)] {
     let mut bytes = geneve.clone();
     bytes[at] = value;

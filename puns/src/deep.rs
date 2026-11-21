@@ -48,10 +48,9 @@
 //! This is a behavior of the compiler. The Reference says that a `const` block that is not executed
 //! may or may not be evaluated ([`r-expr.block.const.not-executed`][const not executed]). The
 //! compile-fail test `view_behind_pointers` (a `u8` reinterpreted as a `bool` behind the pointers
-//! of a recursive type) holds the compiler to it in a debug build. The workflow `model.yml` builds
-//! the same program optimized, with LTO, every night, and it must be refused there too. Run that
-//! check when `rust-toolchain` changes. The program declares its own pointer and needs no other
-//! crate.
+//! of a recursive type) checks this behavior in a debug build. The workflow `model.yml` builds the
+//! same program optimized, with LTO, every night, and it must be refused there too. Run that check
+//! when `rust-toolchain` changes. The program declares its own pointer and needs no other crate.
 //!
 //! For the same reason, `view_ref` is not a `const fn`: a call in a constant would make no
 //! instance, and an interpreter that evaluates only the constants of the functions that it runs, as
@@ -91,7 +90,7 @@
 //! [`try_view_ref`](crate::try_view_ref) checks what is not proven of the value itself, with the
 //! marks of the analysis. That may be a variant that the target does not have, a restricted scalar,
 //! or a nullable pointer reinterpreted as one that is not nullable, whose bytes must not be all
-//! zero. It requires of what the value points to what `view_ref` requires.
+//! zero. For what the pointers of the value aim at, it has the same requirements as `view_ref`.
 //!
 //! # Rules that every function keeps
 //!
@@ -203,14 +202,15 @@
 //!
 //! ## No `&mut` with a pointer
 //!
-//! [`mutable`](crate::analysis::mutable) and [`mutable_part`](crate::analysis::mutable_part) are
-//! false with a pointer on either side.
+//! With a pointer on either side, [`mutable`](crate::analysis::mutable) returns `false`, and
+//! [`mutable_part`](crate::analysis::mutable_part) returns a reason to refuse the pun.
 //!
 //! ## The views prove behind pointers
 //!
-//! `view_ref` and `try_view_ref` are the only functions with the plans that [Only views make a
-//! value that holds a pointer](#only-views-make-a-value-that-holds-a-pointer) exempts. Both call
-//! [`proof`] for the same pair of types, and neither is a `const fn`.
+//! `view_ref` and `try_view_ref` are the only functions whose plans accept a target that holds a
+//! pointer ([Only views make a value that holds a
+//! pointer](#only-views-make-a-value-that-holds-a-pointer)). Both call [`proof`] for the same pair
+//! of types, and neither is a `const fn`.
 //!
 //! ## What `local` accepts, `pair` names
 //!
@@ -229,10 +229,8 @@
 //! ## The contract of `SelfRelative`, and nothing more
 //!
 //! `puns` relies on the requirements of the `# Safety` section of
-//! [`SelfRelative`](crate::SelfRelative#safety), and on nothing more. It relies on "The scheme is
-//! the way to the target" when it reinterprets a pointer as another of the same scheme, on "What it
-//! aims at is there, and valid" and "What it aims at is its own" for what this module proves of the
-//! targets, and on "Null" for the check of a nullable pointer by `try_view_ref`.
+//! [`SelfRelative`](crate::SelfRelative#safety), and on nothing more. That section says which
+//! requirement each proof of this module relies on.
 //!
 //! [only views]: #only-a-proof-of-what-pointers-aim-at-makes-a-value-that-holds-one
 //! [no mut]: #no-mut-to-a-pointer-nor-next-to-one

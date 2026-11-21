@@ -167,7 +167,7 @@ fn replace_self(tokens: TokenStream, this: &TokenStream) -> TokenStream {
 /// its name.
 ///
 /// A generic type has none (`Id::NONE`), since two of its instances are other types, which `rustc`
-/// may arrange otherwise, and what makes one is not all `Pun` (`PhantomData<T>`). Lifetime
+/// may lay out differently, and what makes one is not all `Pun` (`PhantomData<T>`). Lifetime
 /// parameters do not count.
 fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
   // One crate is expanded by one process, in which each derive takes the next number.
@@ -195,7 +195,7 @@ struct Repr {
   transparent: bool,
   /// The `N` of `packed(N)`, which is 1 for `packed`.
   packed: Option<TokenStream>,
-  /// The integer of `repr(u8)`, `repr(i32)` and the like.
+  /// The integer of `repr(u8)`, `repr(i32)` or another primitive representation.
   int: Option<Ident>,
 }
 
@@ -535,7 +535,7 @@ fn expect(found: Ty, expected: Ty, spanned: &impl ToTokens) -> Result<()> {
   }
   let hint = match expected {
     Ty::Int => "`EXPR as u8` is `0` or `1`",
-    Ty::Bool => "Rust has no truthiness: write `EXPR != 0`",
+    Ty::Bool => "Rust does not convert an integer to a `bool`: write `EXPR != 0`",
   };
   Err(Error::new_spanned(
     spanned,
@@ -1386,7 +1386,7 @@ fn valid_ranges(
     Expr::Lit(ExprLit { lit, .. }) => literal(lit),
     Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => Err(Error::new_spanned(
       unary,
-      "the values of a field are told as unsigned integers: there is no negative number",
+      "the values of a field are given as unsigned integers: there is no negative number",
     )),
     expr => Ok(quote_spanned!(expr.span()=> #root::layout::Op::constant(&(#expr)))),
   };
@@ -1656,11 +1656,12 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         accessors.push(region.ty.as_ref().map_or_else(
           || {
             let doc = format!(
-              "Returns the bytes of the `{name}` region of the tail, cut short if the fields that \
+              "Returns the bytes of the `{name}` region of the tail, truncated if the fields that \
                size the regions give more bytes than the tail holds. The region takes the rest of \
                the tail if its expression fails.\n\n# Compile-time errors\n\n\
-               A call compiles only under the compile-time conditions of `puns::region`, which \
-               require every byte of the struct, up to the end of its tail, to be initialized."
+               A call compiles only if every byte of the struct, up to the end of its tail, is \
+               initialized and, without the `unstable` feature of `puns`, this does not depend on \
+               a layout that Rust leaves to the compiler."
             );
             quote! {
               #[doc = #doc]
@@ -1673,13 +1674,15 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           |ty| {
             let doc = format!(
               "Returns the `{name}` region of the tail as the type it is said to hold, read with \
-               `puns::from_bytes`. The region is cut short if the fields that size the regions \
+               `puns::from_bytes`. The region is truncated if the fields that size the regions \
                give more bytes than the tail holds, and takes the rest of the tail if its \
                expression fails.\n\n# Errors\n\nReturns the error of \
                `puns::from_bytes` if the bytes of the region are not a value of that type.\n\n\
-               # Compile-time errors\n\nA call compiles only under the compile-time conditions \
-               of `puns::region`, which require every byte of the struct, up to the end of its \
-               tail, to be initialized, and of `puns::from_bytes` for the type of the region."
+               # Compile-time errors\n\nA call compiles only if every byte of the struct, up \
+               to the end of its tail, is initialized and, without the `unstable` feature of \
+               `puns`, this does not depend on a layout that Rust leaves to the compiler. It also \
+               compiles only under the compile-time conditions of `puns::from_bytes` for the type \
+               of the region."
             );
             quote! {
               #[doc = #doc]
@@ -1700,7 +1703,10 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     let expr = rust(&getter.expr, &fields, &root, repr.packed.is_some());
     let doc = format!(
       "Returns `{}`, computed from the fields of the value, as a `{}`.\n\n# Panics\n\nPanics \
-       where the expression, evaluated as Rust code, panics, such as on a division by zero.",
+       where the expression, evaluated as Rust code, panics, such as on a division by zero.\n\n\
+       # Compile-time errors\n\nA call compiles only if each field that the expression names is \
+       an unsigned integer, or a sized struct whose only field with a size is one and is as large \
+       as the struct.",
       getter.expr.to_token_stream(),
       ty.to_token_stream()
     );
@@ -1856,9 +1862,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         // an unsized last field, whose `Pun` type is a slice, `str`, or a struct whose last field
         // is one of these. Its probe is the probe of that field, `<[E] as Pun>::PROBE` cast with
         // `as` casts, cast again to `*const Self`. The size of the struct with 8 elements in its
-        // tail must fit in an `isize`. The derive does not check it, and relies on `rustc` to
-        // report an error in const evaluation where it does not fit, a behavior that the crate
-        // documentation discloses (section Soundness).
+        // tail must fit in an `isize`, which is not established. The derive relies on `rustc` to
+        // report an error in const evaluation where it does not fit. No documentation promises this
+        // behavior, which the crate documentation discloses (section Soundness).
         const LAYOUT: #root::layout::Layout = unsafe {
           #root::layout::Layout::structure::<Self>(
             Self::PROBE,
@@ -1938,7 +1944,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
       }
     });
   }
-  // An enum of references: a view of what is one thing or another.
+  // An enum of references: a view of data that is one of several types.
   let references = data
     .variants
     .iter()

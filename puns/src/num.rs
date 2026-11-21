@@ -1,11 +1,11 @@
 //! Numbers of a given byte order, and integers restricted to some values.
 //!
-//! - [`u16le`], [`u32be`] and the like are unsigned integers stored in a given byte order. Each
-//!   is a byte array, so its alignment is 1, and any bytes are a valid value.
-//! - [`i16le`], [`i32be`], [`f32le`], [`f64be`] and the like are signed integers and
+//! - [`u16le`], [`u32be`] and similar types are unsigned integers stored in a given byte order.
+//!   Each is a byte array, so its alignment is 1, and any bytes are a valid value.
+//! - [`i16le`], [`i32be`], [`f32le`], [`f64be`] and similar types are signed integers and
 //!   floating-point numbers, stored the same way.
-//! - [`u8c<V>`](u8c), [`u16lec<V>`](u16lec), [`u32bec<V>`](u32bec) and the like are integers whose
-//!   only valid value is `V`: magic numbers, versions and type tags.
+//! - [`u8c<V>`](u8c), [`u16lec<V>`](u16lec), [`u32bec<V>`](u32bec) and similar types are integers
+//!   whose only valid value is `V`: magic numbers, versions and type tags.
 //! - [`u8in<MIN, MAX>`](u8in) is a `u8` from `MIN` to `MAX`.
 //!
 //! The types of restricted values guarantee their values. Their field is private, and a value is
@@ -111,11 +111,15 @@ macro_rules! sample {
 /// that type whose only valid value is `V`.
 macro_rules! ints {
   ($($name:ident $literal:ident: $raw:ident[$size:tt] $endian:ident;)+) => {$(
-    #[doc = concat!("An unsigned integer of ", stringify!($size), " bytes, stored least significant ")]
+    #[doc = concat!(
+      "An unsigned integer of ", stringify!($size), " bytes, stored least significant "
+    )]
     #[doc = endian!($endian, "byte first (little-endian),", "byte last (big-endian),")]
     #[doc = concat!(" read as a `", stringify!($raw), "`.")]
     ///
-    #[doc = concat!("Any ", stringify!($size), " bytes are a valid value, at any address: its alignment is 1.")]
+    #[doc = concat!(
+      "Any ", stringify!($size), " bytes are a valid value, at any address: its alignment is 1."
+    )]
     /// It is compared, ordered and formatted as its value.
     ///
     /// # Examples
@@ -140,7 +144,9 @@ macro_rules! ints {
       /// The greatest value, whose bytes are all `0xff`.
       pub const MAX: Self = Self([0xff; $size]);
 
-      #[doc = concat!("Creates the integer `value`, stored in ", stringify!($size), " bytes of this byte order.")]
+      #[doc = concat!(
+        "Creates the integer `value`, stored in ", stringify!($size), " bytes of this byte order."
+      )]
       ///
       #[doc = narrower!($raw $size, concat!(
         "# Panics\n\nPanics if `value` does not fit in ", stringify!($size), " bytes.\n"
@@ -465,11 +471,17 @@ macro_rules! order {
 /// the byte order `$endian`, read as a `$raw`. Its examples use the value `$value`.
 macro_rules! numbers {
   ($($name:ident: $raw:ident[$size:literal] $endian:ident = $value:literal;)+) => {$(
-    #[doc = concat!("An `", stringify!($raw), "` stored in ", stringify!($size), " bytes, least significant ")]
+    #[doc = concat!(
+      "An `", stringify!($raw), "` stored in ", stringify!($size), " bytes, least significant "
+    )]
     #[doc = endian!($endian, "byte first (little-endian).", "byte last (big-endian).")]
     ///
-    #[doc = concat!("Any ", stringify!($size), " bytes are a valid value, at any address: its alignment is 1.")]
-    #[doc = concat!("Two values are equal if their bytes are.", order!($raw), " It is formatted as its value.")]
+    #[doc = concat!(
+      "Any ", stringify!($size), " bytes are a valid value, at any address: its alignment is 1."
+    )]
+    #[doc = concat!(
+      "Two values are equal if their bytes are.", order!($raw), " It is formatted as its value."
+    )]
     ///
     /// Its bits are not its value as an unsigned integer, so the rules of `#[derive(Pun)]` do not
     /// read it.
@@ -493,7 +505,9 @@ macro_rules! numbers {
     pub struct $name([u8; $size]);
 
     impl $name {
-      #[doc = concat!("Creates the number `value`, stored in ", stringify!($size), " bytes of this byte order.")]
+      #[doc = concat!(
+        "Creates the number `value`, stored in ", stringify!($size), " bytes of this byte order."
+      )]
       ///
       /// # Examples
       ///

@@ -137,7 +137,8 @@ pub struct Ipv4<P: ?Sized + Pun = [u8]> {
 #[repr(C)]
 #[pun(size = payload_length + 40)]
 #[pun(assert({
-  // What a header is in the high 64 bits, where it starts in the low ones: two registers.
+  // The state holds the kind of a header in its high 64 bits and its offset in its low 64 bits,
+  // so each is one register.
   let upper = walk(
     (next_header << 64) + 40,
     |at| { let kind = at >> 64; kind == 0 || kind == 43 || kind == 60 },
@@ -195,9 +196,16 @@ macro_rules! pointers {
     #[repr(transparent)]
     pub struct $name<$($param)?>(i32le, PhantomData<($($param,)?)>);
 
-    // SAFETY: The type is `repr(transparent)` over its offset, an `i32le`, a byte array, every byte
-    // of which is initialized, and none in an `UnsafeCell`. Its scheme is its own. No value of it
-    // is made, so no pointer of it is followed, and nothing relies on more.
+    // SAFETY: Each requirement of `SelfRelative` holds:
+    // - The type is its offset: it is `repr(transparent)` over an `i32le`, a byte array, every
+    //   byte of which is initialized, and none in an `UnsafeCell`. Every value is an offset.
+    // - The scheme is the way to the target: only this file declares types of `SCHEME`, and
+    //   nothing follows them.
+    // - What it aims at is there, valid, and its own, and Null: no value of the type is made, so
+    //   there is no pointer.
+    // - The target is the type: each use of the macro makes `POINTER` for its `Target`, by
+    //   `Pointer::one`, `Pointer::sequence` or `Pointer::text`.
+    // - Nothing follows a pointer, so nothing relies on more.
     unsafe impl<$($param: Pun)?> SelfRelative for $name<$($param)?> {
       type Target = $target;
       const POINTER: Pointer = $pointer;

@@ -9,7 +9,7 @@
 //!
 //! | Specific to these formats                      | Declared with                            |
 //! |------------------------------------------------|------------------------------------------|
-//! | four-character codes tell what is held         | `tag(FourCc = u32bec<0x666d_7420>)`      |
+//! | four-character codes say what is held          | `tag(FourCc = u32bec<0x666d_7420>)`      |
 //! | a RIFF pad byte, not counted in the length     | `size = 8 + length + (length & 1)`       |
 //! | the fields of a WAVE format agree              | `assert(byte_rate == .. * block_align)`  |
 //! | WAVE chunks fill the file, `fmt ` first        | `assert(walk(12, ..) == ..)`             |
@@ -18,9 +18,9 @@
 //! | the version and flags of a full box            | `u8c<0>`, `u24be`                        |
 //! | brands, up to the end of a box                 | `[FourCc]`                               |
 //!
-//! The size of an MP4 box takes 4 or 8 bytes, as its first 4 bytes tell. When these bytes are 0,
+//! The size of an MP4 box takes 4 or 8 bytes, as its first 4 bytes say. When these bytes are 0,
 //! the box extends to the end of what holds it. That end is not in the box, so a `size` rule
-//! cannot tell it. Each form of box is a struct with a payload of its type, and an enum of
+//! cannot give it. Each form of box is a struct with a payload of its type, and an enum of
 //! references tells the forms apart.
 //!
 //! The following are not covered:
@@ -28,7 +28,7 @@
 //! - The code that uses the types reads boxes inside boxes (`moov`, `trak`, ...) one level at a
 //!   time, since a box does not say what kind of box its children are.
 //! - The samples are compressed, or interleaved by tables that point anywhere in the file (`stco`,
-//!   `stsz`). Decoding them is not a view of the bytes.
+//!   `stsz`). Decoding them makes a copy, not a view of the bytes.
 //!
 //! `main` reads a WAVE file chunk by chunk and an MP4 file box by box, and asserts their fields,
 //! regions and getters. It changes bytes so that a rule fails or the size is wrong, asserts that
@@ -42,7 +42,7 @@ use puns::{
   num::{u8c, u16le, u24be, u32be, u32bec, u32le, u64be},
 };
 
-/// A four-character code, when what it tells is not known.
+/// A four-character code whose meaning is not known.
 #[derive(Pun, Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct FourCc(pub u32be);
@@ -250,7 +250,7 @@ pub fn main() {
   let mut bytes = WAVE.to_vec();
   bytes[52] = 7;
   assert_eq!(from_head::<Wave>(&bytes).err(), Some(Error::Validity));
-  // A chunk that runs past the file; "fmt " not first; not RIFF; a RIFF size beyond the bytes.
+  // A chunk that extends beyond the file; "fmt " not first; not RIFF; a RIFF size beyond the bytes.
   for (at, value, error) in [
     (40, 9, Error::Validity),
     (12, b'g', Error::Validity),

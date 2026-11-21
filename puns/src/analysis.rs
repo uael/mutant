@@ -51,9 +51,9 @@
 //! So the cost of an analysis grows with the number of fields, variants, ranges of values and
 //! states of automata of the types. Where it would grow with their size, a search stops at a limit:
 //! [`PLACES`] places of fields, a budget of boxes of a scalar, a budget of runs under a pattern,
-//! and [`CUT_ELEMENTS`] elements of a `&mut` to a part. Const evaluation is bounded (see "Minimum
-//! Rust version" in the [crate documentation](crate#minimum-rust-version)), so it could not be
-//! otherwise.
+//! and [`CUT_ELEMENTS`] elements of a `&mut` to a part. These limits keep the analysis within the
+//! bound of const evaluation (see "Minimum Rust version" in the [crate
+//! documentation](crate#minimum-rust-version)).
 //!
 //! # Enums and unions
 //!
@@ -83,8 +83,8 @@
 //! As a source, a union is padding, and from a union only the same union proves a union
 //! ([`Layout::equals`]).
 //!
-//! A type without values is no value of any type that has some ([`relate_at`] reports the pun as
-//! never valid). A variant or a struct that holds one has no value either.
+//! A pun from a type that has values to a type without values is never valid, and [`relate_at`]
+//! reports it so. A variant or a struct that holds a type without values has no value either.
 //!
 //! # Uninitialized bytes
 //!
@@ -823,7 +823,8 @@ pub const fn relate_at(
     relation.unspecified(start);
     return relation;
   }
-  // A type without values is no value of any other, whatever its bytes (it may have none).
+  // No value of a source that has values is a value of a target without values, whatever their
+  // sizes.
   if !b.is_inhabited() && a.is_inhabited() {
     relation.disjoint = Some(start);
     return relation;
@@ -1128,8 +1129,8 @@ const fn relate_range(
         if b.stack[0].layout.has_pointers() {
           out.pointer(pos);
         }
-        // A part whose layout Rust does not keep is recorded too, since a check would read it where
-        // `rustc` put it.
+        // A part whose layout Rust leaves to the compiler is recorded too, since a check would read
+        // it where `rustc` put it.
         if !b.stack[0].layout.checks_kept() {
           out.unspecified(pos);
         }
@@ -1148,7 +1149,8 @@ const fn relate_range(
         return true;
       }
     }
-    // What Rust does not keep (after the repetitions: an array of it is one period).
+    // A part whose layout Rust leaves to the compiler (after the repetitions: an array of it is one
+    // period).
     if let RunKind::Opaque(target) = run_b.kind {
       let stop = min(run_b.end, end);
       let whole = run_b.start == pos && run_b.end <= end;
@@ -1193,7 +1195,8 @@ const fn relate_range(
       if enum_b.has_pointers() {
         out.pointer(pos);
       }
-      // Nor can it be done if the check would read what Rust does not keep, where `rustc` put it.
+      // Nor can it be done if the check would read a part whose layout Rust leaves to the compiler,
+      // where `rustc` put it.
       if !enum_b.checks_kept() {
         out.unspecified(pos);
       }
@@ -2292,13 +2295,13 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
 /// must have a layout that Rust specifies, or be the same type. Nothing is looked for inside a
 /// part of the source whose layout Rust leaves to the compiler.
 const fn proves_rules(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
-  // The same rules of the same bytes: of the same fields at the same offsets, which Rust keeps
-  // of both, or which are those of the same type.
+  // The same rules of the same bytes: of the same fields at the same offsets, which Rust specifies
+  // for both, or which are those of the same type.
   let kept = !STRICT || (source.stable.fixed && target.stable.fixed) || same_type(source, target);
   if offset == 0 && kept && source.same_rules(target) {
     return true;
   }
-  // Rust does not keep where the fields of the source are, so nothing is looked for in it.
+  // Rust leaves to the compiler where the fields of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2334,7 +2337,7 @@ const fn proves_rules(source: &'static Layout, offset: usize, target: &'static L
 /// one is. Without the `unstable` feature, nothing is looked for inside a part of the source whose
 /// layout Rust leaves to the compiler.
 const fn same_elements(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
-  // Rust does not keep where the parts of the source are, so nothing is looked for in it.
+  // Rust leaves to the compiler where the parts of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2389,7 +2392,7 @@ const fn covered(source: &'static Layout, offset: usize, target: &'static Layout
       return true;
     }
   }
-  // Rust does not keep where the fields of the source are, so nothing is looked for in it.
+  // Rust leaves to the compiler where the fields of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2627,10 +2630,10 @@ pub const PART_UNSPECIFIED: &str = "the `&mut` covers a part of the source whose
                                     to the same type may write.\nAdd `#[repr(C)]` (or \
                                     `#[repr(u8)]` to an enum), or enable the `unstable` feature \
                                     of `puns`";
-/// Why a `&mut` to a part is refused when it covers bytes that a rule of the source reads.
-pub const PART_RULE: &str = "a rule of the source (a size, a length, an assertion, a region) \
-                             holds over bytes that the `&mut` covers, and could stop holding when \
-                             they are written";
+/// Why a `&mut` to a part is refused when a struct of the source that has a rule overlaps it.
+pub const PART_RULE: &str = "a struct of the source that has a rule (a size, a length, an \
+                             assertion, a region) overlaps the bytes that the `&mut` covers, and \
+                             a write could break the rule";
 /// Why a `&mut` to a part is refused when it covers only a part of an enum of the source.
 pub const PART_ENUM: &str = "an enum of the source is only partly covered by the `&mut`: what its \
                              tag says of the bytes on one side depends on the other";
@@ -2712,8 +2715,8 @@ const fn cut(
   }
   // Within the bytes, and sized: the target is there too.
   let within = !layout.is_dynamic() && base >= lo && end <= hi;
-  // What Rust does not keep is written whole, by the same type: nothing else tells what of it
-  // the bytes cover.
+  // A part whose layout Rust leaves to the compiler is written whole, by the same type: nothing
+  // else tells what of it the bytes cover.
   if layout.is_opaque() {
     return if within && covered(b, base - lo, layout) { None } else { Some(PART_UNSPECIFIED) };
   }

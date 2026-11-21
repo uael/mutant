@@ -72,9 +72,9 @@ use puns::{
 #[pun(assert({ let opcode = (flags >> 11) & 0xf; opcode <= 2 || opcode == 4 || opcode == 5 }))]
 #[pun(assert(flags & 0x0040 == 0))]
 // The name of the first question, if any: labels, down to an empty label. A pointer (two bytes
-// whose first two bits are set) is followed to the offset it tells, from the start of the
-// message; a pointer that loops is cut by the limit of the steps of a walk. A label of the
-// reserved forms (`0x40`, `0x80`) makes `1 / 0`: what cannot be computed makes the rule fail.
+// whose first two bits are set) is followed to the offset that it gives, from the start of the
+// message. A pointer that loops fails at the step limit of a walk. A label of a reserved form
+// (`0x40`, `0x80`) evaluates `1 / 0`, which makes the rule fail.
 #[pun(assert(questions == 0 || {
   let end = walk(
     12,
@@ -546,7 +546,7 @@ pub struct Rtcp {
 pub struct Compound(pub [u8]);
 
 // -------------------------------------------------------------------------------------------------
-// One thing or another
+// One of several kinds
 
 /// A datagram, as the first variant whose type accepts its bytes.
 #[derive(Pun)]
@@ -665,7 +665,7 @@ pub fn main() {
   let address: &A = try_pun_ref(&record.rdata).unwrap();
   assert_eq!(address.0, [93, 184, 216, 34]);
   assert!(try_pun_ref::<_, Name>(&RESPONSE[29..31]).is_ok());
-  // Questions and records from a stream: each is as long as walking its name tells.
+  // Questions and records from a stream: each is as long as walking its name finds.
   let (question, rest) = from_head::<Question>(&RESPONSE[12..]).unwrap();
   assert_eq!((question.name().map(|name| name.0.len()), rest.len()), (Ok(13), 16));
   let (record, rest) = from_head::<Record>(rest).unwrap();
@@ -802,7 +802,7 @@ pub fn main() {
   let mut short = STUN[..44].to_vec();
   short[3] -= 8;
   assert!(try_pun_ref::<_, Stun>(&short[..]).is_ok());
-  // An attribute that runs past the message.
+  // An attribute that extends beyond the message.
   short[35] = 9;
   assert_eq!(try_pun_ref::<_, Stun>(&short[..]).err(), Some(Error::Validity));
 
@@ -845,7 +845,7 @@ pub fn main() {
     assert_eq!(try_pun_ref::<_, Compound>(&bytes[..]).err(), Some(Error::Validity));
   }
 
-  // ---- One thing or another.
+  // ---- One of several kinds.
   let describe = |bytes: &[u8]| match AnyMessage::from_bytes(bytes) {
     Ok(AnyMessage::Stun(stun)) => format!("STUN method {}", stun.method()),
     Ok(AnyMessage::Dhcp(dhcp)) => format!("DHCP {:#x}", dhcp.xid),

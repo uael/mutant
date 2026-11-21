@@ -116,7 +116,7 @@ pub unsafe fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
   }
   // SAFETY: `views::<S, D>(FUEL)` is `true`, and `FUEL` is at least the number of pairs of types
   // that can be met, by contract on the caller. So `crate::view_ref::<S, D>` compiles: `Plan::<S,
-  // D>::VIEW` and `deep::proof::<S, D>` do. As in `pun_ref` above, the pointer that `Plan::cast`
+  // D>::VIEW` and `deep::proof::<S, D>` do. As in `pun_ref` below, the pointer that `Plan::cast`
   // returns is not null, is aligned for `D`, and is in the allocation of `value`, and the bytes
   // there are a valid `D` when its pointers are taken as plain bytes. What the pointers of `D` aim
   // at is proven as well:
@@ -155,7 +155,7 @@ pub unsafe fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
   // `Plan::<S, D>::TRY_VIEW` and `deep::proof::<S, D>` do. `value` is a reference, so it points to
   // a valid `S`, valid for reads, as `try_cast` requires. If `try_cast` returns `Ok`, `target` is
   // not null, is aligned for `D`, and is in the allocation of `value`, and the bytes there are a
-  // valid `D` when its pointers are taken as plain bytes, as in `try_pun_ref` above. `validate`
+  // valid `D` when its pointers are taken as plain bytes, as in `try_pun_ref` below. `validate`
   // checked that a pointer of `D` that may not be null is not null where that of `S` may be. What
   // the pointers aim at is proven as in `view_ref` above. The reference has the lifetime of the
   // shared borrow `value`.
@@ -164,8 +164,8 @@ pub unsafe fn try_view_ref<S: ?Sized + Pun, D: ?Sized + Pun, const FUEL: usize>(
 
 /// Whether each public function that takes a part of a value compiles for a pun from `S` to `D`.
 ///
-/// It is apart from [`Verdict`], so that a test of whole values does not pay for the analyses of
-/// the end of the source and of a `&mut` to a part.
+/// It is apart from [`Verdict`], so that a test of whole values does not run the analyses of the
+/// end of the source and of a `&mut` to a part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "one for each function of the API")]
 pub struct Parts {

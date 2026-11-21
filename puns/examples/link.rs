@@ -36,7 +36,7 @@
 //!   here are those of SocketCAN, in memory, little-endian.
 //! - An L2CAP frame fragmented over several ACL packets needs reassembly, which is a copy, not a
 //!   view.
-//! - Protected 802.11 bodies (CCMP, GCMP) are encrypted, so they are not a view either.
+//! - Protected 802.11 bodies (CCMP, GCMP) are encrypted, and decrypting them makes a copy too.
 //!
 //! `main` reads frames of each format from bytes and asserts their fields, regions and getters. It
 //! then changes bytes, asserts that the read returns an error, and prints `ok`.
@@ -472,7 +472,7 @@ pub fn main() {
   let (element, rest) = from_head::<Element>(beacon.elements()).unwrap();
   let ssid: &Ssid = try_pun_ref(&beacon.elements()[..6]).unwrap();
   assert_eq!((element.id, &ssid.name, rest), (0, &b"test"[..], &[1, 2, 0x82, 0x84][..]));
-  // An element that runs into the frame check sequence (and a sequence that agrees with it).
+  // An element that extends into the frame check sequence (and a sequence that agrees with it).
   let mut bytes = BEACON[..46].to_vec();
   bytes[37] = 5;
   bytes.extend(puns::crc32(&bytes).to_le_bytes());
@@ -485,7 +485,7 @@ pub fn main() {
   bytes[5] = 0;
   assert_eq!(try_pun_ref::<_, Ack>(&bytes[..]).err(), Some(Error::Validity));
 
-  // ---- Bluetooth: packets told by their indicator.
+  // ---- Bluetooth: packets distinguished by their indicator.
   let (packet, rest) = Packet::from_head(&HCI).unwrap();
   let Packet::Command(command) = packet else { panic!() };
   assert_eq!((command.ogf(), command.ocf(), command.parameters.len()), (3, 3, 0));

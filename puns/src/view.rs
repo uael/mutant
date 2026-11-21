@@ -11,13 +11,13 @@
 //!   Examples of such scalars are an EtherType and a version. These comparisons of the same bytes,
 //!   one for each variant, become one decision of the optimizer. A VLAN frame meets the EtherTypes
 //!   of IPv4 and of ARP as in a `match`.
-//! - A variant has a *base*. It is the first later variant whose type takes every value of the type
-//!   of the variant, over the same bytes. The analysis decides it at compile time, as it decides
-//!   that `pun_ref` is proven. `Frame<Ipv4>` takes every `Frame<Ipv4<Udp>>`, and `Frame` takes
-//!   both. The base is decided first. Bytes that are not a value of the base are not a value of the
-//!   variant either. For bytes that are, the variant is checked only for what its base does not
-//!   prove of it, which is the marks of `try_pun_ref` from the base. For a packet, that is its
-//!   protocol, and not its checksums again.
+//! - A variant has a *base*. It is the first later variant whose type accepts every value of the
+//!   type of the variant, over the same bytes. The analysis decides it at compile time, as it
+//!   decides that `pun_ref` is proven. `Frame<Ipv4>` accepts every `Frame<Ipv4<Udp>>`, and `Frame`
+//!   accepts both. The base is decided first. Bytes that are not a value of the base are not a
+//!   value of the variant either. For bytes that are, the variant is checked only for what its base
+//!   does not prove of it, which is the marks of `try_pun_ref` from the base. For a packet, that is
+//!   its protocol, and not its checksums again.
 //! - What is decided is recorded in [`Known`], a state for each variant. A base that several
 //!   variants share is decided once, as `Frame<Ipv4>` is for UDP, TCP and ICMP. So is a base that
 //!   is tried in its own turn after it was a base. Each variant is a function that the derive
@@ -43,7 +43,7 @@
 //!
 //! # Soundness
 //!
-//! Soundness does not rest on the code that the derive writes. The types of the variants form a
+//! Soundness does not rely on the code that the derive writes. The types of the variants form a
 //! balanced tree at the type level ([`List`]), so finding a type in it recurses as deep as the
 //! logarithm of the number of variants. A sealed type ([`First`]`<`[`Here`]`>`, an [`Index`]) names
 //! a place in the tree, and selects both the type and the layout at that place. Only [`decide`]
@@ -296,8 +296,8 @@ const fn base(tree: &'static Tree, index: usize, from: usize, head: bool) -> (us
 ///
 /// The scalar is in the sized part of `a`, and only some values are valid for it. At the same
 /// place, `b` has a scalar of the same size and byte order, for which none of these values is
-/// valid: another EtherType, or another protocol. This walk of `a` spares the analysis of most
-/// pairs of variants.
+/// valid: another EtherType, or another protocol. This walk of `a` rules out most pairs of variants
+/// before their analysis.
 const fn apart(a: &Layout, at: usize, b: &Layout) -> bool {
   match a.kind {
     Kind::Scalar(spec) => match scalar_at(b, at, spec.size) {
@@ -364,12 +364,13 @@ const fn disjoint(a: &Spec, b: &Spec) -> bool {
   true
 }
 
-/// Returns whether `from_head` takes the same bytes as `a` and as `b`, wherever they are a valid
-/// `a` and a valid `b`.
+/// Returns whether `from_head` takes the same bytes as `a` and as `b`, given that every `a` is a
+/// `b` of the same extent, which the caller proves.
 ///
-/// It does if both say how long they are, by a size, a `size` rule or a `len` rule, which a valid
-/// value meets. It does too if neither says, and both take as many elements as fit, of the same
-/// size, with the same alignment, from a head of the same remainder.
+/// It does if both say how long they are, by a size, a `size` rule or a `len` rule: a valid value
+/// meets its rule, so the extent that `a` gives is the one that `b` gives. It does too if neither
+/// says, and both take as many elements as fit, of the same size, with the same alignment, from a
+/// head of the same remainder.
 const fn same_extent(a: &Layout, b: &Layout) -> bool {
   const fn told(layout: &Layout) -> bool {
     layout.stride() == 0 || layout.length_rule().is_some()

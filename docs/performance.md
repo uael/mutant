@@ -82,7 +82,8 @@ tcp, 0 headers`). The output of each run is in [`docs/checks-2026-11-21.txt`][re
 The chart and the table are written from the record by `cargo xtask checks-chart`.
 
 <!-- checks:start -->
-![The time of each check by puns relative to the same check by hand: from 0.038 to 1.52 times, below 1 for 22 of the 33 cases](charts/checks.svg)
+![The time of each check by puns relative to the same check by hand: from 0.038 to 1.52 times,
+below 1 for 22 of the 33 cases](charts/checks.svg)
 
 <details>
 <summary>The times in nanoseconds per check, the median of 5 runs</summary>
@@ -163,10 +164,10 @@ pair of types.
 | 200 | 0.75 | 4.19 | 0.77 | 2.24 |
 
 A view enum compares its variants with each other. Where each variant starts with a different
-constant, it tells most of them apart at once, and its build grows about in proportion to its
-number of variants. Where the values of each variant are also values of the next one, the analysis
-compares more pairs, and the build grows as the square of the number of variants, or faster in a
-release build.
+constant, it distinguishes most of them by that constant, and its build grows about in proportion to
+its number of variants. Where the values of each variant are also values of the next one, the
+analysis compares more pairs, and the build grows as the square of the number of variants, or faster
+in a release build.
 
 | Variants | distinct, debug | distinct, release | overlapping, debug | overlapping, release |
 |---:|---:|---:|---:|---:|

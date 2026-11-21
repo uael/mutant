@@ -53,13 +53,13 @@
 //! checked by its tag and its variant, with the same precision. A variant whose fields have no
 //! value is in the layout, with no tag. The lists of fields and variants are the declared ones. A
 //! field of a variant without values is not in the layout, and its entry in the list says so (its
-//! `FIELD` is `None`). No field may hold a self-relative pointer, because a sample of a pointer
-//! cannot be made from nothing. `Option<T>` and `Result<T, E>` are found the same way
+//! `FIELD` is `None`). No field may hold a self-relative pointer, because `puns` cannot make a
+//! sample value of a pointer. `Option<T>` and `Result<T, E>` are found the same way
 //! (`std_enums.rs`).
 //!
-//! # What the experiments rest on
+//! # What the experiments rely on
 //!
-//! The experiments rest on these facts of the compiler, and on one fact of this crate.
+//! The experiments rely on these facts of the compiler, and on one fact of this crate.
 //!
 //! ## The layout is that of the target
 //!
@@ -83,18 +83,18 @@
 //! Const evaluation reports an error when it reads an uninitialized byte, and when it reads the
 //! variant of a value whose tag is not the tag of a variant that has values. This is a behavior of
 //! the compiler, which the Reference does not promise for undefined behavior in `const`. The
-//! compile-fail tests `discover_reads_padding` and `discover_invalid_tag` hold the compiler to it.
+//! compile-fail tests `discover_reads_padding` and `discover_invalid_tag` check this behavior.
 //!
 //! ## The variant is read from the tag
 //!
 //! When const evaluation reads the variant of a value whose tag is the tag of a variant that has
 //! values, it reads the tag alone, and neither reads nor checks the other bytes of the value. Yet
-//! `mem::discriminant` takes a reference to the whole value, and the Reference requires a
-//! reference to point to a valid value. [`try_tag`] relies on this behavior of the compiler: the
-//! bytes of the tag of one variant, moved into the sample of another, make a value whose tag is
-//! valid and whose other bytes may be no valid fields of the variant that the tag tells. The model
-//! check holds the layouts that the experiments find to oracles that do not use them, for its
-//! enums of the `Rust` representation.
+//! `mem::discriminant` takes a reference to the whole value, and the Reference requires a reference
+//! to point to a valid value. [`try_tag`] relies on this behavior of the compiler: the bytes of the
+//! tag of one variant, moved into the sample of another, make a value whose tag is valid and whose
+//! other bytes may be no valid fields of the variant that the tag tells. The model check compares
+//! the layouts that the experiments find with oracles that do not use them, for its enums of the
+//! `Rust` representation.
 //!
 //! ## The discriminant is the index
 //!
@@ -108,7 +108,7 @@
 //! A value made in const evaluation (`E::A(x)`) has its padding uninitialized, because making a
 //! variant writes its fields and its tag and nothing else. So a byte of a fresh sample outside its
 //! fields that can be read is a byte of the tag, which the compile-fail test
-//! `discover_reads_padding` holds.
+//! `discover_reads_padding` checks.
 //!
 //! ## The valid values of a layout are valid for `rustc`
 //!
@@ -286,12 +286,13 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
   // SAFETY: The reference made from `ptr` must meet the requirements of a reference [1]:
   // - It is not null and aligned for `E`, by contract on the caller.
   // - It is not dangling, because `ptr` is valid for reads of an `E`, by contract on the caller.
-  // - It points to a valid `E` at run time, by contract on the caller. At compile time, the bytes
-  //   at `ptr` may be no `E`, which is valid only if its tag is the tag of a variant and the
-  //   fields of that variant are valid [2]. `rustc` then reports an error if the tag is
-  //   uninitialized or not the tag of a variant that has values, and otherwise reads the variant
-  //   from the tag alone, without reading the fields (`discover`, module documentation). The
-  //   Reference promises neither.
+  // - It points to a valid `E` at run time, by contract on the caller. At compile time, this is not
+  //   established: the bytes at `ptr` may be no `E`, which is valid only if its tag is the tag of a
+  //   variant and the fields of that variant are valid [2]. The call then relies on two behaviors
+  //   of `rustc` that the Reference does not promise, and that the crate documentation discloses
+  //   (section Soundness). `rustc` reports an error if the tag is uninitialized or not the tag of a
+  //   variant that has values, and otherwise reads the variant from the tag alone, without reading
+  //   the fields (`discover`, module documentation).
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
   //
@@ -590,9 +591,10 @@ const unsafe fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u
   assert!(offset + len <= size_of::<E>() && len <= 16);
   // SAFETY: `offset + len` is at most the size of an `E`, and `len` at most 16, which is asserted
   // above. So `add(offset)` stays within `sample`, and the `len` bytes from there are valid for
-  // reads. `load` also requires them to be initialized. By contract on the caller, the call is
-  // evaluated at compile time, where reading an uninitialized byte is an error rather than a
-  // read.
+  // reads. `load` also requires them to be initialized, which is not established. By contract on
+  // the caller, the call is evaluated at compile time, where `rustc` reports an error instead of
+  // reading an uninitialized byte. No documentation promises this behavior, which the crate
+  // documentation discloses (section Soundness).
   unsafe { load(sample.as_ptr().cast::<u8>().add(offset), len, Endian::NATIVE) }
 }
 
@@ -639,12 +641,10 @@ pub const unsafe fn discover<E, const V: usize>(
       i += 1;
     }
     if inhabited {
-      // SAFETY: `samples[v]` is the sample of the variant `v`, which has values, as `discover`
-      // documents. `Layout::sample` makes it a valid `E`, so its tag is initialized and is the
-      // tag of a variant, and the fields of that variant are valid. `as_ptr` of a
-      // `MaybeUninit<E>` in a slice is not null, is aligned for `E`, and is valid for reads of
-      // one. These are the requirements of `variant`. With other samples, the tag may be invalid, which `variant` allows only in a
-      // call evaluated in a constant. By contract on the caller of `discover`, this call is.
+      // SAFETY: `as_ptr` of a `MaybeUninit<E>` in a slice is not null, is aligned for `E`, and is
+      // valid for reads of one. By contract on the caller of `discover`, this call is evaluated
+      // at compile time, so the sample need not be a valid `E`. These are the requirements of
+      // `variant`.
       assert!(unsafe { variant(samples[v].as_ptr()) } == v, "the discriminant is not the index");
       let mut i = 0;
       while i < these.len() {

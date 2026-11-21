@@ -210,12 +210,13 @@ pub const unsafe fn field<T: ?Sized + Pun, F: ?Sized + Pun>(
 pub const fn is_aligned(addr: *const u8, align: usize) -> bool {
   // SAFETY: A pointer to a sized type has the size of a `usize` (see `from_raw_parts`). So the
   // bytes of `addr`, which are initialized, are a `usize` of the same size (see `Cast`). This
-  // reinterprets a pointer as an integer, which `core` says to avoid at run time [1], since the
-  // rules of memory for it are not settled. The quoted text does not make it undefined behavior
-  // there, but no documentation promises that it reads the address either, so `puns` relies on it,
-  // as its section Soundness discloses. The integer is never made into a pointer again. In const
-  // evaluation, it is undefined behavior for a pointer that was not made from an integer, and
-  // `rustc` stops the evaluation [1]: such a call evaluated at compile time does not compile.
+  // reinterprets a pointer as an integer, which `core` says to avoid at run time [1], since its
+  // semantics are not settled. The quoted text does not make it undefined behavior there, but no
+  // documentation promises that it reads the address either, so `puns` relies on it, as its section
+  // Soundness discloses. The integer is never made into a pointer again. In const evaluation,
+  // `core` requires the pointer to have been made from an integer [1], which is not established.
+  // `core` also says that using the integer stops the evaluation [1], so such a call evaluated at
+  // compile time does not compile.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.transmute.html#transmutation-between-pointers-and-integers:
   //

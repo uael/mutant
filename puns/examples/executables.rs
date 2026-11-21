@@ -15,11 +15,11 @@
 //! | ELF entry sizes are the sizes of the types     | `assert(e_phentsize == size_of::<P>())`  |
 //! | an alignment that is a power of two            | `assert(p_align & (p_align - 1) == 0)`   |
 //! | PE headers, where the DOS header says          | `regions(stub = e_lfanew - 64, ..)`      |
-//! | a PE magic at a distance tells the kind        | `assert(le(e_lfanew + 24, 2) == MAGIC)`  |
+//! | a PE magic at a distance gives the kind        | `assert(le(e_lfanew + 24, 2) == MAGIC)`  |
 //! | PE data directories and sections               | `regions(sections: [..] = .., ..)`       |
 //! | counted Mach-O commands fill `sizeofcmds`      | a `walk` of an offset and a count        |
 //! | Mach-O sections, counted by their segment      | `len = nsects`                           |
-//! | Java pool entries, of a size their tag tells   | a `walk`, a table of sizes in a constant |
+//! | Java pool entries, of a size their tag gives   | a `walk`, a table of sizes in a constant |
 //! | what follows the Java pool, from its end       | `be(at + 2, 2) < constant_pool_count`    |
 //! | WebAssembly sections, of a size in LEB128      | `size = 1 + leb128_len(1) + leb128(1)`   |
 //! | WebAssembly sections, in order                 | a walk, ranks in a constant              |
@@ -33,7 +33,7 @@
 //!   consecutive regions. Other layouts are valid ELF, but these types reject them. Code that
 //!   uses the types must follow the offsets to the segments and the sections. `main` reads only
 //!   the regions.
-//! - The checksum of a PE image and its import and export tables are not views of the bytes as
+//! - The checksum of a PE image and its import and export tables cannot be read from the bytes as
 //!   they are. The tables hold addresses relative to where the sections are loaded, not to the
 //!   file.
 //! - The constant pool of a Java class file is walked, but its fields and methods are not
@@ -204,12 +204,12 @@ pub enum AnyElf<'a> {
 
 /// A PE file: a DOS header, the DOS stub, then the headers `O`.
 ///
-/// The field `e_lfanew` of the DOS header, at least 64 and a multiple of 8, tells where the headers
-/// are. The magic of the optional header is `MAGIC`, which tells which optional header `O` holds.
+/// The field `e_lfanew` of the DOS header, at least 64 and a multiple of 8, says where the headers
+/// are. The magic of the optional header is `MAGIC`, which says which optional header `O` holds.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(e_lfanew >= 64 && e_lfanew % 8 == 0))]
-// The magic of the optional header, at a distance, tells which `O` this is.
+// The magic of the optional header, at a distance, says which `O` this is.
 #[pun(assert(le(e_lfanew + 24, 2) == MAGIC))]
 pub struct Pe<O: ?Sized, const MAGIC: u16> {
   pub e_magic: u16lec<0x5a4d>,
@@ -356,7 +356,7 @@ pub enum AnyPe<'a> {
 
 /// A Mach-O file of 64 bits, little-endian.
 ///
-/// Its load commands fill `sizeofcmds` bytes, and there are as many as `ncmds` counts. The size
+/// Its load commands fill `sizeofcmds` bytes, and their number is `ncmds`. The size
 /// of each command is a multiple of 8, and at least 8.
 #[derive(Pun)]
 #[repr(C)]
@@ -794,7 +794,7 @@ pub fn main() {
   bytes[40] = 0xf0;
   assert_eq!(AnyElf::from_bytes(&bytes).err(), Some(Error::Validity));
 
-  // ---- PE: headers where the DOS header says, an optional header of the kind its magic tells.
+  // ---- PE: headers where the DOS header says, an optional header of the kind its magic gives.
   let Ok(AnyPe::Pe64(pe)) = AnyPe::from_bytes(&PE64) else { panic!() };
   assert_eq!((pe.e_lfanew.get(), pe.stub().len()), (0x80, 64));
   let headers = pe.headers().unwrap();

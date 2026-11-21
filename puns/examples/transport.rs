@@ -41,11 +41,11 @@
 //! - The option numbers of CoAP are sums of the deltas before them. This is state carried along
 //!   a sequence, which the code that reads the options carries.
 //! - A TLS handshake message can span records, and records are encrypted after the handshake.
-//!   Reassembly and decryption are not views of the bytes. Typed regions are checked when they
-//!   are read, so the cipher suites of a ClientHello are checked only when they are read.
-//! - What follows a QUIC long header is protected (header protection, AEAD), so it is not a view.
-//!   HTTP/2 header blocks are HPACK, with Huffman codes and indexes into a table, so they are not a
-//!   view either.
+//!   Reassembly and decryption make copies, not views of the bytes. Typed regions are checked when
+//!   they are read, so the cipher suites of a ClientHello are checked only when they are read.
+//! - What follows a QUIC long header is protected (header protection, AEAD), so reading it makes
+//!   a copy. HTTP/2 header blocks are HPACK, with Huffman codes and indexes into a table, so
+//!   decoding them makes a copy too.
 //! - WebSocket payloads from a client are masked. Unmasking is a transformation, which the code
 //!   that reads the frames does.
 //!
@@ -566,8 +566,8 @@ pub struct Connect {
 }))]
 #[pun(assert(code != 0 || size_of_val(self) == 4))]
 // The options are well formed, up to the end or to a payload marker, which a payload follows.
-// Each nibble of the head of an option is a value (0 to 12), or tells 1 (13) or 2 (14) more
-// bytes; 15 is not one.
+// Each nibble of the head of an option is a value from 0 to 12, or 13 or 14 for 1 or 2 more
+// bytes. A nibble of 15 is not allowed.
 #[pun(assert({
   let end = walk(
     4 + (version_type_tkl & 15),
@@ -945,7 +945,7 @@ pub fn main() {
   long[2] = 0x80;
   assert!(from_bytes::<ServerFrame>(&long).is_err());
 
-  // ---- SSH: a packet of a block size and a MAC size that the bytes do not tell.
+  // ---- SSH: a packet of a block size and a MAC size that the bytes do not give.
   let (packet, rest) = from_head::<SshPacket<8, 32>>(&KEXINIT).unwrap();
   assert_eq!(
     (packet.payload().len(), packet.padding().len(), packet.mac(), rest.len()),
@@ -1067,7 +1067,7 @@ pub fn main() {
     bytes[at] = value;
     assert_eq!(try_pun_ref::<_, Coap>(&bytes[..]).err(), Some(Error::Validity));
   }
-  // An option that runs past the message.
+  // An option that extends beyond the message.
   let mut bytes = GET;
   bytes[5] = 0xbc;
   assert_eq!(try_pun_ref::<_, Coap>(&bytes[..]).err(), Some(Error::Validity));

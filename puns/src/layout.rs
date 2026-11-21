@@ -30,12 +30,8 @@
 //!   ranges. A scalar that restricts its values is 1 to 16 bytes, while one that accepts any bytes
 //!   may have any size. `bool` is `0..=1`, `char` is two ranges, and `NonZero` is `1..`. An enum
 //!   without fields is the values of its variants, read from the compiler whatever its `repr`. A
-//!   scalar has two sets of values. The values it *accepts* are those that a value made of it must
-//!   have, and the values it is *known* to hold are those that every value of it has. The two are
-//!   the same, with two exceptions. A field restricted by `#[pun(valid(..))]` accepts fewer values
-//!   than it is known to hold ([Guarantees and requirements](crate#guarantees-and-requirements)),
-//!   and a scalar made by [`Spec::maybe_uninit`] accepts some values but is known to hold anything,
-//!   padding included.
+//!   scalar has two sets of values, the values that it *accepts* and the values that it is *known*
+//!   to hold, which [`Spec`] defines.
 //! - A **struct** has its fields ([`Field`]) at their offsets, which come from the compiler for
 //!   any `repr`. The bytes that no field covers are padding. A struct may have rules ([`Rule`]).
 //! - An **enum** with fields ([`Enum`]) has a tag, a scalar at a fixed place, and each [`Variant`]
@@ -64,8 +60,8 @@
 //! - A **self-relative pointer** ([`Pointer`]) is an offset in a byte order. What it aims at is
 //!   not in the layout.
 //!
-//! A layout is an automaton in a compact, hierarchical form, where a position in it is a state. The
-//! analysis walks the layouts of the source and the target together, position by position.
+//! A layout is an automaton written as a tree, where a position in it is a state. The analysis
+//! walks the layouts of the source and the target together, position by position.
 //!
 //! [RFC 2195]: https://rust-lang.github.io/rfcs/2195-really-tagged-unions.html
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
@@ -145,8 +141,11 @@ pub(crate) enum Valid {
 /// A `Spec` holds two sets of values. The values it *accepts* are what a target requires, so a pun
 /// makes a value of the scalar only from one of these. The values it is *known* to hold are what
 /// every value of the type guarantees, whatever safe code does, so a source proves these values,
-/// and no others. Both sets are the same, except for a field restricted by `#[pun(valid(..))]`
-/// ([`Layout::restricted`]) and for a scalar that may be uninitialized ([`Spec::maybe_uninit`]).
+/// and no others. Both sets are the same, with two exceptions. A field restricted by
+/// `#[pun(valid(..))]` ([`Layout::restricted`]) accepts fewer values than it is known to hold
+/// ([Guarantees and requirements](crate#guarantees-and-requirements)). A scalar that may be
+/// uninitialized ([`Spec::maybe_uninit`]) accepts some values, but is known to hold anything,
+/// padding included.
 ///
 /// # Examples
 ///
@@ -328,8 +327,8 @@ impl Spec {
   ///
   /// # Panics
   ///
-  /// Panics if `self` accepts any initialized bytes, or uninitialized bytes, since such a scalar is
-  /// [`Spec::uninit`].
+  /// Panics if `self` does not restrict its values: if it accepts any initialized bytes, or
+  /// uninitialized bytes.
   ///
   /// # Examples
   ///
@@ -1251,11 +1250,10 @@ impl Pointer {
   /// targets hold is related through the types, by `deep.rs`.
   ///
   /// Both pointers must have the same scheme, and offsets of the same width and byte order, so that
-  /// they find the same target in the same buffer. They must also aim at the same kind of target.
-  /// One value is reinterpreted as a value that is no larger and needs no more alignment. A
-  /// sequence is reinterpreted as a sequence of elements of the same size, since its length is a
-  /// number of elements, with a declared alignment that is no greater. Text is reinterpreted as
-  /// text.
+  /// they find the same target in the same buffer. They must also have the same kind of aim. One
+  /// value is reinterpreted as a value that is no larger and needs no more alignment. A sequence is
+  /// reinterpreted as a sequence of elements of the same size, since its length is a number of
+  /// elements, with a declared alignment that is no greater. Text is reinterpreted as text.
   pub(crate) const fn reads_as(&self, to: &Pointer) -> Option<bool> {
     let fits = str_equals(self.scheme, to.scheme)
       && self.width == to.width
@@ -2055,8 +2053,10 @@ const unsafe fn none_is_zeros<P>() -> bool {
   while i < size_of::<P>() {
     // SAFETY: `i < size_of::<P>()`, which is the size of `Option<P>`, so `add(i)` stays within
     // `none`, and the byte is valid for reads and aligned. A read of a `u8` also requires the byte
-    // to be initialized. The caller evaluates this function at compile time, where reading an
-    // uninitialized byte is an error rather than a read.
+    // to be initialized, which is not established. By contract on the caller, the call is evaluated
+    // at compile time, where `rustc` reports an error instead of reading an uninitialized byte. No
+    // documentation promises this behavior, which the crate documentation discloses (section
+    // Soundness).
     if unsafe { *none.as_ptr().cast::<u8>().add(i) } != 0 {
       return false;
     }
@@ -2104,7 +2104,7 @@ impl Layout {
   /// only associated functions of these types, and of `Layout` and `Spec`, which the traits it
   /// implements name. It also writes this constant with the same paths, as a tuple of `fn` types,
   /// so a path that names another type does not compile, because a `fn` type is not a path, and
-  /// nothing can stand in for it.
+  /// nothing can replace it.
   #[doc(hidden)]
   #[expect(
     clippy::type_complexity,
@@ -2156,8 +2156,8 @@ impl Layout {
   ///
   /// # Panics
   ///
-  /// Panics if `T` has no value, or holds a self-relative pointer, since no pointer is made from
-  /// nothing.
+  /// Panics if `T` has no value, or holds a self-relative pointer, since `puns` cannot make a
+  /// sample value of a pointer.
   #[doc(hidden)]
   #[must_use]
   pub const fn sample<T: crate::Pun>() -> mem::MaybeUninit<T> {
@@ -2914,12 +2914,11 @@ impl Layout {
     }
     match tail {
       None => {
-        // SAFETY: This satisfies the safety contracts of `size_of_val_raw` and
-        // `align_of_val_raw` [1], which are the same. If `T` is `Sized`, both are always safe to
-        // call. Otherwise, by contract on the caller, the tail of `T` is a slice or a `str`, and
-        // `probe` is `T::PROBE`, whose tail has `PROBE_LEN` elements. A value of `T` whose tail
-        // has 8 elements fits in an `isize`, by contract on the caller, and so does one of
-        // `PROBE_LEN` (3) elements.
+        // SAFETY: This satisfies the safety contracts of `size_of_val_raw` and `align_of_val_raw`
+        // [1], which are the same. If `T` is `Sized`, both are always safe to call. Otherwise, by
+        // contract on the caller, the tail of `T` is a slice or a `str`, and `probe` is a null
+        // pointer to a `T` whose tail has `PROBE_LEN` (3) elements. A value of `T` whose tail has 8
+        // elements fits in an `isize`, by contract on the caller, and so does one of 3 elements.
         //
         // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/fn.size_of_val_raw.html:
         //
@@ -5030,12 +5029,13 @@ impl Op {
 
   /// Returns the operation that pushes the value of the field of type `T` at `offset`.
   ///
-  /// `T` must be an unsigned integer, or a struct whose only field with a size is one
-  /// ([`Spec::not_a_number`] says what is not). The operation reads it in its byte order.
+  /// `T` must be an unsigned integer, or a sized struct whose only field with a size is one and is
+  /// as large as the struct ([`Spec::not_a_number`] says what is not an integer). The operation
+  /// reads it in its byte order.
   ///
   /// # Panics
   ///
-  /// Panics if `T` is neither an unsigned integer nor a struct that holds only one.
+  /// Panics if `T` is neither an unsigned integer nor such a struct.
   ///
   /// # Examples
   ///

@@ -38,14 +38,14 @@ use crate::{Pun, layout::Pointer};
 ///    compiler does not know of.
 /// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or bytes
 ///    it aims at, depend only on its scheme, the width and the byte order of its offset, the kind
-///    of what it aims at ([`Aim`](crate::layout::Aim): one value, a sequence, or text), its
-///    address, the bytes of its offset, and bytes of its buffer (such as a length next to the
-///    target). They never depend on the type that holds the pointer, on its `Target`, on its
-///    alignment, or on whether it may be null. Two pointers of the same scheme, offset and kind, at
-///    the same address with the same bytes, aim at the same place. A scheme is a name that the
-///    declaring crate owns, such as its own name. The crate declares no type of the scheme of
-///    another crate unless that crate allows it, and changes the way to the target only with the
-///    name.
+///    of its aim ([`Aim`](crate::layout::Aim): one value, a sequence, or text), its address, the
+///    bytes of its offset, and bytes of its buffer (such as a length next to the target). They
+///    never depend on the type that holds the pointer, on its `Target`, on its alignment, or on
+///    whether it may be null. Two pointers of the same scheme, offset and kind, at the same address
+///    with the same bytes, aim at the same place. A scheme is a name that the declaring crate owns,
+///    such as its own name. The crate declares no type of the scheme of another crate unless that
+///    crate allows it, and gives a scheme a new name whenever it changes how a pointer of that
+///    scheme finds its target.
 /// 3. **What it aims at is there, and valid**, in the same allocation, for as long as a shared
 ///    reference to the pointer lives. For one value ([`Pointer::one`]), it is a [valid] `Target` at
 ///    an address that is a multiple of the alignment of `Target`. For a sequence
@@ -54,13 +54,12 @@ use crate::{Pun, layout::Pointer};
 ///    alignment that `POINTER` declares for the sequence (the `align` of [`Pointer::sequence`]).
 ///    For text ([`Pointer::text`]), it is as many bytes of UTF-8 as the scheme says. Every byte of
 ///    it that `Target` requires to be initialized is initialized.
-/// 4. **What it aims at is its own.** While a shared reference to a pointer lives, nothing writes
-///    to what it aims at, nor makes a `&mut` to any of it. It is borrowed with the pointer, and
-///    read through what `view_ref` makes of it.
+/// 4. **What it aims at is its own**, borrowed with the pointer. While a shared reference to a
+///    pointer lives, nothing writes to what it aims at, nor makes a `&mut` to any of it. It is read
+///    through what `view_ref` makes of it.
 /// 5. **Null.** If `POINTER` is made with [`Pointer::or_null`], a value whose bytes are all zero
-///    aims at nothing, and is not followed. Any other value is a pointer as a pointer of the same
-///    scheme that may not be null would be. The way to it, what is there, and that it is its own
-///    are as the three requirements above say.
+///    aims at nothing, and is not followed. Any other value is a pointer, and meets requirements 2,
+///    3 and 4 as a pointer of the same scheme that may not be null does.
 /// 6. **The target is the type.** `Target` is the type of the value aimed at, of an element for a
 ///    sequence, and `()` for text. `POINTER` is made for it, by `Pointer::one::<Target>`,
 ///    `Pointer::sequence::<Target>` or `Pointer::text`. `self_relative!` asserts the size and the
@@ -108,10 +107,17 @@ use crate::{Pun, layout::Pointer};
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: A `Rel<T>` is its `i32`, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. Its scheme is its own, and is the way to the target.
-/// // The only one of this example is made where it aims at a valid `T` (below), and nothing
-/// // writes to the buffer while it is read. Nothing in this example relies on more.
+/// // SAFETY: Each requirement of `SelfRelative` holds:
+/// // - The type is its offset: `Rel<T>` is `repr(transparent)` over an `i32`. Every byte of an
+/// //   `i32` is initialized, none is in an `UnsafeCell`, and every `i32` is an offset.
+/// // - The scheme is the way to the target: a `Rel` aims at its own address plus its offset,
+/// //   whatever its `T`. Only this example declares a type of this scheme.
+/// // - What it aims at is there, valid, and its own: the only pointer that this example makes is
+/// //   the `Rel<bool>` of `old` (below). It aims at a valid `bool` of the same buffer, and a
+/// //   `bool` is aligned at any address. Nothing writes to the buffer while `old` is borrowed.
+/// // - Null: `POINTER` is not made with `or_null`.
+/// // - The target is the type: `POINTER` is made for `Target`, by `Pointer::one::<T>`.
+/// // - Nothing in this example follows a `Rel`, so nothing relies on more.
 /// unsafe impl<T: Pun> SelfRelative for Rel<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer =
@@ -159,13 +165,14 @@ use crate::{Pun, layout::Pointer};
 /// assert_eq!(new.state, 1);
 /// ```
 ///
-/// Not every `New`, nor what it points to, is an `Old`:
+/// Not every `New`, nor what its pointer aims at, is an `Old`:
 ///
 /// ```compile_fail,E0080
 /// # use core::marker::PhantomData;
 /// # use puns::{Pun, SelfRelative, layout::{Endian, Pointer}};
 /// # #[repr(transparent)]
 /// # pub struct Rel<T> { offset: i32, target: PhantomData<T> }
+/// # // SAFETY: Each requirement holds as in the example above. This example makes no `Rel`.
 /// # unsafe impl<T: Pun> SelfRelative for Rel<T> {
 /// #   type Target = T;
 /// #   const POINTER: Pointer = Pointer::one::<T>("rel, an example", 4, Endian::NATIVE);
@@ -194,35 +201,32 @@ pub unsafe trait SelfRelative: Sized {
 /// Call `self_relative!(Type)` for a type without generic parameters, and `self_relative!(impl[T:
 /// Bound, ..] Type<T, ..>)` with the generic parameters of its implementation of `SelfRelative`.
 /// The macro is safe to call, since it writes the implementation of `Pun` only from what
-/// `SelfRelative` says of the type, and requires `Type: SelfRelative`, whose `unsafe impl` carries
-/// the promise. Do not implement `Pun` for a pointer type by hand, because the items of `Pun`
-/// belong to `puns` and may change, while the macro is expanded with the version of `puns` that
-/// defines them.
+/// `SelfRelative` says of the type, and requires `Type: SelfRelative`, whose `unsafe impl` promises
+/// it. Do not implement `Pun` for a pointer type by hand, because the items of `Pun` belong to
+/// `puns` and may change, while the macro is expanded with the version of `puns` that defines them.
 ///
 /// The macro is not a blanket implementation of `Pun` for every `SelfRelative` type. That
 /// implementation would overlap the one for every [`Scalar`](crate::Scalar), because coherence
 /// cannot tell that no type is both.
 ///
-/// `Pun` has a hidden associated constant, the layout of `Option<Self>` if `Self` gives it, which
-/// is `None` by default, so that the layout of `Option` of another type is found by experiment, as
-/// for any enum of the `Rust` representation. This macro gives it as the same pointer, which may be
-/// null, after a check, made where `Option` of the pointer is used, that `Option<Type>` has the
-/// size of `Type`, and that `None`, read in const evaluation, is all zero bytes. If so, `rustc` has
-/// put `None` in a niche of the bytes of the pointer, which are all of its offset and initialized
-/// ("The type is its offset" in [`SelfRelative`]), and that niche is zeros. `Some(p)` is then the
-/// bytes of `p`, which are not all zero, so "Null" holds for `Option<Type>`.
+/// `Option<Type>` is `Pun` too. It is the pointer `POINTER.or_null()`, whose value of all zero
+/// bytes is `None`. This needs an offset with a niche at zero (a `NonZero`). With another offset,
+/// `Option<Type>` is larger than `Type`, and a use of it does not compile.
 ///
-/// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
-/// zero bytes is `None`. This holds if the offset has a niche at zero (a `NonZero`). An offset
-/// without such a niche makes `Option<Type>` larger than `Type`, so a use of `Option<Type>` does
-/// not compile.
+/// Where `Option<Type>` is used, `puns` checks that it has the size of `Type`, and that `None`,
+/// read in const evaluation, is all zero bytes. The bytes of the pointer are all of its offset, and
+/// initialized ("The type is its offset" in [`SelfRelative`]). So `rustc` has put `None` in a niche
+/// of the offset, and that niche is zero. `Some(p)` then has the bytes of `p`, which are not all
+/// zero, so "Null" holds for `Option<Type>`.
 ///
-/// That `None` is all zero bytes is what `rustc` does, and Rust documents it for a
-/// `repr(transparent)` struct around a `NonZero` ("Representation" in [`core::option`]). Declare
-/// the pointer type so, for `Option` of it to be the same pointer with every compiler. `puns`
-/// cannot see the `repr` of the type, so it takes `Option` of it as the same pointer, after the
-/// check above, with or without the `unstable` feature (see
-/// [`layout::UNSTABLE`](crate::layout::UNSTABLE)).
+/// Rust documents this layout only for a `repr(transparent)` struct around a `NonZero`
+/// ("Representation" in [`core::option`]). Declare the pointer type that way, so that every
+/// compiler gives it. `puns` cannot see the `repr` of the type, so it relies on the check above,
+/// with or without the `unstable` feature (see [`layout::UNSTABLE`](crate::layout::UNSTABLE)).
+///
+/// The macro states this through a hidden associated constant of `Pun`, the layout of
+/// `Option<Self>`. For any other type the constant is `None`, and the layout of its `Option` is
+/// found by experiment, as for any enum of the `Rust` representation.
 ///
 /// # Compile-time errors
 ///
@@ -269,9 +273,17 @@ pub unsafe trait SelfRelative: Sized {
 ///   target: PhantomData<T>,
 /// }
 ///
-/// // SAFETY: A `Ptr<T>` is its offset, the distance from its own address to a `T` of the same
-/// // buffer, at an address aligned for it. Its scheme is its own. No `Ptr<T>` that is followed
-/// // is made in this example.
+/// // SAFETY: Each requirement of `SelfRelative` holds:
+/// // - The type is its offset: `Ptr<T>` is `repr(transparent)` over a `NonZero<i32>`. Every byte
+/// //   of it is initialized, none is in an `UnsafeCell`, and zero is the only `i32` that is not
+/// //   an offset.
+/// // - The scheme is the way to the target: a `Ptr` aims at its own address plus its offset,
+/// //   whatever its `T`. Only this example declares a type of this scheme.
+/// // - What it aims at is there, valid, and its own: this example makes no `Ptr`, only a `None`,
+/// //   which is no pointer.
+/// // - Null: `POINTER` is not made with `or_null`.
+/// // - The target is the type: `POINTER` is made for `Target`, by `Pointer::one::<T>`.
+/// // - Nothing in this example follows a `Ptr`, so nothing relies on more.
 /// unsafe impl<T: Pun> SelfRelative for Ptr<T> {
 ///   type Target = T;
 ///   const POINTER: Pointer =
