@@ -31,19 +31,13 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 0]), Ok(&[Switch::On, Switch::Of
 assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity));
 ```
 
-`bools` borrows `switches`, and nothing is copied. Each such conversion is a *pun*, of one of three
-kinds:
-
-- **Proven**: `puns` can show that every value of the source is a valid value of the target, of
-  a size the target allows, and, for a reference, at an address aligned for the target. `pun` and
-  `pun_ref` accept only proven puns, and add no check at run time.
-- **Checked**: some values of the source may be invalid for the target, or its length or its
-  address may not suit the target. `try_pun`, `from_bytes` and the other functions whose names
-  start with `try_` or `from_` check at run time what `puns` could not prove, and return a
-  `Result`. Given a checked pun, `pun` and `pun_ref` do not compile, and the error suggests a
-  `try_` function.
-- **Refused**: the pun can never be valid, or it would read padding, or `puns` can neither prove
-  nor check what it needs. No function accepts it.
+`bools` borrows `switches`, and nothing is copied. Each such conversion is a *pun*. It is
+*proven* when every value of the source is a valid value of the target, of a size the target
+allows, and, for a reference, at an address aligned for it: `pun` and `pun_ref` accept only these,
+and add no check at run time. It is *checked* when some of these may not hold: `try_pun`,
+`from_bytes` and the other `try_` and `from_` functions check them at run time, and return a
+`Result`. It is *refused* when it can never be valid, would read padding, or needs what `puns` can
+neither prove nor check.
 
 If `Switch` gained a variant with the value 2, the call to `pun_ref` above would stop compiling,
 with an error that starts with:
@@ -54,14 +48,7 @@ Use a `try_*` function to check them at run time.
 This is at byte 0 of the target.
 ```
 
-`try_pun_ref` would then check each element. `cargo build` reports such errors, but `cargo check`
-and editors miss most of them.
-
-`puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
-structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun` and `try_pun`
-take values of `Copy` types; most other functions take references. A function that returns a
-`&mut` also needs every value of the target to be valid for the source, since you can write any of
-them through it.
+`cargo build` reports these errors. `cargo check` and editors miss most of them.
 
 ```sh
 cargo add puns
@@ -70,16 +57,36 @@ cargo add puns
 `puns` is `no_std`, never allocates, and needs Rust 1.99 or later ([why][msrv]). It is young: the
 first release was in November 2026, and the API may change before 1.0.
 
-## When to use it
+## What it reads
 
-Use `puns` to read data in place, such as network packets, file headers and records, or to read a
-value of one of your types as another. It pays off when the format stores its own lengths and
-checksums, or when the target type accepts every value of the source, as in the examples below.
-It also goes the other way: `as_bytes` reads a value as its bytes, and `from_bytes_mut` gives a
-`&mut` to a valid header in a buffer, to change its fields in place.
+`puns` is for data read in place: network packets, file headers, records, or a value of one of
+your types read as another. To decode data into owned values, or to transform it as you read it,
+consider [`binrw`][binrw], [`deku`][deku] or [`nom`][nom] instead.
 
-To decode data into owned values, or to transform data as you read it, consider a declarative
-crate like [`binrw`][binrw] or [`deku`][deku], or a parser like [`nom`][nom].
+- **Plain data.** Integers, floats, `bool`, `char`, arrays, slices and `str`, and the types that
+  derive `Pun`, such as `repr(C)` structs, which may end with a slice, enums with an integer
+  `repr`, with or without fields, and `repr(C)` unions.
+- **Fixed byte order.** [`puns::num`][num] has numbers of each byte order with an alignment of 1,
+  like `u16be`, constants like `u8c<7>`, and ranges like `u8in<0, 0x7f>`, which is ASCII.
+- **Rules.** The size of a value, the length of its last slice, and conditions on its fields, as
+  expressions over its unsigned integer fields. They can call checksums like `crc32` and `sum16`,
+  read variable-length integers, and `walk` a chain of headers.
+- **Bit fields and regions.** `get` generates a getter for the bits of a field. `regions` splits
+  the last field into named parts whose sizes are in the data.
+- **Views.** For data that is one thing or another, an enum of references like
+  `enum Frame<'a> { Ipv4(&'a Ipv4), Arp(&'a Arp), Other(&'a [u8]) }` gets a `from_bytes` that
+  returns the first variant the bytes match. It checks each variant at most once.
+- **Parts.** `from_head` reads the front of the bytes and returns the rest, and `from_tail` reads
+  the back. `head` and `tail` do the same for typed values. Like `pun` and `try_pun`, they take
+  values of `Copy` types; the other functions take references.
+- **Both directions.** `as_bytes` reads a value as its bytes. `from_bytes_mut` and `pun_mut`
+  return a `&mut`, which also needs every value of the target to be valid for the source, since
+  you can write any of them through it.
+- **Constants.** `from_bytes`, `from_head` and `from_tail` are `const fn`, so bytes in a `const` are
+  checked when you build. Since `unwrap` is not `const`, [match on the result][const] there.
+
+The [reference][api] has a table of the functions, and the [documentation of the derive][derive]
+lists its attributes and the functions of rules.
 
 ## Reading a packet
 
@@ -126,19 +133,13 @@ let wrong = [1, 64, 0, 3, 0, 0, 0, 0, b'a', b'b', b'c'];
 assert_eq!(puns::from_head::<Packet>(&wrong).err(), Some(puns::Error::Validity));
 ```
 
-`u16be` and `u32be` are big-endian integers with an alignment of 1, so `Packet` has no padding,
-and can be read at any address. A rule is an expression over the unsigned integer fields, with
-operators, constants, and functions that the derive macro provides, like `crc32`, and `walk` to
-loop over a chain of headers. A rule cannot call your own functions on the values of fields, and
-`puns` does not prove a rule from a different rule that implies it. The
-[documentation of the derive][derive] lists the functions, and the other attributes, such as bit
-fields and regions whose sizes are in the data.
+`Packet` has no padding, because `u16be` and `u32be` have an alignment of 1, so it can be read at
+any address. A rule cannot call your own functions on the values of fields, and `puns` does not
+prove a rule from a different rule that implies it. The error says that the bytes are invalid,
+but not which field or rule.
 
 A rule is checked by the function that reads the bytes, and nothing keeps it true afterwards.
 Through a `&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
-
-`from_bytes`, `from_head` and `from_tail` are `const fn`, so bytes in a `const` are checked when
-you build. Since `unwrap` is not `const`, [match on the result][const] there.
 
 ## Reading an old version of a format
 
@@ -209,9 +210,8 @@ case of the page, a slice of an enum whose layout needs the `unstable` feature, 
 long.
 
 Comparing the types takes build time: about 17 ms of a debug build for each struct read from
-bytes, on average over 100 of them. An enum of references that returns the first variant that
-the bytes match, a *view enum*, takes longer: with 64 overlapping variants, 25 s in a release
-build.
+bytes, on average over 100 of them. A view takes longer, since its build grows as the square of
+the number of its variants: with 64 variants that overlap, 25 s in a release build.
 
 ## Caveats
 
@@ -227,8 +227,8 @@ build.
   another integer type for an enum. Without a `repr`, the layout may change with the compiler, and
   `puns` refuses what depends on it, unless you turn on the [`unstable` feature][unstable] (which
   works on stable Rust). `repr(C)` fixes the order of the fields, not the byte order of a `u32` or
-  the alignment of a `u64`, which differ between targets. For data that leaves the program, use
-  the integers of [`puns::num`][num], like `u32be`.
+  the alignment of a `u64`, which differ between targets: for data that leaves the program, use
+  the numbers of `puns::num`.
 - **Deriving `Pun` bypasses your constructors.** Any code can then make a value of the type from
   bytes, and read or write its fields, private ones included. Do not derive `Pun` on a type with a
   private invariant ([details][deriving]).
@@ -241,29 +241,28 @@ build.
 
 ## Safety and testing
 
-Code that uses `puns` can keep `#![forbid(unsafe_code)]`, deriving `Pun` included. The `unsafe`
-code is in `puns` and in what its derive generates, and the analysis of the types decides when it
-runs. The [Soundness] section of the documentation lists
-what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states. One is
-the representation of a pointer to an unsized type, which `puns` checks at compile time for each
-type. The other is that the compiler evaluates the constants of every function that compiled code
-names, even one that is never called. Only `view_ref` and `try_view_ref`, which read values that
-hold pointers, rely on it, and tests check it in debug and optimized builds.
+Code that uses `puns` can keep `#![forbid(unsafe_code)]`, deriving `Pun` included. The `unsafe` code
+is in `puns` and in what its derive generates, and the analysis of the types decides when it runs.
+The [Soundness] section of the documentation lists what `puns` relies on. Two of these are behaviors
+of `rustc` that no documentation states. One is the representation of a pointer to an unsized type,
+which `puns` checks at compile time for each type. The other is that the compiler evaluates the
+constants of every function that compiled code names, even one that is never called. Only `view_ref`
+and `try_view_ref`, which read values that hold pointers, rely on it, and tests check it in debug
+and optimized builds.
 
-[`docs/testing.md`][testing] describes the tests. A model check compares the analysis with
-oracles, code written by hand that does not use it, on every ordered pair of test types of the same
-size: for every value of the source up to 2 bytes, and for chosen values beyond. The tests of
-`puns` run under Miri, also on 32-bit and big-endian targets, and so do a few of those pairs for
-each `unsafe` path that they reach, on x86-64. More than 100
-programs must fail to compile, each with its expected message. If you find a soundness bug, please
-[open an issue][issues].
+[`docs/testing.md`][testing] describes the tests. A model check compares the analysis with oracles,
+code written by hand that does not use it, on every ordered pair of test types of the same size: for
+every value of the source up to 2 bytes, and for chosen values beyond. The tests of `puns` run under
+Miri, also on 32-bit and big-endian targets, and so do a few of those pairs for each `unsafe` path
+that they reach, on x86-64. More than 100 programs must fail to compile, each with its expected
+message. If you find a soundness bug, please [open an issue][issues].
 
 ## Learn more
 
-The [reference][api] has a table of the functions, and [Limitations] lists what `puns` cannot do
-yet. The [examples] read parts of more than 40 formats, from TLS and DNS to ELF and SQLite, and
-Bluetooth in [`link.rs`][link]. The shortest, [`media.rs`][media], reads WAVE files and MP4
-boxes; in a clone of the repository, `cargo run --example media` runs it.
+[Limitations] lists what `puns` cannot do yet. The [examples] read parts of more than 40 formats,
+from TLS and DNS to ELF and SQLite, and Bluetooth in [`link.rs`][link]. The shortest,
+[`media.rs`][media], reads WAVE files and MP4 boxes; in a clone of the repository, `cargo run
+--example media` runs it.
 
 ## History
 
