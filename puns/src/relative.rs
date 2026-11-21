@@ -241,7 +241,7 @@ pub unsafe trait SelfRelative: Sized {
 /// violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic
 /// of [`Pointer::one`](crate::layout::Pointer::one),
 /// [`Pointer::sequence`](crate::layout::Pointer::sequence) or
-/// [`Pointer::text`](crate::layout::Pointer::text) is also a compile-time error.
+/// [`Pointer::text`](crate::layout::Pointer::text) is also a compile error.
 ///
 /// # Examples
 ///
