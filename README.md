@@ -8,15 +8,18 @@
 Type punning proven at compile time: a safe alternative to `transmute` and to hand-written parsing
 of bytes.
 
-`puns` reads a value as another type, or bytes as a typed value, in place and without `unsafe`. It
-compares the source type with the target type at compile time:
+`puns` reads a value as another type, or bytes as a typed value, without `unsafe`, and through a
+reference without copying. Crates such as `zerocopy` and `bytemuck` judge each type on its own.
+`puns` compares the source type with the target type at compile time, and calls each conversion a
+*pun*:
 
-- When every value of the source is a valid value of the target, the conversion is **proven**. It
-  returns no `Result`, and compiles to no check.
-- When only some values are valid, the conversion is **checked**. A `try_` or `from_` function
-  checks at run time what the comparison could not prove, and nothing more.
-- When the conversion can never be valid, or the types change so that a proven conversion no
-  longer is, the build fails.
+- When `puns` can prove that every value of the source is a valid value of the target, the pun is
+  **proven**. It returns no `Result`, and compiles to no check.
+- When only some values are valid, the pun is **checked**. A `try_` or `from_` function checks at
+  run time what `puns` could not prove.
+- When the pun can never be valid, or needs something that `puns` can neither prove nor check,
+  such as reading padding, the build fails. So does a proven pun whose types change so that it no
+  longer is.
 
 ```rust
 use puns::Pun;
@@ -38,21 +41,21 @@ assert_eq!(puns::from_bytes::<[Switch]>(&[1, 0]), Ok(&[Switch::On, Switch::Off][
 assert_eq!(puns::from_bytes::<[Switch]>(&[1, 2]), Err(puns::Error::Validity));
 ```
 
-`puns` works with plain data, such as integers, floats, `bool`, `char`, arrays, slices, `str`,
-`Option`, and the structs, enums and unions that derive `Pun`. It is `no_std`, and depends on
-nothing but its derive.
+`puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
+structs, enums and unions that derive `Pun`. It is `no_std`.
 
 ```sh
 cargo add puns
 ```
 
 `puns` needs Rust 1.99 or later ([why][msrv]). It is young: the first release was in November
-2026, and the API may change before 1.0.
+2026, and the API may change before 1.0. `cargo build` reports a refused pun, but `cargo check`
+and editors do not ([why](#errors)).
 
 ## Reading a packet
 
-Formats store their own lengths and checksums. The derive declares them as *rules*, and the
-functions that check bytes check the rules along with the fields:
+Many formats include length and checksum fields. You declare them with the derive, as *rules*,
+and the functions that read bytes check the rules along with the fields:
 
 ```rust
 use puns::{Pun, num::{u16be, u32be}};
@@ -99,10 +102,10 @@ assert_eq!(error(&[9, 64, 0, 0, 0, 0, 0, 0]), Some(puns::Error::Validity));
 ```
 
 `packet` and `rest` borrow `bytes`, and nothing is copied. A rule is an expression over the
-unsigned integer fields, with operators and the functions that the derive provides, such as
-`crc32`. It cannot call your own functions. The derive also declares the valid values of a field,
-the length of a slice, and getters for flags packed into a field. Its [documentation][derive]
-lists every attribute and function.
+unsigned integer fields, with operators, constants, and the functions that the derive provides,
+like `crc32`. You can also declare the valid values of a field, the length of a slice, and getters
+for flags packed into a field. The [documentation of the derive][derive] lists every attribute and
+function.
 
 A rule holds when the bytes are read, and nothing keeps it true afterwards. Through a
 `&mut Packet`, code can write any `length`, and the CRC will not follow.
@@ -148,33 +151,33 @@ a valid key. Keep the tags of existing variants.
 
 ## When to use it
 
-Use `puns` to read data in place, such as network packets, file headers and records, or to read a
+Use `puns` to read data in place: network packets, file headers and records, or to read a
 value of one of your types as another. Choose it when the types carry what you know about the
 data: lengths and checksums, enums whose values are a subset of other enums, or versions of a
 format that keep their old values valid.
 
 `puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
-implementation details. They judge each type on its own: a `bool` does not accept every byte, so
-with them, reading a `&[Switch]` as a `&[bool]` is a checked conversion. It returns an `Option` or
-a `Result`, and with zerocopy 0.8.63 and bytemuck 1.25.2 it compiles to a loop over the bytes
-(aarch64, release build with LTO). With `puns` it compiles to a `ret`. Prefer them when you need
-an older version of Rust, or years of use and review behind your `unsafe` code. Most of their
-errors are trait bounds, which `cargo check` and editors report.
+implementation details. They judge each type on its own, and a `bool` does not accept every byte.
+So with them, reading a `&[Switch]` as a `&[bool]` is a checked conversion: it returns a `Result`,
+and with zerocopy 0.8.63 and bytemuck 1.25.2 it compiles to a loop over the bytes. With `puns` it
+compiles to a `ret` ([code and command][comparison]).
+
+Prefer them when you need an older version of Rust, or years of use and review behind your
+`unsafe` code. Most of their errors are trait bounds, which `cargo check` and editors report.
 
 Rust's [Safe Transmute][safe transmute] project also compares the two types, in the compiler, and
 is available on nightly only. To decode data into owned values, to write a format, or to read one
-that rules cannot describe, a declarative crate such as [`binrw`][binrw] or [`deku`][deku], or a
-parser such as [`nom`][nom], fits better.
+that rules cannot describe, a declarative crate like [`binrw`][binrw] or [`deku`][deku], or a
+parser like [`nom`][nom], fits better.
 
 ## Functions
 
-`pun`, `pun_ref` and `pun_mut` read a whole value as another type. `head` and `tail` read the first
-or last bytes of a value, with `_ref` and `_mut` forms too. These accept only proven conversions.
-`try_pun`, `try_pun_ref` and `try_pun_mut` check the conversions that they cannot prove.
-`from_bytes`, `from_head` and `from_tail` read a byte slice as a type, with `_mut` forms, and
-check it. `as_bytes` reads a value as its bytes. `pun`, `try_pun`, `head` and `tail` take and
-return values of `Copy` types, and the other functions take and return references. All of them are
-`const fn`. The [reference][api] has a table of them, and an example of each.
+`pun`, `pun_ref` and `pun_mut` read a whole value as another type, and `head` and `tail` read its
+first or last bytes, with `_ref` and `_mut` forms. All of them accept only proven puns.
+`try_pun`, `try_pun_ref` and `try_pun_mut` also accept checked ones. `from_bytes`, `from_head` and
+`from_tail` read bytes as a type, with `_mut` forms, and `as_bytes` reads a value as its bytes.
+`pun`, `try_pun`, `head` and `tail` take values of `Copy` types. The [reference][api] has a table
+of every function, with an example of each.
 
 Through a `&mut`, you can write any value of the target, so every value of the target must also be
 a valid value of the source, and `puns` must prove it. A `&mut bool` can become a `&mut Switch`,
@@ -182,7 +185,7 @@ but not a `&mut u8`, even with `try_pun_mut`.
 
 ## Errors
 
-The comparison runs when the compiler generates code. `cargo build` reports a failed conversion,
+`puns` compares the types when the compiler generates code. `cargo build` reports a refused pun,
 but `cargo check` and editors do not. The error looks like this:
 
 ```rust,compile_fail,E0080
@@ -204,9 +207,10 @@ note: the above error was encountered while instantiating `fn pun::<u8, bool>`
 
 The first lines say what is wrong, and at which byte of the target. Here, 1 is a valid `bool`, but
 other `u8`s are not, and `pun` accepts only proven conversions, so the message suggests a `try_`
-function. When the conversion can never be valid, the message says so instead. The last note gives
-the line of your code, and the `...` stands for about 30 lines inside `puns`, which you can skip.
-[Compile-time errors] explains the common messages and how to fix them.
+function. When the conversion can never be valid, the message says so instead. The `...` stands
+for about 30 lines inside `puns`, which you can skip. In a debug build, the last note gives the
+line of your code. An optimized build may leave that note out, and the error then names only the
+two types. [Compile-time errors] explains the common messages and how to fix them.
 
 At run time, an [`Error`][error-type] says whether the size, the alignment or a value was wrong,
 not which field.
@@ -215,8 +219,8 @@ not which field.
 
 Give your types a stable representation: `#[repr(C)]` for a struct, and `#[repr(u8)]` or another
 integer type for an enum. Even then, a field of an ordinary integer type has the byte order of the
-machine, and may leave padding before it. The integers of [`puns::num`][num], such as `u16be`,
-have a fixed byte order and an alignment of 1.
+machine, and may leave padding before it, and a type with padding cannot be read as bytes. The
+integers of [`puns::num`][num], like `u16be`, have a fixed byte order and an alignment of 1.
 
 The default representation, `repr(Rust)`, guarantees little about the layout, so that the
 compiler can optimize it. The order of the fields, the tag of an enum and its niches may change
@@ -224,30 +228,31 @@ with the next version of the compiler, or at random with [`-Zrandomize-layout`][
 default, `puns` refuses a conversion of such a type when its result depends on these choices. This
 includes tuples and most `Option`s.
 
-With the [`unstable` feature][unstable], `puns` uses the layout that the compiler chose, and
-accepts more conversions. The next version of the compiler may change what they check, or make
-`puns` refuse them.
+With the [`unstable` feature][unstable], which builds on stable Rust, `puns` uses the layout that
+the compiler chose, and accepts more conversions. The next version of the compiler may change what
+they check, or make `puns` refuse them.
 
 ## Caveats
 
 - Deriving `Pun` lets any code read and write every field through bytes, as if the fields were
   public. Do not derive it on a type with a private invariant ([why][deriving]).
 - A generic function cannot require in its bounds that a conversion is possible, since the
-  comparison is a constant, not a trait. The error then points inside the generic function.
+  analysis of the types is a constant, not a trait. The error then points inside the generic
+  function.
 - A check never allocates or panics. Its time is in proportion to the length of the data, unless a
   rule nests loops over the data. Then it can grow up to the fifth power of the length, so limit
   the length of untrusted input for such a type ([details][performance]).
-- The comparison costs build time. On an Apple M4 Max, reading a struct of five fields from bytes
-  added about 17 ms to a debug build. Some types cost much more, as
+- Comparing the types costs build time. On an Apple M4 Max, reading a struct of five fields from
+  bytes added about 17 ms to a debug build. Some types cost much more, as
   [`docs/performance.md`][performance] shows.
 
-## Soundness
+## Safety and testing
 
-`puns` uses `unsafe` code, and the comparison decides when that code runs. The [Soundness] section
-of the documentation says what `puns` relies on, and [`docs/testing.md`][testing] how it is
-tested:
+`puns` uses `unsafe` code, and the analysis of the types decides when that code runs. The
+[Soundness] section of the documentation says what `puns` relies on, and
+[`docs/testing.md`][testing] how it is tested:
 
-- A model check runs the comparison on every ordered pair of test types of the same size, and
+- A model check runs the analysis on every ordered pair of test types of the same size, and
   checks each verdict against oracles written by hand.
 - The tests run under [Miri][miri-repo] on x86-64, on a 32-bit target and on a big-endian target.
 - More than 100 programs must fail to compile, each with its expected message.
@@ -297,6 +302,7 @@ additional terms or conditions.
 [unstable]: https://docs.rs/puns/latest/puns/#the-unstable-feature
 [randomize]: https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/randomize-layout.html
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
+[comparison]: https://github.com/uael/puns/blob/main/docs/performance.md#compared-with-zerocopy-and-bytemuck
 [testing]: https://github.com/uael/puns/blob/main/docs/testing.md
 [changelog]: https://github.com/uael/puns/blob/main/CHANGELOG.md
 [examples]: https://github.com/uael/puns/tree/main/puns/examples
