@@ -21,26 +21,26 @@
 //! [Layouts that Rust leaves to the compiler](#layouts-that-rust-leaves-to-the-compiler)).
 //!
 //! The errors of the analysis are panics of `const { .. }` blocks in the generic functions of the
-//! crate. A `const` block that depends on type parameters is evaluated after monomorphization. So
-//! `cargo check` does not report these errors, and `cargo build` does.
+//! crate. Such a block depends on type parameters, so it is evaluated after monomorphization, and
+//! `cargo check` does not report these errors while `cargo build` does.
 //!
 //! # Cost
 //!
-//! A [`Cursor`] walks a layout as *runs*: padding, initialized bytes of any value, or a
-//! constrained scalar. A subtree without constraint is one run, whatever its size. `[u8; 1 << 40]`
-//! is one step.
+//! A [`Cursor`] walks a layout as *runs*: padding, initialized bytes of any value, or a constrained
+//! scalar. A subtree without constraint is one run whatever its size, so `[u8; 1 << 40]` is one
+//! step.
 //!
 //! Scalars are compared as sets of values, not byte by byte. Two aligned scalars compare their
-//! lists of ranges. Scalars that are misaligned, or of different byte orders, go through an exact
-//! decomposition of ranges of integers into boxes of bytes ([`digit_box`], [`box_meets`]). So
+//! lists of ranges, while scalars that are misaligned, or of different byte orders, go through an
+//! exact decomposition of ranges of integers into boxes of bytes ([`digit_box`], [`box_meets`]). So
 //! `NonZero<u16>` in little endian is known to be `NonZero<u16>` in big endian, and `u32 >= 0x100`
 //! is known not to be.
 //!
-//! Arrays and slices are periodic, so they are not walked element by element. Suppose the target
-//! is at the start of an element of a repetition, and the source is inside a repetition too. What
-//! happens over the least common multiple of both strides then happens again for as long as both
-//! repetitions last. One period is analyzed, and the rest is skipped ([`find_skip`]). This is also
-//! what makes the analysis of two slice tails, which never end, terminate.
+//! Arrays and slices are periodic, so they are not walked element by element. When the target is at
+//! the start of an element of a repetition and the source is inside a repetition too, what happens
+//! over the least common multiple of both strides happens again for as long as both repetitions
+//! last, so one period is analyzed and the rest is skipped ([`find_skip`]). This is also what makes
+//! the analysis of two slice tails, which never end, terminate.
 //!
 //! Patterns run with sets of states over the runs of the other side, each box of a scalar on its
 //! own. A repetition ends as soon as one of its elements leaves the set unchanged. Two patterns are
@@ -52,30 +52,30 @@
 //!
 //! # Enums and unions
 //!
-//! Enums are related variant by variant. Each variant of the source is related to the variants of
-//! the target whose tags it has, as two structs, knowing the tag ([`Known`]). Knowing the tags of
+//! Enums are related variant by variant: each variant of the source is related, as two structs, to
+//! the variants of the target whose tags it has, knowing the tag ([`Known`]). Knowing the tags of
 //! both proves a niche of the target that the source variant has as padding. A variant of the
-//! source with no tag of the target is not valid. A variant of the source is proven if all its tags
-//! are tags of one variant of the target, which it proves.
+//! source is proven if all its tags are tags of one variant of the target, which it proves, and is
+//! not valid if it has no tag of the target.
 //!
-//! The source may not be an enum, or be an enum whose tag is elsewhere. The analysis then finds
-//! what the source holds at the place of the tag ([`tag_values`]). This is what a scalar of the
-//! same size and byte order is known to be, or else any value. Each variant whose tags meet those
-//! values is related to the source over the bytes of the enum, knowing the tag. The enum is proven
-//! if every value that the source may hold there is the tag of a variant that has values, and if
-//! each such variant is proven ([`relate_enum_from`]). Otherwise the enum is checked as a whole at
-//! run time. A variant that the source can never be is not looked at. A byte that a possible
-//! variant requires to be initialized must be initialized in the source. A source that may be
+//! When the source is not an enum, or is an enum whose tag is elsewhere, the analysis finds what
+//! the source holds at the place of the tag ([`tag_values`]): what a scalar of the same size and
+//! byte order there is known to be, or else any value. Each variant whose tags meet those values is
+//! related to the source over the bytes of the enum, knowing the tag, and a variant that the source
+//! can never be is not looked at. The enum is proven if every value that the source may hold there
+//! is the tag of a variant that has values, and if each such variant is proven
+//! ([`relate_enum_from`]). Otherwise it is checked as a whole at run time. A byte that a possible
+//! variant requires to be initialized must be initialized in the source, and a source that may be
 //! padding at the tag is an error.
 //!
 //! An enum as a source is known by its tag, and by the bytes that every variant with values
 //! initializes.
 //!
 //! A union as a target is proven by one of its fields that the source proves. Otherwise it is
-//! checked field by field at run time, if the check of no field reads a byte that may be padding
-//! in the source. Otherwise it is refused ([`relate_union_from`]). The marks of the analysis cannot
+//! checked field by field at run time if the check of no field reads a byte that may be padding in
+//! the source, and refused if one does ([`relate_union_from`]). The marks of the analysis cannot
 //! tell the validation which fields to skip, so a union is not checked by some of its fields only.
-//! As a source, a union is padding. From a union, only the same union proves a union
+//! As a source, a union is padding, and from a union only the same union proves a union
 //! ([`Layout::equals`]).
 //!
 //! A type without values is no value of any type that has some ([`relate_at`] reports the pun as
@@ -84,12 +84,11 @@
 //! # Uninitialized bytes
 //!
 //! A scalar may be required to be some values while nothing is known of it as a source, not even
-//! that it is initialized ([`Spec::maybe_uninit`]). Wherever a source is read, such a scalar is
-//! padding. The places that read a source are [`atom_relation`], a run of the target without
-//! constraints, a pattern, and [`Layout::segment`]. Two such scalars are never equal
-//! ([`Layout::equals`]). What a type described this way holds lies between what it requires and
-//! what it is known to be. Two types can have the same of both while one may be padding where the
-//! other may not.
+//! that it is initialized ([`Spec::maybe_uninit`]). Such a scalar is padding wherever a source is
+//! read: in [`atom_relation`], in a run of the target without constraints, in a pattern, and in
+//! [`Layout::segment`]. Two such scalars are never equal ([`Layout::equals`]), because what a type
+//! described this way holds lies between what it requires and what it is known to be, and two types
+//! can have the same of both while one may be padding where the other may not.
 //!
 //! Two layouts are the same ([`Layout::equals`], by which an enum proves an enum without looking
 //! into it) only if they require the same values and guarantee the same values. A
@@ -98,45 +97,45 @@
 //! # Shifted relations
 //!
 //! [`relate_at`] and [`analyze_tail`] relate layouts whose starts differ. The cursors of both
-//! layouts count offsets from the start of the source, and each starts at its own base. The target
-//! of `tail` starts at `shift = size(S) - size(D)`. The source of the reverse relation of
-//! `tail_mut` starts there as well. Nothing else changes with the shift, because every step
-//! compares only what is at the same offset of both sides:
+//! layouts count offsets from the start of the source, and each starts at its own base: the target
+//! of `tail` at `shift = size(S) - size(D)`, as does the source of the reverse relation of
+//! `tail_mut`. Nothing else changes with the shift, because every step compares only what is at the
+//! same offset of both sides:
 //!
 //! - A run of the target is compared with what lies under it. Scalars that the shift cuts are
 //!   decomposed into boxes of bytes, as misaligned scalars are.
 //! - An enum is related only with an enum whose base is at the same offset.
 //! - The rules of a struct are proven only by the same rules of a struct of the same extent at that
 //!   offset of the source ([`mark_rules`] from the shift, see [Rules](#rules)).
-//! - Periods stay correct. A period is taken only when the target is at the start of one of its
-//!   elements. What lies under a run of the target one period later does not depend on the phase of
-//!   the two repetitions, and a shift only changes that phase.
+//! - Periods stay correct: a period is taken only when the target is at the start of one of its
+//!   elements, and what lies under a run of the target one period later does not depend on the
+//!   phase of the two repetitions, which is all that a shift changes.
 //!
-//! The relation reports offsets of the source, and messages subtract the shift. `tail_ref`
-//! requires the target to be no more aligned than the source. The shift is then a multiple of the
-//! alignment of the target, because sizes are multiples of alignments.
+//! The relation reports offsets of the source, and messages subtract the shift. `tail_ref` requires
+//! the target to be no more aligned than the source, so the shift is a multiple of the alignment of
+//! the target, since sizes are multiples of alignments.
 //!
 //! # Mutable parts
 //!
 //! Through `head_mut` or `tail_mut`, safe code may write any value of the target over the bytes
-//! `shift..shift + size` of the source. The source must stay valid. [`mutable_part`] requires two
-//! conditions of it:
+//! `shift..shift + size` of the source, and the source must stay valid, so [`mutable_part`]
+//! requires two conditions of that part:
 //!
 //! - **The part takes what is written.** The reverse relation over those bytes must be infallible,
-//!   as `pun_mut` requires of the whole. Every value of the target, padding included, must be valid
+//!   as `pun_mut` requires of the whole: every value of the target, padding included, must be valid
 //!   for what the source has there. A scalar of the source that the part covers only in part is not
-//!   proven, since what its other bytes hold is not known. Neither is an enum whose base is outside
-//!   the part.
+//!   proven, since what its other bytes hold is not known, and neither is an enum whose base is
+//!   outside the part.
 //! - **Nothing outside the part depends on it** ([`cut`]). A struct of the source with rules
 //!   (`size`, `len`, `assert`, regions, walks) that covers any of the bytes is refused, because its
 //!   rules read its fields. So is an enum, or a string, of the source of which the bytes are only a
 //!   part, such as its tag on one side and fields on the other. A target that takes as many
 //!   elements as fit may end anywhere in the source, so it is refused over a source with enums. One
-//!   exception holds for a struct with rules that lies within the bytes. It is accepted if the
+//!   exception holds for a struct with rules that lies within the bytes: it is accepted if the
 //!   target has the same rules over the same extent there ([`proves_rules`], the test of
-//!   [Rules](#rules) in the other direction). What is written through the target then meets the
-//!   rules of the source if it meets those of the target. The same holds of the elements of an
-//!   array that lie within the bytes. They are accepted at once where the target has elements of
+//!   [Rules](#rules) in the other direction), since what is written through the target then meets
+//!   the rules of the source if it meets those of the target. The same holds of the elements of an
+//!   array that lie within the bytes, which are accepted at once where the target has elements of
 //!   the same size at the same place, or else one by one, up to 64 elements.
 //!
 //! This is conservative. A rule that does not read the bytes of the part is refused all the same,
@@ -149,21 +148,20 @@
 //! value is. A rule is proven only by the same rules, at the same place of the source, in a struct
 //! of the same extent ([`Layout::same_rules`], [`proves_rules`]). A rule is a function of four
 //! things: the bytes of its struct, its size (`size_of_val(self)` or a `size` rule), the number of
-//! elements of its tail (a `len` rule), and the bytes of that tail (regions). Consider a struct of
-//! the source with the same rules in the same order
-//! ([`Rule::equals`](crate::layout::Rule::equals)), the same sized part and the same tail. The same
-//! tail means the same start, the same size of an element and, for a sized struct, the same bytes
-//! and elements of the array that it ends with. Such a struct computes the same rules over the same
-//! bytes, whatever its fields. Its fields are related to the target as any others. So
-//! `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>`, because the payload of `Ipv4` is a typed
-//! region of its bytes and not a field of another type. A part of a struct of a dynamic size has
-//! another size, so it does not prove the rules of a struct of its own size.
+//! elements of its tail (a `len` rule), and the bytes of that tail (regions). So a struct of the
+//! source with the same rules in the same order ([`Rule::equals`](crate::layout::Rule::equals)),
+//! the same sized part and the same tail computes the same rules over the same bytes, whatever its
+//! fields, which are related to the target as any others. The same tail means the same start, the
+//! same size of an element and, for a sized struct, the same bytes and elements of the array that
+//! it ends with. This is how `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>`: the payload of
+//! `Ipv4` is a typed region of its bytes, not a field of another type. A part of a struct of a
+//! dynamic size has another size, so it does not prove the rules of a struct of its own size.
 //!
 //! The elements of an array or a slice share their leaves, so their rules are proven together.
 //! Where the source has elements of the same size at the same place, each element is to the source
 //! what the first is, and the rules of all are proven at once ([`same_elements`]). Otherwise each
-//! element is checked. A rule that reads the bytes of its struct reads its padding as well. The
-//! same tests decide whether the rule is checked, and so whether the padding is read
+//! element is checked. A rule that reads the bytes of its struct reads its padding as well, so the
+//! same tests decide whether the rule is checked and whether the padding is read
 //! ([`Cursor::padding_is_read`]).
 //!
 //! # Layouts that Rust leaves to the compiler
@@ -171,44 +169,44 @@
 //! Without the `unstable` feature ([`STRICT`]), the analysis does not look into a node that is not
 //! `fixed` ([`Layout::is_opaque`], [`Stable`](crate::layout::Stable)), and the cursor makes it one
 //! run ([`RunKind::Opaque`]). The exception is a node whose size is the same in every layout, that
-//! has no rule, and whose bytes are all of any value or all padding. What such bytes are does not
-//! depend on where its fields are.
+//! has no rule, and whose bytes are all of any value or all padding, since what such bytes are does
+//! not depend on where its fields are.
 //!
-//! - **As a source**, an opaque node is what every layout of it is. It is initialized bytes if it
-//!   is `init`, and otherwise bytes that may be padding. It is all one or all the other. That the
-//!   first byte of a `(u8, u16)` is never padding is not used.
+//! - **As a source**, an opaque node is what every layout of it is: all initialized bytes if it is
+//!   `init`, and otherwise all bytes that may be padding. That the first byte of a `(u8, u16)` is
+//!   never padding is not used.
 //! - **As a target**, an opaque node is proven by the same type at the same place ([`equal`]). A
 //!   struct or a tuple whose size is the same in every layout may also be proven field by field
-//!   ([`relate_fields`]). A field may be anywhere, so it must be proven everywhere that it may be.
-//!   A struct is valid if each of its fields is valid at its place. So the source proves the struct
-//!   in every order of its fields if, and only if, it proves each field at each offset that the
-//!   field has in some order. This is exact, and no order is tried. The offsets taken are the
-//!   multiples of the alignment of the field where the field fits. Where no order needs padding,
-//!   they are the multiples of the greatest common divisor of the sizes, of which every sum of
-//!   sizes is one. A few of these offsets are in no order, such as the second byte of a `(bool,
-//!   [u8; 3])`. More is then required, never less. A struct that has a rule, which names fields, or
-//!   a pointer, which is paired by its place, proves only itself, as an enum does.
-//! - **Nothing in an opaque node is checked at run time.** A check would read where the compiler
-//!   may not have put the field. What is not proven does not compile ([`Relation::unspecified`]),
-//!   and whatever reads a relation reads this. That includes what a pointer aims at
-//!   ([`deep::behind`](crate::deep::behind)), what a variant of a view takes from another
-//!   (`base` in `view.rs`), and an enum or a union that would be checked as a whole,
-//!   fields included, which the relations of its variants report. So the marks of the analysis,
-//!   which tell validation what to check, are at places that every layout shares.
+//!   ([`relate_fields`]). A field may be anywhere, so it must be proven everywhere that it may be,
+//!   and since a struct is valid if each of its fields is valid at its place, the source proves the
+//!   struct in every order of its fields if, and only if, it proves each field at each offset that
+//!   the field has in some order. This is exact, and tries no order. The offsets taken are the
+//!   multiples of the alignment of the field where the field fits or, where no order needs padding,
+//!   the multiples of the greatest common divisor of the sizes, of which every sum of sizes is one.
+//!   A few of these offsets are in no order, such as the second byte of a `(bool, [u8; 3])`, so
+//!   more is then required, never less. A struct that has a rule, which names fields, or a pointer,
+//!   which is paired by its place, proves only itself, as an enum does.
+//! - **Nothing in an opaque node is checked at run time,** since a check would read where the
+//!   compiler may not have put the field. What is not proven does not compile
+//!   ([`Relation::unspecified`]), and whatever reads a relation reads this, including what a
+//!   pointer aims at ([`deep::behind`](crate::deep::behind)), what a variant of a view takes from
+//!   another (`base` in `view.rs`), and an enum or a union that would be checked as a whole, fields
+//!   included, which the relations of its variants report. So the marks of the analysis, which tell
+//!   validation what to check, are at places that every layout shares.
 //!
 //! A check must not read a byte of the source that, in another layout that Rust allows, holds
 //! another field ([`reads_moved`]). The analysis counts exactly the bytes that a check reads, as
 //! "What a check may read" in the [crate documentation](crate#what-a-check-may-read) says.
 //!
 //! Nothing is found in a source that is not fixed, where `rustc` put it. A rule is proven by the
-//! same rule of the same struct at the same place. The analysis looks for it through the fields of
-//! the source ([`proves_rules`], [`covered`], [`same_elements`]), but not through a node that is
+//! same rule of the same struct at the same place, which the analysis looks for through the fields
+//! of the source ([`proves_rules`], [`covered`], [`same_elements`]), but not through a node that is
 //! not fixed. Two layouts are the same there only if what Rust does not specify of them is of the
 //! same type ([`equal`]). A `&mut` to a part covers such a node whole, by the same type, or not at
 //! all ([`cut`]). A pun of a type whose size Rust does not specify compiles only if both sides are
 //! the same type ([`sizes_kept`]). A function of [`Visit`](crate::Visit) compiles only if nothing
-//! that Rust does not specify has something to check or holds a pointer ([`Layout::checks_kept`]).
-//! [`zeroed`](crate::zeroed) does not accept the zeros of an enum that is not fixed.
+//! that Rust does not specify has something to check or holds a pointer ([`Layout::checks_kept`]),
+//! and [`zeroed`](crate::zeroed) does not accept the zeros of an enum that is not fixed.
 //!
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 
@@ -830,10 +828,10 @@ pub const fn relate_at(
 /// Returns the offset of the first byte in `start..end` that a marked check of `target` reads,
 /// and that the compiler may move in `source`.
 ///
-/// `target` is at `base_b`, and its first leaf is `leaf`. `source` is at `base_a`. The checks are
-/// those of a part of `target` that `marks` has, rules included ([`analyze`], [`analyze_tail`]).
-/// A byte may move if it is in a part of `source` that is not ordered ([`moves`]). In another
-/// layout, the check would read another part of the same value, and might answer otherwise.
+/// `target` is at `base_b`, with its first leaf `leaf`, and `source` is at `base_a`. The checks are
+/// those of a part of `target` that `marks` has, rules included ([`analyze`], [`analyze_tail`]). A
+/// byte may move if it is in a part of `source` that is not ordered ([`moves`]), and in another
+/// layout the check would read another part of the same value, and might answer otherwise.
 ///
 /// The elements of an array share their leaves, so each one is checked if one is. Where the
 /// source has elements of the same size at the same places, what the first element reads tells

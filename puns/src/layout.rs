@@ -6130,10 +6130,10 @@ impl Machine {
   /// Applies the operation `op`, at the index `at` of an expression, computed as `how` says
   /// (`narrow.rs`), over the value at `base`.
   ///
-  /// `size` is the size of the value, or, for a `size` or a `len` rule, which tells it, the number
+  /// `size` is the size of the value or, for a `size` or a `len` rule, which tells it, the number
   /// of bytes that can be read. Returns `false` if the operation fails, which is then the failure
-  /// of the expression. Does nothing, and returns `true`, if the operation is not computed. Never
-  /// applies an [`Op::Walk`], which `validate::walk` applies: returns `false`.
+  /// of the expression. Does nothing, and returns `true`, if the operation is not computed. It
+  /// never applies an [`Op::Walk`], which `validate::walk` applies, and returns `false` for one.
   ///
   /// # Safety
   ///
