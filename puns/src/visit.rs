@@ -5,64 +5,62 @@
 //! [`pointers_in`] and [`pointers_elems_in`] hand over the pointers of values known to be valid,
 //! and check nothing. [`copy_in`] copies the initialized bytes of a valid value.
 //!
-//! The functions recurse over types, as `validate` does. In each instance the layout is a
-//! constant, and code for what cannot be invalid is not compiled. A part of a value that holds no
-//! pointer is validated by `validate`, the code of `try_pun_ref`. It is walked again only where
-//! that validation fails, to find the position of the error.
+//! Like `validate`, the functions recurse over types, so the layout is a constant in each instance
+//! and no code is compiled for what cannot be invalid.
 //!
 //! # The walk
 //!
-//! What holds no pointer is validated by `validate`, at the speed of `try_pun_ref`. Its answer is
-//! the verdict. Only where it fails is the value walked again, by the walk by position
-//! ([`value`], [`fields`], [`enumeration`]), to tell where. If that walk finds nothing, the error
-//! is at the value itself, which is less precise and never wrong. The same holds of the elements
-//! of [`validate_elems_in`]. The test `the_verdict_is_the_one_of_try_pun_ref` holds the two to the
-//! same answers.
+//! What holds no pointer is validated by `validate`, at the speed of `try_pun_ref`, and its answer
+//! is the verdict. Where it fails, the walk by position ([`value`], [`fields`], [`enumeration`])
+//! goes over the value again to find where. If that walk finds nothing, the error is reported at
+//! the value itself, which is less precise but never wrong. The elements of [`validate_elems_in`]
+//! are validated the same way, and the test `the_verdict_is_the_one_of_try_pun_ref` holds the two
+//! to the same answers.
 //!
-//! The walk goes by the lists of types that the derive writes (`Fields`, `Variants`, `Elem`,
-//! `Pointee`). It checks them against the layout for every type that it goes through
-//! ([`listed`]), as [`deep`](crate::deep) does for `view_ref`. It checks every field by its index
-//! of declaration, offset, layout and type, every variant by its tag, its tags of a niche and its
-//! fields, the element, and the target of a pointer. A list that left a field out would leave it
+//! The walk follows the lists of types that the derive writes (`Fields`, `Variants`, `Elem`,
+//! `Pointee`), and checks them against the layout of every type that it goes through ([`listed`]),
+//! as [`deep`](crate::deep) does for `view_ref`: each field by its declaration index, offset,
+//! layout and type, each variant by its tag, its niche tags and its fields, the element type, and
+//! the target of a pointer. Without that check, a list that left a field out would leave the field
 //! unchecked (compile-fail test `validate_lists_not_the_layout`). A struct that holds pointers is
-//! walked field by field, so that its pointers are handed over in order with the checks of the
-//! rest. A visitor whose queue is full stops the walk where it is, with its error. The functions
-//! recurse over types only, never through pointers. They read nothing outside the bytes: a `get`,
-//! checked arithmetic, then reads at positions in bounds.
+//! walked field by field, so that its pointers are handed over in order, between the checks of the
+//! rest, and a visitor whose queue is full can stop the walk where it is with an error of its own.
+//! The functions recurse over types only, never through pointers, and read nothing outside the
+//! bytes: each read follows a `get` and checked arithmetic, at a position in bounds.
 //!
-//! The bytes are initialized, since they are a `&[u8]`, so `MaybeUninit` and padding hold what
-//! they hold. A `MaybeUninit` of a pointer is nothing, and nothing of it is handed over. A union
-//! that holds a pointer does not compile, because which field it holds cannot be told, and so
-//! neither can the pointer.
+//! The bytes are a `&[u8]`, so they are initialized, and a `MaybeUninit` or padding holds whatever
+//! it holds. A `MaybeUninit` of a pointer is not a pointer, and nothing in it is handed over. A
+//! union that holds a pointer does not compile, because which field the union holds cannot be told,
+//! and so neither can whether it holds the pointer.
 //!
-//! [`pointers_in`] makes the calls that [`validate_in`] makes on the same bytes, in the same
-//! order. It reads the tags of enums, niches included, as `validate_in` does: [`variants`] and
-//! [`follow_variants`] choose the variant by the same test. It reads the offsets of nullable
-//! pointers, and nothing else, and evaluates no rule. The rules of a value and the `valid(..)` of
-//! its fields need not hold. Safe code can break them in a value that it makes, such as
-//! `Span { lo: 2, hi: 1 }` of `assert(lo <= hi)`, and `nearest` walks and copies such a value all
-//! the same. A type without pointers is not walked at all.
+//! [`pointers_in`] makes the same calls as [`validate_in`] on the same bytes, in the same order,
+//! because [`variants`] and [`follow_variants`] choose the variant of an enum by the same test on
+//! its tag or niche. Apart from tags, it reads only the offsets of pointers that may be null, and
+//! it evaluates no rule. The rules of a value and the `valid(..)` of its fields need not hold,
+//! since safe code can break them in a value that it makes, such as `Span { lo: 2, hi: 1 }` for
+//! `assert(lo <= hi)`, and `nearest` walks and copies such a value all the same. A type without
+//! pointers is not walked at all.
 //!
-//! [`copy_in`] walks by the same lists of types as `validate_in`, choosing the variant by the same
-//! test, so that it compiles to a few moves for each type. Copying the bytes of the pointers first
-//! would write them twice. A union does not compile there (compile-fail test `copy_in_union`). The
-//! source of `copy_in` is what `pointers_in` reads, as its types say, whatever its rules say. No
-//! rule is read, and a restricted field is copied as the scalar of its type.
+//! [`copy_in`] walks by the same lists of types as `validate_in` and chooses the variant by the
+//! same test, so that it compiles to a few moves for each type, rather than copying everything and
+//! then writing the pointers a second time. It refuses a union (compile-fail test `copy_in_union`).
+//! Its source is what `pointers_in` reads, a value as its types say, whatever its rules say: it
+//! reads no rule, and copies a restricted field as the scalar of its type.
 //!
 //! # Tests
 //!
-//! `tests/validate_in.rs` gives each kind of type its answer and the positions of errors. It runs
-//! random bytes, positions and counts, some of which overflow, under Miri on every target of CI.
-//! On what `validate_in` accepts there, it checks that `pointers_in` and `pointers_elems_in` hand
-//! over the same pointers, at any alignment, with the bytes that they need not read left
-//! uninitialized. It checks that `copy_in` of a value on the stack, with its padding and its other
-//! variant uninitialized, into memory that is then read whole as a `&[u8]`, copies its value and
-//! nothing else. It checks that `copy_in` of random accepted bytes gives a value that
-//! `validate_in` accepts again. Last, a value with pointers breaks its `assert` and the `valid(..)`
-//! of a field, in a buffer, and `validate_in` refuses it. The test checks that `pointers_in` hands
-//! over its pointers, and that `copy_in` copies its scalars and its null pointer, as for a value
-//! that meets them (`rules_need_not_hold_for_pointers_in_and_copy_in`). The model check holds these
-//! functions to an oracle of pointers (`puns-model`, "Self-relative pointers").
+//! `tests/validate_in.rs` checks the answer and the error positions for each kind of type, and runs
+//! random bytes, positions and counts, some of which overflow, under Miri on every target of CI. On
+//! the bytes that `validate_in` accepts there, it checks that `pointers_in` and `pointers_elems_in`
+//! hand over the same pointers at any alignment, with the bytes that they need not read left
+//! uninitialized. It checks that `copy_in` of a value on the stack, whose padding and other variant
+//! are uninitialized, into memory that is then read whole as a `&[u8]`, copies the value and
+//! nothing else, and that `copy_in` of random accepted bytes gives a value that `validate_in`
+//! accepts again. Last, `rules_need_not_hold_for_pointers_in_and_copy_in` breaks the `assert` of a
+//! value with pointers and the `valid(..)` of one of its fields, in a buffer: `validate_in` refuses
+//! the value, while `pointers_in` hands over its pointers and `copy_in` copies its scalars and its
+//! null pointer, as for a value that meets them. The model check holds these functions to an oracle
+//! of pointers (`puns-model`, "Self-relative pointers").
 
 use core::fmt;
 
@@ -76,23 +74,22 @@ use crate::{
 /// A visitor of the self-relative pointers of a value in a buffer.
 ///
 /// [`validate_in`] and [`validate_elems_in`] hand each pointer of the value they validate to the
-/// visitor. The visitor belongs to the crate that declares the pointers. It follows each pointer
+/// visitor, which belongs to the crate that declares the pointers. The visitor follows each pointer
 /// as its scheme says, and validates the target in turn or queues it. [`pointers_in`] and
-/// [`pointers_elems_in`] hand over the same pointers of a value known to be valid, without
-/// checking anything. A crate uses them to copy what the pointers aim at, or to re-aim the
-/// pointers when the value moves.
+/// [`pointers_elems_in`] hand over the same pointers of a value already known to be valid, without
+/// checking anything, so that a crate can copy what the pointers aim at, or re-aim them when the
+/// value moves.
 ///
-/// The walk calls `pointer::<P>(at)` once for each pointer that the value holds: in its fields,
-/// in the variant that the tag of an enum selects, and in the elements of its arrays. `P` is the
-/// type of the pointer, whose `LAYOUT` describes it ([`Layout::as_pointer`]), and `at` is its
-/// position in the bytes. The order is that of the walk: the fields of a struct or a variant in
-/// the order of their declarations, the elements of an array in order. For a `repr(C)` type, this
-/// is the order of their positions. The calls are interleaved with the checks of the rest of the
-/// value.
+/// The walk calls `pointer::<P>(at)` once for each pointer that the value holds, in its fields, in
+/// the variant that the tag of an enum selects, and in the elements of its arrays. `P` is the
+/// pointer type, whose `LAYOUT` describes it ([`Layout::as_pointer`]), and `at` is the position of
+/// the pointer in the bytes. The calls come in the order of the walk, interleaved with the checks
+/// of the rest of the value: the fields of a struct or a variant in declaration order, and the
+/// elements of an array in order, which for a `repr(C)` type is the order of their positions.
 ///
 /// A pointer whose bytes are all zero is not handed over if the pointer may be null, since it is
-/// then no pointer. It is not valid, and not handed over, if its type has no value of all zero
-/// bytes (its offset is a `NonZero`). Any other pointer of all zero bytes is handed over. An error
+/// then not a pointer, nor if its type has no value of all zero bytes (its offset is a `NonZero`),
+/// since it is then not valid. Any other pointer of all zero bytes is handed over. An error
 /// returned by `pointer` ends the walk with that error.
 ///
 /// [`Layout::as_pointer`]: layout::Layout::as_pointer
@@ -131,9 +128,9 @@ pub trait Visit {
 
   /// Visits the pointer of type `P` at the position `at` of the bytes.
   ///
-  /// The walk calls this method for pointers only. The compiler still instantiates it for every
-  /// type that the walked value holds, because it instantiates every branch on a constant. A
-  /// `const` block in an implementation must therefore not fail for a `P` that is not a pointer.
+  /// The walk calls this method for pointers only, but the compiler instantiates it for every type
+  /// that the walked value holds, since it instantiates every branch on a constant. A `const` block
+  /// in an implementation must therefore not fail for a `P` that is not a pointer.
   ///
   /// # Errors
   ///
@@ -208,12 +205,12 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///    see "The type is its offset" in [`SelfRelative`](crate::SelfRelative#safety)). For any other
 ///    pointer they are a pointer, handed over.
 ///
-/// Nothing is promised of what the pointers aim at: whether they aim inside `bytes`, at what, or
-/// whether two aim at the same place. That is the business of the visitor, as is the scheme of the
-/// pointers. Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T`
-/// at `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`. The
-/// buffer must then be at an address aligned to `align_of::<T>()`, and `at` a multiple of it. The
-/// same holds for what the pointers aim at, which their scheme places.
+/// Nothing is promised of what the pointers aim at, whether inside `bytes`, at what, or whether two
+/// aim at the same place: that, like the scheme of the pointers, is the business of the visitor.
+/// Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T` at
+/// `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`, for example
+/// by placing the buffer at an address aligned to `align_of::<T>()` and choosing `at` as a multiple
+/// of it. The same holds for what the pointers aim at, which their scheme places.
 ///
 /// A `T` of size 0 has no bytes to check: it is valid if it has a value and its rules hold. `T` is
 /// `Sized`: a value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of
@@ -326,11 +323,10 @@ pub fn validate_in<T: Pun, V: Visit>(
 /// Validates the `count` values of `T` from the position `at` of `bytes`, `size_of::<T>()`
 /// apart, in order, as [`validate_in`] validates one.
 ///
-/// Elements that hold no pointer are validated as `try_pun_ref` validates a slice, by blocks
-/// where it can. Only the first element found not valid is then walked again, to find the
-/// position of the error. Elements that hold pointers are validated one by one, and each pointer
-/// is handed to `visit` in order. Elements of a type whose every bit pattern is valid are not
-/// read.
+/// Elements that hold no pointer are validated as `try_pun_ref` validates a slice, by blocks where
+/// it can, and only the first element found not valid is walked again, to find the position of the
+/// error. Elements that hold pointers are validated one by one, with each pointer handed to `visit`
+/// in order. Elements of a type whose every bit pattern is valid are not read.
 ///
 /// After `Ok(())`, unsafe code may rely on what [`validate_in`] promises, for each of the `count`
 /// values. **In bounds** becomes: `at + count * size_of::<T>()` does not overflow and is at most
@@ -430,12 +426,12 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// Hands each self-relative pointer of the valid `T` at the position `at` from `base` to
 /// `visit`, as [`validate_in`] would, and checks nothing.
 ///
-/// This is for a value already known to be valid, such as one being copied or moved in its
-/// buffer, where validating it again would check every scalar for nothing. The calls of
+/// This is for a value already known to be valid, such as one being copied or moved in its buffer,
+/// where validating it again would check every scalar for nothing. The calls of
 /// `visit.pointer::<P>(at)` are those that [`validate_in`] makes on the same bytes, in the same
-/// order (see [`Visit`]). A pointer whose bytes are all zero is not handed over if the pointer may
-/// be null, and is handed over otherwise. The function reads only the tags of enums (and their
-/// niches) and the offsets of pointers that may be null, at any alignment. It does not follow
+/// order (see [`Visit`]), so a pointer whose bytes are all zero is not handed over if the pointer
+/// may be null, and is handed over otherwise. The function reads only the tags of enums, niches
+/// included, and the offsets of pointers that may be null, at any alignment, and does not follow
 /// pointers. An error returned by `visit` ends the walk with that error.
 ///
 /// # Errors
@@ -472,13 +468,12 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// - The tag of every enum, or its niche, is initialized and selects one of its variants. The
 ///   bytes that this variant holds meet these requirements in turn.
 ///
-/// The rules of its structs (`assert`, `size`, `len`, regions) need not hold, nor the `valid(..)`
-/// restrictions of its fields. Safe code can break them, and the walk does not read them. A
-/// restricted field is a scalar, which holds no pointer. Padding, and the bytes that the variant
-/// of an enum does not hold, may be anything, uninitialized included, since they are not read.
-/// Nothing is required of what the pointers aim at, which is not read either. A valid `T` meets
-/// these requirements, whatever values safe code wrote to its fields, and so do bytes that
-/// [`validate_in`] accepted.
+/// The rules of its structs (`assert`, `size`, `len`, regions) and the `valid(..)` restrictions of
+/// its fields need not hold, since safe code can break them and the walk does not read them: a
+/// restricted field is a scalar, which holds no pointer. Padding and the bytes that the variant of
+/// an enum does not hold may be anything, uninitialized included, and nothing is required of what
+/// the pointers aim at, since none of it is read. A valid `T` meets these requirements, whatever
+/// values safe code wrote to its fields, and so do bytes that [`validate_in`] accepted.
 ///
 /// # Examples
 ///
@@ -773,23 +768,22 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// its self-relative pointers, which the caller writes.
 ///
 /// The bytes copied are those of each scalar, of the tag of each enum, and of the fields of the
-/// variant that the tag selects. A scalar that may be uninitialized, such as a `MaybeUninit`, is
-/// not copied. The bytes of a pointer that may be null and whose bytes are all zero are copied,
-/// since it is no pointer. The bytes of the other pointers are not written. These are the
-/// pointers that [`pointers_in`] hands over, in the same order. The caller writes their offsets,
-/// re-aimed for where the copy is, or aimed at copies of their targets.
+/// variant that the tag selects, except a scalar that may be uninitialized, such as a
+/// `MaybeUninit`. A pointer that may be null and whose bytes are all zero is copied, since it is
+/// not a pointer. The other pointers are not written: they are the ones that [`pointers_in`] hands
+/// over, in the same order, and the caller writes their offsets, re-aimed for where the copy is, or
+/// aimed at copies of their targets.
 ///
 /// This is for a crate that writes a value into a buffer of initialized bytes, which a copy of the
-/// whole value would not keep initialized. A typed copy leaves the padding of the destination
-/// uninitialized. A copy of the bytes copies the padding of the source, which may be
+/// whole value would not keep initialized: a typed copy leaves the padding of the destination
+/// uninitialized, and a copy of the bytes copies the padding of the source, which may be
 /// uninitialized.
 ///
-/// The bytes of a valid `T` that may be uninitialized are never read from `src` nor written to
-/// `dst`: padding, the bytes of the variants that the value is not, and fields that may be
-/// uninitialized. Those bytes of `dst` keep what they held. A value without such bytes and without
+/// The bytes of a valid `T` that may be uninitialized (padding, the bytes of the variants that the
+/// value is not, and fields that may be uninitialized) are never read from `src` nor written to
+/// `dst`, so those bytes of `dst` keep what they held. A value without such bytes and without
 /// pointers ([`Layout::is_plain`]) is copied whole, at once. The function reads the tags of enums,
-/// their niches included, to find the variant, as [`validate_in`] does. It does not follow
-/// pointers.
+/// niches included, to find the variant, as [`validate_in`] does, and does not follow pointers.
 ///
 /// [`Layout::is_plain`]: layout::Layout::is_plain
 ///
