@@ -691,7 +691,7 @@ fn main() {
     noise(4 << 10).chunks(4).flat_map(|c| [c[0] % 3, c[1] & 1, c[2], c[3]]).collect();
   case(
     &filter,
-    "[u8] -> [Small] (no repr: a tag, a bool), 4 KiB",
+    "[u8] -> [Small] (repr(Rust): a tag, a bool), 4 KiB",
     &smalls[..],
     |b: &[u8]| from_bytes::<[Small]>(b).is_ok(),
     |b: &[u8]| {
@@ -704,7 +704,7 @@ fn main() {
   let flags: Vec<u8> = noise(64 << 10).iter().map(|b| b % 3).collect();
   case(
     &filter,
-    "[u8] -> [MaybeFlag] (no repr: a niche), 64 KiB",
+    "[u8] -> [MaybeFlag] (repr(Rust): a niche), 64 KiB",
     &flags[..],
     |b: &[u8]| from_bytes::<[MaybeFlag]>(b).is_ok(),
     |b: &[u8]| b.iter().all(|&b| b <= 2),
