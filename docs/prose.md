@@ -26,23 +26,52 @@ verdict.
 
 ## How sentences read
 
+- **Common words only.** Use the words that most readers know, including those who read English as
+  a second language. A Rust term is fine if `core`, `std` or `zerocopy` uses it. A rarer word
+  ("struck", "salient", "elided") is replaced by a common one ("impressed", "main", "left out").
+- **No idioms or figures of speech.** "A string of prototypes", "close to landing" and "put it
+  aside" become "many prototypes", "about to be stabilized" and "stopped working on it".
+- **The simplest sentence that says it.** Write each sentence from what it has to say, not by
+  rearranging the old one. "But by then compile-time evaluation was too limited" is better than
+  "It could not go far enough. Compile-time evaluation was too limited".
 - **Sentences vary in length.** A short sentence states a fact. A longer one carries the reasoning
   that connects facts. A run of short sentences of the same shape reads as generated.
-- **Connectives carry the logic.** Join related facts with "because", "so", "since", "which means",
-  "but", "while", "though", rather than stating each as its own sentence and leaving the reader to
-  join them.
+- **Connectives carry the logic, and only the logic.** Join two facts with "because", "so",
+  "but" or "while" where one explains, follows from or limits the other. Do not join sentences only
+  to make them longer: a sentence of clauses chained by commas reads as generated too.
+- **Keep only what answers the question.** A list of what made something possible names only
+  what it could not do without, not everything that helped.
 - **Possessives and compound nouns replace chains of "of".** "The tag's position" or "the field
   type", not "the position of the tag of the variant of the enum", where the result stays clear.
 - **Plain technical words replace circumlocutions.** "Zero-terminated string", "variable-length
   integer" and "pointer method" are clearer than descriptions built from simple words.
 - **Examples are concrete.** A real format, real bytes, a real error message.
 
+## Examples the author approved
+
+The History section of the README, before:
+
+> Compile-time evaluation had many limitations. I tried types instead, and found even more. I wrote
+> many prototypes that mixed the two approaches. Then I stopped the project for a long time.
+
+A first rewrite, refused for "too much comma":
+
+> Compile-time evaluation had many limitations, and when I tried types instead, I found even more.
+> After many prototypes that mixed the two approaches, I stopped the project for a long time.
+
+A second, refused for a word that is not common ("I had been struck by") and for "It could not go
+far enough", where a simpler sentence says the same. The text the author approved:
+
+> But by then compile-time evaluation was too limited, types were worse, and after many prototypes
+> that mixed the two I stopped working on the project for a long time.
+
 ## What reads as generated
 
 Avoid these patterns, each of which is common in generated text:
 
 - A sentence that ends with ", not Y" to contrast with something no one claimed.
-- Clause after clause joined by colons.
+- Clause after clause joined by colons, or by commas.
+- Rare words and idioms where a common word would do.
 - Bold lead words on every bullet, where the bullets are not a catalogue.
 - Every paragraph or section ending with a caveat.
 - Lists of three by habit.
