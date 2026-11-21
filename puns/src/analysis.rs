@@ -1,7 +1,7 @@
 //! The analysis of a pun, made of relations between two [`Layout`]s, computed at compile time.
 //!
 //! For a source `S` and a target `D`, [`analyze`] decides the inclusion of languages, whether every
-//! value of `S` is a [valid] value of `D`. It walks both layouts in step, as the product of two
+//! value of `S` is a [valid] value of `D`. It walks both layouts together, as the product of two
 //! automata, and answers the following questions:
 //!
 //! - **Fit** ([`Fit`]): how the size of a source maps to the size of a target. It is always, for
@@ -86,9 +86,9 @@
 //! A scalar may be required to be some values while nothing is known of it as a source, not even
 //! that it is initialized ([`Spec::maybe_uninit`]). Such a scalar is padding wherever a source is
 //! read: in [`atom_relation`], in a run of the target without constraints, in a pattern, and in
-//! [`Layout::segment`]. Two such scalars are never equal ([`Layout::equals`]), because what a type
-//! described this way holds lies between what it requires and what it is known to be, and two types
-//! can have the same of both while one may be padding where the other may not.
+//! [`Layout::segment`]. Two such scalars are never equal ([`Layout::equals`]), because two types
+//! can require the same values and be known to hold the same values while one may be padding where
+//! the other may not.
 //!
 //! Two layouts are the same ([`Layout::equals`], by which an enum proves an enum without looking
 //! into it) only if they require the same values and guarantee the same values. A
@@ -128,11 +128,11 @@
 //!   is an enum whose base is outside the part.
 //! - **Nothing outside the part depends on it** ([`cut`]). A struct of the source with rules
 //!   (`size`, `len`, `assert`, regions, walks) that covers any of the bytes is refused, because its
-//!   rules read its fields. So is an enum, or a string, of the source of which the bytes are only a
-//!   part, such as its tag on one side and fields on the other. A target that takes as many
-//!   elements as fit may end anywhere in the source, so it is refused over a source with enums. One
-//!   exception holds for a struct with rules that lies within the bytes. It is accepted if the
-//!   target has the same rules over the same extent there ([`proves_rules`], the test of
+//!   rules read its fields. So is an enum or a string of the source that the bytes cover only in
+//!   part, such as an enum with its tag on one side and fields on the other. A target that takes as
+//!   many elements as fit may end anywhere in the source, so it is refused over a source with
+//!   enums. One exception holds for a struct with rules that lies within the bytes. It is accepted
+//!   if the target has the same rules over the same extent there ([`proves_rules`], the test of
 //!   [Rules](#rules) in the other direction), since what is written through the target then meets
 //!   the rules of the source if it meets those of the target. The same holds of the elements of an
 //!   array that lie within the bytes, which are accepted at once where the target has elements of
@@ -199,15 +199,16 @@
 //! another field ([`reads_moved`]). The analysis counts exactly the bytes that a check reads, as
 //! "What a check may read" in the [crate documentation](crate#what-a-check-may-read) says.
 //!
-//! Nothing is found in a source that is not fixed, where `rustc` put it. A rule is proven by the
-//! same rule of the same struct at the same place, which the analysis looks for through the fields
-//! of the source ([`proves_rules`], [`covered`], [`same_elements`]), but not through a node that is
-//! not fixed. Two layouts are the same there only if what Rust does not specify of them is of the
-//! same type ([`equal`]). A `&mut` to a part covers such a node whole, by the same type, or not at
-//! all ([`cut`]). A pun of a type whose size Rust does not specify compiles only if both sides are
-//! the same type ([`sizes_kept`]). A function of [`Visit`](crate::Visit) compiles only if nothing
-//! that Rust does not specify has something to check or holds a pointer ([`Layout::checks_kept`]),
-//! and [`zeroed`](crate::zeroed) does not accept the zeros of an enum that is not fixed.
+//! The analysis looks for nothing inside a part of the source that is not fixed, at the place where
+//! `rustc` put it. A rule is proven by the same rule of the same struct at the same place, which
+//! the analysis looks for through the fields of the source ([`proves_rules`], [`covered`],
+//! [`same_elements`]), but not through a node that is not fixed. Two layouts are the same there
+//! only if what Rust does not specify of them is of the same type ([`equal`]). A `&mut` to a part
+//! covers such a node whole, by the same type, or not at all ([`cut`]). A pun of a type whose size
+//! Rust does not specify compiles only if both sides are the same type ([`sizes_kept`]). A function
+//! of [`Visit`](crate::Visit) compiles only if nothing that Rust does not specify has something to
+//! check or holds a pointer ([`Layout::checks_kept`]), and [`zeroed`](crate::zeroed) does not
+//! accept the zeros of an enum that is not fixed.
 //!
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 
@@ -702,8 +703,8 @@ pub struct Relation {
   pub(crate) partial: Option<usize>,
   /// The leaves of the target that may receive an invalid value, which a check tests at run time.
   pub(crate) marks: Marks,
-  /// The offset of a pointer of the target that is not, in the source, a pointer whose target it
-  /// can read.
+  /// The offset of a pointer of the target where the source has no pointer whose target can be
+  /// reinterpreted as the target of this one.
   ///
   /// No check at run time makes up for it, since what a pointer guarantees is not a property of
   /// its bytes.
@@ -877,8 +878,9 @@ const fn reads_moved(
       }
       None
     }
-    // Its tag, then the fields of the variant that the tag is: of the values of the source whose
-    // tag is that variant's, where the source has an enum of its tag at the same place.
+    // Its tag, then the fields of the variant that the tag selects. Where the source has an enum
+    // whose tag is at the same place, these count only for the values of the source whose tag is
+    // that variant's.
     Kind::Enum(layout) if !layout.union => {
       let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
       let at = base_b + layout.tag.offset;
@@ -983,8 +985,8 @@ const fn moves(source: &Layout, base: usize, start: usize, end: usize, tag: Opti
       }
       false
     }
-    // Every element is the same: the first and the last that the bytes overlap tell, and a whole
-    // one between them.
+    // Every element is the same, so the first and the last element that the bytes overlap decide,
+    // with one whole element between them.
     Kind::Array(elem, _) | Kind::Slice(elem) if elem.size > 0 => {
       let (first, last) = ((lo - base) / elem.size, (hi - 1 - base) / elem.size);
       if last - first >= 2 {
@@ -1110,14 +1112,15 @@ const fn relate_range(
       // The bytes of a pattern are initialized: enough for a target without constraint.
       let free = matches!(run_b.kind, RunKind::Pad | RunKind::Any) && run_b.end >= end;
       if !free || b.enumeration().is_some() {
-        // Else, give up on proving anything: everything is checked at run time.
+        // Otherwise nothing is proven, and everything is checked at run time.
         out.marks = Marks::ALL;
         out.partial = Some(pos);
-        // But a pointer, which no check makes: one that the target holds is not proven here.
+        // No check proves a pointer, so a pointer that the target holds is recorded as not proven.
         if b.stack[0].layout.has_pointers() {
           out.pointer(pos);
         }
-        // Nor what Rust does not keep, which would be checked where `rustc` put it.
+        // A part whose layout Rust does not keep is recorded too, since a check would read it where
+        // `rustc` put it.
         if !b.stack[0].layout.checks_kept() {
           out.unspecified(pos);
         }
@@ -1175,13 +1178,13 @@ const fn relate_range(
         pos += enum_b.size;
         continue;
       }
-      // Else, what follows only tells whatever the enum can be checked at run time: which a
-      // pointer in one of its variants cannot.
+      // Otherwise the enum is marked to be checked as a whole at run time, which cannot be done if
+      // one of its variants holds a pointer.
       out.mark(leaf, pos);
       if enum_b.has_pointers() {
         out.pointer(pos);
       }
-      // Nor one that would check what Rust does not keep, where `rustc` put it.
+      // Nor can it be done if the check would read what Rust does not keep, where `rustc` put it.
       if !enum_b.checks_kept() {
         out.unspecified(pos);
       }
@@ -1241,7 +1244,8 @@ const fn relate_range(
           {
             match from.reads_as(&to) {
               Some(true) => {}
-              // What is not a pointer (`None`) is not read as one: checked at run time.
+              // What is not a pointer (`None`) is not reinterpreted as one, which is checked at run
+              // time.
               Some(false) => out.mark(run_b.leaf, pos),
               None => out.pointer(pos),
             }
@@ -1357,7 +1361,7 @@ const fn relate_enums(
   {
     return false;
   }
-  // Whatever some variants of `a` are, and some are not, valid for `b`.
+  // Whether some variants of `a` are valid for `b`, and whether all are.
   let (mut some, mut all, mut i) = (false, true, 0);
   let (tag, size) = (enum_b.tag.offset, tag_b.size);
   while i < enum_a.variants.len() {
@@ -2009,7 +2013,8 @@ const fn box_meets(lo: &[u8; 16], hi: &[u8; 16], size: usize, start: u128, end: 
   while i < size && lo[i] <= digit(start, size, i) && digit(start, size, i) <= hi[i] {
     i += 1;
   }
-  // Whatever the digit at `i` is bumped (else it is, as the digits after it, the least one).
+  // Whether the digit at `i` is raised. If it is not, it is the least digit of the box, as are the
+  // digits after it.
 
   let bump = if i == size {
     // `start` is in the box.
@@ -2233,9 +2238,9 @@ const fn mark_rules(
         i += 1;
       }
     }
-    // Elements share their leaves: either they are all proven at once, or none is. They are when
-    // the source has elements of the same size at the same place, as many: then what the first
-    // one is to the source, each is.
+    // Elements share their leaves, so either all of them are proven at once, or none is. They are
+    // proven when the source has as many elements of the same size at the same place, since each
+    // element is then to the source what the first one is.
     Kind::Array(elem, _) | Kind::Slice(elem) => {
       if same_elements(source, base, target) {
         mark_rules(source, elem, base, leaf, out);
@@ -2284,7 +2289,7 @@ const fn proves_rules(source: &'static Layout, offset: usize, target: &'static L
   if offset == 0 && kept && source.same_rules(target) {
     return true;
   }
-  // Where the fields of the source are is not kept: nothing is found in it.
+  // Rust does not keep where the fields of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2320,7 +2325,7 @@ const fn proves_rules(source: &'static Layout, offset: usize, target: &'static L
 /// one is. Without the `unstable` feature, nothing is looked for inside a part of the source whose
 /// layout Rust leaves to the compiler.
 const fn same_elements(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
-  // Where the parts of the source are is not kept: nothing is found in it.
+  // Rust does not keep where the parts of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2375,7 +2380,7 @@ const fn covered(source: &'static Layout, offset: usize, target: &'static Layout
       return true;
     }
   }
-  // Where the fields of the source are is not kept: nothing is found in it.
+  // Rust does not keep where the fields of the source are, so nothing is looked for in it.
   if STRICT && !source.stable.fixed {
     return false;
   }
@@ -2746,8 +2751,8 @@ const fn cut(
         return None;
       }
       if has_rules(elem) {
-        // Every element is within the bytes, and the target has elements of the same size there:
-        // what the first one is to the target, each is.
+        // Every element is within the bytes, and the target has elements of the same size there, so
+        // each element is to the target what the first one is.
         if within && same_elements(b, base - lo, layout) {
           return cut(elem, base, b, lo, hi);
         }
