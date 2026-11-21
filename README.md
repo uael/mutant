@@ -45,10 +45,16 @@ kinds:
 - **Refused**: the pun can never be valid, or it would read padding, or `puns` can neither prove
   nor check what it needs. No function accepts it.
 
-A call that a function does not accept is a compile error. If `Switch` gained a variant with the
-value 2, `pun_ref` would no longer accept the call above, and you would write `try_pun_ref`, which
-checks each element. `cargo build` reports such an error, but `cargo check` and editors miss most
-of them.
+If `Switch` gained a variant with the value 2, the call to `pun_ref` above would stop compiling:
+
+```text
+cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
+Use a `try_*` function to check them at run time.
+This is at byte 0 of the target.
+```
+
+`try_pun_ref` would then check each element. `cargo build` reports such errors, but `cargo check`
+and editors miss most of them.
 
 `puns` works with plain data: integers, floats, `bool`, `char`, arrays, slices, `str`, and the
 structs, enums and unions that derive `Pun`, whose fields are plain data too. `pun` and `try_pun`
@@ -131,7 +137,7 @@ A rule is checked by the function that reads the bytes, and nothing keeps it tru
 Through a `&mut Packet`, code can set `length` to 10, and the payload still has 3 bytes.
 
 `from_bytes`, `from_head` and `from_tail` are `const fn`, so bytes in a `const` are checked when
-you build.
+you build. Since `unwrap` is not `const`, [match on the result][const] there.
 
 ## Reading an old version of a format
 
@@ -191,11 +197,10 @@ available on nightly only.
 
 ## Performance
 
-A proven pun adds no check. A checked pun checks only what `puns` could not prove.
-[`docs/performance.md`][performance] times those checks next to the same checks written by hand,
-on an Apple M4 Max. Its packet checks (Ethernet, IPv4, IPv6 extension headers, UDP and TCP)
-take from about half as long to about 1.2 times as long as by hand. Its slowest case is a slice of
-an enum whose layout needs the `unstable` feature, at 1.5 times as long.
+[`docs/performance.md`][performance] times the checks of `puns` next to the same checks written
+by hand, on an Apple M4 Max. For Ethernet, IPv4, IPv6 extension headers, UDP and TCP, the median
+of five runs is between 0.55 and 1.13 times the time by hand. The slowest case there, a slice of
+an enum whose layout needs the `unstable` feature, takes 1.5 times as long.
 
 Comparing the types takes build time: about 17 ms of a debug build for each struct read from
 bytes, on average over 100 of them. An enum of references that returns the first variant that
@@ -227,8 +232,9 @@ build.
 
 ## Safety and testing
 
-Code that uses `puns` can keep `#![forbid(unsafe_code)]`: the `unsafe` code is in `puns`, and the
-analysis of the types decides when it runs. The [Soundness] section of the documentation lists
+Code that uses `puns` can keep `#![forbid(unsafe_code)]`, deriving `Pun` included. The `unsafe`
+code is in `puns` and in what its derive generates, and the analysis of the types decides when it
+runs. The [Soundness] section of the documentation lists
 what `puns` relies on. Two of these are behaviors of `rustc` that no documentation states. One is
 the representation of a pointer to an unsized type, which `puns` checks at compile time for each
 type. The other is that the compiler evaluates the constants of every function that compiled code
@@ -281,6 +287,7 @@ additional terms or conditions.
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
 [deriving]: https://docs.rs/puns/latest/puns/#what-deriving-pun-means
 [Compile-time errors]: https://docs.rs/puns/latest/puns/#compile-time-errors
+[const]: https://docs.rs/puns/latest/puns/#using-the-functions
 [unstable]: https://docs.rs/puns/latest/puns/#the-unstable-feature
 [performance]: https://github.com/uael/puns/blob/main/docs/performance.md
 [comparison]: https://github.com/uael/puns/blob/main/docs/performance.md#compared-with-zerocopy-and-bytemuck
