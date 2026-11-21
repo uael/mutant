@@ -217,9 +217,9 @@ relies on, including four behaviors of `rustc` that no documentation guarantees,
 is checked.
 
 The analysis is compared with hand-written oracles on every pair of test types of the same size,
-the tests also run under Miri on 32-bit and big-endian targets, and more than 100 programs are
-required to fail to compile ([`docs/testing.md`][testing]). If you find a soundness bug, please
-[open an issue][issues].
+and the tests run under Miri, on 32-bit and big-endian targets as well. More than 100 programs must
+fail to compile, each with its expected message ([`docs/testing.md`][testing]). If you find a
+soundness bug, please [open an issue][issues].
 
 ## Learn more
 
