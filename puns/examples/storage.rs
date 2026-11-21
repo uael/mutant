@@ -1,9 +1,8 @@
 //! Storage formats (the SQLite database header, FAT boot sectors, GPT partition tables, and USB
 //! descriptors), declared with `#[derive(Pun)]` and read in place from bytes.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads these formats in place, from
-//! bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads these formats in place, from bytes.
 //!
 //! The following table lists what is specific to these formats, and what tells it to `puns`:
 //!

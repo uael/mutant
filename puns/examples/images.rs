@@ -1,8 +1,8 @@
 //! Images and fonts (PNG files, BMP files, and the table directory of TrueType and OpenType
 //! fonts), declared with `#[derive(Pun)]` and read in place from bytes.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads files in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads files in place, from bytes.
 //!
 //! The following table lists what is specific to these formats, and what tells it to `puns`:
 //!

@@ -2,8 +2,8 @@
 //! (32 and 64 bits, of either byte order), PE/COFF, Mach-O, Java class files and WebAssembly
 //! modules.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads files in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads files in place, from bytes.
 //!
 //! The following table lists what is specific to these formats, and what tells it to `puns`:
 //!
@@ -202,9 +202,8 @@ pub enum AnyElf<'a> {
 
 /// A PE file: a DOS header, the DOS stub, then the headers `O`.
 ///
-/// The field `e_lfanew` of the DOS header tells where the headers are. It is at least 64 and a
-/// multiple of 8. The magic of the optional header is `MAGIC`, which tells which optional header
-/// `O` holds.
+/// The field `e_lfanew` of the DOS header, at least 64 and a multiple of 8, tells where the headers
+/// are. The magic of the optional header is `MAGIC`, which tells which optional header `O` holds.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(assert(e_lfanew >= 64 && e_lfanew % 8 == 0))]

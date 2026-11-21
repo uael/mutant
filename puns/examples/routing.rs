@@ -2,8 +2,8 @@
 //! place from bytes: BGP-4, OSPFv2, GRE, VXLAN, Geneve, IGMP v2 and v3, and the neighbor
 //! discovery of ICMPv6.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads messages in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads messages in place, from bytes.
 //!
 //! The following table lists what is specific to these protocols, and what tells it to `puns`:
 //!

@@ -1,8 +1,8 @@
 //! Archives (ZIP files, tar entries in the ustar format, and gzip members), declared with
 //! `#[derive(Pun)]` and read in place from bytes.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads archives in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads archives in place, from bytes.
 //!
 //! The following table lists what is specific to these formats, and what tells it to `puns`:
 //!

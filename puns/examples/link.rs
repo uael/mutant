@@ -4,8 +4,8 @@
 //! Linux's SocketCAN has them), Modbus RTU and Modbus TCP, and the byte-stuffed framings of SLIP
 //! and PPP.
 //!
-//! As in `ethernet.rs`, the first half of this file only declares types. It has no `unsafe`, no
-//! `impl` and no parsing code. The second half reads frames in place from bytes, in safe Rust.
+//! As in `ethernet.rs`, the first half of this file only declares types, with no `unsafe`, no
+//! `impl` and no parsing code, and the second half reads frames in place from bytes, in safe Rust.
 //!
 //! The following table lists what is specific to these links, and what in the declarations
 //! expresses it:
@@ -38,8 +38,8 @@
 //!   view.
 //! - Protected 802.11 bodies (CCMP, GCMP) are encrypted, so they are not a view either.
 //!
-//! `main` reads frames of each format from bytes and asserts their fields, regions and getters.
-//! It also changes bytes and asserts that the read then returns an error. It prints `ok`.
+//! `main` reads frames of each format from bytes and asserts their fields, regions and getters. It
+//! then changes bytes, asserts that the read returns an error, and prints `ok`.
 #![forbid(unsafe_code)]
 
 use puns::{

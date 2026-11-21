@@ -4,8 +4,8 @@
 //! The text covers UTF-8 fields, C strings, padded names, an HTTP/1.1 request line and a
 //! `Content-Length` header.
 //!
-//! As in `ethernet.rs`, the first half of this file holds only type declarations. It has no
-//! `unsafe`, no `impl` and no parsing code. The second half reads values in place, from bytes.
+//! As in `ethernet.rs`, the first half of this file holds only type declarations, with no `unsafe`,
+//! no `impl` and no parsing code, and the second half reads values in place, from bytes.
 //!
 //! The following table lists what is specific to these encodings, and what tells it to `puns`:
 //!
@@ -172,8 +172,8 @@ pub type VarBind = Der<u8c<0x30>, Then<Der<u8c<0x06>, ObjectIdentifier>, Der<u8>
 
 /// The head of a Kerberos AS-REQ.
 ///
-/// Its form is `[APPLICATION 10] SEQUENCE { [1] pvno 5, [2] msg-type 10, rest }`. The rest is
-/// bytes. It holds the padata, which is OPTIONAL, and the request body.
+/// Its form is `[APPLICATION 10] SEQUENCE { [1] pvno 5, [2] msg-type 10, rest }`. The rest is bytes
+/// that hold the padata, which is OPTIONAL, and the request body.
 pub type AsReq = Der<u8c<0x6a>, Der<u8c<0x30>, Then<Pvno, Then<MessageType, [u8]>>>>;
 
 /// The Kerberos field `[1] pvno`, of value 5.

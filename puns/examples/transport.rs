@@ -3,8 +3,9 @@
 //! The protocols are TLS records and handshakes, QUIC long headers, HTTP/2 frames, WebSocket
 //! frames, SSH binary packets, MQTT control packets, CoAP messages and SCTP packets.
 //!
-//! As in `ethernet.rs`, the first half of this file only declares types. It has no `unsafe`, no
-//! `impl` and no parsing code. The second half reads messages in place from bytes, in safe Rust.
+//! As in `ethernet.rs`, the first half of this file only declares types, with no `unsafe`, no
+//! `impl` and no parsing code, and the second half reads messages in place from bytes, in safe
+//! Rust.
 //!
 //! The following table lists what is specific to these protocols, and what in the declarations
 //! expresses it:
@@ -43,13 +44,13 @@
 //!   Reassembly and decryption are not views of the bytes. Typed regions are checked when they
 //!   are read, so the cipher suites of a ClientHello are checked only when they are read.
 //! - What follows a QUIC long header is protected (header protection, AEAD), so it is not a view.
-//!   HTTP/2 header blocks are HPACK, with Huffman codes and indexes into a table. They are not a
+//!   HTTP/2 header blocks are HPACK, with Huffman codes and indexes into a table, so they are not a
 //!   view either.
 //! - WebSocket payloads from a client are masked. Unmasking is a transformation, which the code
 //!   that reads the frames does.
 //!
 //! `main` reads a message of each protocol from bytes and asserts its fields, regions and getters.
-//! It also changes bytes and asserts that the read then returns an error. It prints `ok`.
+//! It then changes bytes, asserts that the read returns an error, and prints `ok`.
 #![forbid(unsafe_code)]
 
 use core::marker::PhantomData;
