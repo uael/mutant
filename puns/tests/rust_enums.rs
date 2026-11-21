@@ -511,8 +511,9 @@ enum Restricted {
 
 #[test]
 fn many_variants() {
-  // The tag is the first two bytes, which every value has initialized: read as such (proven),
-  // without the check of 300 variants, which is the one of any enum and costs seconds to build.
+  // The tag is the first two bytes, which every value has initialized: reinterpreted as such
+  // (proven), without the check of 300 variants, which is the one of any enum and costs seconds to
+  // build.
   assert_eq!(puns::head::<Many, [u8; 2]>(Many::V297), bytes::<2>(298));
   assert_eq!(puns::head::<Many, [u8; 2]>(Many::First(7)), bytes::<2>(0));
   assert_eq!(puns::pun::<Many, Many>(Many::V3), Many::V3);

@@ -20,8 +20,8 @@ use syn::{
 pub fn derive_pun(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let tokens = TokenStream::from(input.clone());
   let mut input = parse_macro_input!(input as DeriveInput);
-  // The generated items are named `__Pun..`: a type of the input of that name would be one of
-  // them where the generated code names it, not what the input means.
+  // The generated items are named `__Pun..`. A type of the input with such a name would be taken
+  // for one of them where the generated code names it.
   if let Some(ident) = find_reserved(tokens) {
     return Error::new(
       ident.span(),
@@ -179,7 +179,7 @@ fn identity(input: &DeriveInput, root: &TokenStream) -> TokenStream {
   }
   let ident = &input.ident;
   let n = proc_macro2::Literal::usize_unsuffixed(DERIVES.fetch_add(1, Ordering::Relaxed));
-  // Of the type that the traits name, whatever the path leads to (see `Layout::PIN`).
+  // Of the type that the traits name, whatever type the path names (see `Layout::PIN`).
   quote!({
     let id: #root::layout::Id = #root::layout::Id::new(#root::__site!(#ident, #n), &[]);
     id
@@ -769,8 +769,8 @@ fn compile(
       ty
     }
     Expr::Binary(binary) => {
-      // The name of the operation, the type of its operands (`None`: any, but the same), whatever
-      // it compares.
+      // The name of the operation, the type of its operands (`None` for either type, if both are
+      // the same), and whether it compares them.
       let (name, operands, compares) = match binary.op {
         BinOp::Add(_) => ("Add", Some(Ty::Int), false),
         BinOp::Sub(_) => ("Sub", Some(Ty::Int), false),
@@ -841,7 +841,7 @@ fn compile(
       ops.push(quote!(#op::At { size: #size, big: #big }));
       Ty::Int
     }
-    // `matches(DFA, start, end)`: whatever the bytes are accepted by an automaton.
+    // `matches(DFA, start, end)`: whether an automaton accepts the bytes.
     Expr::Call(call) if call.args.len() == 3 && is_call(call, "matches") => {
       int(&call.args[1], ops, scope)?;
       int(&call.args[2], ops, scope)?;
@@ -1505,11 +1505,11 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     .collect::<Result<Vec<_>>>()?;
   let count = fields.len();
 
-  // The offsets of the fields. Not with `offset_of!`, which is read from wherever `::core` leads
-  // (`extern crate other as core;` makes it another crate): with `repr(C)` and
-  // `repr(transparent)`, they are what these representations specify, from the sizes and
-  // alignments of the fields; otherwise the struct is `Sized` and they are found by projecting a
-  // pointer to an uninitialized value (`&raw const (*p).field`), which the language does.
+  // The offsets of the fields. Not with `offset_of!`, which comes from whatever crate `::core`
+  // names (`extern crate other as core;` makes it another crate): with `repr(C)` and
+  // `repr(transparent)`, they are what these representations specify, from the sizes and alignments
+  // of the fields; otherwise the struct is `Sized` and they are found by projecting a pointer to an
+  // uninitialized value (`&raw const (*p).field`), which the language does.
   for (i, field) in fields.iter_mut().enumerate() {
     let member = &field.member;
     field.offset = match () {
@@ -1545,7 +1545,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
     if options.bounds.is_none() && needs_bound(field.ty, input) {
       bound(&mut generics, field.ty, &root);
     }
-    // What a region is read as.
+    // The types of the typed regions.
     for ty in field.options.regions.iter().flatten().filter_map(|region| region.ty.as_ref()) {
       bound(&mut generics, ty, &root);
     }
@@ -1814,9 +1814,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       //   analysis takes to be the same in every layout that Rust allows.
       // - Each field is `Pun`, so no byte is inside an `UnsafeCell`.
       // The functions called are those of the types that `Layout::PIN` fixes, which no path can
-      // lead elsewhere. A struct whose private fields keep an invariant must not derive `Pun`
-      // (crate documentation, section Soundness): the layout describes only what the language
-      // requires of its fields.
+      // replace. A struct whose private fields keep an invariant must not derive `Pun` (crate
+      // documentation, section Soundness): the layout describes only what the language requires of
+      // its fields.
       //
       // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.c.struct.size-field-offset:
       //
@@ -2004,8 +2004,8 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
       impl #impl_generics #ident #ty_generics #where_clause {
         #(#deciders)*
 
-        /// Returns the first variant, in order, whose type `bytes` start with a valid value of,
-        /// and the bytes after that value.
+        /// Returns the first variant, in order, such that `bytes` start with a valid value of its
+        /// type, and the bytes after that value.
         ///
         /// # Errors
         ///
@@ -2021,7 +2021,8 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
           #result::Err(#root::Error::Validity)
         }
 
-        /// Returns the first variant, in order, whose type all of `bytes` are a valid value of.
+        /// Returns the first variant, in order, such that `bytes` as a whole are a valid value of
+        /// its type.
         ///
         /// # Errors
         ///
@@ -2144,7 +2145,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
   // A `repr(C)` struct for each variant (RFC 2195), which starts with the tag unless the enum is
   // `repr(C)`: their layouts, from the sizes and alignments of the fields. Not measured from
   // structs declared here, which would hold a marker of the generic parameters, `PhantomData`,
-  // named by a path that `extern crate other as core;` can lead elsewhere.
+  // named by a path that `extern crate other as core;` can make name another type.
   let shadows = (0..count).map(|i| format_ident!("__PunVariant{}", i)).collect::<Vec<_>>();
   let shapes = (0..count).map(|i| format_ident!("V{}", i)).collect::<Vec<_>>();
   let usize = quote!(::core::primitive::usize);

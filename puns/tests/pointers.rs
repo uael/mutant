@@ -452,7 +452,7 @@ unsafe impl Fix for Wide {
 /// The elements of a sequence are aligned as its declarer says. Here the declarer aligns them to
 /// the larger of their alignment and the width of the offset. A sequence of `[u8; 4]` behind an
 /// `i32le` is therefore a sequence of `u32`, but one `[u8; 4]` is not one `u32`.
-// Tuples of the `Rust` representation, read as other tuples: the `unstable` feature.
+// Tuples of the `Rust` representation, reinterpreted as other tuples: the `unstable` feature.
 #[cfg(feature = "unstable")]
 #[test]
 fn prefixes_and_sequences() {

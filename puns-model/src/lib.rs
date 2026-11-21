@@ -113,8 +113,8 @@
 //! `hook::views` answers with the `const` code that decides the pairing (`deep::local`, pointers
 //! followed a bounded number of times). The functions themselves are called for the pairs that it
 //! accepts, and the compile-fail tests of `puns` are the pairs that they refuse. The model counts
-//! as imprecise what is refused by design: a target of another size, a sequence or text read as
-//! something else, and a check that would be behind a pointer.
+//! as imprecise what is refused by design: a target of another size, a sequence or text
+//! reinterpreted as something else, and a check that would be behind a pointer.
 //!
 //! The model holds `puns::validate_in`, `puns::pointers_in` and `puns::copy_in` to the oracle of
 //! pointers. Its visitor follows the pointers of the tests through their buffer.

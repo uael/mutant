@@ -407,9 +407,9 @@ fn imprecise(cause: &'static str, pair: &str) {
 ///
 /// # Panics
 ///
-/// Panics if a verdict is unsound, because a value that is not a `D` is read as one. Panics if a
-/// verdict is incorrect, because `try_view_ref` rejects a value that is a `D`. Panics if
-/// `view_ref` compiles for the pair while `try_view_ref` does not. Panics if [`IMPRECISE`] is
+/// Panics if a verdict is unsound, because a value that is not a `D` is reinterpreted as one.
+/// Panics if a verdict is incorrect, because `try_view_ref` rejects a value that is a `D`. Panics
+/// if `view_ref` compiles for the pair while `try_view_ref` does not. Panics if [`IMPRECISE`] is
 /// poisoned.
 pub fn check_pair<S: Model, D: Model>() {
   let pair = format!("{} -> {}", name::<S>(), name::<D>());

@@ -412,7 +412,7 @@ fn signed_non_zero() {
   assert_eq!(pun::<NonZero<i32>, NonZero<u32>>(minus).get(), u32::MAX);
 }
 
-/// Checks that `ManuallyDrop` of an unsized type is read as that type: the layout of
+/// Checks that `ManuallyDrop` of an unsized type is reinterpreted as that type: the layout of
 /// `ManuallyDrop<[u8]>` checks that a pointer to it is represented as a pointer to a slice.
 #[test]
 fn manually_drop_of_a_slice() {

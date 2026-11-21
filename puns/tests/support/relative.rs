@@ -127,14 +127,13 @@ macro_rules! pointer {
     //   the scheme `SCHEME` of this file, from its address, its offset, its kind of aim and the
     //   length before a sequence or a text, for every type of the scheme. Only this file
     //   declares types of `SCHEME`.
-    // - What it aims at is there, valid, and its own: a value of this type in a buffer is made
-    //   by a `Builder`, which `Region::new` turns into a region whose pointers aim at valid
-    //   targets, aligned as `POINTER` says (the `# Safety` of `Region::new`, and
-    //   `Builder::reserve`). The target of `One::here` is the zero bytes of its offset, which
-    //   are a valid target by that `# Safety`, and which hold it at any address, since `here`
-    //   asserts that the target is no larger than the offset and no more aligned than the
-    //   pointer. A region never writes to its buffer, nor gives a `&mut` to any of
-    //   it.
+    // - What it aims at is there, valid, and its own: a value of this type in a buffer is made by a
+    //   `Builder`, which `Region::new` turns into a region whose pointers aim at valid targets,
+    //   aligned as `POINTER` says (the `# Safety` of `Region::new`, and `Builder::reserve`). The
+    //   target of `One::here` is the zero bytes of its offset, which are a valid target by that `#
+    //   Safety`, and which hold it at any address, since `here` asserts that the target is no
+    //   larger than the offset and no more aligned than the pointer. A region never writes to its
+    //   buffer, nor gives a `&mut` to any of it.
     // - Null: `Opt` is made with `or_null`, and `Region::opt` follows no pointer of offset zero.
     // - The target is the type: `POINTER` is made for `Target` by `Pointer::one`,
     //   `Pointer::sequence` or `Pointer::text`.
