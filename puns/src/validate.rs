@@ -424,8 +424,8 @@ const fn covers<X: Ops, S: Steps>() -> bool {
 /// Returns the value of the `size` or `len` rule that sets the length of the `T` at `base`.
 ///
 /// The rule is the one of `T`, or of its last field, and so on. [`layout::Layout::length_rule`]
-/// tells which rule it is and where. This function finds the same rule through the types.
-/// `from_head` uses it to find how long a value is.
+/// tells which rule it is and where, and this function finds the same rule through the types, so
+/// that `from_head` can find how long a value is.
 ///
 /// # Errors
 ///

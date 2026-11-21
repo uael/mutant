@@ -343,9 +343,9 @@ const fn wide(op: Op, how: How, a: u128, b: u128) -> Option<u128> {
 
 /// Defines `fn name(op, fails, a, b)` for each `name: T`, a binary operation computed on `T`.
 ///
-/// The operands and the result fit `T`, and a shift is by less than its width. A sum, a product
-/// or a shift then does not overflow `T`. A difference, a quotient or a remainder fails where it
-/// would on `u128`. Another operation fails.
+/// The operands and the result fit `T`, and a shift is by less than its width, so a sum, a product
+/// or a shift does not overflow `T`. A difference, a quotient or a remainder fails where it would
+/// on `u128`, and any other operation fails.
 macro_rules! narrow {
   ($($name:ident: $t:ty)+) => {$(
     #[inline(always)]

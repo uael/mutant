@@ -2050,8 +2050,8 @@ fn pin<T>(_: T) {}
 /// the compiler: whether a pun compiles, what it checks, and which values it accepts are the same
 /// in every layout that Rust allows. Only the message of a refusal may differ.
 ///
-/// With the `unstable` feature, `puns` uses the layout that `rustc` chose for the build, as it is.
-/// A pun is still sound for the build that compiles it. Everything that compiles without the
+/// With the `unstable` feature, `puns` uses the layout that `rustc` chose for the build, as it is,
+/// and a pun is still sound for the build that compiles it. Everything that compiles without the
 /// feature also compiles with it and does the same, and more compiles. See [The `unstable`
 /// feature](crate#the-unstable-feature).
 pub const UNSTABLE: bool = cfg!(feature = "unstable");

@@ -93,10 +93,10 @@
 //!
 //! ## A fresh value has uninitialized padding
 //!
-//! A value made in const evaluation (`E::A(x)`) has its padding uninitialized. Making a variant
-//! writes its fields and its tag, and nothing else. So a byte of a fresh sample outside its fields
-//! that can be read is a byte of the tag. The compile-fail test `discover_reads_padding` holds
-//! this.
+//! A value made in const evaluation (`E::A(x)`) has its padding uninitialized, because making a
+//! variant writes its fields and its tag and nothing else. So a byte of a fresh sample outside its
+//! fields that can be read is a byte of the tag, which the compile-fail test
+//! `discover_reads_padding` holds.
 //!
 //! ## The valid values of a layout are valid for `rustc`
 //!

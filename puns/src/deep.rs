@@ -52,9 +52,9 @@
 //! same program optimized, with LTO, every night, and it must be refused there too. Run that check
 //! when `rust-toolchain` changes. The program declares its own pointer and needs no other crate.
 //!
-//! For the same reason, `view_ref` is not a `const fn`. A call in a constant would make no
-//! instance. An interpreter that evaluates only the constants of the functions that it runs, as
-//! Miri does, would not refuse such a view. The refusal is one of a build.
+//! For the same reason, `view_ref` is not a `const fn`: a call in a constant would make no
+//! instance, and an interpreter that evaluates only the constants of the functions that it runs, as
+//! Miri does, would not refuse such a view. The refusal happens when the crate is built.
 //!
 //! # Pairing by position
 //!
@@ -110,10 +110,10 @@
 //!
 //! ## Only a proof of what pointers aim at makes a value that holds one
 //!
-//! `view_ref` and `try_view_ref` prove what pointers aim at. Every other function refuses a target
-//! that holds a pointer ([`Plan::gate`](crate::Plan::gate)). A crate that has pointers checks bytes
-//! from outside with a walk of its own ([`validate_in`](crate::validate_in)), as `nearest` does.
-//! `puns` does not load a buffer.
+//! `view_ref` and `try_view_ref` prove what pointers aim at, and every other function refuses a
+//! target that holds a pointer ([`Plan::gate`](crate::Plan::gate)). A crate that has pointers
+//! checks bytes from outside with a walk of its own ([`validate_in`](crate::validate_in)), as
+//! `nearest` does, since `puns` does not load a buffer.
 //!
 //! ## No `&mut` to a pointer, nor next to one
 //!
