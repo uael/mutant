@@ -55,8 +55,10 @@ modules. The module `view` is `#[doc(hidden)]`, so read its documentation in the
   function gives a `&mut` to one. The three rules and the eight invariants are named headings of
   [`deep`](src/deep.rs) ("Rules that every function keeps", "Invariants").
 - What the derive or a hand-written `Pun` lists (fields, variants, elements, rules, pointer
-  targets) is checked against the layout wherever it is used: `validate::listed`,
-  `deep::listed`, `visit::listed`.
+  targets) is compared with the layout, list by list, where pointers are followed:
+  `deep::listed` and `visit::listed`. The validation of the `try_` and `from_` functions compares
+  the rules (`validate::listed`) and the place of each field (`F::Path`), and takes the other
+  lists from the `# Safety` of `Pun`.
 - The derive names nothing through a path that the deriving crate can redefine.
 - Pointers are declared through the public API only, as another crate would declare them: in
   the doc test of `SelfRelative` (doc tests are outside the crate), in the tests
