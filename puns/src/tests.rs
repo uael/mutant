@@ -808,3 +808,41 @@ fn the_readme_defines_no_label_of_the_crate_documentation() {
     link_labels(&crate_docs).into_iter().filter(|label| defined.contains(label)).collect();
   assert!(shared.is_empty(), "labels of both the README and `lib.rs`: {shared:?}");
 }
+
+/// Returns the ids that rustdoc gives the headings of a Markdown text: the text in lowercase, its
+/// spaces as `-`, and only its letters, digits, `-` and `_`.
+fn heading_ids(text: &str) -> Vec<String> {
+  text
+    .lines()
+    .filter_map(|line| {
+      line.trim_start_matches('#').strip_prefix(' ').filter(|_| line.starts_with('#'))
+    })
+    .map(|heading| {
+      heading
+        .trim()
+        .chars()
+        .filter_map(|c| match c {
+          ' ' => Some('-'),
+          c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c.to_ascii_lowercase()),
+          _ => None,
+        })
+        .collect()
+    })
+    .collect()
+}
+
+/// A heading of the README with the id of a heading of the rest of the crate documentation takes
+/// that id, and the other becomes `id-1`: a link to `#soundness` once led to a short section of
+/// the README instead of the chapter of `lib.rs`.
+#[test]
+fn the_readme_takes_no_heading_id_of_the_crate_documentation() {
+  let crate_docs = include_str!("lib.rs")
+    .lines()
+    .filter_map(|line| line.strip_prefix("//! "))
+    .collect::<Vec<_>>()
+    .join("\n");
+  let ids = heading_ids(&crate_docs);
+  let shared: Vec<String> =
+    heading_ids(include_str!("../README.md")).into_iter().filter(|id| ids.contains(id)).collect();
+  assert!(shared.is_empty(), "headings of both the README and `lib.rs`: {shared:?}");
+}
