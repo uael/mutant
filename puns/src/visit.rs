@@ -315,9 +315,9 @@ pub fn validate_in<T: Pun, V: Visit>(
   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
   let size = const { T::LAYOUT.size() };
   match bytes.get(at..).and_then(|rest| rest.get(..size)) {
-    // SAFETY: `bytes.get(at..)` and `.get(..size)` returned `Some`, so the `size` bytes from
-    // `at` are in `bytes`. They are valid for reads and initialized, since they are `u8`s of a
-    // slice. This is what `value` requires.
+    // SAFETY: `bytes.get(at..)` and `.get(..size)` returned `Some`, so the `at + size` bytes from
+    // the start of `bytes` are in `bytes`, one allocation. The `size` bytes from `at` are valid for
+    // reads and initialized, since they are `u8`s of a slice. This is what `value` requires.
     Some(_) => unsafe { value::<T, V>(bytes.as_ptr(), at, visit) },
     None => Err(Invalid::at(at).into()),
   }
@@ -414,7 +414,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
   let mut i = 0;
   while i < count {
     // SAFETY: `i < count`, so the `size` bytes from `at + i * size` are in `elems`, which
-    // `bytes.get` returned. They are valid for reads and initialized, as `value` requires.
+    // `bytes.get` returned, and every byte from the start of `bytes` to their end is in `bytes`,
+    // one allocation. They are valid for reads and initialized, as `value` requires.
     unsafe { value::<T, V>(bytes.as_ptr(), at + i * size, visit)? };
     i += 1;
   }
@@ -464,7 +465,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///
 /// The caller must ensure that:
 ///
-/// - The `size_of::<T>()` bytes at `base + at` are valid for reads. They need not be aligned.
+/// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
+///   `size_of::<T>()` bytes at `base + at` are valid for reads. They need not be aligned.
 /// - Those bytes hold a `T` as its types say. Every scalar is initialized and a valid value of its
 ///   type (`bool`, `char`, `NonZero`, an enum without fields, the offset of a pointer).
 /// - The tag of every enum, or its niche, is initialized and selects one of its variants. The
@@ -1039,8 +1041,9 @@ const unsafe fn validate_elems<T: Pun>(base: *const u8, count: usize) -> bool {
 ///
 /// The caller must ensure that:
 ///
-/// - `base + at` is valid for reads of the `size_of::<T>()` bytes of a `T`, all initialized. They
-///   need not be aligned.
+/// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
+///   `size_of::<T>()` bytes of a `T` at `base + at` are valid for reads, all initialized. They need
+///   not be aligned.
 #[inline(always)]
 unsafe fn value<T: ?Sized + Pun, V: Visit>(
   base: *const u8,
@@ -1059,8 +1062,8 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
   };
   // The walk goes by the lists of types of `T`, which the derive writes: they must be its layout.
   const { assert!(listed::<T>(), "{}", LISTS) };
-  // SAFETY: `base + at` is valid for reads of a `T`, by contract on the caller, so `add(at)` stays
-  // in bounds of the allocation of `base`.
+  // SAFETY: The `at + size_of::<T>()` bytes from `base` are within one allocation, by contract on
+  // the caller, so `add(at)` stays in bounds of it, and `at` fits in an `isize`.
   let here = unsafe { base.add(at) };
   if const { !T::LAYOUT.has_pointers() } {
     // The code of `try_pun_ref` is the verdict; where it fails, the walk tells where, and the
