@@ -143,8 +143,9 @@ pub(crate) enum Valid {
 /// A `Spec` holds two sets of values. The values that it *accepts* are what a target requires. A
 /// pun makes a value of the scalar only from one of these. The values that it is *known* to hold
 /// are what every value of the type guarantees, whatever safe code does. A source proves these
-/// values, and no others. Both sets are the same, but for a field restricted by `#[pun(valid(..))]`
-/// ([`Layout::restricted`]) and for a scalar that may be uninitialized ([`Spec::maybe_uninit`]).
+/// values, and no others. Both sets are the same, except for a field restricted by
+/// `#[pun(valid(..))]` ([`Layout::restricted`]) and for a scalar that may be uninitialized
+/// ([`Spec::maybe_uninit`]).
 ///
 /// # Examples
 ///
@@ -166,9 +167,9 @@ pub struct Spec {
   /// The values that every value of the type holds, whatever safe code does, which a source
   /// guarantees.
   ///
-  /// This is `valid`, but for a field restricted by `#[pun(valid(..))]`, of which nothing is known
-  /// but what its type guarantees (safe code may write any value of that type to the field), and
-  /// for a scalar that may be uninitialized.
+  /// This is `valid`, except for a field restricted by `#[pun(valid(..))]`, of which nothing is
+  /// known but what its type guarantees (safe code may write any value of that type to the field),
+  /// and for a scalar that may be uninitialized.
   pub(crate) known: Valid,
   /// Whether the value of the scalar is the value of an unsigned integer, which rules read. It is
   /// not for a signed or floating-point number, a `bool`, a `char` or an enum.
@@ -244,8 +245,8 @@ impl Spec {
   ///
   /// The ranges are inclusive, and must be sorted, disjoint and not adjacent. [`sorted_ranges`]
   /// makes them from a list of values. They are both what the scalar accepts and what every value
-  /// of it is known to hold: the type guarantees them. One range of every value accepts any
-  /// initialized bytes, as [`Spec::any`] does.
+  /// of it is known to hold: the type guarantees them. A single range that covers every value
+  /// accepts any initialized bytes, as [`Spec::any`] does.
   ///
   /// # Panics
   ///
@@ -270,9 +271,9 @@ impl Spec {
   /// Returns the same scalar, whose values are those of `ranges`.
   ///
   /// The ranges are inclusive. They are both what the scalar accepts and what every value of it is
-  /// known to hold: the type guarantees them. One range of every value accepts any initialized
-  /// bytes, as [`Spec::any`] does. [`Layout::restricted`] makes a field that requires some values,
-  /// which its type does not guarantee.
+  /// known to hold: the type guarantees them. A single range that covers every value accepts any
+  /// initialized bytes, as [`Spec::any`] does. [`Layout::restricted`] makes a field that requires
+  /// some values, which its type does not guarantee.
   ///
   /// # Panics
   ///
@@ -703,7 +704,7 @@ pub(crate) struct Stable {
   pub(crate) fixed: bool,
   /// Each byte of a value belongs to the same part in every layout that Rust allows.
   ///
-  /// This is `fixed`, but for a struct whose orders of fields all make the same bytes, such as
+  /// This is `fixed`, except for a struct whose orders of fields all make the same bytes, such as
   /// `(u8, u8)`. Its bytes are the same in every order, but which field each byte holds is not, so
   /// what a check would read of a value is not the same either.
   pub(crate) ordered: bool,
@@ -1547,8 +1548,8 @@ pub struct Variant {
   pub(crate) ranges: Option<&'static [(u128, u128)]>,
   /// Whether the tag is in the fields of this variant: a niche.
   pub(crate) holds_tag: bool,
-  /// The enum when it is this variant: a struct of its fields, in which the tag is padding, but for
-  /// the variant that holds it.
+  /// The enum when it is this variant: a struct of its fields, in which the tag is padding, except
+  /// for the variant that holds it.
   pub(crate) layout: &'static Layout,
 }
 
@@ -2028,7 +2029,7 @@ fn pin<T>(_: T) {}
 /// Rust leaves a part of some layouts to the compiler, which may choose otherwise in its next
 /// version, or at random with `-Zrandomize-layout`. This part is the order of the fields of a
 /// struct or a tuple of the `Rust` representation, the place and the values of the tag of an enum
-/// without `repr`, and the niches of `Option` and `Result`, but where `core` documents them.
+/// without `repr`, and the niches of `Option` and `Result`, except where `core` documents them.
 ///
 /// Without the `unstable` feature, nothing that `puns` does depends on a layout that Rust leaves to
 /// the compiler. Whether a pun compiles, what it checks, and which values it accepts are the same
@@ -3167,13 +3168,13 @@ impl Layout {
     Self { id, ..self }
   }
 
-  /// Returns the same layout, of a type whose layout Rust leaves to the compiler, but for a size of
-  /// 0.
+  /// Returns the same layout, of a type whose layout Rust leaves to the compiler, except for a size
+  /// of 0.
   ///
-  /// This is an enum without `repr`, with fields or not, and `Option` and `Result` but where `core`
-  /// documents their layout. Rust specifies only that an enum without variants, or of one variant
-  /// whose fields have no size, has a size of 0. Such a layout is not `fixed` ([`Stable`]), and is
-  /// known as a source to be initialized only if it has no byte.
+  /// This is an enum without `repr`, with fields or not, and `Option` and `Result` except where
+  /// `core` documents their layout. Rust specifies only that an enum without variants, or of one
+  /// variant whose fields have no size, has a size of 0. Such a layout is not `fixed` ([`Stable`]),
+  /// and is known as a source to be initialized only if it has no byte.
   #[doc(hidden)]
   #[must_use]
   pub const fn unspecified(self) -> Self {
@@ -3818,8 +3819,8 @@ impl Layout {
   /// by offset.
   ///
   /// Each field gets its index in the order of declarations, and the number of leaves of the fields
-  /// declared before it. The sort is stable: fields at the same offset, which have no size but for
-  /// one, keep the order of their declarations.
+  /// declared before it. The sort is stable: fields at the same offset, which have no size except
+  /// for one, keep the order of their declarations.
   ///
   /// # Examples
   ///
@@ -4207,7 +4208,7 @@ impl Layout {
 
   /// Returns whether bytes that are all zero are a valid value of the layout.
   ///
-  /// Without the `unstable` feature, this is `false` for a layout that is not `fixed` but for a
+  /// Without the `unstable` feature, this is `false` for a layout that is not `fixed` except for a
   /// struct, since the values of the tag of an enum without `repr` are not specified. The fields of
   /// a struct are zeros in every order.
   pub(crate) const fn zeroable(&self) -> bool {
@@ -5882,7 +5883,7 @@ pub(crate) const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined:
     assert!(depth >= pops, "malformed expression");
     assert!(open == 0 || depth - pops >= parts[open - 1].1, "malformed expression");
     // A part that starts after this operation, and the operation that ends it: the one after it,
-    // but for the part of an `Else`, which is followed by the `Select` (which it does not skip).
+    // except for the part of an `Else`, which is followed by the `Select` (which it does not skip).
     if let Op::Shortcut { len, .. } | Op::Then(len) | Op::Else(len) = op {
       let end = i + len as usize + matches!(op, Op::Else(_)) as usize;
       assert!(depth >= 1 && len >= 1 && end < ops.len(), "malformed expression");
@@ -6185,7 +6186,7 @@ impl Machine {
       | Op::CrcZeros(_)
       | Op::Checksum(_)
       | Op::Matches(_)) => {
-        // The range, and the one taken as zeros (none but for `CrcZeros`).
+        // The range, and the one taken as zeros (none except for `CrcZeros`).
         let operands = if matches!(op, Op::CrcZeros(_)) { 4 } else { 2 };
         let (start, end) = (self.get(depth - operands), self.get(depth - operands + 1));
         let (zeros, to) =

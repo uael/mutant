@@ -158,7 +158,7 @@ pub struct Prefix {
 #[repr(C)]
 #[pun(size = length)]
 #[pun(assert(length >= 24))]
-// The checksum of IP over the packet, but for the 8 bytes of authentication; there is none when
+// The checksum of IP over the packet, except for the 8 bytes of authentication; there is none when
 // the authentication is cryptographic (type 2).
 #[pun(assert(auth_type == 2 || (sum16(0, 16) + sum16(24, length)) % 0xffff == 0))]
 pub struct Ospf {

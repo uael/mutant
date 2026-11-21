@@ -1086,9 +1086,9 @@ pub use layout::{crc32, sum16};
 /// - `#[pun(get(name: Type = EXPR, ..))]`: generates `const fn name(&self) -> Type`, which returns
 ///   `(EXPR) as Type`, for bit fields and the like. The method is as visible as the struct. Here
 ///   `EXPR` is any Rust expression. In it, the name of an unsigned integer field, or `self.name`,
-///   is the value of that field as a `u128`, but for a name that a `let` or a closure declares. A
-///   field of another type is refused where the method is used. The field is read by reference, or
-///   copied in a packed struct.
+///   is the value of that field as a `u128`, except for a name that a `let` or a closure declares.
+///   A field of another type is refused where the method is used. The field is read by reference,
+///   or copied in a packed struct.
 /// - `#[pun(tag(Key = Type, ..))]`: implements [`Tag<Key>`](Tag) with `type Tag = Type`. Where the
 ///   struct is carried by something that tells what it carries with a `Key`, that `Key` must be a
 ///   `Type`.
@@ -1142,8 +1142,8 @@ pub use layout::{crc32, sum16};
 ///   `self.name` (`self.0` in a tuple struct). A signed or floating-point number, a `bool`, a
 ///   `char` or an enum is refused, since its bits are not its value. A rule does not name the
 ///   fields of a field or the elements of an array. It reads them with `le` and `be`.
-/// - `size_of_val(self)`, the size of the value in bytes, but in a `size` or a `len`, which defines
-///   it.
+/// - `size_of_val(self)`, the size of the value in bytes, except in a `size` or a `len`, which
+///   defines it.
 /// - integer literals, with no suffix or the one of an unsigned type (`1u8`), and byte literals
 ///   (`b'a'`). A floating-point number, a negative number, a signed integer and a `char` are
 ///   refused, since they would mean something else.
@@ -1759,7 +1759,7 @@ impl<K: Pun + Copy> Tag<K> for [u8] {
 pub unsafe trait Fields {
   type Type: ?Sized + Pun;
   type Next: Fields;
-  /// The last field of the list, which may be unsized (`()` but for the fields of a struct, of
+  /// The last field of the list, which may be unsized (`()` except for the fields of a struct, of
   /// which only the last one may be).
   type Last: Fields;
   /// Where the field is in the target, given where the struct is.
@@ -1845,7 +1845,7 @@ pub trait Steps: sealed::Sealed {
   /// The condition of a walk and what follows a step (`WALK`), `()` otherwise.
   type Cond: Steps;
   type Then: Steps;
-  /// Where they are, given where the walk is: `X` itself but for a walk. The functions that
+  /// Where they are, given where the walk is: `X` itself except for a walk. The functions that
   /// apply the operations name all of these, whatever the kind of `Self` (the compiler makes
   /// what a function names, used or not): so they name nothing new where they are not used.
   type InCond<X: steps::Ops>: steps::Ops;

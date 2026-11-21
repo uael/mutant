@@ -67,7 +67,7 @@ use crate::{Pun, layout::Pointer};
 ///    pointer relies on nothing of the pointer, of its buffer, or of what it aims at, except the
 ///    requirements above.
 ///
-/// If `P: SelfRelative`, then unsafe code may assume these requirements of `P`, but for "The
+/// If `P: SelfRelative`, then unsafe code may assume these requirements of `P`, except for "The
 /// declaring crate relies on this, and on nothing more", which binds the declaring crate. `puns`
 /// relies on "The scheme is the way to the target" when it reads a pointer as another of the same
 /// scheme, on "What it aims at is there, and valid" and "What it aims at is its own" when it
