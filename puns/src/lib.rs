@@ -3,21 +3,20 @@
 //! # Reference
 //!
 //! A *pun* reinterprets the bytes of a value of one type, the *source* `S`, as a value of another
-//! type, the *target* `D`. For each pun, the analysis decides at compile time which of three cases
-//! applies:
+//! type, the *target* `D`. At compile time, `puns` puts each pun in one of three kinds:
 //!
-//! - The pun is **proven** if every value of the source is a [valid] value of the target. It
-//!   compiles to no check, though it may still compute an address or a length.
-//! - The pun is **checked** if only some values of the source are valid targets. A `try_` or
-//!   `from_` function then tests at run time what the analysis could not prove.
-//! - The pun is **refused** if it can never be valid, or if what it needs can be neither proven nor
-//!   checked. It does not compile.
+//! - **Proven**: every value of the source is a [valid] value of the target. The pun compiles to no
+//!   check, though it may still compute an address or a length.
+//! - **Checked**: only some values of the source are valid targets. A `try_` or `from_` function
+//!   checks at run time what could not be proven.
+//! - **Refused**: the pun can never be valid, or some part of it can be neither proven nor checked.
+//!   It does not compile.
 //!
 //! `puns` works with plain data: structs and enums of any representation, `repr(C)` unions, tuples,
 //! arrays, slices, structs that end with a slice, `str`, `MaybeUninit`, and types without values.
 //! For an enum of the `Rust` representation, `puns` finds the layout that `rustc` chose.
-//! `#[derive(Pun)]` describes what the data itself says about a value: its size, the length of its
-//! trailing slice, and the conditions it meets.
+//! `#[derive(Pun)]` also describes what the bytes of a value say about it: its size, the length of
+//! its trailing slice, and conditions such as a checksum.
 //!
 //! |               | Whole                                  | Front                     | Back                      |
 //! |---------------|----------------------------------------|---------------------------|---------------------------|
@@ -3187,15 +3186,15 @@ const unsafe fn pun_unchecked<S: Copy, D: Copy>(value: S) -> D {
 
 /// Reinterprets a reference to an `S` as a reference to a `D`.
 ///
-/// The returned reference points to the same bytes as `value`. If `D` ends with a slice, the slice
-/// has the length that gives the result the extent of `value` (its size up to the end of its slice,
-/// without the padding that may follow the slice). Nothing is checked at run time.
+/// The returned reference points to the same bytes as `value`. If `D` ends with a slice, its length
+/// is chosen so that the result covers the same bytes as `value`, up to the end of the slice of
+/// `value`. Padding after that slice is not included. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
 /// A call compiles only if all of the following hold:
 ///
-/// - `D` holds no [self-relative pointer](SelfRelative). Use [`view_ref`] to read such a value.
+/// - `D` holds no [self-relative pointer](SelfRelative). Use [`view_ref`] for such a value.
 /// - Whatever the length of its slice, every value of `S` has a size that `D` can have. For sized
 ///   types, this means `size_of::<S>() == size_of::<D>()`.
 /// - `D` needs no greater alignment than `S`. Use [`try_pun_ref`] to check the address at run
@@ -3224,16 +3223,18 @@ const unsafe fn pun_unchecked<S: Copy, D: Copy>(value: S) -> D {
 #[inline(always)]
 pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
   const { Plan::<S, D>::BY_REF };
-  // SAFETY: `Plan::<S, D>::BY_REF` compiled, so `check` found the analysis to meet `Need::REF`.
-  // `Plan::cast` returns a pointer to the address of `value`. Its tail length gives the target the
-  // extent of `value`, since the fit is `Exact::Always`. The reference is valid [1]:
-  // - It is aligned. The analysis found `D` no more aligned than `S` (`aligned`), `value` is
-  //   aligned for `S`, and alignments are powers of two.
+  // SAFETY: `Plan::<S, D>::BY_REF` compiled, so the analysis meets `Need::REF`: the fit is
+  // `Exact::Always`, `D` is no more aligned than `S`, and the relation is infallible.
+  // `Plan::cast` returns a pointer to the address of `value`, with a tail length that gives the
+  // target the extent of `value`. The reference made from it is valid [1]:
+  // - It is not null, because `value` is a reference at the same address.
+  // - It is aligned, because `value` is aligned for `S`, `D` is no more aligned than `S`, and
+  //   alignments are powers of two.
   // - It is not dangling. The target has the extent of `value` and no greater alignment, so its
-  //   size, its extent rounded up to its alignment, is at most the size of `value`. So it is in
-  //   the allocation of `value`, and its size fits in an `isize`.
-  // - It points to a valid `D`. The relation records nothing, so every value of `S` is a valid
-  //   `D` (`Relation::infallible`).
+  //   size, which is its extent rounded up to its alignment, is at most the size of `value`. So it
+  //   is within the allocation of `value`, and its size fits in an `isize`.
+  // - It points to a valid `D`, because the relation is infallible: every value of `S` is a valid
+  //   `D`.
   // The reference has the lifetime of the shared borrow `value`. Neither `S` nor `D` holds an
   // `UnsafeCell` (`Pun`, section Safety), so nothing writes the bytes while it lives.
   //

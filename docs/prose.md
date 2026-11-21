@@ -66,6 +66,43 @@ far enough", where a simpler sentence says the same. The text the author approve
 > But by then compile-time evaluation was too limited, types were worse, and after many prototypes
 > that mixed the two I stopped working on the project for a long time.
 
+The opening of the reference, where a vague subject ("the analysis decides … which of three cases
+applies") and vague objects ("what it needs", "what the data itself says") became plain ones.
+Before:
+
+> For each pun, the analysis decides at compile time which of three cases applies:
+>
+> - The pun is **refused** if it can never be valid, or if what it needs can be neither proven nor
+>   checked.
+
+After:
+
+> At compile time, `puns` puts each pun in one of three kinds:
+>
+> - **Refused**: the pun can never be valid, or some part of it can be neither proven nor checked.
+
+The docs of `pun_ref`, where a definition in parentheses inside a long sentence became two plain
+sentences. Before:
+
+> If `D` ends with a slice, the slice has the length that gives the result the extent of `value`
+> (its size up to the end of its slice, without the padding that may follow the slice).
+
+After:
+
+> If `D` ends with a slice, its length is chosen so that the result covers the same bytes as
+> `value`, up to the end of the slice of `value`. Padding after that slice is not included.
+
+The `SAFETY` comment of `pun_ref`, which states what the compiled check means where it is used,
+and proves every condition of the quoted rule, "non-null" included, which it had left out. After:
+
+> SAFETY: `Plan::<S, D>::BY_REF` compiled, so the analysis meets `Need::REF`: the fit is
+> `Exact::Always`, `D` is no more aligned than `S`, and the relation is infallible. […] The
+> reference made from it is valid [1]:
+>
+> - It is not null, because `value` is a reference at the same address.
+> - It is aligned, because `value` is aligned for `S`, `D` is no more aligned than `S`, and
+>   alignments are powers of two.
+
 ## What reads as generated
 
 Avoid these patterns, each of which is common in generated text:
