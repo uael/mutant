@@ -11,9 +11,10 @@
 //! [`mem::discriminant`] and read bytes. Every conclusion is either observed, or a hypothesis that
 //! an experiment verifies. When a hypothesis is wrong, the experiment gives another answer, and the
 //! enum is refused with a message ("no tag found", "unsupported layout", and so on), or it is an
-//! error of const evaluation, and the build fails. It never finds a wrong layout. Every experiment
-//! copies a sample and reads a variant. There are about four experiments for each variant, and none
-//! for each byte of a field.
+//! error of const evaluation, and the build fails. It never finds a wrong layout. Most experiments
+//! copy a sample, change some of its bytes, and read the variant of the copy. The others read bytes
+//! of a sample. The number of experiments grows with the number of variants and of the scalars that
+//! may hold a niche, not with the size of the fields.
 //!
 //! # Cases
 //!

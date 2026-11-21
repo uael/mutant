@@ -1117,7 +1117,9 @@ const fn relate_range(
       if !free || b.enumeration().is_some() {
         // Otherwise nothing is proven, and everything is checked at run time.
         out.marks = Marks::ALL;
-        out.partial = Some(pos);
+        if out.partial.is_none() {
+          out.partial = Some(pos);
+        }
         // No check proves a pointer, so a pointer that the target holds is recorded as not proven.
         if b.stack[0].layout.has_pointers() {
           out.pointer(pos);
@@ -2440,8 +2442,8 @@ pub struct Fit {
 pub const TOO_SMALL: &str = "the source is smaller than the target";
 /// The reason of [`Exact::Never`] when the source is larger than the target.
 pub const TOO_LARGE: &str = "the source is larger than the target";
-/// The reason of [`Exact::Never`] when no length of the slice tail of the target gives the size
-/// of the source.
+/// The reason of [`Exact::Never`] when no number of elements in the tail of the target makes it the
+/// size of the source.
 pub const UNEVEN: &str =
   "the size of the source cannot be reached with elements of the tail slice of the target";
 

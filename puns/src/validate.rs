@@ -25,11 +25,11 @@
 //!
 //! Nothing that a list says is trusted. Where a list is used, it is checked against the layout
 //! ([`listed`], [`covers`]). Every rule with an expression must be listed once and in order, with
-//! every operation of each, and a walk where there is one and only there. The functions name every
-//! part of the tree whatever its kind. Where a part is not a walk, they name the expression that it
-//! is in again, which adds nothing new. [`Machine::apply`](layout::Machine::apply) never sees a
-//! walk. `from_head` also finds a `size` rule of the last field through the types (`Fields::Last`),
-//! and checks that it is the layout's.
+//! every operation of each, and with a walk exactly where the expression has one. The functions
+//! name every part of the tree whatever its kind. Where a part is not a walk, they name the
+//! expression that it is in again, which adds nothing new.
+//! [`Machine::apply`](layout::Machine::apply) never sees a walk. `from_head` also finds a `size`
+//! rule of the last field through the types (`Fields::Last`), and checks that it is the layout's.
 //!
 //! # The machine
 //!
@@ -626,8 +626,9 @@ pub const unsafe fn region_at<'a, T: ?Sized + Pun, L: Rules>(
 ///
 /// # Errors
 ///
-/// Returns `None` if the expression fails: an overflow, a division by zero, a shift by 128 or
-/// more, or a read out of the `size` bytes.
+/// Returns `None` if the expression fails, as each [`Op`] documents: for example
+/// an overflow, a division by zero, a shift by 128 or more, a read out of the `size` bytes, or a
+/// walk that does not end.
 ///
 /// # Safety
 ///

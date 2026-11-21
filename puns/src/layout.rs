@@ -30,11 +30,12 @@
 //!   ranges. A scalar that restricts its values is 1 to 16 bytes, while one that accepts any bytes
 //!   may have any size. `bool` is `0..=1`, `char` is two ranges, and `NonZero` is `1..`. An enum
 //!   without fields is the values of its variants, read from the compiler whatever its `repr`. A
-//!   scalar has two sets of values. What it *requires* is the values that a value made of it must
-//!   have, and what it is *known* to be is what every value of it is. The two are the same, with
-//!   two exceptions. A field restricted by `#[pun(valid(..))]` requires values that it is not known
-//!   to hold ([Guarantees and requirements](crate#guarantees-and-requirements)), and a scalar made
-//!   by [`Spec::maybe_uninit`] requires some values but is known to be anything, padding included.
+//!   scalar has two sets of values. The values it *accepts* are those that a value made of it must
+//!   have, and the values it is *known* to hold are those that every value of it has. The two are
+//!   the same, with two exceptions. A field restricted by `#[pun(valid(..))]` accepts fewer values
+//!   than it is known to hold ([Guarantees and requirements](crate#guarantees-and-requirements)),
+//!   and a scalar made by [`Spec::maybe_uninit`] accepts some values but is known to hold anything,
+//!   padding included.
 //! - A **struct** has its fields ([`Field`]) at their offsets, which come from the compiler for
 //!   any `repr`. The bytes that no field covers are padding. A struct may have rules ([`Rule`]).
 //! - An **enum** with fields ([`Enum`]) has a tag, a scalar at a fixed place, and each [`Variant`]
@@ -2599,10 +2600,10 @@ impl Layout {
 
   /// Returns whether the validation has nothing to check of a value of the layout.
   ///
-  /// This is so if the layout has no leaf (no scalar that accepts only some values, no pattern, no
-  /// pointer, no enum with fields, no union, no type without values, and no rule). Any bytes that
-  /// are initialized wherever the layout is not padding are then a valid value, and
-  /// [`validate_in`](crate::validate_in) reads nothing of such a value.
+  /// This is so if the layout has nothing that a validation checks: no scalar that accepts only
+  /// some values, no pattern, no pointer, no enum with fields, no union, no type without values,
+  /// and no rule. Any bytes that are initialized wherever the layout is not padding are then a
+  /// valid value, and [`validate_in`](crate::validate_in) reads nothing of such a value.
   ///
   /// # Examples
   ///
@@ -4658,7 +4659,10 @@ impl Dfa {
     while i < self.states.len() {
       let (edges, mut j) = (self.states[i].edges, 0);
       while j < edges.len() {
-        assert!(edges[j].0 <= edges[j].1 && (edges[j].2 as usize) < self.states.len());
+        assert!(
+          edges[j].0 <= edges[j].1 && (edges[j].2 as usize) < self.states.len(),
+          "a DFA edge is empty or leads to no state"
+        );
         assert!(j == 0 || edges[j - 1].1 < edges[j].0, "DFA edges must be sorted and disjoint");
         j += 1;
       }
@@ -4944,9 +4948,11 @@ pub enum Op {
   /// as the expression `cond` holds for it. In both expressions, the value is the variable `var`.
   ///
   /// A walk reaches something at an offset that depends on what comes before it: after options, or
-  /// at the end of a chain of headers. A walk takes at most `8 * size + 128` steps, where `size` is
-  /// the size of the value in bytes, one step for each bit of the value and of a `u128`. It fails
-  /// if `cond` still holds after them, or if `cond` or `next` fails.
+  /// at the end of a chain of headers. A walk takes at most `8 * size + 128` steps, one for each
+  /// bit of the `size` bytes that the expression may read and of a `u128`. These bytes are the
+  /// value, or, for a `size` or `len` rule, which tells how large the value is, the bytes from the
+  /// start of the value to the end of the input. It fails if `cond` still holds after them, or if
+  /// `cond` or `next` fails.
   Walk {
     /// The variable that holds the value, in `cond` and in `next`.
     var: u8,
@@ -5905,6 +5911,10 @@ pub(crate) const fn check_ops(ops: &[Op], head: usize, sizes: bool, mut defined:
   let (mut parts, mut open) = ([(0usize, 0usize, 0u8, Op::Size); STACK], 0);
   while i < ops.len() {
     let op = ops[i];
+    // An automaton written without `Op::matches` is checked here, before a validation runs it.
+    if let Op::Matches(dfa) = op {
+      dfa.check();
+    }
     assert!(
       !(sizes && matches!(op, Op::Size)),
       "a size or a length cannot be computed from `size_of_val(self)`, which it defines"
@@ -6314,8 +6324,8 @@ impl Machine {
 // `walk_limit` adds 16 to the size of a value, at most `isize::MAX`: it does not overflow.
 const _: () = assert!(isize::MAX as usize <= usize::MAX - 16);
 
-/// Returns the greatest number of steps of a walk over a value of `size` bytes, a step for each bit
-/// of the value, and for each bit of a `u128`, so that a walk ends.
+/// Returns the greatest number of steps of a walk that may read `size` bytes, a step for each bit
+/// of these bytes and for each bit of a `u128`, so that a walk ends.
 ///
 /// `size` is at most `isize::MAX`, so adding 16 does not overflow.
 #[inline(always)]

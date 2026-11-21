@@ -14,8 +14,8 @@
 //!
 //! A value is known as two intervals, one for each half of a `u128` ([`Range`]). For example,
 //! `(kind << 64) + start` is a kind of `0..=255` in the high half and an offset in the low half. A
-//! field, a read of `n` bytes and a checksum are as wide as they are. A literal is itself, and a
-//! comparison is `0..=1`. `size_of_val(self)` is at most `isize::MAX` ([`SIZE_MAX`]). A QUIC
+//! field, a read of `n` bytes and a checksum may be any value of their width. A literal is itself,
+//! and a comparison is `0..=1`. `size_of_val(self)` is at most `isize::MAX` ([`SIZE_MAX`]). A QUIC
 //! integer is 62 bits, and the other integers of variable length may be anything. Each operation
 //! makes the range of its result from those of its operands, and tells whether it may fail. A sum
 //! whose bounds do not overflow cannot fail. Nor can a difference whose left side is never less

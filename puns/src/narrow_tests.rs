@@ -512,8 +512,7 @@ fn expressions_are_the_ones_on_u128() {
 }
 
 /// The walk of IPv6 (`examples/codegen.rs`): its state is two numbers, one in each half, and the
-/// step adds to the low one what does not carry: each half is computed alone. The checksum after
-/// it is computed on 32 bits.
+/// step adds to the low one what does not carry: each half is computed alone.
 #[test]
 fn the_walk_of_ipv6_is_two_halves() {
   const MASK: u128 = u64::MAX as u128;

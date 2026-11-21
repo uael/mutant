@@ -309,7 +309,7 @@ fn part_mut<S: ?Sized + Pun, D: ?Sized + Pun>(tail: bool) -> String {
   word.into()
 }
 
-/// The rule of `Distinct` over other fields: a field that is restricted, and one that is a `bool`.
+/// The rule of `Distinct` over other fields: one restricted to ASCII, and one that is any `u8`.
 #[derive(Pun)]
 #[repr(C)]
 #[pun(crate, assert(a != b))]
@@ -677,6 +677,16 @@ fn patterns_are_the_same_by_their_states() {
   assert!(!pattern(AGAIN).equals(&pattern(Dfa::UTF8)));
   assert!(Dfa::UTF8.is_utf8());
   assert!(!ANY.is_utf8() && !AGAIN.is_utf8());
+}
+
+/// An automaton that a rule names is checked by `Layout::structure`, whether or not it was made
+/// with `Op::matches`: one whose edge leads to no state would fail a validation.
+#[test]
+#[should_panic(expected = "a DFA edge is empty or leads to no state")]
+fn an_automaton_of_a_rule_is_checked() {
+  use crate::layout::{Dfa, DfaState, Op, check_ops};
+  const BROKEN: &Dfa = &Dfa { id: 7, states: &[DfaState { accept: true, edges: &[(0, 0xff, 1)] }] };
+  check_ops(&[Op::Lit(0), Op::Lit(1), Op::Matches(BROKEN)], 1, false, 0, 0);
 }
 
 /// A check reads the bytes of the source that every layout has there: not those of a struct
