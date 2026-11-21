@@ -1109,7 +1109,9 @@ pub use layout::{crc32, sum16};
 ///
 /// On a struct:
 ///
-/// - `#[pun(size = EXPR)]`: the size in bytes of a value is `EXPR`.
+/// - `#[pun(size = EXPR)]`: the extent of a value in bytes is `EXPR`: its size up to the end of its
+///   slice, without the padding that may follow the slice. [`from_head`] takes that many bytes,
+///   rounded up to the alignment of the struct.
 /// - `#[pun(assert(EXPR))]`: `EXPR` must be true of a value. A struct may have several.
 /// - `#[pun(get(name: Type = EXPR, ..))]`: generates `const fn name(&self) -> Type`, which returns
 ///   `(EXPR) as Type`, for bit fields and the like. The method is as visible as the struct. Here
@@ -1170,8 +1172,9 @@ pub use layout::{crc32, sum16};
 ///   `self.name` (`self.0` in a tuple struct). A signed or floating-point number, a `bool`, a
 ///   `char` or an enum is refused, since its bits are not its value. A rule does not name the
 ///   fields of a field or the elements of an array: it reads them with `le` and `be`.
-/// - `size_of_val(self)`, the size of the value in bytes, except in a `size` or a `len`, which
-///   defines it.
+/// - `size_of_val(self)`, the extent of the value in bytes: its size up to the end of its slice,
+///   without the padding that may follow the slice, which `core::mem::size_of_val` counts. A `size`
+///   or a `len`, which defines it, does not read it.
 /// - integer literals, with no suffix or the suffix of an unsigned type (`1u8`), and byte literals
 ///   (`b'a'`). Floating-point numbers, negative numbers, signed integers and `char`s are refused,
 ///   since they would mean something else.
@@ -3145,9 +3148,9 @@ const unsafe fn pun_unchecked<S: Copy, D: Copy>(value: S) -> D {
 
 /// Reinterprets a reference to an `S` as a reference to a `D`.
 ///
-/// The returned reference points to the same bytes as `value`. If `D` ends with a slice, the
-/// slice has the length that gives the result the size of `value`. Nothing is checked at run
-/// time.
+/// The returned reference points to the same bytes as `value`. If `D` ends with a slice, the slice
+/// has the length that gives the result the extent of `value`: its size up to the end of its slice,
+/// without the padding that may follow the slice. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///

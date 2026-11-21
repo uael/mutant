@@ -4811,8 +4811,9 @@ pub enum Op {
     /// `true` if it is big-endian, `false` if little-endian.
     big: bool,
   },
-  /// Pushes the size in bytes of the value, `size_of_val(self)`. A `size` or `len` rule, which
-  /// defines that size, does not read it.
+  /// Pushes the extent of the value in bytes, `size_of_val(self)` in a rule: its size up to the end
+  /// of its slice, without the padding that may follow the slice. A `size` or `len` rule, which
+  /// defines it, does not read it.
   Size,
   /// Replaces an offset with the unsigned integer of `size` bytes at that offset in the value.
   /// Fails if these bytes are not all within the value.
@@ -5722,7 +5723,8 @@ pub(crate) const fn same_ops(a: &[Op], b: &[Op]) -> bool {
 /// ```
 #[derive(Copy, Clone, Debug)]
 pub enum Rule {
-  /// The size of the value in bytes is the value of the expression.
+  /// The extent of the value in bytes, up to the end of its slice and without the padding that may
+  /// follow it, is the value of the expression.
   Size(&'static [Op]),
   /// The number of elements of the tail of the value, a slice or an array, is the value of the
   /// expression.
