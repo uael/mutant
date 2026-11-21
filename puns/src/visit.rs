@@ -269,9 +269,9 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///   rules, those rules. This holds for every type that derives `Pun` and every type for which
 ///   `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a violation,
-/// but `cargo build` does. A generic function that calls `validate_in` compiles until it is
-/// instantiated with types that violate them.
+/// These conditions are checked after monomorphization, as [the crate
+/// documentation](crate#compile-time-errors) explains. A generic function that calls `validate_in`
+/// compiles until it is instantiated with types that violate them.
 ///
 /// # Examples
 ///
@@ -810,9 +810,9 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 ///   elements and pointer targets that its layout describes. This holds for every type that
 ///   derives `Pun` and every type for which `puns` implements it.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `copy_in` compiles until it
-/// is instantiated with types that violate them.
+/// These conditions are checked after monomorphization, as [the crate
+/// documentation](crate#compile-time-errors) explains. A generic function that calls `copy_in`
+/// compiles until it is instantiated with types that violate them.
 ///
 /// # Examples
 ///

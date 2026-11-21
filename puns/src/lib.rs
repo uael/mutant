@@ -1249,8 +1249,9 @@ pub use layout::{crc32, sum16};
 ///   `u128` needs, even if the value fits.
 /// - `crc32(start, end)`: the Ethernet CRC-32 of the bytes from `start` to `end`.
 /// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of 1 to 64 bits, given by its
-///   parameters in the catalogue of CRCs (see [`layout::Crc`]). `crc::<16, 0x8005, 0xffff, true,
-///   0>` is the Modbus CRC, and `crc::<32, 0x1edc6f41, 0xffffffff, true, 0xffffffff>` is CRC-32C.
+///   parameters in the catalogue of parametrised CRC algorithms (see [`layout::Crc`]). `crc::<16,
+///   0x8005, 0xffff, true, 0>` is the Modbus CRC, and `crc::<32, 0x1edc6f41, 0xffffffff, true,
+///   0xffffffff>` is CRC-32C.
 /// - `crc32(start, end, from, to)` and `crc::<..>(start, end, from, to)`: the same, with the bytes
 ///   from `from` to `to` read as zeros, for a CRC over the header that holds it (GPT).
 /// - `sum16(start, end)`: the ones' complement sum of the 16-bit words from `start` to `end`. It is
@@ -1362,21 +1363,12 @@ pub use layout::{crc32, sum16};
 /// [Soundness](crate#soundness) says. That validity is what the language guarantees, and the
 /// private invariants of the types of [`num`].
 ///
-/// Deriving `Pun` makes every field as accessible as if it were public. A value of the type can be
-/// made from anything whose bytes are valid for its fields and rules, read as anything its bytes
-/// are, and written through a `&mut` to another type. [`try_pun`] and [`from_bytes`] check what the
-/// derive was told, and nothing that a constructor would check, so a type whose private fields keep
-/// an invariant that the derive is not told about must not derive `Pun`.
-///
-/// `#[pun(valid(..))]` and rules are requirements, not guarantees. They are checked when a value is
-/// made from another type, or proven by the same rules at the same place in the source. They never
-/// prove what another type guarantees, since safe code can write any value to a field, so the bytes
-/// of a struct whose field has `valid(..=0x7f)` are still checked when read as a `str`.
-///
-/// Two types that differ only in phantom parameters or lifetimes have the same layout, and each
-/// converts to the other freely, by value and by `&mut`. A type whose parameters act as a brand (an
-/// invariant lifetime that ties a value to a scope, or a marker of what a value was checked
-/// against) must not derive `Pun`, since a pun would turn one brand into another.
+/// Deriving `Pun` makes every field as accessible as if it were public, and lets two types that
+/// differ only in phantom parameters or lifetimes convert to each other. So a type whose private
+/// fields keep an invariant, or whose parameters act as a brand, must not derive `Pun`, as [What
+/// deriving `Pun` means](crate#what-deriving-pun-means) shows. `#[pun(valid(..))]` and rules are
+/// [requirements](crate#guarantees-and-requirements), which safe code can break, so they never
+/// prove what another type guarantees.
 ///
 /// Without the `unstable` feature, nothing that a pun does depends on a layout that Rust leaves to
 /// the compiler, and with it, a pun uses the layout that `rustc` chose for this build ([The

@@ -294,8 +294,8 @@ const fn require(why: Option<&'static str>) {
 /// - For every pair of types that [`pair`] names behind pointers, [`behind`] finds nothing that
 ///   prevents the read.
 ///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does.
+/// These conditions are checked after monomorphization, as [the crate
+/// documentation](crate#compile-time-errors) explains.
 #[inline(always)]
 pub fn proof<S: ?Sized + Pun, D: ?Sized + Pun>() {
   const { require(local::<S, D>(0)) };

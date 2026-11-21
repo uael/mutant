@@ -239,9 +239,9 @@ pub unsafe trait SelfRelative: Sized {
 /// - `Option<Option<Type>>` is larger than `Option<Type>`.
 ///
 /// These conditions are checked after monomorphization, when the `LAYOUT` of `Type` or of
-/// `Option<Type>` is evaluated, and not where the macro is called, so `cargo check` does not report
-/// a violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic
-/// of [`Pointer::one`](crate::layout::Pointer::one),
+/// `Option<Type>` is evaluated, and not where the macro is called, as [the crate
+/// documentation](crate#compile-time-errors) explains. `POINTER` is evaluated at compile time as
+/// well, so a panic of [`Pointer::one`](crate::layout::Pointer::one),
 /// [`Pointer::sequence`](crate::layout::Pointer::sequence) or
 /// [`Pointer::text`](crate::layout::Pointer::text) is also a compile error.
 ///

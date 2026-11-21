@@ -361,14 +361,35 @@ impl Spec {
   ///
   /// # Examples
   ///
-  /// The `Spec` of `i16` is `Spec::any::<i16>().not_a_number()`, so a rule does not read an `i16`:
+  /// The `Spec` of `i16` is `Spec::any::<i16>().not_a_number()`. A type of two bytes that are a
+  /// signed number is declared the same way, and a rule then does not read it:
   ///
   /// ```should_panic
-  /// use puns::layout::Op;
+  /// use puns::{
+  ///   Scalar,
+  ///   layout::{Endian, Op, Spec},
+  /// };
   ///
-  /// // A rule reads a `u16`, and not an `i16`.
+  /// /// A signed number of two bytes, the most significant first.
+  /// #[derive(Clone, Copy)]
+  /// #[repr(transparent)]
+  /// struct I16be([u8; 2]);
+  ///
+  /// // SAFETY: `I16be` is `repr(transparent)` over `[u8; 2]`, so it has the layout of a `[u8; 2]`
+  /// // [1], and `SPEC` has its size. Every value is two initialized bytes, which `Spec::any`
+  /// // accepts, any two initialized bytes are a valid `I16be`, and it holds no `UnsafeCell`.
+  /// //
+  /// // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.transparent.layout-abi:
+  /// //
+  /// //     Structs and enums with this representation have the same layout and ABI as the only
+  /// //     non-size 0 non-alignment 1 field, if present, or unit otherwise.
+  /// unsafe impl Scalar for I16be {
+  ///   const SPEC: Spec = Spec::any::<I16be>().with_endian(Endian::Big).not_a_number();
+  /// }
+  ///
+  /// // A rule reads a `u16`, but neither an `i16` nor an `I16be`.
   /// let _ = Op::load::<u16>(0);
-  /// let _ = Op::load::<i16>(0);
+  /// let _ = Op::load::<I16be>(0);
   /// ```
   #[must_use]
   pub const fn not_a_number(self) -> Self {
@@ -690,9 +711,8 @@ pub(crate) enum Uniform {
 /// What a layout has in common with every layout that Rust allows for its type.
 ///
 /// Rust leaves part of some layouts to the compiler, which may choose differently in its next
-/// version, or at random under `-Zrandomize-layout`. That part is the order of the fields of a
-/// struct or tuple of the `Rust` representation, and the tag and niches of an enum of that
-/// representation. A `Stable` says which facts about a layout hold under every choice, and is
+/// version, or at random under `-Zrandomize-layout`, as [The `unstable`
+/// feature](crate#the-unstable-feature) lists. A `Stable` says which facts about a layout hold under every choice, and is
 /// computed from the layouts of its parts.
 ///
 /// Without the `unstable` feature, the analysis does not look into a layout that is not `fixed`
@@ -898,8 +918,7 @@ pub enum Aim {
   /// of the pointer defines.
   Sequence {
     /// The alignment of the first element, which the crate that declares the pointer guarantees. It
-    /// is a power of two, at least the alignment of the element type. `nearest` declares the larger
-    /// of the alignment of the element and the width of the offset.
+    /// is a power of two, at least the alignment of the element type.
     align: usize,
   },
   /// Bytes that are UTF-8. The bytes of the buffer tell how many there are, as the scheme of the
@@ -2049,10 +2068,8 @@ fn pin<T>(_: T) {}
 /// Whether the `unstable` feature is enabled.
 ///
 /// Rust leaves part of some layouts to the compiler, which may choose differently in its next
-/// version, or at random under `-Zrandomize-layout`. That part is the order of the fields of a
-/// struct or tuple of the `Rust` representation, the position and values of the tag of an enum of
-/// that representation, and the niches of `Option` and `Result`, except where `core` documents
-/// them.
+/// version, or at random under `-Zrandomize-layout`, as [The `unstable`
+/// feature](crate#the-unstable-feature) lists.
 ///
 /// Without the `unstable` feature, nothing that `puns` does depends on a layout that Rust leaves to
 /// the compiler, so whether a pun compiles, what it checks, and which values it accepts are the
@@ -5138,7 +5155,8 @@ impl Op {
   }
 }
 
-/// A CRC of 1 to 64 bits, given by its parameters in the catalogue of CRCs.
+/// A CRC of 1 to 64 bits, given by its parameters in the [Catalogue of parametrised CRC
+/// algorithms][catalogue].
 ///
 /// The parameters are the `width` in bits, the polynomial `poly` without its high bit, the value
 /// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, with which
@@ -5148,6 +5166,8 @@ impl Op {
 ///
 /// A `Crc` holds 32 KiB of tables, or 2 KiB on a 16-bit target, made in const evaluation, so it is
 /// meant to be a constant.
+///
+/// [catalogue]: https://reveng.sourceforge.io/crc-catalogue/all.htm
 ///
 /// # Examples
 ///

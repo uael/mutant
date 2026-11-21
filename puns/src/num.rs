@@ -306,8 +306,8 @@ macro_rules! ints {
     ///
     #[doc = narrower!($raw $size, concat!(
       "# Compile-time errors\n\nA pun of a type that holds this type compiles only if `V` fits ",
-      "in ", stringify!($size), " bytes. This is checked after monomorphization. `cargo check` ",
-      "does not report a violation, but `cargo build` does.\n"
+      "in ", stringify!($size), " bytes. This is checked after monomorphization, as ",
+      "[the crate documentation](crate#compile-time-errors) explains.\n"
     ))]
     ///
     /// # Examples
@@ -447,6 +447,20 @@ ints! {
   u128be u128bec: u128[16] Big;
 }
 
+/// Expands to the sentence that says how a number read as a `$raw` is ordered: by its value for a
+/// signed integer (`ordered!`), and not at all for a floating-point number.
+macro_rules! order {
+  (f32) => {
+    ""
+  };
+  (f64) => {
+    ""
+  };
+  ($raw:ident) => {
+    " Two values are ordered as their values are."
+  };
+}
+
 /// Defines, for each `$name: $raw[$size] $endian = $value`, a number `$name` of `$size` bytes of
 /// the byte order `$endian`, read as a `$raw`. Its examples use the value `$value`.
 macro_rules! numbers {
@@ -455,7 +469,7 @@ macro_rules! numbers {
     #[doc = endian!($endian, "byte first (little-endian).", "byte last (big-endian).")]
     ///
     #[doc = concat!("Any ", stringify!($size), " bytes are a valid value, at any address: its alignment is 1.")]
-    /// Two values are equal if their bytes are. It is formatted as its value.
+    #[doc = concat!("Two values are equal if their bytes are.", order!($raw), " It is formatted as its value.")]
     ///
     /// Its bits are not its value as an unsigned integer, so the rules of `#[derive(Pun)]` do not
     /// read it.
@@ -743,8 +757,8 @@ impl<const V: u8> fmt::Debug for u8c<V> {
 /// # Compile-time errors
 ///
 /// A pun of a type that holds this type compiles only if `MIN` is not greater than `MAX`. This is
-/// checked after monomorphization. `cargo check` does not report a violation, but `cargo build`
-/// does.
+/// checked after monomorphization, as [the crate documentation](crate#compile-time-errors)
+/// explains.
 ///
 /// ```compile_fail,E0080
 /// use puns::num::u8in;
