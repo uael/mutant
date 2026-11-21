@@ -73,10 +73,10 @@
 //!   the halves, over values at their bounds and others, as on a target of 64 bits and of 32 bits.
 //!   Each is compared with the operation on `u128`. The result must be in the range that the
 //!   analysis gives, and what the analysis says cannot fail must not fail.
-//! - Random expressions, with variables, parts, reads and walks. The walks are random, move an
-//!   offset by what they read, or carry two numbers in the halves of the state. Each expression is
-//!   evaluated over random and boundary bytes, narrowed and not. Both must have the same value or
-//!   fail alike.
+//! - Random expressions, with variables, parts, reads and walks, where a walk is random, moves an
+//!   offset by what it reads, or carries two numbers in the halves of the state. Each expression is
+//!   evaluated over random and boundary bytes, narrowed and not, and both must have the same value
+//!   or fail alike.
 //!
 //! `tests/rules_are_rust.rs` compares rules at the limits of the widths, and walks, with Rust. The
 //! tests catch an analysis that does not test a carry, that takes no fixed point, or that does not

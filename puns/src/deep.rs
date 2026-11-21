@@ -78,8 +78,8 @@
 //! `lists_not_the_layout`). Hence the limits, each of which is a refusal:
 //!
 //! - A field that holds a pointer keeps its position among the fields of its struct.
-//! - A variant that holds a pointer keeps its position among the variants of its enum. New
-//!   variants go last. A variant found by its tag at another position is refused (compile-fail test
+//! - A variant that holds a pointer keeps its position among the variants of its enum, and new
+//!   variants go last: a variant found by its tag at another position is refused (compile-fail test
 //!   `view_variant_moved`).
 //! - A struct that only holds a pointer is not that pointer.
 //!
@@ -155,12 +155,12 @@
 //!   macro writes `Pun` from it, and asserts what can be asserted
 //!   ([Pointer layouts come from `SelfRelative`](#pointer-layouts-come-from-selfrelative)).
 //! - `layout::*` holds values that describe layouts, for the code that the derive and
-//!   `self_relative!` write. They make no value of a type. A layout stands for a type only through
-//!   `Pun`, an `unsafe trait`. `Pointer` is public, and made only by its constructors, since its
-//!   fields are private.
+//!   `self_relative!` write. They make no value of a type, and a layout stands for a type only
+//!   through `Pun`, an `unsafe trait`. `Pointer` is public, and made only by its constructors,
+//!   since its fields are private.
 //! - `hook::*`, behind the test-only feature `verdict`, runs the same plans and answers instead of
-//!   enforcing. Its `view_ref` follows pointers a bounded number of times. It is for the model
-//!   check, whose types that bound covers.
+//!   enforcing. Its `view_ref` follows pointers a bounded number of times, which covers the types
+//!   of the model check, for which it exists.
 //!
 //! # Invariants
 //!
@@ -195,9 +195,9 @@
 //!
 //! ## The views prove behind pointers
 //!
-//! `view_ref` and `try_view_ref` are the only functions with the plans that
-//! [Only views make a value that holds a pointer](#only-views-make-a-value-that-holds-a-pointer)
-//! exempts. Both call [`proof`] for the same pair of types. Neither is a `const fn`.
+//! `view_ref` and `try_view_ref` are the only functions with the plans that [Only views make a
+//! value that holds a pointer](#only-views-make-a-value-that-holds-a-pointer) exempts. Both call
+//! [`proof`] for the same pair of types, and neither is a `const fn`.
 //!
 //! ## What `local` accepts, `pair` names
 //!
@@ -364,9 +364,9 @@ fn variants<VA: Variants, VB: Variants>() {
 /// a pointer. If `X` or `Y` has size 0, the pair is not a pair of pointers, and `None` is
 /// returned.
 ///
-/// With `fuel` greater than 0, the pointers of `Y` are followed that many more times. The model
-/// check asks so (`hook::views`). The proof asks with 0, and follows pointers through the
-/// instances of [`target`].
+/// With `fuel` greater than 0, the pointers of `Y` are followed that many more times, as the model
+/// check asks (`hook::views`). The proof asks with 0, and follows pointers through the instances of
+/// [`target`].
 ///
 /// # Errors
 ///

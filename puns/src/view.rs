@@ -127,8 +127,8 @@ impl<A: List, B: List> List for Pair<A, B> {
 
 /// The place of a variant in a [`List`], as a type.
 ///
-/// A place is [`Here`], the type of a [`Leaf`], or [`First`] or [`Second`] of a place in that
-/// side of a [`Pair`]. This trait is sealed. Only these types implement it.
+/// A place is [`Here`], the type of a [`Leaf`], or [`First`] or [`Second`] of a place in that side
+/// of a [`Pair`]. This trait is sealed: only these types implement it.
 pub trait Index: sealed::Sealed {}
 
 /// The place of the type of a [`Leaf`].

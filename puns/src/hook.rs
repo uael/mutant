@@ -4,7 +4,7 @@
 //! Where the public function does not compile, this one returns `None` instead.
 //!
 //! This module is not part of the API. It is compiled only with the `verdict` feature, which only
-//! tests may enable. The feature changes nothing else.
+//! tests may enable, and which changes nothing else.
 
 use crate::{Error, Need, Plan, Pun, Root, pun_unchecked, validate::validate};
 

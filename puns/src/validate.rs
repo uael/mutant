@@ -54,8 +54,8 @@
 //! alternative, a flag on each value of the stack that tells whether it failed, makes every
 //! operation carry failures along, and computes the side of a `||` that is not needed.
 //!
-//! Nothing that is computed can be left out of the value of an expression. So its first failure is
-//! its failure, and the evaluator stops there. What follows is compiled knowing that nothing
+//! Nothing that is computed can be left out of the value of an expression, so its first failure is
+//! its failure: the evaluator stops there, and what follows is compiled knowing that nothing
 //! failed.
 
 use crate::{
@@ -695,8 +695,8 @@ const unsafe fn steps<X: Ops, S: Steps>(
 
 /// Applies the [`Op::Walk`] `W` of the expression `X` to `machine`.
 ///
-/// The state starts as the top of the stack. While the condition holds, the next expression
-/// replaces it. A walk that is in a part of the expression that is not computed does nothing.
+/// The state starts as the top of the stack, and while the condition holds, the next expression
+/// replaces it. A walk in a part of the expression that is not computed does nothing.
 ///
 /// # Errors
 ///
