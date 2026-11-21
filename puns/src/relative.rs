@@ -2,7 +2,7 @@
 
 use crate::{Pun, layout::Pointer};
 
-/// A self-relative pointer: an offset from its own address to a target in the same buffer, as the
+/// A self-relative pointer, an offset from its own address to a target in the same buffer, as the
 /// `Near<T, O>` of the crate [`nearest`](https://docs.rs/nearest) is.
 ///
 /// A crate declares such a type with an `unsafe impl` of this trait, then with
@@ -33,7 +33,7 @@ use crate::{Pun, layout::Pointer};
 ///    offset may be a `NonZero`, which `puns` detects because `Option<Self>` then has the size of
 ///    `Self` and `None` is all zero bytes, and `puns` then never reads such a type from a pointer
 ///    that may be zero without a check. No other restriction of the values of the offset is
-///    supported: `puns` refuses a niche other than zero where it finds one, but cannot find a
+///    supported. `puns` refuses a niche other than zero where it finds one, but cannot find a
 ///    restriction that the compiler does not know of.
 /// 2. **The scheme is the way to the target.** Where a pointer aims, and how many elements or
 ///    bytes it aims at, depend only on its scheme, the width and the byte order of its offset,
@@ -58,7 +58,7 @@ use crate::{Pun, layout::Pointer};
 ///    read through what `view_ref` makes of it.
 /// 5. **Null.** If `POINTER` is made with [`Pointer::or_null`], a value whose bytes are all zero
 ///    aims at nothing, and is not followed. Any other value is a pointer as a pointer of the same
-///    scheme that may not be null would be: the way to it, what is there, and that it is its own
+///    scheme that may not be null would be. The way to it, what is there, and that it is its own
 ///    are as the three requirements above say.
 /// 6. **The target is the type.** `Target` is the type of the value aimed at, of an element for a
 ///    sequence, and `()` for text. `POINTER` is made for it, by `Pointer::one::<Target>`,
@@ -86,7 +86,7 @@ use crate::{Pun, layout::Pointer};
 /// to a value that holds one.
 ///
 /// This trait is meant to be implemented by hand, by the crate that declares the pointer type.
-/// [`Pun`] is not: implement it with [`self_relative!`](crate::self_relative).
+/// [`Pun`] is not, so implement it with [`self_relative!`](crate::self_relative).
 ///
 /// [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 ///
@@ -190,8 +190,9 @@ pub unsafe trait SelfRelative: Sized {
 /// Bound, ..] Type<T, ..>)` with the generic parameters of its implementation of `SelfRelative`.
 /// The macro is safe to call, since it writes the implementation of `Pun` only from what
 /// `SelfRelative` says of the type, and requires `Type: SelfRelative`, whose `unsafe impl` carries
-/// the promise. Do not implement `Pun` for a pointer type by hand: the items of `Pun` belong to
-/// `puns` and may change, while the macro is expanded with the version of `puns` that defines them.
+/// the promise. Do not implement `Pun` for a pointer type by hand, because the items of `Pun`
+/// belong to `puns` and may change, while the macro is expanded with the version of `puns` that
+/// defines them.
 ///
 /// The macro is not a blanket implementation of `Pun` for every `SelfRelative` type. That
 /// implementation would overlap the one for every [`Scalar`](crate::Scalar), because coherence
@@ -200,11 +201,11 @@ pub unsafe trait SelfRelative: Sized {
 /// `Pun` has a hidden associated constant, the layout of `Option<Self>` if `Self` gives it, which
 /// is `None` by default, so that the layout of `Option` of another type is found by experiment, as
 /// for any enum of the `Rust` representation. This macro gives it as the same pointer, which may be
-/// null, after a check made where `Option` of the pointer is used: that `Option<Type>` has the size
-/// of `Type`, and that `None`, read in const evaluation, is all zero bytes. If so, `rustc` has put
-/// `None` in a niche of the bytes of the pointer, which are all of its offset and initialized ("The
-/// type is its offset" in [`SelfRelative`]), and that niche is zeros. `Some(p)` is then the bytes
-/// of `p`, which are not all zero, so "Null" holds of `Option<Type>`.
+/// null, after a check, made where `Option` of the pointer is used, that `Option<Type>` has the
+/// size of `Type`, and that `None`, read in const evaluation, is all zero bytes. If so, `rustc` has
+/// put `None` in a niche of the bytes of the pointer, which are all of its offset and initialized
+/// ("The type is its offset" in [`SelfRelative`]), and that niche is zeros. `Some(p)` is then the
+/// bytes of `p`, which are not all zero, so "Null" holds of `Option<Type>`.
 ///
 /// `Option<Type>` is then a `Pun` type too, as the pointer `POINTER.or_null()`, whose value of all
 /// zero bytes is `None`. This holds if the offset has a niche at zero (a `NonZero`). An offset
@@ -223,7 +224,7 @@ pub unsafe trait SelfRelative: Sized {
 /// A function of `puns` compiles with a type that holds `Type` only if all of the following
 /// hold:
 ///
-/// - `Type` is as large as its offset: `size_of::<Type>()` is the width of `POINTER`.
+/// - `Type` is as large as its offset (`size_of::<Type>()` is the width of `POINTER`).
 /// - `POINTER` is made for `Target`, with the size and the alignment of `Target`.
 /// - If `Option<Type>` has the size of `Type`, then `None` is all zero bytes. That is, the offset
 ///   has no niche other than zero.
@@ -238,9 +239,9 @@ pub unsafe trait SelfRelative: Sized {
 /// - If `Option<Option<Type>>` has the size of `Option<Type>`, then its `None` is all zero bytes.
 ///
 /// These conditions are checked after monomorphization, when the `LAYOUT` of `Type` or of
-/// `Option<Type>` is evaluated, and not where the macro is called: `cargo check` does not report a
-/// violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic of
-/// [`Pointer::one`](crate::layout::Pointer::one),
+/// `Option<Type>` is evaluated, and not where the macro is called, so `cargo check` does not report
+/// a violation, but `cargo build` does. `POINTER` is evaluated at compile time as well, so a panic
+/// of [`Pointer::one`](crate::layout::Pointer::one),
 /// [`Pointer::sequence`](crate::layout::Pointer::sequence) or
 /// [`Pointer::text`](crate::layout::Pointer::text) is also a compile error.
 ///
@@ -337,7 +338,7 @@ macro_rules! self_relative {
   };
 }
 
-/// Returns the `PROBE` of a sized type: a null pointer.
+/// Returns the `PROBE` of a sized type, a null pointer.
 ///
 /// [`self_relative!`] names it through `$crate`, so that no path of the crate that calls the macro
 /// can make it lead elsewhere.

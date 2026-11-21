@@ -1,4 +1,4 @@
-//! The analysis of a pun: relations between two [`Layout`]s, computed at compile time.
+//! The analysis of a pun, made of relations between two [`Layout`]s, computed at compile time.
 //!
 //! For a source `S` and a target `D`, [`analyze`] decides the inclusion of languages, whether every
 //! value of `S` is a [valid] value of `D`. It walks both layouts in step, as the product of two
@@ -26,9 +26,9 @@
 //!
 //! # Cost
 //!
-//! A [`Cursor`] walks a layout as *runs*: padding, initialized bytes of any value, or a constrained
-//! scalar. A subtree without constraint is one run whatever its size, so `[u8; 1 << 40]` is one
-//! step.
+//! A [`Cursor`] walks a layout as *runs*, each of which is padding, initialized bytes of any value,
+//! or a constrained scalar. A subtree without constraint is one run whatever its size, so
+//! `[u8; 1 << 40]` is one step.
 //!
 //! Scalars are compared as sets of values, not byte by byte. Two aligned scalars compare their
 //! lists of ranges, while scalars that are misaligned, or of different byte orders, go through an
@@ -52,18 +52,18 @@
 //!
 //! # Enums and unions
 //!
-//! Enums are related variant by variant: each variant of the source is related, as two structs, to
+//! Enums are related variant by variant. Each variant of the source is related, as two structs, to
 //! the variants of the target whose tags it has, knowing the tag ([`Known`]). Knowing the tags of
 //! both proves a niche of the target that the source variant has as padding. A variant of the
 //! source is proven if all its tags are tags of one variant of the target, which it proves, and is
 //! not valid if it has no tag of the target.
 //!
 //! When the source is not an enum, or is an enum whose tag is elsewhere, the analysis finds what
-//! the source holds at the place of the tag ([`tag_values`]): what a scalar of the same size and
-//! byte order there is known to be, or else any value. Each variant whose tags meet those values is
-//! related to the source over the bytes of the enum, knowing the tag, and a variant that the source
-//! can never be is not looked at. The enum is proven if every value that the source may hold there
-//! is the tag of a variant that has values, and if each such variant is proven
+//! the source holds at the place of the tag ([`tag_values`]), either what a scalar of the same size
+//! and byte order there is known to be, or else any value. Each variant whose tags meet those
+//! values is related to the source over the bytes of the enum, knowing the tag, and a variant that
+//! the source can never be is not looked at. The enum is proven if every value that the source may
+//! hold there is the tag of a variant that has values, and if each such variant is proven
 //! ([`relate_enum_from`]). Otherwise it is checked as a whole at run time. A byte that a possible
 //! variant requires to be initialized must be initialized in the source, and a source that may be
 //! padding at the tag is an error.
@@ -107,8 +107,8 @@
 //! - An enum is related only with an enum whose base is at the same offset.
 //! - The rules of a struct are proven only by the same rules of a struct of the same extent at that
 //!   offset of the source ([`mark_rules`] from the shift, see [Rules](#rules)).
-//! - Periods stay correct: a period is taken only when the target is at the start of one of its
-//!   elements, and what lies under a run of the target one period later does not depend on the
+//! - Periods stay correct, because a period is taken only when the target is at the start of one of
+//!   its elements, and what lies under a run of the target one period later does not depend on the
 //!   phase of the two repetitions, which is all that a shift changes.
 //!
 //! The relation reports offsets of the source, and messages subtract the shift. `tail_ref` requires
@@ -122,16 +122,16 @@
 //! requires two conditions of that part:
 //!
 //! - **The part takes what is written.** The reverse relation over those bytes must be infallible,
-//!   as `pun_mut` requires of the whole: every value of the target, padding included, must be valid
-//!   for what the source has there. A scalar of the source that the part covers only in part is not
-//!   proven, since what its other bytes hold is not known, and neither is an enum whose base is
-//!   outside the part.
+//!   as `pun_mut` requires of the whole, which means that every value of the target, padding
+//!   included, must be valid for what the source has there. A scalar of the source that the part
+//!   covers only in part is not proven, since what its other bytes hold is not known, and neither
+//!   is an enum whose base is outside the part.
 //! - **Nothing outside the part depends on it** ([`cut`]). A struct of the source with rules
 //!   (`size`, `len`, `assert`, regions, walks) that covers any of the bytes is refused, because its
 //!   rules read its fields. So is an enum, or a string, of the source of which the bytes are only a
 //!   part, such as its tag on one side and fields on the other. A target that takes as many
 //!   elements as fit may end anywhere in the source, so it is refused over a source with enums. One
-//!   exception holds for a struct with rules that lies within the bytes: it is accepted if the
+//!   exception holds for a struct with rules that lies within the bytes. It is accepted if the
 //!   target has the same rules over the same extent there ([`proves_rules`], the test of
 //!   [Rules](#rules) in the other direction), since what is written through the target then meets
 //!   the rules of the source if it meets those of the target. The same holds of the elements of an
@@ -153,9 +153,10 @@
 //! the same sized part and the same tail computes the same rules over the same bytes, whatever its
 //! fields, which are related to the target as any others. The same tail means the same start, the
 //! same size of an element and, for a sized struct, the same bytes and elements of the array that
-//! it ends with. This is how `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>`: the payload of
-//! `Ipv4` is a typed region of its bytes, not a field of another type. A part of a struct of a
-//! dynamic size has another size, so it does not prove the rules of a struct of its own size.
+//! it ends with. This is how `Frame<Ipv4<Udp>>` proves the rules of `Frame<Ipv4>`, since the
+//! payload of `Ipv4` is a typed region of its bytes, not a field of another type. A part of a
+//! struct of a dynamic size has another size, so it does not prove the rules of a struct of its own
+//! size.
 //!
 //! The elements of an array or a slice share their leaves, so their rules are proven together.
 //! Where the source has elements of the same size at the same place, each element is to the source
@@ -172,8 +173,8 @@
 //! has no rule, and whose bytes are all of any value or all padding, since what such bytes are does
 //! not depend on where its fields are.
 //!
-//! - **As a source**, an opaque node is what every layout of it is: all initialized bytes if it is
-//!   `init`, and otherwise all bytes that may be padding. That the first byte of a `(u8, u16)` is
+//! - **As a source**, an opaque node is what every layout of it is (all initialized bytes if it is
+//!   `init`, and otherwise all bytes that may be padding). That the first byte of a `(u8, u16)` is
 //!   never padding is not used.
 //! - **As a target**, an opaque node is proven by the same type at the same place ([`equal`]). A
 //!   struct or a tuple whose size is the same in every layout may also be proven field by field
@@ -244,7 +245,7 @@ pub enum RunKind {
   Pointer(Pointer),
   /// Without the `unstable` feature, a part whose layout Rust leaves to the compiler.
   ///
-  /// As a source, it is what every layout of it has: initialized bytes, or bytes that may be
+  /// As a source, it is what every layout of it has, either initialized bytes or bytes that may be
   /// padding. As a target, it is proven by the same type at the same place, or by a source that
   /// proves each of its fields wherever the field may be ([`relate_fields`]).
   Opaque(&'static Layout),
@@ -263,7 +264,7 @@ impl RunKind {
 
   /// Returns what a source is known to hold in a run of this kind.
   ///
-  /// An opaque run is what every layout of it has: initialized bytes, or bytes that may be
+  /// An opaque run is what every layout of it has, either initialized bytes or bytes that may be
   /// padding.
   const fn seen(self) -> Self {
     match self {
@@ -286,8 +287,8 @@ pub struct Run {
   start: usize,
   /// One past the last byte of the run.
   end: usize,
-  /// The index of the leaf of the run: the scalar of an atom, a pattern, a pointer or an opaque
-  /// part. It is 0 for padding and for initialized bytes.
+  /// The index of the leaf of the run (the scalar of an atom, a pattern, a pointer or an opaque
+  /// part). It is 0 for padding and for initialized bytes.
   leaf: usize,
 }
 
@@ -311,7 +312,7 @@ impl Frame {
   }
 }
 
-/// A repetition that a cursor is in: `stride` bytes repeat until `end`.
+/// A repetition that a cursor is in, where `stride` bytes repeat until `end`.
 #[derive(Copy, Clone)]
 struct Repeat {
   /// The size of what repeats.
@@ -320,7 +321,7 @@ struct Repeat {
   end: usize,
   /// Whether the repetition is a run of identical bytes rather than an array or a slice.
   run: bool,
-  /// What tells an array or a slice from another: its depth in the stack of the cursor and its
+  /// What tells an array or a slice from another, its depth in the stack of the cursor and its
   /// offset.
   id: (usize, usize),
 }
@@ -332,7 +333,7 @@ pub struct Cursor {
   stack: [Frame; MAX_DEPTH],
   /// The number of layouts on the stack.
   depth: usize,
-  /// Whether the layout is the one of the target.
+  /// Whether the layout is that of the target.
   ///
   /// A byte that only some variants of an enum initialize must then be initialized, rather than
   /// be known to be maybe uninitialized.
@@ -791,8 +792,8 @@ pub const fn relate(
 /// target (`a` there).
 ///
 /// Nothing else changes with where the layouts are. The analysis is made of what each run of
-/// `b` has under it. Periods are found from the strides of both: what lies under a run of `b` a
-/// period later is the same, whatever the phase of the repetitions of `a` and `b`. An enum is
+/// `b` has under it. Periods are found from the strides of both, because what lies under a run of
+/// `b` a period later is the same, whatever the phase of the repetitions of `a` and `b`. An enum is
 /// proven only by an enum at the same offset.
 ///
 /// # Panics
@@ -934,7 +935,7 @@ struct Tag {
 /// A part may move if it is not [`ordered`](crate::layout::Stable::ordered). Where `tag` is at the
 /// place of the tag of an enum of `source`, only the variants whose tags meet those of `tag`
 /// count, since a check reads no further for the others. With the `unstable` feature, nothing
-/// moves: the result is `false`.
+/// moves, so the result is `false`.
 const fn moves(source: &Layout, base: usize, start: usize, end: usize, tag: Option<Tag>) -> bool {
   let (lo, hi) = (max(start, base), min(end, extent_end(source, base)));
   if !STRICT || lo >= hi {
@@ -1089,8 +1090,8 @@ const fn relate_known(
 
 /// Relates `a` and `b` over `pos..end`, and records what it finds in `out`.
 ///
-/// Returns `true` if this settles everything after `end` too: what follows repeats forever, or a
-/// pattern goes on until the end.
+/// Returns `true` if this settles everything after `end` too, because what follows repeats forever,
+/// or a pattern goes on until the end.
 const fn relate_range(
   a: &mut Cursor,
   b: &mut Cursor,
@@ -1270,11 +1271,11 @@ const PLACES: usize = 1024;
 /// A struct is valid if each of its fields is valid at its place. So the source proves the
 /// struct in every order of its fields if, and only if, it proves each field at each offset that
 /// the field has in some order. This is exact, and no order is tried. The offsets taken are all
-/// those that the field may have: the multiples of its alignment where it fits. Where no order
+/// those that the field may have, the multiples of its alignment where it fits. Where no order
 /// needs padding, because every size is a multiple of every alignment, they are the multiples of
-/// the greatest common divisor of the sizes, since every sum of sizes is one. Some of these
-/// offsets are in no order, such as the second byte of a `(bool, [u8; 3])`. More is then
-/// required, never less.
+/// the greatest common divisor of the sizes, since every sum of sizes is one. Some of these offsets
+/// are in no order, such as the second byte of a `(bool, [u8; 3])`. More is then required, never
+/// less.
 ///
 /// Nothing is left to check at run time, since a check would read where the compiler may not
 /// have put the field. A field that the source does not prove somewhere fails the relation. So
@@ -1477,7 +1478,7 @@ const fn relate_enum_from(
 ///
 /// The union is proven if the source proves one of its fields. Otherwise it is checked at run
 /// time, field by field, if no field's check would read a byte that may be padding in the
-/// source. Otherwise it is refused: that byte is recorded as read from padding.
+/// source. Otherwise it is refused, with that byte recorded as read from padding.
 ///
 /// Returns `false`, having done nothing, if `b` is not a union.
 const fn relate_union_from(
@@ -1621,9 +1622,9 @@ enum Skip {
 /// Returns a period of both layouts at `pos`, if there is one.
 ///
 /// `b` must be at the start of an element of a repetition. The analysis is made of what happens
-/// to each run of `b`, so a period must not cut one. `a` only has to be inside a repetition:
-/// what lies under a run of `b` a period later is the same, even if the period cuts runs of `a`.
-/// A period is taken if it repeats forever or at least twice before `end`. The outermost
+/// to each run of `b`, so a period must not cut one. `a` only has to be inside a repetition,
+/// because what lies under a run of `b` a period later is the same, even if the period cuts runs of
+/// `a`. A period is taken if it repeats forever or at least twice before `end`. The outermost
 /// repetitions are tried first, since they skip the most.
 const fn find_skip(
   a: &Cursor,
@@ -1950,14 +1951,14 @@ const fn box_count(lo: u128, hi: u128, size: usize) -> usize {
 /// A box is a range for each digit, most significant first. With `p` the first digit that
 /// differs between `lo` and `hi`, the numbers of `lo..=hi` are the following:
 ///
-/// - The numbers whose digit `p` is strictly between the ones of `lo` and `hi`: the first box.
+/// - The numbers whose digit `p` is strictly between those of `lo` and `hi`: the first box.
 /// - The numbers that start like `lo` up to a digit `q > p`, which is greater: a box for each `q`.
 /// - The numbers that start like `hi` up to a digit `q > p`, which is less: a box for each `q`.
 /// - `lo` and `hi` themselves, which are in the boxes of the last digit.
 const fn digit_box(lo: u128, hi: u128, size: usize, index: usize) -> Option<([u8; 16], [u8; 16])> {
   let p = first_difference(lo, hi, size);
   let (mut box_lo, mut box_hi) = ([0; 16], [0xff; 16]);
-  // The digits before `q` are the ones of `prefix`, the digits after are free.
+  // The digits before `q` are those of `prefix`, the digits after are free.
   let (prefix, q, range);
   if p + 1 >= size {
     // `lo..=hi` is a box: only the last digit differs, if any.
@@ -2272,13 +2273,13 @@ const fn mark_all_rules(target: &'static Layout, base: usize, leaf: usize, out: 
 /// `target`.
 ///
 /// The rules must be the same function of the same bytes ([`Layout::same_rules`]). They then
-/// hold of the target if they hold of the source. The fields are not compared: those of the
+/// hold of the target if they hold of the source. The fields are not compared, since those of the
 /// target are related to the source as any other. Without the `unstable` feature, both structs
 /// must have a layout that Rust specifies, or be the same type. Nothing is looked for inside a
 /// part of the source whose layout Rust leaves to the compiler.
 const fn proves_rules(source: &'static Layout, offset: usize, target: &'static Layout) -> bool {
   // The same rules of the same bytes: of the same fields at the same offsets, which Rust keeps
-  // of both, or which are the ones of the same type.
+  // of both, or which are those of the same type.
   let kept = !STRICT || (source.stable.fixed && target.stable.fixed) || same_type(source, target);
   if offset == 0 && kept && source.same_rules(target) {
     return true;
@@ -2415,8 +2416,8 @@ pub enum Exact {
 
 /// How the extent of a source maps to the extent of a target.
 ///
-/// The *extent* of a value is its size without the trailing padding of an unsized type: the
-/// offset of its slice tail plus the size of that slice.
+/// The *extent* of a value is its size without the trailing padding of an unsized type (the offset
+/// of its slice tail plus the size of that slice).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Fit {
   /// Whether the extents are the same.
@@ -2584,10 +2585,10 @@ pub const fn mutable_unspecified(a: &'static Layout, b: &'static Layout, fit: &F
 /// Returns whether every value written through a `&mut` to the target `b` leaves a valid source
 /// `a`.
 ///
-/// Every value of `b`, padding included, must be a valid `a`: the reverse relation must be
-/// infallible. This is never so with a self-relative pointer on either side. Through a `&mut`,
-/// safe code could write over a pointer, swap two, or move one to where it aims at something
-/// else. It is never so either if the extents never match.
+/// Every value of `b`, padding included, must be a valid `a`, which means that the reverse relation
+/// must be infallible. This is never so with a self-relative pointer on either side. Through a
+/// `&mut`, safe code could write over a pointer, swap two, or move one to where it aims at
+/// something else. It is never so either if the extents never match.
 pub const fn mutable(a: &'static Layout, b: &'static Layout, fit: &Fit) -> bool {
   !a.has_pointers()
     && !b.has_pointers()
@@ -2627,11 +2628,12 @@ pub const PART_PATTERN: &str = "a string of the source is only partly covered by
 /// `a`, or `None` if no value does.
 ///
 /// The `&mut` covers the bytes of `a` from `shift`, as many as `fit` says. Any value of `b` may be
-/// written, so every value of `b` must be valid for what `a` has over those bytes: the reverse
-/// relation, which [`mutable`] requires of the whole. And nothing of `a` outside those bytes may
-/// depend on them ([`cut`]): a rule of a struct that holds over them, an enum of which they are
-/// only a part (its tag on one side, fields on the other), or a string that goes on after them.
-/// This is conservative: such a source is refused even if no value of `b` would break it.
+/// written, so every value of `b` must be valid for what `a` has over those bytes. This is the
+/// reverse relation, which [`mutable`] requires of the whole. And nothing of `a` outside those
+/// bytes may depend on them ([`cut`]): a rule of a struct that holds over them, an enum of which
+/// they are only a part (its tag on one side, fields on the other), or a string that goes on after
+/// them. This is conservative, since such a source is refused even if no value of `b` would break
+/// it.
 ///
 /// # Errors
 ///
@@ -2830,8 +2832,8 @@ const fn has_rules(layout: &'static Layout) -> bool {
   }
 }
 
-/// Returns whether `layout` holds an enum with fields, a union or a pattern: bytes whose validity
-/// depends on other bytes.
+/// Returns whether `layout` holds an enum with fields, a union or a pattern (bytes whose validity
+/// depends on other bytes).
 const fn is_tagged(layout: &'static Layout) -> bool {
   match layout.kind {
     Kind::Enum(_) | Kind::Pattern(_) => true,

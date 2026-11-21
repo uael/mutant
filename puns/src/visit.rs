@@ -19,14 +19,15 @@
 //!
 //! The walk follows the lists of types that the derive writes (`Fields`, `Variants`, `Elem`,
 //! `Pointee`), and checks them against the layout of every type that it goes through ([`listed`]),
-//! as [`deep`](crate::deep) does for `view_ref`: each field by its declaration index, offset,
-//! layout and type, each variant by its tag, its niche tags and its fields, the element type, and
-//! the target of a pointer. Without that check, a list that left a field out would leave the field
-//! unchecked (compile-fail test `validate_lists_not_the_layout`). A struct that holds pointers is
-//! walked field by field, so that its pointers are handed over in order, between the checks of the
-//! rest, and a visitor whose queue is full can stop the walk where it is with an error of its own.
-//! The functions recurse over types only, never through pointers, and read nothing outside the
-//! bytes: each read follows a `get` and checked arithmetic, at a position in bounds.
+//! as [`deep`](crate::deep) does for `view_ref`. It checks each field by its declaration index,
+//! offset, layout and type, each variant by its tag, its niche tags and its fields, the element
+//! type, and the target of a pointer. Without that check, a list that left a field out would leave
+//! the field unchecked (compile-fail test `validate_lists_not_the_layout`). A struct that holds
+//! pointers is walked field by field, so that its pointers are handed over in order, between the
+//! checks of the rest, and a visitor whose queue is full can stop the walk where it is with an
+//! error of its own. The functions recurse over types only, never through pointers, and read
+//! nothing outside the bytes, since each read follows a `get` and checked arithmetic, at a position
+//! in bounds.
 //!
 //! The bytes are a `&[u8]`, so they are initialized, and a `MaybeUninit` or padding holds whatever
 //! it holds. A `MaybeUninit` of a pointer is not a pointer, and nothing in it is handed over. A
@@ -44,8 +45,8 @@
 //! [`copy_in`] walks by the same lists of types as `validate_in` and chooses the variant by the
 //! same test, so that it compiles to a few moves for each type, rather than copying everything and
 //! then writing the pointers a second time. It refuses a union (compile-fail test `copy_in_union`).
-//! Its source is what `pointers_in` reads, a value as its types say, whatever its rules say: it
-//! reads no rule, and copies a restricted field as the scalar of its type.
+//! Its source is what `pointers_in` reads, a value as its types say, whatever its rules say, since
+//! it reads no rule, and copies a restricted field as the scalar of its type.
 //!
 //! # Tests
 //!
@@ -57,7 +58,7 @@
 //! are uninitialized, into memory that is then read whole as a `&[u8]`, copies the value and
 //! nothing else, and that `copy_in` of random accepted bytes gives a value that `validate_in`
 //! accepts again. Last, `rules_need_not_hold_for_pointers_in_and_copy_in` breaks the `assert` of a
-//! value with pointers and the `valid(..)` of one of its fields, in a buffer: `validate_in` refuses
+//! value with pointers and the `valid(..)` of one of its fields, in a buffer. `validate_in` refuses
 //! the value, while `pointers_in` hands over its pointers and `copy_in` copies its scalars and its
 //! null pointer, as for a value that meets them. The model check holds these functions to an oracle
 //! of pointers (`puns-model`, "Self-relative pointers").
@@ -123,7 +124,7 @@ use crate::{
 /// assert_eq!(puns::validate_in::<Flags, _>(&bytes, 4, &mut NoPointers), Err(Invalid::at(4)));
 /// ```
 pub trait Visit {
-  /// The error that ends a walk: [`Invalid`], or an error of the visitor's own.
+  /// The error that ends a walk, either [`Invalid`] or an error of the visitor's own.
   type Error: From<Invalid>;
 
   /// Visits the pointer of type `P` at the position `at` of the bytes.
@@ -174,8 +175,8 @@ impl fmt::Display for Invalid {
 
 impl core::error::Error for Invalid {}
 
-/// The type that a self-relative pointer type `P` aims at: the target of one value, or an
-/// element of a sequence, or `()` for text.
+/// The type that a self-relative pointer type `P` aims at (the target of one value, or an element
+/// of a sequence, or `()` for text).
 ///
 /// A [`Visit`] validates what a pointer aims at as this type, with [`validate_in`] or
 /// [`validate_elems_in`].
@@ -185,7 +186,7 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 /// each of its self-relative pointers to `visit`.
 ///
 /// The function is safe for any bytes and any `at`. It reads nothing outside `bytes`, and does not
-/// panic unless `visit` does. It does not follow pointers: the visitor follows them, or does not.
+/// panic unless `visit` does. It does not follow pointers, which the visitor follows, or does not.
 /// The bytes may be at any address.
 ///
 /// After `Ok(())`, unsafe code may rely on the following, and on nothing more:
@@ -206,15 +207,15 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///    pointer they are a pointer, handed over.
 ///
 /// Nothing is promised of what the pointers aim at, whether inside `bytes`, at what, or whether two
-/// aim at the same place: that, like the scheme of the pointers, is the business of the visitor.
+/// aim at the same place. That, like the scheme of the pointers, is the business of the visitor.
 /// Nothing is promised of addresses either, only of positions in `bytes`. To make a `&T` at
 /// `bytes.as_ptr() + at`, the caller must ensure that this address is aligned for `T`, for example
 /// by placing the buffer at an address aligned to `align_of::<T>()` and choosing `at` as a multiple
 /// of it. The same holds for what the pointers aim at, which their scheme places.
 ///
-/// A `T` of size 0 has no bytes to check: it is valid if it has a value and its rules hold. `T` is
-/// `Sized`: a value whose size its bytes tell (a slice tail, `str`) is not one that a buffer of
-/// pointers holds by value.
+/// A `T` of size 0 has no bytes to check, so it is valid if it has a value and its rules hold. `T`
+/// is `Sized`, because a value whose size its bytes tell (a slice tail, `str`) is not one that a
+/// buffer of pointers holds by value.
 ///
 /// [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
 /// [`SelfRelative`]: crate::SelfRelative
@@ -231,8 +232,8 @@ pub type Pointee<P> = <P as Pun>::Pointee;
 ///
 /// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
 ///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
-///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
+///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
 ///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
@@ -329,8 +330,8 @@ pub fn validate_in<T: Pun, V: Visit>(
 /// in order. Elements of a type whose every bit pattern is valid are not read.
 ///
 /// After `Ok(())`, unsafe code may rely on what [`validate_in`] promises, for each of the `count`
-/// values. **In bounds** becomes: `at + count * size_of::<T>()` does not overflow and is at most
-/// `bytes.len()`.
+/// values. **In bounds** becomes that `at + count * size_of::<T>()` does not overflow and is at
+/// most `bytes.len()`.
 ///
 /// # Errors
 ///
@@ -343,8 +344,8 @@ pub fn validate_in<T: Pun, V: Visit>(
 ///
 /// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
 ///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
-///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
+///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
 ///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
@@ -456,7 +457,7 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///   bytes that this variant holds meet these requirements in turn.
 ///
 /// The rules of its structs (`assert`, `size`, `len`, regions) and the `valid(..)` restrictions of
-/// its fields need not hold, since safe code can break them and the walk does not read them: a
+/// its fields need not hold, since safe code can break them and the walk does not read them. A
 /// restricted field is a scalar, which holds no pointer. Padding and the bytes that the variant of
 /// an enum does not hold may be anything, uninitialized included, and nothing is required of what
 /// the pointers aim at, since none of it is read. A valid `T` meets these requirements, whatever
@@ -468,8 +469,8 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///
 /// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
 ///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
-///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
+///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
 ///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
@@ -544,7 +545,7 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
   visit: &mut V,
 ) -> Result<(), V::Error> {
   const { assert!(T::LAYOUT.checks_kept(), "{}", layout::VISIT_UNSPECIFIED) };
-  // SAFETY: The requirements of `follow` are the ones of this function.
+  // SAFETY: The requirements of `follow` are those of this function.
   unsafe { follow::<T, V>(base, at, visit) }
 }
 
@@ -571,8 +572,8 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///
 /// - Without the `unstable` feature, the walk does not depend on a layout that Rust leaves to the
 ///   compiler. No part of `T` whose arrangement Rust does not specify (such as a struct, a tuple or
-///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check: a
-///   scalar with invalid bit patterns, an enum, or a rule. A part whose every possible arrangement
+///   an enum of the `Rust` representation) holds a self-relative pointer or anything to check (a
+///   scalar with invalid bit patterns, an enum, or a rule). A part whose every possible arrangement
 ///   places the same bytes is exempt.
 /// - No union in `T` holds a self-relative pointer, since which field a union holds cannot be
 ///   told.
@@ -720,8 +721,8 @@ unsafe fn follow_fields<F: Fields, V: Visit>(
   // SAFETY: `F` is a field of the struct or the variant at `at` (`Fields`, section Safety), whose
   // lists `listed` asserts are its layout. So a `F::Type` is at `at + field.offset()`, within the
   // value, and meets the requirements of `pointers_in`, as `follow` requires. A restricted field
-  // is a scalar, which holds no pointer. The requirements of the call for the next fields are
-  // the ones of this call.
+  // is a scalar, which holds no pointer. The requirements of the call for the next fields are those
+  // of this call.
   unsafe {
     if field.restriction().is_none() {
       follow::<F::Type, V>(base, at + field.offset(), visit)?;
@@ -760,7 +761,7 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
   // the caller. So if `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
   // (`Variants`, section Safety). They meet the requirements of `pointers_in`, by contract on the
   // caller, as `follow_fields` requires. Otherwise the requirements of the call for the next
-  // variants are the ones of this call.
+  // variants are those of this call.
   unsafe {
     if this {
       Some(follow_fields::<W::Fields, V>(base, at, visit))
@@ -776,14 +777,14 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// The bytes copied are those of each scalar, of the tag of each enum, and of the fields of the
 /// variant that the tag selects, except a scalar that may be uninitialized, such as a
 /// `MaybeUninit`. A pointer that may be null and whose bytes are all zero is copied, since it is
-/// not a pointer. The other pointers are not written: they are the ones that [`pointers_in`] hands
+/// not a pointer. The other pointers are not written. They are the ones that [`pointers_in`] hands
 /// over, in the same order, and the caller writes their offsets, re-aimed for where the copy is, or
 /// aimed at copies of their targets.
 ///
 /// This is for a crate that writes a value into a buffer of initialized bytes, which a copy of the
-/// whole value would not keep initialized: a typed copy leaves the padding of the destination
-/// uninitialized, and a copy of the bytes copies the padding of the source, which may be
-/// uninitialized.
+/// whole value would not keep initialized, because a typed copy leaves the padding of the
+/// destination uninitialized, and a copy of the bytes copies the padding of the source, which may
+/// be uninitialized.
 ///
 /// The bytes of a valid `T` that may be uninitialized (padding, the bytes of the variants that the
 /// value is not, and fields that may be uninitialized) are never read from `src` nor written to
@@ -798,15 +799,15 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// The caller must ensure that:
 ///
 /// - The `size_of::<T>()` bytes at `src` are valid for reads, and hold a `T` as its types say, as
-///   [`pointers_in`] requires: every scalar is initialized and valid for its type, and the tag of
+///   [`pointers_in`] requires. Every scalar is initialized and valid for its type, and the tag of
 ///   every enum, or its niche, is initialized and selects one of its variants, whose bytes meet
 ///   these requirements in turn. They need not be aligned.
 /// - The `size_of::<T>()` bytes at `dst` are valid for writes. They need not be aligned.
 /// - The two ranges do not overlap.
 ///
-/// The rules of the structs of `T` and the `valid(..)` restrictions of its fields need not hold:
-/// none is read, and a restricted field is copied as the scalar of its type that it is. The bytes
-/// that may be uninitialized may be so.
+/// The rules of the structs of `T` and the `valid(..)` restrictions of its fields need not hold,
+/// because none is read, and a restricted field is copied as the scalar of its type that it is. The
+/// bytes that may be uninitialized may be so.
 ///
 /// # Compile-time errors
 ///
@@ -850,7 +851,7 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// ```
 #[inline]
 pub unsafe fn copy_in<T: Pun>(src: *const u8, dst: *mut u8) {
-  // SAFETY: The requirements of `copy` are the ones of this function.
+  // SAFETY: The requirements of `copy` are those of this function.
   unsafe { copy::<T>(src, dst) }
 }
 
@@ -979,7 +980,7 @@ unsafe fn copy_fields<F: Fields>(src: *const u8, dst: *mut u8) {
   // whose lists `listed` asserts are its layout. So a `F::Type` is at `off`, within both ranges,
   // and meets the requirements of `copy_in`, as `copy` requires. A restricted field is a scalar
   // of its type, whose bytes are those of the type. The requirements of the call for the next
-  // fields are the ones of this call.
+  // fields are those of this call.
   unsafe {
     copy::<F::Type>(src.add(off), dst.add(off));
     copy_fields::<F::Next>(src, dst);
@@ -1007,7 +1008,7 @@ unsafe fn copy_variants<W: Variants>(src: *const u8, dst: *mut u8, tag: u128) {
   // the caller. So if `this`, `W` is the variant that the tag selects, whose fields are `W::Fields`
   // (`Variants`, section Safety). They meet the requirements of `copy_in`, by contract on the
   // caller, as `copy_fields` requires. Otherwise the requirements of the call for the next variants
-  // are the ones of this call.
+  // are those of this call.
   unsafe {
     if this {
       copy_fields::<W::Fields>(src, dst);
@@ -1089,21 +1090,20 @@ unsafe fn value<T: ?Sized + Pun, V: Visit>(
     if unsafe { validate::<All, Root, T>(ptr::from_raw_parts::<T>(here, 0)) } {
       return Ok(());
     }
-    // SAFETY: The requirements of `walk` are the ones of this function, and `here` is
-    // `base + at`.
+    // SAFETY: The requirements of `walk` are those of this function, and `here` is `base + at`.
     return match unsafe { walk::<T, V>(base, at, here, visit) } {
       Ok(()) => Err(Invalid::at(at).into()),
       error => error,
     };
   }
-  // SAFETY: The requirements of `walk` are the ones of this function, and `here` is `base + at`.
+  // SAFETY: The requirements of `walk` are those of this function, and `here` is `base + at`.
   unsafe { walk::<T, V>(base, at, here, visit) }
 }
 
 /// Validates the `T` at `at` part by part, and hands its pointers to `visit` in order.
 ///
-/// A union is not valid here: [`value`] walks a union only after `validate` has found it not
-/// valid, since a union that holds a pointer does not compile there.
+/// A union is not valid here, because [`value`] walks a union only after `validate` has found it
+/// not valid, since a union that holds a pointer does not compile there.
 ///
 /// # Errors
 ///
@@ -1189,8 +1189,8 @@ const LISTS: &str = "an implementation of `Pun` lists fields, variants or elemen
 /// index, its offset, its layout and whether it is restricted, and a type of that layout unless it
 /// is restricted. Each variant must have its tag, its tags of a niche, and its fields. The element
 /// must have the layout of the elements. What a pointer aims at must have the size and the
-/// alignment that the pointer says. Only `T` itself is checked: the walk checks each type that it
-/// goes through.
+/// alignment that the pointer says. Only `T` itself is checked, since the walk checks each type
+/// that it goes through.
 const fn listed<T: ?Sized + Pun>() -> bool {
   match T::LAYOUT.kind {
     Kind::Struct(fields, _) => fields_listed::<T::Fields>(fields, 0),
@@ -1285,7 +1285,7 @@ unsafe fn fields<F: Fields, V: Visit>(
   // lists `value` asserted are its layout. So it is at `place`, within the value, valid for
   // reads, and initialized, by contract on the caller. A restricted field is a scalar of
   // `spec.size` bytes, as `add` and `Spec::matches` require. Any other is a `F::Type`, as
-  // `value` requires. The requirements of the call for the next fields are the ones of this call.
+  // `value` requires. The requirements of the call for the next fields are those of this call.
   unsafe {
     match field.restriction() {
       // A scalar that accepts less than its type does.
@@ -1300,7 +1300,7 @@ unsafe fn fields<F: Fields, V: Visit>(
   }
 }
 
-/// Validates the enum at `at`: its tag, and the fields of the variant that the tag selects.
+/// Validates the tag of the enum at `at`, and the fields of the variant that the tag selects.
 ///
 /// # Errors
 ///
@@ -1363,7 +1363,7 @@ unsafe fn variants<W: Variants, V: Visit>(
   // contract on the caller. So if `this`, `W::Fields` are the fields of the variant `W`
   // (`Variants`, section Safety), whose bytes are valid for reads and initialized, by contract on
   // the caller, as `fields` requires. Otherwise the requirements of the call for the next
-  // variants are the ones of this call.
+  // variants are those of this call.
   unsafe {
     if this {
       Some(fields::<W::Fields, V>(base, at, visit))
