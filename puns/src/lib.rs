@@ -21,8 +21,8 @@
 //!
 //! |               | Whole                                  | Front                     | Back                      |
 //! |---------------|----------------------------------------|---------------------------|---------------------------|
-//! | a typed value | [`pun`], [`pun_ref`], [`pun_mut`] (and [`try_pun`], [`try_pun_ref`], [`try_pun_mut`]) | [`head`], [`head_ref`], [`head_mut`] | [`tail`], [`tail_ref`], [`tail_mut`] |
-//! | bytes         | [`from_bytes`], [`from_bytes_mut`], [`as_bytes`] | [`from_head`], [`from_head_mut`] | [`from_tail`], [`from_tail_mut`] |
+//! | a typed value | [`pun`], [`pun_ref`], [`pun_mut`], [`as_bytes`] (and [`try_pun`], [`try_pun_ref`], [`try_pun_mut`]) | [`head`], [`head_ref`], [`head_mut`] | [`tail`], [`tail_ref`], [`tail_mut`] |
+//! | bytes         | [`from_bytes`], [`from_bytes_mut`] | [`from_head`], [`from_head_mut`] | [`from_tail`], [`from_tail_mut`] |
 //!
 //! Each row says what is read, a typed value or bytes, and each column says how much of it: the
 //! whole, the front, or the back. Every function in the table is a `const fn`.
@@ -1275,7 +1275,8 @@ pub use layout::{crc32, sum16};
 /// - No identifier in the item starts with `__Pun`, since these names are reserved.
 /// - Every `#[pun(..)]` option on the type, or on a field of a struct, a union or an enum that is
 ///   not a view, is one of those above, in a place where it means something.
-/// - The type of every field implements `Pun`.
+/// - The type of every field implements `Pun`, except in a view, where the type `T` of each
+///   reference `&'a T` does.
 /// - The type of every field of a struct, an enum that is not a view, or a union is at least as
 ///   visible as the type (E0446).
 /// - The bounds that the derive finds for a generic type do not form a cycle (E0275). Otherwise,
@@ -1286,9 +1287,10 @@ pub use layout::{crc32, sum16};
 /// - A struct whose last field is unsized is `repr(C)` or `repr(transparent)`.
 /// - A `packed` struct does not end with an unsized field whose alignment is greater than the
 ///   packing.
-/// - The type of a field with `valid` is a [`Scalar`] of 1 to 16 bytes whose bytes are always
-///   initialized. Integers, floating-point numbers, `bool`, `char`, `NonZero` and enums without
-///   fields are such scalars, but a struct, even a `repr(transparent)` one, is not.
+/// - The layout of the type of a field with `valid` is a scalar of 1 to 16 bytes whose bytes are
+///   always initialized. The layout of a [`Scalar`] is, as are those of integers, floating-point
+///   numbers, `bool`, `char`, `NonZero`, enums without fields, and `ManuallyDrop` of one of them.
+///   The layout of a struct, even a `repr(transparent)` one, is not.
 /// - Every item of `valid` is an unsigned integer literal or a constant of an unsigned integer
 ///   type, no range of `valid` is empty, and every value of `valid` is a valid value of the type of
 ///   the field.
@@ -2926,7 +2928,8 @@ impl Message {
 
 /// Reinterprets a value of type `S` as a value of type `D`.
 ///
-/// The result has the bytes of `value`. Nothing is checked at run time.
+/// The result has the bytes of `value`. As with [`core::mem::transmute`], the padding of the result
+/// is not guaranteed to keep them. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -2966,7 +2969,8 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 
 /// Reinterprets the first bytes of a value of type `S` as a value of type `D`.
 ///
-/// The result has the first `size_of::<D>()` bytes of `value`. Nothing is checked at run time.
+/// The result has the first `size_of::<D>()` bytes of `value`. As with [`core::mem::transmute`],
+/// the padding of the result is not guaranteed to keep them. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -2990,7 +2994,8 @@ pub const fn pun<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 /// ```
 ///
 /// ```compile_fail,E0080
-/// // The second byte is padding.
+/// // The second byte may be padding: Rust does not specify the order of the fields of a tuple,
+/// // and `rustc` puts the `u16` after a byte of padding.
 /// let _: [u8; 2] = puns::head((0u8, 0u16));
 /// ```
 #[inline(always)]
@@ -3005,8 +3010,9 @@ pub const fn head<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 
 /// Reinterprets the last bytes of a value of type `S` as a value of type `D`.
 ///
-/// The result has the last `size_of::<D>()` bytes of `value`, which start
-/// `size_of::<S>() - size_of::<D>()` bytes after its start. Nothing is checked at run time.
+/// The result has the last `size_of::<D>()` bytes of `value`, which start `size_of::<S>() -
+/// size_of::<D>()` bytes after its start. As with [`core::mem::transmute`], the padding of the
+/// result is not guaranteed to keep them. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -3072,8 +3078,9 @@ pub const fn tail<S: Pun + Copy, D: Pun + Copy>(value: S) -> D {
 /// Reinterprets a value of type `S` as a value of type `D`, after checking what the analysis
 /// could not prove.
 ///
-/// The result has the bytes of `value`. Only the values of `D` that the bytes of `S` do not
-/// guarantee are checked at run time.
+/// The result has the bytes of `value`. As with [`core::mem::transmute`], the padding of the result
+/// is not guaranteed to keep them. Only the values of `D` that the bytes of `S` do not guarantee
+/// are checked at run time.
 ///
 /// # Errors
 ///
@@ -3829,7 +3836,7 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
 /// ```
 ///
 /// ```compile_fail,E0080
-/// // The second byte of the source is padding.
+/// // One byte of the source is padding, whatever the order of its fields.
 /// let _ = puns::try_pun_ref::<_, [u8; 4]>(&(0u8, 0u16));
 /// ```
 ///
@@ -4028,7 +4035,7 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 /// ```
 ///
 /// ```compile_fail,E0080
-/// // The second byte is padding.
+/// // One byte is padding, whatever the order of the fields.
 /// let _ = puns::as_bytes(&(0u8, 0u16));
 /// ```
 #[inline(always)]
