@@ -258,10 +258,10 @@
 //!
 //! ## Unions
 //!
-//! The language has not settled the validity of unions
-//! ([`r-undefined.validity.union`][union validity]). Some of the rules under discussion let a union
-//! hold any bytes, while others require its bytes to be one of its fields, and safe code may write
-//! one field over another. So `puns` takes what is sound under each of these rules:
+//! The language has not settled the validity of unions ([`r-undefined.validity.union`][union
+//! validity]). Some of the rules under discussion let a union hold any bytes, while others require
+//! its bytes to be one of its fields, and safe code may write one field over another. So `puns`
+//! takes what is sound under each of these rules:
 //!
 //! - As a target, bytes are a union if they are one of its fields. This requires more than some of
 //!   the rules do, and never less. A union is proven by any one field that the source proves, and
@@ -2209,8 +2209,8 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
       // field is one of these (see `ptr::metadata`), and so is `ManuallyDrop<T>`, a struct whose
       // only field is a `T`. `T::PROBE` is `slice_from_raw_parts(null(), PROBE_LEN)`, cast with
       // `as` casts only, and `Self::PROBE` casts it again with `as`. These are the requirements of
-      // `verify`, which
-      // checks that a pointer to `ManuallyDrop<T>` is represented as a pointer to a slice.
+      // `verify`, which checks that a pointer to `ManuallyDrop<T>` is represented as a pointer to a
+      // slice.
       unsafe { ptr::verify::<Self>(Self::PROBE) };
     }
     T::LAYOUT
@@ -4324,10 +4324,9 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
       return Err(Error::Alignment);
     }
     let target = ptr::from_raw_parts::<D>(addr, 0);
-    // SAFETY: This satisfies the safety contract of `validate`. `D` is `Sized`, by contract on
-    // the caller, and `target` is the `size_of::<D>()` bytes from
-    // `start`, which end at `n`. So it is valid for reads of a `D`, and its bytes are
-    // initialized, by contract on the caller.
+    // SAFETY: This satisfies the safety contract of `validate`. `D` is `Sized`, by contract on the
+    // caller, and `target` is the `size_of::<D>()` bytes from `start`, which end at `n`. So it is
+    // valid for reads of a `D`, and its bytes are initialized, by contract on the caller.
     if !unsafe { validate::<Self, Root, D>(target) } {
       return Err(Error::Validity);
     }

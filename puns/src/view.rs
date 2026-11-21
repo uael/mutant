@@ -44,14 +44,14 @@
 //! # Soundness
 //!
 //! Soundness does not rest on the code that the derive writes. The types of the variants form a
-//! tree at the type level ([`List`]). The tree is balanced, so that what proves a type of it is as
-//! deep as the logarithm of the number of variants. Both the layouts and the types are taken from
-//! it, by a place in it that is a type ([`First`]`<`[`Here`]`>`, an [`Index`]) and is sealed. A
-//! state is written only by [`decide`], for the type of its place. A variant is decided from its
-//! base only where the state of the base says that the bytes are a value of the base, of the extent
+//! balanced tree at the type level ([`List`]), so that what proves a type of it is as deep as the
+//! logarithm of the number of variants. Both the layouts and the types are taken from it, by a
+//! place in it that is a type ([`First`]`<`[`Here`]`>`, an [`Index`]) and is sealed. A state is
+//! written only by [`decide`], for the type of its place, and a variant is decided from its base
+//! only where the state of the base says that the bytes are a value of the base, of the extent
 //! recorded with it. The derive chooses the order in which variants are decided. A variant whose
-//! base was not decided first is not found. That is never unsound, and the model check would see
-//! it.
+//! base was not decided first is not found, which is never unsound, and which the model check would
+//! see.
 //!
 //! # Cost
 //!

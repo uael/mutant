@@ -438,6 +438,24 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 ///
 /// Returns the first error that `visit` returns.
 ///
+/// # Safety
+///
+/// The caller must ensure that:
+///
+/// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
+///   `size_of::<T>()` bytes at `base + at` are valid for reads. They need not be aligned.
+/// - Those bytes hold a `T` as its types say. Every scalar is initialized and a valid value of its
+///   type (`bool`, `char`, `NonZero`, an enum without fields, the offset of a pointer).
+/// - The tag of every enum, or its niche, is initialized and selects one of its variants. The
+///   bytes that this variant holds meet these requirements in turn.
+///
+/// The rules of its structs (`assert`, `size`, `len`, regions) and the `valid(..)` restrictions of
+/// its fields need not hold, since safe code can break them and the walk does not read them: a
+/// restricted field is a scalar, which holds no pointer. Padding and the bytes that the variant of
+/// an enum does not hold may be anything, uninitialized included, and nothing is required of what
+/// the pointers aim at, since none of it is read. A valid `T` meets these requirements, whatever
+/// values safe code wrote to its fields, and so do bytes that [`validate_in`] accepted.
+///
 /// # Compile-time errors
 ///
 /// A call compiles only if all of the following hold:
@@ -456,24 +474,6 @@ pub fn validate_elems_in<T: Pun, V: Visit>(
 /// These conditions are checked after monomorphization. `cargo check` does not report a violation,
 /// but `cargo build` does. A generic function that calls `pointers_in` compiles until it is
 /// instantiated with types that violate them.
-///
-/// # Safety
-///
-/// The caller must ensure that:
-///
-/// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
-///   `size_of::<T>()` bytes at `base + at` are valid for reads. They need not be aligned.
-/// - Those bytes hold a `T` as its types say. Every scalar is initialized and a valid value of its
-///   type (`bool`, `char`, `NonZero`, an enum without fields, the offset of a pointer).
-/// - The tag of every enum, or its niche, is initialized and selects one of its variants. The
-///   bytes that this variant holds meet these requirements in turn.
-///
-/// The rules of its structs (`assert`, `size`, `len`, regions) and the `valid(..)` restrictions of
-/// its fields need not hold, since safe code can break them and the walk does not read them: a
-/// restricted field is a scalar, which holds no pointer. Padding and the bytes that the variant of
-/// an enum does not hold may be anything, uninitialized included, and nothing is required of what
-/// the pointers aim at, since none of it is read. A valid `T` meets these requirements, whatever
-/// values safe code wrote to its fields, and so do bytes that [`validate_in`] accepted.
 ///
 /// # Examples
 ///
@@ -551,6 +551,14 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 ///
 /// Returns the first error that `visit` returns.
 ///
+/// # Safety
+///
+/// The caller must ensure that each of the `count` values at `base + at`, `size_of::<T>()` apart,
+/// meets the requirements of [`pointers_in`].
+///
+/// If `T` holds no self-relative pointer, nothing is read, and nothing is required of `base`,
+/// `at` or `count`.
+///
 /// # Compile-time errors
 ///
 /// A call compiles only if all of the following hold:
@@ -569,14 +577,6 @@ pub unsafe fn pointers_in<T: Pun, V: Visit>(
 /// These conditions are checked after monomorphization. `cargo check` does not report a violation,
 /// but `cargo build` does. A generic function that calls `pointers_elems_in` compiles until it is
 /// instantiated with types that violate them.
-///
-/// # Safety
-///
-/// The caller must ensure that each of the `count` values at `base + at`, `size_of::<T>()` apart,
-/// meets the requirements of [`pointers_in`].
-///
-/// If `T` holds no self-relative pointer, nothing is read, and nothing is required of `base`,
-/// `at` or `count`.
 #[inline]
 pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
   base: *const u8,
@@ -614,16 +614,16 @@ pub unsafe fn pointers_elems_in<T: Pun, V: Visit>(
 ///
 /// Returns the first error that `visit` returns.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T` is not a union that holds a pointer, and the lists of `T` are
-/// what its layout holds ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - The requirements of [`pointers_in`] hold for the `T` at `at`.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T` is not a union that holds a pointer, and the lists of `T` are
+/// what its layout holds ([`listed`]).
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn follow<T: ?Sized + Pun, V: Visit>(
   base: *const u8,
@@ -787,20 +787,6 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 ///
 /// [`Layout::is_plain`]: layout::Layout::is_plain
 ///
-/// # Compile-time errors
-///
-/// A call compiles only if all of the following hold:
-///
-/// - No part of `T` is a union: not `T` itself, nor a field, an element or a variant at any depth.
-///   Which field a union holds, and so which of its bytes are initialized, cannot be told.
-/// - Every implementation of `Pun` that the copy goes through lists the fields, variants,
-///   elements and pointer targets that its layout describes. This holds for every type that
-///   derives `Pun` and every type for which `puns` implements it.
-///
-/// These conditions are checked after monomorphization. `cargo check` does not report a
-/// violation, but `cargo build` does. A generic function that calls `copy_in` compiles until it
-/// is instantiated with types that violate them.
-///
 /// # Safety
 ///
 /// The caller must ensure that:
@@ -815,6 +801,20 @@ unsafe fn follow_variants<W: Variants, V: Visit>(
 /// The rules of the structs of `T` and the `valid(..)` restrictions of its fields need not hold:
 /// none is read, and a restricted field is copied as the scalar of its type that it is. The bytes
 /// that may be uninitialized may be so.
+///
+/// # Compile-time errors
+///
+/// A call compiles only if all of the following hold:
+///
+/// - No part of `T` is a union: not `T` itself, nor a field, an element or a variant at any depth.
+///   Which field a union holds, and so which of its bytes are initialized, cannot be told.
+/// - Every implementation of `Pun` that the copy goes through lists the fields, variants,
+///   elements and pointer targets that its layout describes. This holds for every type that
+///   derives `Pun` and every type for which `puns` implements it.
+///
+/// These conditions are checked after monomorphization. `cargo check` does not report a
+/// violation, but `cargo build` does. A generic function that calls `copy_in` compiles until it
+/// is instantiated with types that violate them.
 ///
 /// # Examples
 ///
@@ -876,16 +876,16 @@ const fn whole(layout: &layout::Layout) -> bool {
 
 /// Copies the valid `T` at `src` to `dst`, as [`copy_in`] does.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T` is not a union, and its lists are what its layout holds
-/// ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
 ///
 /// - The requirements of [`copy_in`] hold.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T` is not a union, and its lists are what its layout holds
+/// ([`listed`]).
 #[cfg_attr(not(debug_assertions), inline(always))]
 unsafe fn copy<T: ?Sized + Pun>(src: *const u8, dst: *mut u8) {
   let size = const { T::LAYOUT.size() };
@@ -1040,11 +1040,6 @@ const unsafe fn validate_elems<T: Pun>(base: *const u8, count: usize) -> bool {
 /// Returns [`Invalid`] at the position where the bytes stop being a valid `T`, or the first error
 /// that `visit` returns.
 ///
-/// # Compile-time errors
-///
-/// An instance compiles only if `T` is not a union that holds a pointer, and the lists of `T` are
-/// what its layout holds ([`listed`]).
-///
 /// # Safety
 ///
 /// The caller must ensure that:
@@ -1052,6 +1047,11 @@ const unsafe fn validate_elems<T: Pun>(base: *const u8, count: usize) -> bool {
 /// - The `at + size_of::<T>()` bytes from `base` are within one allocation, and the
 ///   `size_of::<T>()` bytes of a `T` at `base + at` are valid for reads, all initialized. They need
 ///   not be aligned.
+///
+/// # Compile-time errors
+///
+/// An instance compiles only if `T` is not a union that holds a pointer, and the lists of `T` are
+/// what its layout holds ([`listed`]).
 #[inline(always)]
 unsafe fn value<T: ?Sized + Pun, V: Visit>(
   base: *const u8,

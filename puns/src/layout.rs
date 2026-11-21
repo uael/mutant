@@ -1702,7 +1702,8 @@ impl Variant {
   /// const SHAPE: Enum = Enum::new(&TAG, false, &SHADOWS, 0, &VARIANTS);
   /// const LAYOUT: Layout = Layout::enumeration::<Shape>(&SHAPE);
   ///
-  /// // Each tag is a value of the tag of the enum, and no two variants share one.
+  /// // `Layout::enumeration` accepts the variants, since each tag is a value of the tag of the
+  /// // enum and no two variants share one, and the layout has the size of the enum.
   /// assert_eq!(LAYOUT.size(), size_of::<Shape>());
   /// ```
   #[must_use]
@@ -2291,9 +2292,8 @@ impl Layout {
   /// # Panics
   ///
   /// Panics if `self` is not a scalar, or is a scalar that accepts uninitialized bytes
-  /// ([`Spec::uninit`]). Also panics if
-  /// `ranges` are not as [`Spec::with_ranges`] requires, or hold a value that the scalar does not
-  /// accept. In const evaluation, the panic is a compile error.
+  /// ([`Spec::uninit`]). Also panics if `ranges` are not as [`Spec::with_ranges`] requires, or hold
+  /// a value that the scalar does not accept. In const evaluation, the panic is a compile error.
   ///
   /// # Examples
   ///
@@ -5101,7 +5101,7 @@ impl Op {
   /// Returns a number that tells the kind of the operation apart from the others, whatever its
   /// data.
   const fn code(self) -> u8 {
-    // SAFETY-free: the discriminant of a variant without data, by exhaustion.
+    // A number for each variant, by an exhaustive `match`, so that a new variant needs one.
     match self {
       Op::Lit(_) => 0,
       Op::Load { .. } => 1,

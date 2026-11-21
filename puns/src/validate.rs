@@ -197,9 +197,9 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
   };
   // SAFETY: `ptr` is valid for reads of a `T`, and `V` is in the list of the variants of `T`, by
   // contract on the caller. If `this`, `V` has the tag `tag`, and `V::Fields` are its fields
-  // (`Variants`, section Safety). What their checks
-  // read is initialized, by contract on the caller, as `validate_fields` requires. Otherwise the
-  // requirements of the call for the next variants are the ones of this call.
+  // (`Variants`, section Safety). What their checks read is initialized, by contract on the caller,
+  // as `validate_fields` requires. Otherwise the requirements of the call for the next variants are
+  // the ones of this call.
   unsafe {
     if this {
       validate_fields::<All, Root, T, V::Fields>(ptr)

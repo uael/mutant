@@ -42,11 +42,11 @@
 //!   the values of that scalar, which the tags of the other variants must not be.
 //!
 //! In both cases, the gaps of each variant that has one tag, outside the tag, are filled with zeros
-//! and then with ones. This must leave it that variant, since a byte of a tag outside would give
+//! and then with ones, which must leave it that variant, since a byte of a tag outside would give
 //! two values to one variant. All the gaps of the dataful variant of a niche are filled the same
-//! way. Its scalar must tell it alone. A layout in which another place takes part, such as an
-//! encoding in two levels, is refused. The tags must differ. What is found is checked against the
-//! size and the alignment of the enum (`Layout::enumeration`).
+//! way, since its scalar must tell it alone, and a layout in which another place takes part, such
+//! as an encoding in two levels, is refused. The tags must differ, and what is found is checked
+//! against the size and the alignment of the enum (`Layout::enumeration`).
 //!
 //! Such an enum is then what an enum of a specified layout is. It is proven variant by variant, and
 //! checked by its tag and its variant, with the same precision. A variant whose fields have no
