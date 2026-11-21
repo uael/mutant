@@ -13,7 +13,8 @@ time:
 
 - A pun is proven if every value of the source is a valid value of the target. It compiles to no
   check.
-- A pun is checked if it holds for some values of the source only. The `try_` and `from_`
+- A pun is checked if it holds for some values of the source only, such as a `u8` read as a
+  `bool`, or bytes at an address that may not be aligned for the target. The `try_` and `from_`
   functions check it at run time, and the other functions refuse it.
 - Any other pun is refused: it does not compile.
 
@@ -67,10 +68,10 @@ Two notes on the derive:
   for an enum. The default representation, `repr(Rust)`, guarantees little about the layout, so
   that the compiler can optimize it. The order of the fields, the tag of an enum and its niches
   may change with the next version of the compiler, or at random with
-  [`-Zrandomize-layout`][randomize]. By default, `puns` accepts a pun of such a type only if no
-  such change can change what the pun does. The [`unstable` feature][unstable] accepts the other
-  puns too, from the layout that the compiler chose. They are sound in the build that compiles
-  them, but another version of the compiler may refuse them, or check other bytes.
+  [`-Zrandomize-layout`][randomize]. By default, `puns` accepts a pun of such a type only if it
+  does the same in every layout that Rust allows. With the [`unstable` feature][unstable], `puns`
+  uses the layout that the compiler chose, and accepts more puns. They are sound in the build that
+  compiles them, but another version of the compiler may refuse them, or check other bytes.
 - Deriving `Pun` lets any code read and write every field through bytes, as if the fields were
   public. Do not derive it on a type that has a private invariant. See
   [What deriving `Pun` means][deriving].
@@ -118,7 +119,8 @@ struct Save<V = u8, B: ?Sized = [Item]> {
   bag: B, // the rest of the file
 }
 
-// A view enum. `from_bytes` returns the first variant that the bytes match. A `u8c<N>` is a
+// A view enum. The derive gives it `from_bytes`, which returns the first variant that the bytes
+// match. A `u8c<N>` is a
 // `u8` that is always `N`, so the version byte selects the variant. A view enum holds
 // references and is not stored in the bytes, so it needs no `repr`.
 #[derive(Pun)]
@@ -130,7 +132,8 @@ enum SaveFile<'a> {
 fn load(file: &[u8]) -> Result<&Save, puns::Error> {
   Ok(match SaveFile::from_bytes(file)? {
     // Proven: every `OldItem` is a valid `Item`, a `u8c<1>` is a `u8`, and both sides have the
-    // same rule. If `Potion` had another tag in `Item`, this line would not compile.
+    // same rule. Variants are matched by their tag, not by their name: if the tag 1 of `Item`
+    // could not hold the fields of a potion, this line would not compile.
     SaveFile::V1(old) => puns::pun_ref(old),
     SaveFile::V2(new) => puns::pun_ref(new),
   })
@@ -163,7 +166,9 @@ padding, the valid values of each field, and its rules. Each function of `puns` 
 constants of its two types in a `const` block. The compiler evaluates this block for each pair of
 types that the function is used with.
 
-`pun`, `pun_ref`, `pun_mut` and `as_bytes` accept only a proven pun. The `try_` and `from_`
+`pun`, `pun_ref`, `pun_mut` and `as_bytes` accept only a proven pun. `pun_mut` also requires
+every value of the target to be a valid source, since the source is written through it: a
+`&mut bool` is not a `&mut u8`. The `try_` and `from_`
 functions also accept a checked pun, and return an [`Error`] when the check fails:
 
 ```rust
@@ -248,8 +253,10 @@ A proven pun compiles to no check. For example, `pun::<[bool; 4], u32>` compiles
 [`docs/performance.md`][performance] has the machine code of more functions, and benchmarks
 against the same checks written by hand.
 
-The time of a check grows with the size of the value. A checksum or a `walk` (a loop in a rule)
-inside a `walk` multiplies it by the size, at each level, and walks nest up to 4 deep.
+A check takes time in proportion to the size of the value, except in one case. A `walk` is a
+loop in a rule. A checksum or a `walk` inside a `walk` takes time in proportion to the square of
+the size, and each further level of nesting multiplies it by the size again, up to 4 levels. Keep
+this in mind before you read untrusted bytes as such a type.
 
 ## Related crates
 
