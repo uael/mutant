@@ -12,8 +12,11 @@ and in part on every push, with and without the `unstable` feature. The [crate d
 
 ## Miri
 
-The tests run under [Miri] on every push: with tree borrows on x86-64, and with stacked borrows
-on a 32-bit target (`i686`) and on a big-endian one (`s390x`).
+The tests of `puns` run under [Miri] on every push: with tree borrows on x86-64, and with stacked
+borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). A test file that is not
+about the `unsafe` code does not run there, such as the examples other than `ethernet`. Under
+Miri, the model check runs on a selection of its pairs that reaches every `unsafe` path
+([`miri_sample.rs`][sample] says which pair is for which), not on every pair.
 
 ## Compile errors
 
@@ -29,5 +32,6 @@ swaps fields. This checks that the generated code trusts no name that you can re
 
 [Miri]: https://github.com/rust-lang/miri
 [model]: https://github.com/uael/puns/blob/main/puns-model/src/lib.rs
+[sample]: https://github.com/uael/puns/blob/main/puns-model/tests/miri_sample.rs
 [compile-fail]: https://github.com/uael/puns/tree/main/puns/tests/compile-fail
 [Soundness]: https://docs.rs/puns/latest/puns/#soundness
