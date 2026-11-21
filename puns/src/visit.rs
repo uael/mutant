@@ -373,9 +373,15 @@ pub fn validate_in<T: Pun, V: Visit>(
 ///
 /// let bytes = [0, 1, 2];
 /// assert_eq!(puns::validate_elems_in::<bool, _>(&bytes, 0, 2, &mut NoPointers), Ok(()));
-/// assert_eq!(puns::validate_elems_in::<bool, _>(&bytes, 0, 3, &mut NoPointers), Err(Invalid::at(2)));
+/// assert_eq!(
+///   puns::validate_elems_in::<bool, _>(&bytes, 0, 3, &mut NoPointers),
+///   Err(Invalid::at(2)),
+/// );
 /// // Three values from 1 are not all there.
-/// assert_eq!(puns::validate_elems_in::<bool, _>(&bytes, 1, 3, &mut NoPointers), Err(Invalid::at(1)));
+/// assert_eq!(
+///   puns::validate_elems_in::<bool, _>(&bytes, 1, 3, &mut NoPointers),
+///   Err(Invalid::at(1)),
+/// );
 /// ```
 #[inline]
 pub fn validate_elems_in<T: Pun, V: Visit>(

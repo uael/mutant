@@ -113,7 +113,8 @@ use crate::{Pun, layout::Pointer};
 /// // writes to the buffer while it is read. Nothing in this example relies on more.
 /// unsafe impl<T: Pun> SelfRelative for Rel<T> {
 ///   type Target = T;
-///   const POINTER: Pointer = Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
+///   const POINTER: Pointer =
+///     Pointer::one::<T>("rel, an example", size_of::<i32>(), Endian::NATIVE);
 /// }
 ///
 /// puns::self_relative!(impl[T: Pun] Rel<T>);
