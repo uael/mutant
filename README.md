@@ -231,17 +231,17 @@ shortest one, [`media.rs`][media], reads WAVE files and MP4 boxes. Run it with
 
 ## History
 
-I started this crate in November 2023, under the name `mutant`. At the time, I worked on
-Bluetooth, which involves a lot of packing and unpacking of protocol data. [`typic`][typic] was
-also a motivation. I was amazed by how much it achieves with the type system. Compile-time
-evaluation had recently gained features on stable Rust, and inline `const` was being stabilized.
+I started this crate in November 2023 under the name `mutant`. At the time I worked on Bluetooth,
+which involves a lot of packing and unpacking of protocol data. I was also amazed by how much
+[`typic`][typic] achieves with the type system, and that was a motivation too. Compile-time
+evaluation had recently gained features on stable Rust and inline `const` was being stabilized, so
 I wanted to see how far it could go.
 
-Compile-time evaluation had many limitations. I tried types instead, and found even more. I wrote
-many prototypes that mixed the two approaches. Then I stopped the project for a long time.
+Compile-time evaluation had many limitations, and when I tried types instead I found even more. I
+wrote many prototypes that mixed the two approaches before I stopped the project for a long time.
 
 Recent stabilizations and the progress of AI models made me want to come back to it. The name
-`mutant` was taken, so the crate became `puns`. The [changelog] lists the releases since.
+`mutant` was taken so the crate became `puns`, and the [changelog] lists the releases since.
 
 ## License
 
