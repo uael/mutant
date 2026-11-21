@@ -100,8 +100,8 @@
 //! the same scheme, the same offset (width and byte order), and the same kind of aim. Its target
 //! must be no larger and need no more alignment. For one value, that is its size and alignment. For
 //! a sequence, the elements must have the same size, and the declared alignment of the target must
-//! not be greater than the one of the source. For text, nothing more is needed. The pointer of the
-//! source must not be nullable where the one of the target is not. Its type must not have an offset
+//! not be greater than that of the source. For text, nothing more is needed. The pointer of the
+//! source must not be nullable where that of the target is not. Its type must not have an offset
 //! of zero where the type of the target has none (a `NonZero`), unless that is checked.
 //! `try_view_ref` checks that it is not zero, and `view_ref` refuses it. Anything else sets the
 //! `pointer` of the [`Relation`](crate::analysis::Relation), which no function accepts and no check
@@ -422,7 +422,7 @@ pub const fn local<A: ?Sized + Pun, B: ?Sized + Pun>(fuel: usize) -> Option<&'st
   if !b.has_pointers() {
     return None;
   }
-  // This walk, and the one of `pair`, are over the lists of the two types: they are what the
+  // This walk, and that of `pair`, are over the lists of the two types: they are what the
   // layouts hold, which the analysis went by, or a pointer could be missed, or taken for another.
   if !listed::<A>() || !listed::<B>() {
     return Some(LISTS);

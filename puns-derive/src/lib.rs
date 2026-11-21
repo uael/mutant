@@ -1775,7 +1775,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
 
   Ok(quote! {
     const _: () = {
-      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      // The types whose functions are called are those of the crate (see `Layout::PIN`).
       const _: (
         fn(#root::layout::Rule),
         fn(#root::layout::Op),
@@ -1793,7 +1793,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
       // - `Layout::structure` takes the size and the alignment from the compiler. It asserts that
       //   the fields do not overlap and are within the size, and that the trailing padding of an
       //   unsized struct is the one it computes.
-      // - The offset of each field is the one of the compiler: for `repr(C)`, the one that the
+      // - The offset of each field is that of the compiler: for `repr(C)`, the one that the
       //   representation specifies [1], from the sizes and alignments of the fields
       //   (`Layout::tail_offset`, `Layout::tail_offset_packed`); for `repr(transparent)`, 0 for
       //   the field with a size [2]; otherwise, the offset of a place projected from a pointer to
@@ -1838,7 +1838,7 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
         const PROBE: *const Self = #probe;
         // SAFETY: `Layout::structure` requires nothing of a `Sized` struct. An unsized struct has
         // an unsized last field, whose `Pun` type is a slice, `str`, or a struct whose last field
-        // is one of these. Its probe is the one of that field, `<[E] as Pun>::PROBE` cast with
+        // is one of these. Its probe is the probe of that field, `<[E] as Pun>::PROBE` cast with
         // `as` casts, cast again to `*const Self`. The size of the struct with 8 elements in its
         // tail must fit in an `isize`, which the derive does not check: `rustc` reports an error
         // in const evaluation where it does not.
@@ -2221,7 +2221,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
 
   Ok(quote! {
     const _: () = {
-      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      // The types whose functions are called are those of the crate (see `Layout::PIN`).
       const _: (
         fn(#root::layout::Rule),
         fn(#root::layout::Op),
@@ -2270,7 +2270,7 @@ fn derive_tagged(input: &DeriveInput, data: &DataEnum, root: &TokenStream) -> Re
       //   `Layout::enumeration` asserts the result against the size and the alignment of the
       //   enum, and asserts that the tag and the fields are within it.
       // - Each field has the layout of its type, or a restriction of it. An enum is valid if its
-      //   tag is the one of a variant and the fields of that variant are valid [3], which is what
+      //   tag is that of a variant and the fields of that variant are valid [3], which is what
       //   the layout accepts.
       // - `Variants` lists the variants in order, each with its fields (see the markers above).
       //   The other lists are `()`, and `OPTION` is `None`.
@@ -2511,7 +2511,7 @@ fn derive_discovered(
 
   Ok(quote! {
     const _: () = {
-      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      // The types whose functions are called are those of the crate (see `Layout::PIN`).
       const _: (
         fn(#root::layout::Rule),
         fn(#root::layout::Op),
@@ -2667,7 +2667,7 @@ fn derive_union(input: &DeriveInput, data: &syn::DataUnion) -> Result<TokenStrea
   let first = shadows.first().map_or_else(|| quote!(()), |shadow| quote!(#shadow #ty_generics));
   Ok(quote! {
     const _: () = {
-      // The types whose functions are called are the ones of the crate (see `Layout::PIN`).
+      // The types whose functions are called are those of the crate (see `Layout::PIN`).
       const _: (
         fn(#root::layout::Rule),
         fn(#root::layout::Op),

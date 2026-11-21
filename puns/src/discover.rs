@@ -60,7 +60,7 @@
 //!
 //! The experiments rest on these facts of the compiler, and on one fact of this crate.
 //!
-//! ## The layout is the one of the target
+//! ## The layout is that of the target
 //!
 //! The layout of a type is the same in const evaluation as at run time, for a given target. Const
 //! evaluation computes it for that target, with the same code. This is a property of how `rustc` is
@@ -847,7 +847,7 @@ const unsafe fn try_tag<E, const V: usize>(
     }
     v += 1;
   }
-  // The variants without a single tag take the one of `base`, which merges with it.
+  // The variants without a single tag take that of `base`, which merges with it.
   let mut v = 0;
   while v < V {
     if !single[v] {

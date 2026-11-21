@@ -82,7 +82,7 @@ pub const fn verdict<S: ?Sized + Pun, D: ?Sized + Pun>() -> Verdict {
 ///
 /// It checks the plan of `view_ref`, then what the pointers of `D` aim at, followed `fuel`
 /// times. `view_ref` itself follows pointers through instances of functions, without a bound.
-/// The answer is the one of `view_ref` only if `fuel` is at least the number of pairs of types
+/// The answer is that of `view_ref` only if `fuel` is at least the number of pairs of types
 /// that can be met.
 #[must_use]
 pub const fn views<S: ?Sized + Pun, D: ?Sized + Pun>(fuel: usize) -> bool {

@@ -30,7 +30,7 @@
 //!   element, and a head of the same remainder. The variant then takes the extent of its base,
 //!   without trailing padding, which each adds on its own.
 //!
-//! # Why the answer is the one of trying each variant in turn
+//! # Why the answer is that of trying each variant in turn
 //!
 //! This follows from what the analysis proves and checks. Bytes that are not a value of the base
 //! are not a value of the variant, since every value of the variant is a value of the base. Bytes
@@ -59,7 +59,7 @@
 //! analysis tries the later variants until one takes it. It skips those that a scalar at the same
 //! place tells apart, such as another EtherType or another protocol (`apart`, a walk of the
 //! layouts). It then analyzes what is left of the variant from the base found. The base of
-//! `from_head` is the one of `from_bytes` if it takes the same bytes, which it does where both tell
+//! `from_head` is that of `from_bytes` if it takes the same bytes, which it does where both tell
 //! their extent. One instance of the validation serves a variant for both functions. It checks what
 //! the two bases do not prove, which is the same marks where the base is the same, or everything
 //! that bytes do not prove where there is no base. The function of each variant names the functions
