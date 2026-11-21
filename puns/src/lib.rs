@@ -9,9 +9,9 @@
 //! - The pun is **proven** if every value of the source is a [valid] value of the target. It
 //!   compiles to no check, though it may still compute an address or a length.
 //! - The pun is **checked** if only some values of the source are valid targets. A `try_` or
-//!   `from_` function then tests at run time exactly what the analysis couldn't prove.
+//!   `from_` function then tests at run time exactly what the analysis could not prove.
 //! - The pun is **refused** if it can never be valid, or if what it needs can be neither proven nor
-//!   checked. It doesn't compile.
+//!   checked. It does not compile.
 //!
 //! `puns` works with plain data: structs and enums of any representation, `repr(C)` unions, tuples,
 //! arrays, slices, structs that end with a slice, `str`, `MaybeUninit`, and types without values.
@@ -38,7 +38,7 @@
 //!   [`from_bytes_mut`] check the address, then the size. [`from_head`] and [`from_head_mut`] check
 //!   that the bytes hold the sized part of the target, then the address, then the extent that its
 //!   rules give. [`from_tail`] and [`from_tail_mut`] check the size first, since it decides where
-//!   the last bytes start, then the address. All of them then check whatever the bytes don't prove
+//!   the last bytes start, then the address. All of them then check whatever the bytes do not prove
 //!   about the target.
 //! - [`from_bytes`], [`from_bytes_mut`] and [`as_bytes`] behave like `try_pun_ref::<[u8], D>`,
 //!   `try_pun_mut::<[u8], D>` and `pun_ref::<S, [u8]>`. Because they fix one side to bytes, they
@@ -46,20 +46,20 @@
 //!   being inferred as an `[i32; N]`.
 //! - [`from_head`] and [`from_head_mut`] take as many bytes as the `size` or `len` rule of the
 //!   target says, or else as many elements as fit. [`from_tail`] and [`from_tail_mut`] require a
-//!   sized target, because the extent of an unsized target can't be found from its end.
+//!   sized target, because the extent of an unsized target cannot be found from its end.
 //! - A view enum is an enum whose variants each hold a reference. [The derive](macro@Pun) gives it
 //!   `from_bytes` and `from_head`, which return the first variant that the bytes match.
 //!
 //! None of these functions makes a value that holds self-relative pointers ([`SelfRelative`]):
 //! they read such a value as plain data. [`view_ref`] and [`try_view_ref`] are the ones that make
 //! it. `view_ref` is proven and follows the pointers, while `try_view_ref` also checks at run time
-//! whatever isn't proven about the value itself. Both work only by reference, and neither is a
+//! whatever is not proven about the value itself. Both work only by reference, and neither is a
 //! `const fn`.
 //!
 //! Types with a fixed byte order or a fixed value live in [`num`], the options of the derive are
 //! documented on [`macro@Pun`], and the building blocks of layouts and checksums are in [`layout`].
 //! For what works in practice, the tests and examples of the repository are the reference, and each
-//! example says what it doesn't cover, and why.
+//! example says what it does not cover, and why.
 //!
 //! ## Using the functions
 //!
@@ -162,7 +162,7 @@
 //! `Pun` meets what the derive was told (the values of fields marked `#[pun(valid(..))]`, and its
 //! rules). The analysis either proves this at compile time, or the function checks it at run time
 //! and returns an [`Error`]. Anything that can be neither proven nor checked, such as a byte that
-//! may be padding, doesn't compile.
+//! may be padding, does not compile.
 //!
 //! The analysis reads the layout of each type from its implementation of [`Pun`]: its size, its
 //! alignment, the offset of each field, the values each scalar may hold, and its rules.
@@ -194,8 +194,8 @@
 //! rests on](#what-this-rests-on).
 //!
 //! The tests run under [Miri], with tree borrows on x86-64 and with stacked borrows on a 32-bit and
-//! a big-endian target. The analysis itself is checked against oracles that don't use it, both with
-//! and without the `unstable` feature.
+//! a big-endian target. The analysis itself is checked against oracles that do not use it, both
+//! with and without the `unstable` feature.
 //!
 //! ## Guarantees and requirements
 //!
@@ -204,22 +204,22 @@
 //! the invariants of the types in [`num`], such as [`u16bec<V>`](num::u16bec) and [`u8in<MIN,
 //! MAX>`](num::u8in), whose fields are private and whose constructors check them.
 //!
-//! A struct, on the other hand, *requires* things of what it's made from. `#[pun(valid(..))]` on a
-//! field is a requirement, and so is a rule, because safe code can write any value to a
-//! `pub version: u8`. `puns` proves or checks a requirement whenever it makes a value of the type,
-//! though [`zeroed`] doesn't check rules. A requirement never proves what another type guarantees:
-//! a slice of a struct whose only field has `#[pun(valid(..=0x7f))]` is checked when it's read as a
-//! `str`, while a `[u8in<0, 0x7f>]` is proven to be one. For the same reason, the accessors of
+//! A struct, on the other hand, *requires* things of what it is made from. `#[pun(valid(..))]` on a
+//! field is a requirement, and so is a rule, because safe code can write any value to a `pub
+//! version: u8`. `puns` proves or checks a requirement whenever it makes a value of the type,
+//! though [`zeroed`] does not check rules. A requirement never proves what another type guarantees:
+//! a slice of a struct whose only field has `#[pun(valid(..=0x7f))]` is checked when it is read as
+//! a `str`, while a `[u8in<0, 0x7f>]` is proven to be one. For the same reason, the accessors of
 //! regions cut a region short rather than trust the fields that give its size. Two types have the
-//! same layout only if they require and guarantee the same values, so a field
-//! `#[pun(valid(0..=1))] u8` is not a `bool`.
+//! same layout only if they require and guarantee the same values, so a field `#[pun(valid(0..=1))]
+//! u8` is not a `bool`.
 //!
 //! ## Padding and `MaybeUninit`
 //!
 //! A pun is refused if a byte that the target requires to be initialized may be padding in the
 //! source.
 //!
-//! `MaybeUninit<T>` is padding with the size and alignment of `T`, and it's only `Pun` if `T` is,
+//! `MaybeUninit<T>` is padding with the size and alignment of `T`, and it is only `Pun` if `T` is,
 //! so that it never holds an `UnsafeCell`. As a target, it accepts anything. As a source, it proves
 //! nothing except a target that accepts anything. So a `&mut MaybeUninit<T>` can only be made from
 //! a source that may hold anything there, since whatever is written through it may be
@@ -227,26 +227,26 @@
 //! requires would be read from padding.
 //!
 //! A rule that reads the bytes of its value (`le`, `be`, a checksum, or `walk` through its
-//! expressions) reads its padding as well. Such a rule is checked when the source doesn't prove it,
-//! or when it belongs to a variant of an enum that is checked as a whole, and its struct must then
-//! have no byte that may be padding in the source.
+//! expressions) reads its padding as well. Such a rule is checked when the source does not prove
+//! it, or when it belongs to a variant of an enum that is checked as a whole, and its struct must
+//! then have no byte that may be padding in the source.
 //!
 //! ## Unions
 //!
-//! The language hasn't settled the validity of unions
+//! The language has not settled the validity of unions
 //! ([`r-undefined.validity.union`][union validity]). Some of the rules under discussion let a union
 //! hold any bytes, while others require its bytes to be one of its fields, and safe code may write
 //! one field over another. So `puns` takes what is sound under each of these rules:
 //!
 //! - As a target, bytes are a union if they are one of its fields. This requires more than some of
 //!   the rules do, and never less. A union is proven by any one field that the source proves, and
-//!   otherwise it's checked field by field at run time.
+//!   otherwise it is checked field by field at run time.
 //! - As a source, nothing is known about a union, not even that its bytes are initialized. Only the
 //!   same union proves a union.
 //!
 //! A field is only checked if no byte it reads may be padding in the source. If some field might
 //! read padding and no field is proven, the pun is refused. Checking only the other fields would be
-//! sound, but `puns` doesn't do it yet (see [Limitations](#limitations)).
+//! sound, but `puns` does not do it yet (see [Limitations](#limitations)).
 //!
 //! ## Types without values
 //!
@@ -291,7 +291,7 @@
 //! from anything whose bytes are valid for its fields and rules, read as anything its bytes are,
 //! and written through a `&mut` to another type. The functions check what the derive was told, and
 //! nothing that a constructor checks, so a type whose private fields keep an invariant the derive
-//! doesn't know about must not derive `Pun`.
+//! does not know about must not derive `Pun`.
 //!
 //! ```
 //! mod even {
@@ -319,18 +319,18 @@
 //!
 //! # Compile-time errors
 //!
-//! Most refusals are panics in `const` blocks of the generic functions of `puns` (error E0080).
-//! Such a block depends on the type parameters, so `rustc` evaluates it only when it generates the
-//! code of an instance of the function, after monomorphization. `cargo check` does not generate
-//! code, so it does not report these errors. `cargo build` does. A generic function that calls a
-//! function of `puns` compiles until it is instantiated with types that violate its conditions.
-//! Each function lists its conditions under "Compile-time errors". Rust has no const traits on
-//! stable, which would let these conditions be trait bounds.
+//! Most refusals are panics in `const` blocks inside the generic functions of `puns` (error E0080).
+//! Because such a block depends on the type parameters, `rustc` only evaluates it when it generates
+//! code for an instance of the function, after monomorphization. `cargo check` does not generate
+//! code, so it does not report these errors, while `cargo build` does. For the same reason, a
+//! generic function that calls into `puns` compiles fine until it is instantiated with types that
+//! violate the conditions. Each function lists its conditions under "Compile-time errors". They
+//! would be trait bounds if stable Rust had const traits.
 //!
 //! ## Reading an error
 //!
-//! A common mistake with `transmute` is to read a struct with padding as bytes. `puns` refuses it,
-//! and the first lines of the error say why.
+//! A common mistake with `transmute` is reading a struct with padding as bytes. `puns` refuses it,
+//! and the first lines of the error say why:
 //!
 //! ```compile_fail,E0080
 //! #[derive(puns::Pun)]
@@ -355,16 +355,18 @@
 //!   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //! ```
 //!
-//! Byte 1 is the first of the three bytes of padding after `kind`. The last note says where the
-//! call is in your code: each function of the table evaluates its constant itself, so that the note
-//! names your call, not a call inside `puns`. Between the first lines and the last note, `rustc`
-//! prints about thirty lines that locate the failed constant inside `puns`, which you can skip.
+//! Byte 1 is the first of the three bytes of padding after `kind`. The last note tells you where
+//! the call is in your code, because each function in the table evaluates its constant itself, so
+//! the note names your call rather than one inside `puns`. Between the first lines and that note,
+//! `rustc` prints about thirty lines locating the failed constant inside `puns`, which you can
+//! skip.
 //!
-//! An optimized build may inline the function into yours before it evaluates the constant. `rustc`
-//! then prints no last note: the error names the two types, as in `Plan::<Header, [u8; 8]>`, but
-//! not the line of your code. A debug build, such as the one of `cargo build`, names it.
+//! An optimized build may inline the function into yours before it evaluates the constant, and
+//! `rustc` then prints no last note. The error still names the two types, as in
+//! `Plan::<Header, [u8; 8]>`, but not the line of your code. A debug build, such as the one
+//! `cargo build` makes, does name it.
 //!
-//! To fix this pun, declare the padding as a field, so that it is initialized.
+//! To fix this pun, declare the padding as a field, so that it is initialized:
 //!
 //! ```
 //! #[derive(puns::Pun)]
@@ -381,12 +383,12 @@
 //!
 //! ## Messages
 //!
-//! Each refusal prints a message that says why the pun is refused. When the reason is at a byte of
-//! the target, the message names that byte. The most common messages follow, each with code that
-//! compiles where the pun can be fixed.
+//! Every refusal prints a message that says why the pun is refused, and names the byte of the
+//! target where the problem is, when there is one. Here are the most common messages, each with
+//! code that compiles where the pun can be fixed.
 //!
 //! **The pun depends on a layout that Rust leaves to the compiler.** The fields of a struct of the
-//! `Rust` representation may be in any order, so `puns` cannot tell which byte is the `bool`.
+//! `Rust` representation may be in any order, so `puns` cannot tell which byte is the `bool`:
 //!
 #![cfg_attr(not(feature = "unstable"), doc = "```compile_fail,E0080")]
 #![cfg_attr(feature = "unstable", doc = "```")]
@@ -405,7 +407,7 @@
 //! This is at byte 0 of the target.
 //! ```
 //!
-//! With `#[repr(C)]`, the fields are in the order of their declarations.
+//! With `#[repr(C)]`, the fields are in declaration order:
 //!
 //! ```
 //! #[derive(puns::Pun)]
@@ -429,15 +431,15 @@
 //! cannot pun: the source is smaller than the target.
 //! ```
 //!
-//! A source larger than the target gives "the source is larger than the target", and the message
-//! suggests [`head`] and [`tail`], which read a part of the source.
+//! A source larger than the target gives "the source is larger than the target", and the
+//! message suggests [`head`] and [`tail`], which read just a part of the source:
 //!
 //! ```
 //! assert_eq!(puns::head::<[u8; 3], [u8; 2]>([1, 2, 3]), [1, 2]);
 //! ```
 //!
-//! **The target needs a greater alignment than the source.** A `[u8; 4]` can be at any address, and
-//! a `u32` cannot.
+//! **The target needs a greater alignment than the source.** A `[u8; 4]` can be at any address,
+//! but a `u32` cannot:
 //!
 //! ```compile_fail,E0080
 //! let n: &u32 = puns::pun_ref(&[0u8; 4]);
@@ -448,9 +450,9 @@
 //! Use `try_pun_ref` or `try_pun_mut` to check the address at run time.
 //! ```
 //!
-//! A value has no address, so [`pun`] copies the bytes into a `u32`. A [`num::u32le`] has
-//! alignment 1, so a reference to four bytes can be read as one. Otherwise, [`try_pun_ref`] checks
-//! the address at run time.
+//! A value has no address, so [`pun`] just copies the bytes into a `u32`. A [`num::u32le`] has an
+//! alignment of 1, so a reference to four bytes can be read as one. Otherwise, [`try_pun_ref`]
+//! checks the address at run time:
 //!
 //! ```
 //! use puns::num::u32le;
@@ -478,8 +480,8 @@
 //! assert_eq!(puns::try_pun_ref::<[u8; 4], str>(&[0xff; 4]), Err(puns::Error::Validity));
 //! ```
 //!
-//! **A value that is not valid for the source could be written through a `&mut`.** Here, the value
-//! would be bytes that are not UTF-8.
+//! **A value that is not valid for the source could be written through a `&mut`.** Here, that value
+//! would be bytes that are not UTF-8:
 //!
 //! ```compile_fail,E0080
 //! let mut text = String::from("text");
@@ -490,7 +492,7 @@
 //! cannot pun: some values of the target are not valid for the source (or are padding where the source is not), and could be written through the `&mut`.
 //! ```
 //!
-//! Nothing is written through a shared reference, and every `str` is bytes.
+//! Nothing is written through a shared reference, and every `str` is bytes:
 //!
 //! ```
 //! let text = String::from("text");
@@ -499,7 +501,7 @@
 //! ```
 //!
 //! **No value of the source is valid for the target.** A byte that is always 2 is never a `bool`.
-//! No function can make this pun, so the code that asks for it has a mistake.
+//! No function can make this pun, so the code that asks for it is a mistake:
 //!
 //! ```compile_fail,E0080
 //! let never = puns::try_pun::<puns::num::u8c<2>, bool>(Default::default());
@@ -510,14 +512,14 @@
 //! This is at byte 0 of the target.
 //! ```
 //!
-//! A byte that is padding in the source, and that the target requires to be initialized, is refused
-//! as well. [Reading an error](#reading-an-error) shows its message, and
+//! A byte that is padding in the source but must be initialized in the target is refused as well.
+//! [Reading an error](#reading-an-error) shows its message, and
 //! [Enums: what is refused](#enums-what-is-refused) shows it for an enum.
 //!
 //! ## Enums: what is refused
 //!
-//! A `Shape` is not a `[u8; 4]`. The byte after the tag of a `Circle` is padding, and nothing
-//! tells a `Circle` from a `Rect` at compile time.
+//! A `Shape` is not a `[u8; 4]`: the byte after the tag of a `Circle` is padding, and nothing tells
+//! a `Circle` from a `Rect` at compile time.
 //!
 //! ```compile_fail,E0080
 //! # use puns::Pun;
@@ -525,8 +527,8 @@
 //! let _: [u8; 4] = puns::pun(Shape::Rect(3, true));
 //! ```
 //!
-//! A `&mut Shape` is not a `&mut Drawing`. A `Drawing` written through it could be a `Nothing`, or
-//! a `Rect` whose second field is not a `bool`.
+//! A `&mut Shape` is not a `&mut Drawing` either, since a `Drawing` written through it could be a
+//! `Nothing`, or a `Rect` whose second field is not a `bool`.
 //!
 //! ```compile_fail,E0080
 //! # use puns::Pun;
