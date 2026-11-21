@@ -676,21 +676,24 @@
 //!
 //! ### The same type
 //!
-//! Without the feature, a part whose layout Rust leaves to the compiler is proven only by the same
-//! type at the same place. A type has one layout in a program, but two types, however alike, may
-//! each be arranged differently ([`offset_of!`, "Layout is subject to change"][offset_of layout]).
-//! `-Zrandomize-layout`, for example, arranges `Wrapper<u8, u8>` and `Wrapper<u8, i8>`
-//! differently. Stable Rust cannot compare types in `const`, since `TypeId` cannot be compared
-//! there and `type_name` is not a `const fn`.
+//! Without the feature, a part whose layout Rust leaves to the compiler, unless it is proven field
+//! by field as above, is proven only by the same type at the same place. A type has one layout in a
+//! program, but two types, however alike, may each be arranged differently ([`offset_of!`, "Layout
+//! is subject to change"][offset_of layout]). `-Zrandomize-layout`, for example, arranges
+//! `Wrapper<u8, u8>` and `Wrapper<u8, i8>` differently. Stable Rust cannot compare types in
+//! `const`, since `TypeId` cannot be compared there and `type_name` is not a `const fn`.
 //!
 //! So `puns` identifies a type by a name, together with the identities of the types it is made of.
 //! The primitive types, the types of [`num`], arrays, slices, tuples, `Option`, `Result` and
 //! `MaybeUninit` have identities, and `ManuallyDrop<T>` is `T`. A type that derives `Pun` is named
 //! by where it is declared (the module, file, line and column) and by its name. A generic type that
 //! derives `Pun`, a `PhantomData`, a [`Scalar`] implemented by hand, and a self-relative pointer
-//! have no identity, and a type that holds one of them proves itself only with the feature. An
-//! identity can only refuse a pun, because the layouts are compared as well, so two types that
-//! happened to share a name would still be read by their layouts.
+//! have no identity. A part whose layout Rust leaves to the compiler and that holds one of them
+//! therefore proves itself only with the feature, unless it is proven field by field, while a type
+//! whose every part has the same layout in every build, such as a generic `repr(C)` struct of a
+//! `u8` and a `PhantomData<T>`, needs no identity. An identity can only refuse a pun, because the
+//! layouts are compared as well, so two types that happened to share a name would still be read by
+//! their layouts.
 //!
 //! ### What this rests on
 //!
@@ -939,17 +942,16 @@
 //! - **Sums of types in sequences, and recursion**, such as `OPTIONAL` and `CHOICE` of ASN.1, and
 //!   the containers of CBOR and MessagePack. A chain of types (`Then<A, B>`) is one sequence of
 //!   types.
-//! - **An arbitrary function in a rule.** Getters may call any function, but rules may not. The
+//! - **An arbitrary function in a rule.** A getter may call any `const fn`, but a rule may not. The
 //!   validator is `const fn` code, generic over the type it validates, and on stable Rust 1.100
 //!   such code cannot call a function that the type chooses. A call through a function pointer is
 //!   refused ("function pointer calls are not allowed in constant functions"), so is a call of a
 //!   trait method (E0015, "cannot call non-const associated function"), and const traits are
-//!   unstable (E0658). A user function could only be called if validation stopped being `const`, as
-//!   every function of the crate is, or behind a check that runs only outside of `const`, which
-//!   stable Rust cannot express. So what a rule computes is built in, and described by data where
-//!   it varies: walks, variable-length integers, CRCs by their parameters, and sums. The analysis
-//!   does not reason about that data, since a rule is proven only by the same rule, and a checksum
-//!   only makes a check stricter.
+//!   unstable (E0658). A user function could only be called if the validator stopped being `const`,
+//!   or behind a check that runs only outside of `const`, which stable Rust cannot express. So what
+//!   a rule computes is built in, and described by data where it varies: walks, variable-length
+//!   integers, CRCs by their parameters, and sums. The analysis does not reason about that data,
+//!   since a rule is proven only by the same rule, and a checksum only makes a check stricter.
 //!
 //! [properly aligned]: core::ptr#alignment
 //! [valid]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html#r-undefined.validity
@@ -1130,10 +1132,10 @@ pub use layout::{crc32, sum16};
 /// - `#[pun(assert(EXPR))]`: `EXPR` must be true of a value. A struct may have several.
 /// - `#[pun(get(name: Type = EXPR, ..))]`: generates `const fn name(&self) -> Type`, which returns
 ///   `(EXPR) as Type`, for bit fields and the like. The method is as visible as the struct. Here
-///   `EXPR` is any Rust expression, in which the name of an unsigned integer field, or `self.name`,
-///   is the value of that field as a `u128`, unless a `let` or a closure declares that name. A
-///   field of another type is refused where the method is used. The field is read by reference, or
-///   copied in a packed struct.
+///   `EXPR` is any Rust expression that a `const fn` may evaluate, in which the name of an unsigned
+///   integer field, or `self.name`, is the value of that field as a `u128`, unless a `let` or a
+///   closure declares that name. A field of another type is refused where the method is used. The
+///   field is read by reference, or copied in a packed struct.
 /// - `#[pun(tag(Key = Type, ..))]`: implements [`Tag<Key>`](Tag) with `type Tag = Type`. Where the
 ///   struct is carried by something that identifies what it carries with a `Key`, that `Key` must
 ///   be a `Type`.
@@ -1238,7 +1240,8 @@ pub use layout::{crc32, sum16};
 ///   (ASN.1 tag numbers and object identifiers). `leb128_len(offset)`, `quic_len(offset)` and
 ///   `vlq_len(offset)` give its length in bytes. They fail if the integer does not end within the
 ///   value, or does not fit in a `u128`. A longer encoding than needed is read as it is, and a rule
-///   such as `leb128_len(1) <= 4` can refuse it.
+///   such as `leb128_len(1) <= 4` can refuse it, but LEB128 fails past 19 bytes, the most that a
+///   `u128` needs, even if the value fits.
 /// - `crc32(start, end)`: the Ethernet CRC-32 of the bytes from `start` to `end`.
 /// - `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)`: any CRC of 1 to 64 bits, given by its
 ///   parameters in the catalogue of CRCs (see [`layout::Crc`]). `crc::<16, 0x8005, 0xffff, true,
@@ -1614,9 +1617,14 @@ pub use core as __core;
 ///     }
 ///   }
 ///
-///   // SAFETY: `Percent` is `repr(transparent)` over a `u8`, so `SPEC` has its size. Its field
-///   // is private, and `new` makes only the bytes from 0 to 100, which `SPEC` accepts. Each of
-///   // them is a valid `Percent`, which holds no `UnsafeCell`.
+///   // SAFETY: `Percent` is `repr(transparent)` over a `u8`, so it has the layout of a `u8` [1],
+///   // and `SPEC` has its size. Its field is private, and `new` makes only the bytes from 0 to
+///   // 100, which `SPEC` accepts. Each of them is a valid `Percent`, which holds no `UnsafeCell`.
+///   //
+///   // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.transparent.layout-abi:
+///   //
+///   //     Structs and enums with this representation have the same layout and ABI as the only
+///   //     non-size 0 non-alignment 1 field, if present, or unit otherwise.
 ///   unsafe impl puns::Scalar for Percent {
 ///     const SPEC: Spec = Spec::ranges::<Percent>(Endian::NATIVE, &[(0, 100)]);
 ///   }
@@ -3243,7 +3251,8 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// Reinterprets a mutable reference to an `S` as a mutable reference to a `D`.
 ///
 /// The returned reference points to the same bytes as `value`, as with [`pun_ref`]. Since any `D`
-/// may be written through it, every `D` must also be a valid `S`. Nothing is checked at run time.
+/// may be written through it, every `D` must also be a valid `S`, except for the rules of `S`.
+/// Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -3256,8 +3265,10 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 ///   time.
 /// - Every byte that `D` requires to be initialized is initialized in every value of `S`.
 /// - Every value of `S` is a [valid](crate#soundness) `D`.
-/// - Every value of `D` is a valid `S`. In particular, every byte that `S` requires to be
-///   initialized is initialized in every value of `D`.
+/// - Every value of `D` is a valid `S`, apart from the rules of `S`. A write through the returned
+///   reference may break a rule of `S`, as a write to a field of `S` may, since a rule is a
+///   [requirement](crate#guarantees-and-requirements). In particular, every byte that `S` requires
+///   to be initialized is initialized in every value of `D`.
 /// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
 ///   the compiler.
 ///
@@ -3914,8 +3925,10 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 /// - Each part of `D` (each scalar that is not in an enum or a union, some variant of each enum,
 ///   and some field of each union) accepts what some value of `S` holds at its place. `D` is
 ///   [inhabited] if `S` is.
-/// - Every value of `D` is a valid `S`. In particular, every byte that `S` requires to be
-///   initialized is initialized in every value of `D`.
+/// - Every value of `D` is a valid `S`, apart from the rules of `S`. A write through the returned
+///   reference may break a rule of `S`, as a write to a field of `S` may, since a rule is a
+///   [requirement](crate#guarantees-and-requirements). In particular, every byte that `S` requires
+///   to be initialized is initialized in every value of `D`.
 /// - Without the `unstable` feature, the result does not depend on a layout that Rust leaves to
 ///   the compiler.
 ///

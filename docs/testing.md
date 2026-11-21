@@ -18,8 +18,8 @@ borrows on a 32-bit target (`i686`) and on a big-endian one (`s390x`). A test fi
 the `unsafe` code does not run there, such as the examples other than `ethernet`. The model check
 runs under Miri too, with tree borrows on x86-64 only, on a few pairs for each `unsafe` path that it
 reaches rather than on every pair ([`miri_sample.rs`][sample] says which pair is for which). It does
-not call `pun`, `pun_mut`, the `_mut` functions that check, or regions, since the tests of `puns`
-run these under Miri.
+not check `pun`, `pun_mut`, the `_mut` functions that check, or regions there, since the tests of
+`puns` run these under Miri, and it calls `pun_mut` only to fill a buffer.
 
 ## Layouts that Rust leaves to the compiler
 

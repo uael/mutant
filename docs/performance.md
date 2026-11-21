@@ -118,8 +118,11 @@ A case is named as in the benchmark, and `cargo bench -p puns --features unstabl
 -- 'ipv6'` runs the cases whose name contains `ipv6`. The size of an IPv4 case is the size of its
 UDP datagram or TCP segment, after the 20 bytes of the IPv4 header. The IPv6 cases of TCP time the
 walk over the extension headers only. The IPv6 case of 1400 bytes computes a checksum that fails.
-By hand, a CRC is computed 16 bytes at a time, unless the name says a byte at a time, and a slice
-is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`.
+By hand, CRC-32 and CRC-32C are computed 16 bytes at a time, unless the name says a byte at a
+time, and a slice is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`. The two
+CRC-16s are computed by hand a byte at a time, with a table, while `puns` computes every CRC 16
+bytes at a time, so their rows compare two algorithms rather than the cost of the check around
+them.
 
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
 without a branch inside a block. A slice of `MaybeFlag`, an enum of the `Rust` representation whose

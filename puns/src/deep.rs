@@ -71,11 +71,14 @@
 //! named without mattering has one side without pointers.
 //!
 //! Those lists (`Fields`, `Variants`, `Elem`, `Pointee`) are types, written next to the layout that
-//! the analysis reads. On its way, `local` checks that they are what the layouts hold ([`listed`]):
-//! the same fields in the order of their declarations, the same variants, the same elements, and a
-//! target of the size and the alignment that the pointer says. So an implementation of `Pun` whose
-//! lists and layout differ cannot make a pointer be missed, or taken for another (compile-fail test
-//! `lists_not_the_layout`). Hence the limits, each of which is a refusal:
+//! the analysis reads. On its way, `local` checks them against the layouts ([`listed`]): as many
+//! fields as the layout has, in the order of their declarations, with the type of the listed layout
+//! where a field holds a pointer, the same variants by their tags, the same elements, and a target
+//! of the size and the alignment that the pointer says. So an implementation of `Pun` whose list
+//! leaves out a field, or gives a field that holds a pointer another type, cannot make a pointer be
+//! missed, or taken for another (compile-fail test `lists_not_the_layout`). That the offset and the
+//! layout of each listed field are those of the layout is taken from the `# Safety` of `Pun`, which
+//! the derive meets by taking each field from the layout (`Layout::field`). Hence the limits, each of which is a refusal:
 //!
 //! - A field that holds a pointer keeps its position among the fields of its struct.
 //! - A variant that holds a pointer keeps its position among the variants of its enum, and new
@@ -502,11 +505,13 @@ const fn local_variants<A0: Variants, VA: Variants, VB: Variants>(
   local_variants::<A0, VA::Next, VB::Next>(fuel)
 }
 
-/// Returns whether the lists of `T` are what its layout holds, as [`Pun`] requires.
+/// Returns whether the lists of `T` agree with its layout, as far as pointers need.
 ///
-/// The lists are its fields in the order of their declarations, its variants, the type of its
-/// elements, and, for a pointer, the type it aims at (`()` for text), of the size and alignment
-/// that the pointer says. Only `T` itself is checked. [`local`] checks the types further down.
+/// The lists must be as many fields as the layout has, in the order of their declarations, its
+/// variants with their tags, the type of its elements, and, for a pointer, the type it aims at
+/// (`()` for text), of the size and alignment that the pointer says. The type of a field is
+/// checked only if the field holds a pointer, and its offset not at all, which [`Pun`] guarantees.
+/// Only `T` itself is checked. [`local`] checks the types further down.
 const fn listed<T: ?Sized + Pun>() -> bool {
   match T::LAYOUT.kind {
     Kind::Struct(fields, _) => listed_fields::<T::Fields>(fields, 0),

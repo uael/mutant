@@ -1649,7 +1649,9 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
           || {
             let doc = format!(
               "Returns the bytes of the `{name}` region of the tail, cut short if the fields that \
-               size the regions give more bytes than the tail holds."
+               size the regions give more bytes than the tail holds.\n\n# Compile-time errors\n\n\
+               A call compiles only under the compile-time conditions of `puns::region`, which \
+               require every byte of the struct, up to the end of its tail, to be initialized."
             );
             quote! {
               #[doc = #doc]
@@ -1664,7 +1666,10 @@ fn derive_struct(input: &DeriveInput, data: &DataStruct) -> Result<TokenStream> 
               "Returns the `{name}` region of the tail as the type it is said to hold, read with \
                `puns::from_bytes`. The region is cut short if the fields that size the regions \
                give more bytes than the tail holds.\n\n# Errors\n\nReturns the error of \
-               `puns::from_bytes` if the bytes of the region are not a value of that type."
+               `puns::from_bytes` if the bytes of the region are not a value of that type.\n\n\
+               # Compile-time errors\n\nA call compiles only under the compile-time conditions \
+               of `puns::region`, which require every byte of the struct, up to the end of its \
+               tail, to be initialized, and of `puns::from_bytes` for the type of the region."
             );
             quote! {
               #[doc = #doc]
@@ -1986,6 +1991,11 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         /// # Errors
         ///
         /// Returns `Err(Error::Validity)` if `bytes` start with a value of no variant's type.
+        ///
+        /// # Compile-time errors
+        ///
+        /// A call compiles only if the type of each variant meets the compile-time conditions of
+        /// `puns::from_bytes`.
         #vis const fn from_head(bytes: #bytes) -> #result<(Self, #bytes), #root::Error> {
           let mut known = #root::view::Known::<Self, #count, true>::new(bytes);
           #(#from_heads)*
@@ -1997,6 +2007,11 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
         /// # Errors
         ///
         /// Returns `Err(Error::Validity)` if `bytes` are a value of no variant's type.
+        ///
+        /// # Compile-time errors
+        ///
+        /// A call compiles only if the type of each variant meets the compile-time conditions of
+        /// `puns::from_bytes`.
         #vis const fn from_bytes(bytes: #bytes) -> #result<Self, #root::Error> {
           let mut known = #root::view::Known::<Self, #count, false>::new(bytes);
           #(#wholes)*

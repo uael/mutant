@@ -113,9 +113,10 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
   //   `check_rules` requires.
   // - A pattern is its tail of `ptr::metadata(ptr)` bytes, which are marked, so initialized, as
   //   `Dfa::matches_utf8` and `Dfa::matches` require.
-  // - An enum or a union with a marked leaf meets the requirements of `validate_union` and
-  //   `validate_enum`, and `layout` is the layout of `T`. `T::Variants` is the list of its
-  //   variants, as `validate_union` requires.
+  // - An enum or a union has a marked leaf, so its tag and what the checks of its variants read
+  //   are initialized, by contract on the caller. These are the requirements of `validate_enum`,
+  //   with `layout` the layout of `T`, and of `validate_union`, with `T::Variants` the list of
+  //   its variants.
   // - A pointer is marked, so its bytes are initialized. `load` requires its width to be at most
   //   16, which `Pointer::new` asserts.
   unsafe {
@@ -157,17 +158,19 @@ pub const unsafe fn validate<C: Checks, P: Path, T: ?Sized + Pun>(ptr: *const T)
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`validate`] hold.
+/// - `ptr` is valid for reads of a `T`. It need not be aligned.
 /// - `layout` is the layout of `T`.
+/// - The tag of the enum is initialized, and so is every byte that the checks of the fields of the
+///   variant of that tag read, which check every part.
 #[inline(always)]
 const unsafe fn validate_enum<T: ?Sized + Pun>(ptr: *const T, layout: &Enum) -> bool {
   let Kind::Scalar(spec) = layout.tag.layout.kind else { panic!() };
   // SAFETY: `Layout::enumeration` asserts that the tag is a scalar that `Spec::is_integer`
   // accepts, so of at most 16 bytes, at `layout.tag.offset` within the size of `T`. So `add`
-  // stays within the `T` at `ptr`, and the tag is valid for reads. A leaf of the enum is marked,
-  // so its tag and what the checks of its variants read are initialized, by contract on the
-  // caller. These are the requirements of `load` and of `validate_variants`, with `T::Variants`
-  // the list of the variants of `T`.
+  // stays within the `T` at `ptr`, and the tag is valid for reads. The tag is initialized, and so
+  // is what the checks of the fields of its variant read, by contract on the caller. These are
+  // the requirements of `load` and of `validate_variants`, with `T::Variants` the list of the
+  // variants of `T`.
   unsafe {
     let tag = load(ptr.cast::<u8>().add(layout.tag.offset), spec.size, spec.endian);
     validate_variants::<T, T::Variants>(ptr, tag)
@@ -217,10 +220,11 @@ const unsafe fn validate_variants<T: ?Sized + Pun, V: Variants>(ptr: *const T, t
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`validate`] hold.
+/// - `ptr` is valid for reads of a `T`. It need not be aligned.
 /// - `V` is `T::Variants`, or a list that `Variants::Next` reaches from it.
-/// - Every byte that one of the fields requires to be initialized is initialized. The analysis
-///   refuses a union of which a field would read a byte that may be padding in the source.
+/// - Every byte that the checks of `V` or of a field after it read, which check every part, is
+///   initialized. The analysis refuses a union of which a field would read a byte that may be
+///   padding in the source.
 const unsafe fn validate_union<T: ?Sized + Pun, V: Variants>(ptr: *const T) -> bool {
   if const { V::TAG.is_none() } {
     return false;
@@ -293,7 +297,7 @@ const unsafe fn validate_elems<C: Checks, P: Path, T: Pun>(ptr: *const T, len: u
 ///
 /// The caller must ensure that:
 ///
-/// - The requirements of [`validate`] hold.
+/// - The requirements of [`validate`] hold, with the same `C`, `P` and `T`.
 /// - `F` is a field of `T`: of the struct, or of the variant of the enum that the value at `ptr`
 ///   is.
 const unsafe fn validate_fields<C: Checks, P: Path, T: ?Sized + Pun, F: Fields>(

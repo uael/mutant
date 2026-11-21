@@ -8,7 +8,8 @@
 //!
 //! Each case is a check made by `puns` and the same check written by hand, as a careful
 //! programmer writes it with the same algorithm. The checksums are computed the same way, so the
-//! comparison measures everything else. Both sides must agree on the input before they are
+//! comparison measures everything else, except in the cases of CRC-16, which the hand-written side
+//! computes a byte at a time while `puns` computes 16 bytes at a time. Both sides must agree on the input before they are
 //! timed. A time is the best of 7 samples of about 20 ms each, in nanoseconds per check. The
 //! machine should be idle.
 //!

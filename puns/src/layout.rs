@@ -466,9 +466,14 @@ impl Spec {
   /// #[repr(transparent)]
   /// struct Be16([u8; 2]);
   ///
-  /// // SAFETY: `Be16` is `repr(transparent)` over `[u8; 2]`, so `SPEC` has its size. Every value
-  /// // is two initialized bytes, which `Spec::any` accepts, any two initialized bytes are a valid
-  /// // `Be16`, and it holds no `UnsafeCell`.
+  /// // SAFETY: `Be16` is `repr(transparent)` over `[u8; 2]`, so it has the layout of a `[u8; 2]`
+  /// // [1], and `SPEC` has its size. Every value is two initialized bytes, which `Spec::any`
+  /// // accepts, any two initialized bytes are a valid `Be16`, and it holds no `UnsafeCell`.
+  /// //
+  /// // [1] Per https://doc.rust-lang.org/1.99.0/reference/type-layout.html#r-layout.repr.transparent.layout-abi:
+  /// //
+  /// //     Structs and enums with this representation have the same layout and ABI as the only
+  /// //     non-size 0 non-alignment 1 field, if present, or unit otherwise.
   /// unsafe impl Scalar for Be16 {
   ///   const SPEC: Spec = Spec::any::<Be16>().with_endian(Endian::Big);
   /// }
@@ -2376,7 +2381,7 @@ impl Layout {
   /// #[repr(transparent)]
   /// struct Digits([u8]);
   ///
-  /// // SAFETY: `Digits` is a struct whose last field is a slice. The probe is the one of a slice
+  /// // SAFETY: `Digits` is a struct whose last field is a slice. The probe is that of a slice
   /// // of bytes, cast to `*const Digits` with an `as` cast, and has 3 bytes, a size that fits in
   /// // an `isize`.
   /// const DIGITS: Layout =
@@ -2967,8 +2972,9 @@ impl Layout {
         let mut len = 0;
         while len <= 8 {
           // SAFETY: `T` is a struct whose last field is a slice, `str`, or a struct whose last
-          // field is one of these, as `raw_with_len` requires. The pointer it returns has a tail
-          // of `len` elements, at most 8. A value of `T` whose tail has 8 elements fits in an
+          // field is one of these, and `verify` accepted `probe` above, so a `*const T` is
+          // represented as a `*const [u8]`. These are the requirements of `raw_with_len`. The
+          // pointer it returns has a tail of `len` elements, at most 8. A value of `T` whose tail has 8 elements fits in an
           // `isize`, by contract on the caller, and so does one with fewer. This is the safety
           // contract of `size_of_val_raw`, quoted above.
           let size = unsafe { mem::size_of_val_raw(ptr::raw_with_len(probe, len)) };
@@ -4822,7 +4828,7 @@ pub enum Op {
   },
   /// Replaces an offset with the variable-length integer of the form `form` at that offset in the
   /// value or, with `length`, with its length in bytes. Fails if the integer does not end within
-  /// the value, or does not fit in a `u128`.
+  /// the value, does not fit in a `u128`, or is in LEB128 and longer than 19 bytes.
   Varint {
     /// The form of the integer.
     form: Varint,
@@ -5559,7 +5565,8 @@ impl Checksum {
 ///
 /// It is `leb128(offset)`, `quic(offset)` or `vlq(offset)` in a rule of `#[derive(Pun)]`, and
 /// `leb128_len(offset)`, `quic_len(offset)` or `vlq_len(offset)` for its length in bytes. A longer
-/// encoding than needed is read as it is.
+/// encoding than needed is read as it is, except that LEB128 is read up to 19 bytes, the most that
+/// a `u128` needs, so a longer one fails even if its value fits.
 ///
 /// # Examples
 ///
@@ -5608,7 +5615,8 @@ impl Varint {
   ///
   /// # Errors
   ///
-  /// Returns `None` if the integer does not end within `size` bytes, or does not fit in a `u128`.
+  /// Returns `None` if the integer does not end within `size` bytes, does not fit in a `u128`, or
+  /// is in LEB128 and longer than 19 bytes.
   ///
   /// # Safety
   ///

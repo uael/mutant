@@ -54,9 +54,12 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
 - Only `view_ref` and `try_view_ref` make a value that holds a self-relative pointer, and no
   function gives a `&mut` to one. The three rules and the eight invariants are named headings of
   [`deep`](src/deep.rs) ("Rules that every function keeps", "Invariants").
-- What the derive or a hand-written `Pun` lists (fields, variants, elements, rules, pointer
-  targets) is compared with the layout, list by list, where pointers are followed:
-  `deep::listed` and `visit::listed`. The validation of the `try_` and `from_` functions compares
+- What the derive or a hand-written `Pun` lists (fields, variants, elements, pointer targets) is
+  compared with the layout, list by list, where pointers are followed. `visit::listed` finds each
+  listed field among the fields of the layout, by its index, offset and layout. `deep::listed`
+  checks less: the number and order of the fields, the type of a field that holds a pointer, the
+  tags of the variants, the elements and the targets, and takes the rest from the `# Safety` of
+  `Pun`. The validation of the `try_` and `from_` functions compares
   the rules (`validate::listed`) and the place of each field (`F::Path`), and takes the other
   lists from the `# Safety` of `Pun`.
 - What a layout is made of depends on no path that the deriving crate can redefine, though the
