@@ -5145,9 +5145,9 @@ impl Op {
 ///
 /// The parameters are the `width` in bits, the polynomial `poly` without its high bit, the value
 /// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, with which
-/// the result is combined by XOR. With reflected bits, each byte is taken least significant bit first, and
-/// the result is read the same way. `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` in a
-/// rule of `#[derive(Pun)]` is this CRC of the bytes from `start` to `end`.
+/// the result is combined by XOR. With reflected bits, each byte is taken least significant bit
+/// first, and the result is read the same way. `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start,
+/// end)` in a rule of `#[derive(Pun)]` is this CRC of the bytes from `start` to `end`.
 ///
 /// A `Crc` holds 32 KiB of tables, or 2 KiB on a 16-bit target, made in const evaluation, so it is
 /// meant to be a constant.

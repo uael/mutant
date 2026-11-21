@@ -264,7 +264,7 @@ const unsafe fn store(ptr: *mut u8, size: usize, endian: Endian, value: u128) {
 ///
 /// The caller must ensure that:
 ///
-/// - `ptr` points to an `E` whose tag is initialized.
+/// - `ptr` is aligned for `E`, and valid for reads of an `E` whose tag is initialized.
 /// - The fields of the variant that its tag tells, if any, are valid.
 /// - Unless the call is evaluated in a constant, the tag is the tag of a variant that has values.
 const unsafe fn variant<E>(ptr: *const E) -> usize {
@@ -273,8 +273,8 @@ const unsafe fn variant<E>(ptr: *const E) -> usize {
   // initialized and the fields of its variant are valid. Its tag is the tag of a variant, by
   // contract on the caller, or else the call is evaluated in a constant, where `rustc` reports
   // an error instead of making the reference (`discover`, module documentation). The Reference
-  // does not promise that error. `ptr` comes from a `MaybeUninit<E>`, so it is aligned and not
-  // dangling.
+  // does not promise that error. `ptr` is aligned and valid for reads of an `E`, by contract on
+  // the caller, so it is not dangling.
   //
   // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.reference-box:
   //
@@ -358,10 +358,12 @@ impl<E> Buf<E> {
   ///
   /// The call must be evaluated at compile time, in a `const` item or block. The tag of the value
   /// may be uninitialized, or not the tag of a variant, and reading the variant of such a value is
-  /// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+  /// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation
+  /// fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
   const unsafe fn variant(&self) -> usize {
-    // SAFETY: The experiments write only over what is not a field of the variant of the sample,
-    // or over a tag that they copy whole, so the fields of that variant are valid. The tag may be
+    // SAFETY: The experiments write only over what is not a field of the variant of the sample, or
+    // over a tag that they copy whole, so the fields of that variant are valid. `as_ptr` of the
+    // `MaybeUninit<E>` of the buffer is aligned for `E` and valid for reads of one. The tag may be
     // uninitialized, or not the tag of a variant, which `variant` allows only in a call evaluated
     // in a constant. By contract on the caller, this call is.
     unsafe { variant(self.0.as_ptr()) }
@@ -531,9 +533,10 @@ const fn fill_gaps<E>(buf: &mut Buf<E>, fields: &[Field], skip: usize, len: usiz
 ///
 /// # Safety
 ///
-/// The call must be evaluated at compile time, in a `const` item or block. A fill may make the
-/// tag invalid, and reading the variant of such a value is undefined behavior at run time. Const
-/// evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// The call must be evaluated at compile time, in a `const` item or block. A fill may make the tag
+/// invalid, and reading the variant of such a value is undefined behavior at run time. Const
+/// evaluation reports an error instead ([const evaluation fails on what is not a
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 const unsafe fn decided_by<E>(
   sample: &MaybeUninit<E>,
   fields: &[Field],
@@ -565,7 +568,8 @@ const unsafe fn decided_by<E>(
 ///
 /// The call must be evaluated at compile time, in a `const` item or block. The bytes may be
 /// uninitialized, and reading them is undefined behavior at run time. Const evaluation reports an
-/// error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// error instead ([const evaluation fails on what is not a
+/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 const unsafe fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
   assert!(offset + len <= size_of::<E>() && len <= 16);
   // SAFETY: `offset + len` is at most the size of an `E`, and `len` at most 16, which is asserted
@@ -592,7 +596,8 @@ const unsafe fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u
 ///
 /// The call must be evaluated at compile time, in a `const` item or block. The experiments read
 /// bytes that may be uninitialized, and the variants of values whose tags may be invalid, which is
-/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation
+/// fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 #[expect(
   clippy::many_single_char_names,
   reason = "`v`, `u` and `d` are variants, `i` and `c` fields and candidates, by their index"
@@ -620,7 +625,8 @@ pub const unsafe fn discover<E, const V: usize>(
     if inhabited {
       // SAFETY: `samples[v]` is the sample of the variant `v`, which has values, as `discover`
       // documents. `Layout::sample` makes it a valid `E`, so its tag is initialized and is the
-      // tag of a variant, and the fields of that variant are valid. These are the requirements
+      // tag of a variant, and the fields of that variant are valid. `as_ptr` of a
+      // `MaybeUninit<E>` is aligned for `E` and valid for reads of one. These are the requirements
       // of `variant`. With other samples, the tag may be invalid, which `variant` allows only in a
       // call evaluated in a constant. By contract on the caller of `discover`, this call is.
       assert!(unsafe { variant(samples[v].as_ptr()) } == v, "the discriminant is not the index");
@@ -759,7 +765,8 @@ pub const unsafe fn discover<E, const V: usize>(
 ///
 /// The call must be evaluated at compile time, in a `const` item or block. The experiments read
 /// bytes that may be uninitialized, and the variants of values whose tags may be invalid, which is
-/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation
+/// fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 const unsafe fn try_tag<E, const V: usize>(
   desc: &mut Desc<V>,
   samples: &[MaybeUninit<E>; V],
