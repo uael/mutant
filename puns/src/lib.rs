@@ -3367,9 +3367,9 @@ pub fn view_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 /// Reinterprets a reference to an `S` that holds self-relative pointers as a reference to a `D`,
 /// after checking what the analysis could not prove of the value itself.
 ///
-/// This is [`view_ref`] for an `S` of which only some values are a valid `D`. The value that
-/// `value` refers to is checked at run time, as [`try_pun_ref`] checks it: its size, its address,
-/// a variant that `D` does not have, a scalar that `D` restricts, and a pointer that may be null
+/// This is [`view_ref`] for an `S` whose values are not all valid `D`s. The value that `value`
+/// refers to is checked at run time, as [`try_pun_ref`] would check it: its size, its address, a
+/// variant that `D` does not have, a scalar that `D` restricts, and a pointer that may be null
 /// ([`Pointer::or_null`](layout::Pointer::or_null)) or zero, read as one that may not. What the
 /// pointers aim at is not checked, so it must be proven, as for `view_ref`.
 ///
@@ -3761,7 +3761,7 @@ pub const fn tail_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D
 /// prove is checked at run time: the size, if it depends on the length of a slice; the address,
 /// if `D` is more aligned than `S`; and the values of `D` that the bytes of `S` do not guarantee.
 ///
-/// This is a `const fn`. In a constant, it cannot make a `D` that is more aligned than `S`,
+/// This is a `const fn`, but in a constant it cannot make a `D` that is more aligned than `S`,
 /// because addresses are not known at compile time.
 ///
 /// # Errors
@@ -3830,8 +3830,8 @@ pub const fn try_pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> Result<
 /// Reinterprets a mutable reference to an `S` as a mutable reference to a `D`, after checking
 /// what the analysis could not prove.
 ///
-/// The returned reference points to the same bytes as `value`. What is checked at run time is
-/// what [`try_pun_ref`] checks. Any `D` may be written through the result, so every `D` must also
+/// The returned reference points to the same bytes as `value`, and is checked at run time as
+/// [`try_pun_ref`] checks it. Since any `D` may be written through the result, every `D` must also
 /// be a valid `S`, as for [`pun_mut`].
 ///
 /// # Errors
@@ -3972,9 +3972,9 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 
 /// Returns the bytes of a value.
 ///
-/// `as_bytes(value)` is [`pun_ref::<S, [u8]>(value)`](pun_ref), with identical behavior. It
-/// names the target, so that only `S` is left to infer. The result covers `value` up to the end
-/// of its slice, without the padding that may follow the slice. Nothing is checked at run time.
+/// `as_bytes(value)` is [`pun_ref::<S, [u8]>(value)`](pun_ref), with identical behavior, and naming
+/// the target leaves only `S` to infer. The result covers `value` up to the end of its slice,
+/// without any padding after the slice. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -4080,9 +4080,8 @@ pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
 /// Reinterprets mutable bytes as a mutable reference to a `D`, after checking them.
 ///
 /// `from_bytes_mut(bytes)` is [`try_pun_mut::<[u8], D>(bytes)`](try_pun_mut), with identical
-/// behavior. It exists for the reasons that [`from_bytes`] does. It checks what `from_bytes`
-/// checks. Any `D` may be written through the result, so every byte of a `D` must be initialized,
-/// as bytes are.
+/// behavior, and exists for the same reasons as [`from_bytes`], whose checks it makes. Since any
+/// `D` may be written through the result, every byte of a `D` must be initialized, as bytes are.
 ///
 /// # Errors
 ///
@@ -4257,9 +4256,9 @@ impl<D: ?Sized + Pun> Plan<[u8], D> {
 /// Reads a `D` from the start of `bytes`, and returns it with the bytes that follow it.
 ///
 /// A sized `D` takes `size_of::<D>()` bytes. A `D` that ends with a slice takes the size that its
-/// `size` or `len` rule gives (see [`macro@Pun`]), or else as many elements as fit. What it takes
-/// includes its trailing padding. It checks the size, the address if `D` needs an alignment
-/// greater than 1, and the values of `D` that bytes do not guarantee.
+/// `size` or `len` rule gives (see [`macro@Pun`]), or else as many elements as fit, trailing
+/// padding included. `from_head` checks the size, the address if `D` needs an alignment greater
+/// than 1, and the values of `D` that bytes do not guarantee.
 ///
 /// # Errors
 ///
@@ -4325,10 +4324,10 @@ pub const fn from_head<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&D, &[u8]), Err
 /// restricts tells (an EtherType, a version): [`from_bytes`] and [`from_head`] would check it,
 /// and fail.
 ///
-/// A view of one thing or another (an enum of references, see `#[derive(Pun)]`) tests this
-/// before it decides each of its variants (`view::decide`): the same bytes are then compared
-/// with what each variant requires there, which the optimizer makes one decision, rather than
-/// each conversion computing sizes and rules before it gets there.
+/// A view of one thing or another (an enum of references, see `#[derive(Pun)]`) tests this before
+/// it decides each of its variants (`view::decide`). The same bytes are then compared with what
+/// each variant requires there, which the optimizer merges into one decision, instead of each
+/// conversion computing sizes and rules before it gets there.
 #[doc(hidden)]
 #[inline(always)]
 #[must_use]
@@ -4344,10 +4343,10 @@ pub const fn rejects<D: ?Sized + Pun>(bytes: &[u8]) -> bool {
   !unsafe { spec.matches(bytes.as_ptr().add(offset)) }
 }
 
-/// Reads a `D` from the end of `bytes`, and returns the bytes that precede it with it.
+/// Reads a `D` from the end of `bytes`, and returns the bytes before it, followed by the `D`.
 ///
-/// The `D` is the last `size_of::<D>()` bytes. It checks the size, the address if `D` needs an
-/// alignment greater than 1, and the values of `D` that bytes do not guarantee.
+/// The `D` is the last `size_of::<D>()` bytes. `from_tail` checks the size, the address if `D`
+/// needs an alignment greater than 1, and the values of `D` that bytes do not guarantee.
 ///
 /// # Errors
 ///
@@ -4414,8 +4413,8 @@ pub const fn from_tail<D: ?Sized + Pun>(bytes: &[u8]) -> Result<(&[u8], &D), Err
 /// Reads a `D` from the start of mutable `bytes`, and returns it with the bytes that follow it,
 /// both mutable.
 ///
-/// It takes and checks what [`from_head`] takes and checks. Any `D` may be written through the
-/// result, so every byte of a `D` must be initialized, as bytes are.
+/// It takes and checks what [`from_head`] takes and checks. Since any `D` may be written through
+/// the result, every byte of a `D` must be initialized, as bytes are.
 ///
 /// # Errors
 ///
@@ -4478,11 +4477,11 @@ pub const fn from_head_mut<D: ?Sized + Pun>(
   }
 }
 
-/// Reads a `D` from the end of mutable `bytes`, and returns the bytes that precede it with it,
-/// both mutable.
+/// Reads a `D` from the end of mutable `bytes`, and returns the bytes before it, followed by the
+/// `D`, both mutable.
 ///
-/// It takes and checks what [`from_tail`] takes and checks. Any `D` may be written through the
-/// result, so every byte of a `D` must be initialized, as bytes are.
+/// It takes and checks what [`from_tail`] takes and checks. Since any `D` may be written through
+/// the result, every byte of a `D` must be initialized, as bytes are.
 ///
 /// # Errors
 ///
@@ -4547,8 +4546,8 @@ pub const fn from_tail_mut<D: ?Sized + Pun>(
 /// Returns the bytes of the `index`th region of the tail of `value`, as the `regions` rule of its
 /// struct cuts them (see `#[derive(Pun)]`).
 ///
-/// The type system does not enforce regions. If the fields of `value` give regions that do not
-/// fit in its tail, they are cut short.
+/// The type system does not enforce regions: if the fields of `value` give regions that do not fit
+/// in its tail, they are cut short.
 ///
 /// # Compile-time errors
 ///
