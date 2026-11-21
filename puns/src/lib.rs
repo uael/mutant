@@ -1562,9 +1562,10 @@ pub use core as __core;
 ///   of `Self` relies on.
 /// - No byte of `Self` is inside an [`UnsafeCell`](core::cell::UnsafeCell).
 ///
-/// If `T: Scalar`, unsafe code may assume that `T::SPEC` describes exactly the values of `T`:
+/// If `T: Scalar`, unsafe code may assume that `T::SPEC` describes the values of `T` exactly:
 /// `puns` makes a `T` from any bytes that `SPEC` accepts, and takes the bytes of every `T` to be
-/// such bytes.
+/// bytes that `SPEC` accepts, unless `SPEC` is made with [`Spec::maybe_uninit`] or
+/// [`Spec::uninit`]. It then takes them to be any bytes, uninitialized ones included.
 ///
 /// # Examples
 ///
@@ -2061,8 +2062,11 @@ unsafe impl Fields for () {
 // neither its size, its alignment, nor its values. It meets the `# Safety` of `Pun`:
 // - Its size is the size of `T::SPEC`, which `Layout::scalar` asserts is `size_of::<T>()`. Its
 //   alignment is `align_of::<T>()`. A scalar has no field.
-// - Every value of `T` holds a value that `T::SPEC` accepts, and every value that `T::SPEC`
-//   accepts is a valid `T`, by the `# Safety` of `Scalar`.
+// - Every value of `T` holds a value that `T::SPEC` accepts or, if `T::SPEC` is made with
+//   `Spec::maybe_uninit` or `Spec::uninit`, any bytes, by the `# Safety` of `Scalar`. These are
+//   the values that `T::SPEC` is known to hold, which are what the layout says every value holds:
+//   any bytes, uninitialized ones included, for such a scalar. Every value that `T::SPEC` accepts
+//   is a valid `T`, by the `# Safety` of `Scalar`.
 // - A scalar has no element, field, variant, rule or pointer, and each of these lists is `()`.
 // - `OPTION` is `None`, the default.
 // - No byte of `T` is inside an `UnsafeCell`, by the `# Safety` of `Scalar`.
