@@ -1,6 +1,6 @@
 # Performance
 
-A proven pun compiles to no check. It may still compute an address or a length. A checked pun
+A proven pun compiles to no check, though it may still compute an address or a length. A checked pun
 compiles to the checks of what the analysis could not prove.
 
 ## Machine code
@@ -124,7 +124,7 @@ is checked with an iterator, such as `bytes.iter().all(|&b| b <= 1)`.
 `puns` checks a slice of small elements, each a few comparisons, in blocks of up to 64 bytes,
 without a branch inside a block. A slice of `MaybeFlag`, an enum of the `Rust` representation whose
 tag is a niche in a `bool`, is not checked this way, and is slower than by hand. In a view enum, a
-variant whose values are all values of a later variant is checked from that variant. So a wrong
+variant whose values are all values of a later variant is checked from that variant, so a wrong
 checksum of UDP over IPv4 is computed once, for the IPv4 variant.
 
 ## Build time
@@ -160,13 +160,12 @@ release build.
 
 ## Costs
 
-A check never allocates and never panics. Without nested walks, its time grows with the size of
-the value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
-`walk` multiplies the time by the size, at each level. Walks nest up to 4 deep, so a checksum
-inside the deepest one takes time in proportion to the fifth power of the size. Keep this in mind
-before you give such a type untrusted bytes. Each checked pun is code specialized for its two
-types. Measure the checks in release. They rely on inlining, which a debug build mostly does not
-do.
+A check never allocates and never panics. Without nested walks, its time grows with the size of the
+value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
+`walk` multiplies the time by the size, at each level. Walks nest up to 4 deep, so a checksum inside
+the deepest one takes time in proportion to the fifth power of the size: keep this in mind before
+you give such a type untrusted bytes. Each checked pun is code specialized for its two types, and
+relies on inlining, which a debug build mostly does not do, so measure the checks in release.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
