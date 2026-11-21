@@ -4575,8 +4575,9 @@ pub const fn region<S: ?Sized + Pun>(value: &S, index: usize) -> &[u8] {
   let (_, tail, size) = validate::tail_of::<S>(value);
   // SAFETY: This satisfies the safety contract of `validate::region_at`:
   // - `value` is a reference, so valid for reads of its `size` bytes, and they are not written
-  //   while the borrow lives, which is the lifetime of the result. `Plan::<S, [u8]>::BY_REF`
-  //   compiled, so every byte of `S` is initialized: bytes take no padding.
+  //   while the borrow lives, which is the lifetime of the result. `size` is the extent of the
+  //   value, up to the end of its slice (`tail_of`). `Plan::<S, [u8]>::BY_REF` compiled, so every
+  //   byte of `S` up to the end of its slice is initialized: bytes take no padding.
   // - `head` is where the tail starts, and `tail` its size in bytes (`tail_shape`, `tail_of`).
   //   The tail is the last part of the struct, so `head + tail <= size`. The search starts at
   //   0, which is at most `tail`.

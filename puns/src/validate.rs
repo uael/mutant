@@ -766,9 +766,11 @@ const unsafe fn walk<X: Ops, W: Steps>(
 // -------------------------------------------------------------------------------------------------
 
 /// Returns the number of elements of the tail of the struct at `ptr`, the size of that tail in
-/// bytes, and the size of the struct.
+/// bytes, and the extent of the struct.
 ///
-/// The tail of a `Sized` struct is its last field.
+/// The tail of a `Sized` struct is its last field, and its extent is its size. The extent of an
+/// unsized struct ends with its slice, without the padding that may follow it, which
+/// `size_of_val` counts.
 #[inline(always)]
 pub const fn tail_of<T: ?Sized + Pun>(ptr: *const T) -> (usize, usize, usize) {
   let (layout, shape) = const { (T::LAYOUT, T::LAYOUT.tail_shape()) };
