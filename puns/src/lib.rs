@@ -3985,10 +3985,11 @@ pub const fn int<T: Pun>(value: &T) -> u128 {
 /// ```
 #[inline(always)]
 pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
-  // Evaluated here, not only in `pun_ref`, so that a refusal names the line that calls this
-  // function, not the line of this function that calls `pun_ref`.
+  // The body of `pun_ref`, not a call to it: a call would evaluate the constant inside `puns`
+  // again, and a refusal would end with notes that point there instead of at the caller.
   const { Plan::<S, [u8]>::BY_REF };
-  pun_ref(value)
+  // SAFETY: As in `pun_ref`, with `[u8]` for `D`.
+  unsafe { &*Plan::<S, [u8]>::cast(value) }
 }
 
 /// Reinterprets bytes as a reference to a `D`, after checking them.
@@ -4052,10 +4053,14 @@ pub const fn as_bytes<S: ?Sized + Pun>(value: &S) -> &[u8] {
 /// [inhabited]: https://doc.rust-lang.org/reference/glossary.html#inhabited
 #[inline]
 pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
-  // Evaluated here, not only in `try_pun_ref`, so that a refusal names the line that calls this
-  // function, not the line of this function that calls `try_pun_ref`.
+  // The body of `try_pun_ref`, not a call to it, for the reason given in `as_bytes`.
   const { Plan::<[u8], D>::TRY_REF };
-  try_pun_ref::<[u8], D>(bytes)
+  // SAFETY: As in `try_pun_ref`, with `[u8]` for `S`.
+  match unsafe { Plan::<[u8], D>::try_cast(bytes) } {
+    // SAFETY: As in `try_pun_ref`, with `[u8]` for `S`.
+    Ok(target) => Ok(unsafe { &*target }),
+    Err(error) => Err(error),
+  }
 }
 
 /// Reinterprets mutable bytes as a mutable reference to a `D`, after checking them.
@@ -4101,10 +4106,15 @@ pub const fn from_bytes<D: ?Sized + Pun>(bytes: &[u8]) -> Result<&D, Error> {
 /// [inhabited]: https://doc.rust-lang.org/reference/glossary.html#inhabited
 #[inline]
 pub const fn from_bytes_mut<D: ?Sized + Pun>(bytes: &mut [u8]) -> Result<&mut D, Error> {
-  // Evaluated here, not only in `try_pun_mut`, so that a refusal names the line that calls this
-  // function, not the line of this function that calls `try_pun_mut`.
+  // The body of `try_pun_mut`, not a call to it, for the reason given in `as_bytes`.
   const { Plan::<[u8], D>::TRY_MUT };
-  try_pun_mut::<[u8], D>(bytes)
+  let source: *mut [u8] = bytes;
+  // SAFETY: As in `try_pun_mut`, with `[u8]` for `S`.
+  match unsafe { Plan::<[u8], D>::try_cast(source) } {
+    // SAFETY: As in `try_pun_mut`, with `[u8]` for `S`.
+    Ok(target) => Ok(unsafe { &mut *target.cast_mut() }),
+    Err(error) => Err(error),
+  }
 }
 
 // -------------------------------------------------------------------------------------------------

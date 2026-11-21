@@ -39,15 +39,3 @@ note: the above error was encountered while instantiating `fn puns::from_bytes::
    |
 16 |   let _ = puns::from_bytes::<Node>(&[0; 8]);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::TRY_REF };
-  |           ^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::TRY_REF };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

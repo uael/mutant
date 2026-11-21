@@ -41,18 +41,6 @@ note: the above error was encountered while instantiating `fn puns::from_bytes::
 30 |   let _ = puns::from_bytes::<Mixed>(&[1, 1]);
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::TRY_REF };
-  |           ^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::TRY_REF };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
 error[E0080]: evaluation panicked:
               cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
               Add `#[repr(C)]` (or `#[repr(u8)]` to an enum), or enable the `unstable` feature of `puns`.
@@ -211,18 +199,6 @@ note: the above error was encountered while instantiating `fn puns::as_bytes::<(
    |
 37 |   let _ = puns::as_bytes(&(1u8, 2u16, 3u8));
    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::BY_REF };
-  |           ^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/lib.rs
-  |
-  |   const { Plan::<S, D>::BY_REF };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0080]: evaluation panicked:
               cannot pun: the pun depends on a part of the source or of the target whose layout Rust does not keep from one compilation to the next (a struct, a tuple or an enum of the `Rust` representation, `Option` or `Result` of most types): another compiler, or `-Zrandomize-layout`, could arrange it otherwise. Only the same type at the same place proves it.
