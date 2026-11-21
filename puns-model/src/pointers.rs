@@ -13,7 +13,7 @@
 //! aligned for its target and holds a valid target, and so on behind it. The oracle knows nothing
 //! of layouts, of pairs of types or of instances of functions.
 //!
-//! [`check_pair`] reads every value of a corpus of `S` as a `D` with the oracle. The corpus
+//! [`check_pair`] reinterprets every value of a corpus of `S` as a `D` with the oracle. The corpus
 //! ([`Model::corpus`]) holds every shape up to a small depth, with every value of a small
 //! alphabet. The bytes that the type writes are marked as written ([`mark`]). If
 //! `view_ref::<S, D>` compiles, every value must be a valid `D`, or the verdict is unsound.

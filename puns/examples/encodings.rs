@@ -47,9 +47,9 @@
 //!   "modified UTF-8" (Java) or UTF-16, but one can be written for `matches`.
 //!
 //! `main` reads values of each encoding from bytes and asserts their fields, regions and getters.
-//! It reads Protocol Buffers fields, MessagePack items and CBOR items as enums of references. It
-//! changes bytes so that a rule fails, asserts that each read then returns an error, and prints
-//! `ok`.
+//! It reinterprets Protocol Buffers fields, MessagePack items and CBOR items as enums of
+//! references. It changes bytes so that a rule fails, asserts that each read then returns an error,
+//! and prints `ok`.
 #![forbid(unsafe_code)]
 
 use core::marker::PhantomData;

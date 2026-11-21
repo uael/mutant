@@ -2,8 +2,8 @@
 //!
 //! # Reference
 //!
-//! A *pun* reads the bytes of a value of one type, the *source* `S`, as a value of another type,
-//! the *target* `D`. For each pun, the analysis decides at compile time which of three cases
+//! A *pun* reinterprets the bytes of a value of one type, the *source* `S`, as a value of another
+//! type, the *target* `D`. For each pun, the analysis decides at compile time which of three cases
 //! applies:
 //!
 //! - The pun is **proven** if every value of the source is a [valid] value of the target. It

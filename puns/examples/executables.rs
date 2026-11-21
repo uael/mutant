@@ -41,7 +41,7 @@
 //!   automaton for it, although one can be written for `matches`.
 //!
 //! `main` reads a file of each format from bytes and asserts its fields, regions and getters. It
-//! reads ELF files of the four classes and byte orders as an [`AnyElf`], and a PE file as an
+//! reinterprets ELF files of the four classes and byte orders as an [`AnyElf`], and a PE file as an
 //! [`AnyPe`]. It changes bytes so that a rule fails, asserts that each read then returns an
 //! error, and prints `ok`.
 #![forbid(unsafe_code)]
