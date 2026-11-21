@@ -1541,23 +1541,23 @@ pub use core as __core;
 ///
 /// Every `Scalar` is a [`Pun`] type. The integer and floating-point types, `bool`, `char`,
 /// `NonZero`, `()`, `PhantomData` and the types of [`num`] implement it, and `#[derive(Pun)]`
-/// implements it for an enum without fields.
+/// implements it for enums without fields.
 ///
 /// # Safety
 ///
 /// `Scalar` may be implemented by hand. `SPEC` must have the size of `Self`, which is checked at
-/// compile time. An implementation must guarantee that:
+/// compile time, and an implementation must guarantee that:
 ///
-/// - Every value of `Self`, read as an unsigned integer of the size and the byte order of `SPEC`,
-///   is a value that `SPEC` accepts. If `SPEC` is made with [`Spec::maybe_uninit`] or
-///   [`Spec::uninit`], a value of `Self` may hold any bytes instead, uninitialized ones included.
+/// - Every value of `Self`, read as an unsigned integer with the size and byte order of `SPEC`, is
+///   a value that `SPEC` accepts. If `SPEC` is made with [`Spec::maybe_uninit`] or
+///   [`Spec::uninit`], a value of `Self` may instead hold any bytes, including uninitialized ones.
 /// - Every value that `SPEC` accepts is a [valid] `Self`, and meets every invariant that the code
 ///   of `Self` relies on.
 /// - No byte of `Self` is inside an [`UnsafeCell`](core::cell::UnsafeCell).
 ///
-/// If `T: Scalar`, then unsafe code may assume that `T::SPEC` describes exactly the values of
-/// `T`. `puns` makes a `T` from any bytes that `SPEC` accepts, and takes the bytes of every `T` to
-/// be such bytes.
+/// If `T: Scalar`, unsafe code may assume that `T::SPEC` describes exactly the values of `T`:
+/// `puns` makes a `T` from any bytes that `SPEC` accepts, and takes the bytes of every `T` to be
+/// such bytes.
 ///
 /// # Examples
 ///
@@ -1616,30 +1616,30 @@ pub unsafe trait Scalar {
 
 /// A type of plain data, whose layout and valid values `puns` knows at compile time.
 ///
-/// Every function of this crate takes `Pun` types. They are the integer and floating-point types,
+/// Every function of this crate takes `Pun` types. These are the integer and floating-point types,
 /// `bool`, `char`, `NonZero`, `()`, `PhantomData`, arrays, slices, `str`, tuples of up to 4
 /// elements, `Option` and `Result` of `Pun` types, `MaybeUninit`, `ManuallyDrop`, `Infallible`, the
 /// types of [`num`], every [`Scalar`], the self-relative pointers of [`self_relative!`], and the
-/// types that derive it. Without the `unstable` feature, a pun relies only on what every layout
-/// that Rust allows has in common, for a tuple, a struct or an enum of the `Rust` representation
+/// types that derive it. For a tuple, struct or enum of the `Rust` representation, a pun without
+/// the `unstable` feature relies only on what every layout that Rust allows has in common
 /// ([`layout::UNSTABLE`]).
 ///
 /// # Safety
 ///
-/// `Pun` must not be implemented by hand. Its items are hidden, and may change in any release. It
+/// `Pun` must not be implemented by hand: its items are hidden, and may change in any release. It
 /// is implemented by `#[derive(Pun)]`, by `puns` for the types listed above, and by
 /// [`self_relative!`] for a type that implements [`SelfRelative`].
 ///
-/// An implementation guarantees that the layout it describes is the layout of `Self`: its size,
-/// its alignment, the offset of each field, the values that each scalar may hold, and its rules.
-/// Every value of `Self` holds what the layout says that every value holds. Every value that the
-/// layout accepts is a valid `Self`. The lists of fields, variants and elements of the
-/// implementation are those of the layout. A layout of `Option<Self>`, if the implementation gives
-/// one, is the layout of `Option<Self>` in the same sense. No byte of `Self` is inside an
+/// An implementation guarantees that the layout it describes is the layout of `Self`: its size, its
+/// alignment, the offset of each field, the values each scalar may hold, and its rules. Every value
+/// of `Self` holds what the layout says every value holds, and every value that the layout accepts
+/// is a valid `Self`. The lists of fields, variants and elements of the implementation are those of
+/// the layout. A layout of `Option<Self>`, if the implementation gives one, is the layout of
+/// `Option<Self>` in the same sense. No byte of `Self` is inside an
 /// [`UnsafeCell`](core::cell::UnsafeCell).
 ///
-/// If `T: Pun`, then unsafe code may assume that the layout of `T` is exact in this sense, and
-/// that `T` holds no `UnsafeCell`. The functions of `puns` are sound only under this assumption.
+/// If `T: Pun`, unsafe code may assume that the layout of `T` is exact in this sense, and that `T`
+/// holds no `UnsafeCell`. The functions of `puns` are sound only under this assumption.
 ///
 /// # Examples
 ///
@@ -1683,45 +1683,45 @@ pub unsafe trait Pun {
   /// What a self-relative pointer aims at (the element, if it aims at a list), `()` if `Self`
   /// is not one or aims at text.
   ///
-  /// This is how the analysis follows pointers: through types, so that a recursive type is a
-  /// finite set of pairs of types rather than a layout without end (see [`view_ref`]).
+  /// This is how the analysis follows pointers: through types, so that a recursive type is a finite
+  /// set of pairs of types rather than an endless layout (see [`view_ref`]).
   #[doc(hidden)]
   type Pointee: Pun;
   /// A null pointer to `Self`, whose slice length is [`ptr::PROBE_LEN`] if `Self` is unsized.
-  /// It must be made with `as` casts only: this is what the pointer tricks are checked against.
+  /// It must be made with `as` casts only, since the pointer tricks are checked against it.
   #[doc(hidden)]
   const PROBE: *const Self;
   #[doc(hidden)]
   const LAYOUT: Layout;
-  /// The layout of `Option<Self>`, if `Self` gives it, rather than the one found of `Option` as
-  /// of any enum of the `Rust` representation (`discover.rs`).
+  /// The layout of `Option<Self>`, if `Self` gives one, instead of the one found for `Option` as
+  /// for any enum of the `Rust` representation (`discover.rs`).
   ///
   /// This is how `Option` of a self-relative pointer is the same pointer, which may be null:
   /// [`self_relative!`] fills it with [`Layout::nullable`], which checks that `None` is the
-  /// pointer of zeros and nothing else. A crate that implements `Pun` otherwise (which only
-  /// `#[derive(Pun)]` and the macros of this crate do) leaves it `None`. If it is `Some`, it is
-  /// the layout of `Option<Self>`, as `LAYOUT` is of `Self` (see the `# Safety` of the trait).
+  /// all-zero pointer and nothing else. Other implementations of `Pun` (which only `#[derive(Pun)]`
+  /// and the macros of this crate provide) leave it `None`. If it is `Some`, it is the layout of
+  /// `Option<Self>`, as `LAYOUT` is of `Self` (see the `# Safety` section of the trait).
   #[doc(hidden)]
   const OPTION: Option<Layout> = None;
-  /// Whether `core` guarantees that `Option<Self>` is `Self`, with `None` the bytes of zeros:
-  /// `Self` is a `NonZero` integer, or a `repr(transparent)` struct around one ("Representation"
-  /// in the documentation of `core::option`). The layout of `Option<Self>` is then the same from
-  /// one version of the compiler to the next, and so is the one of `Result<Self, E>` and
-  /// `Result<E, Self>` where `E` has size 0 and alignment 1 ("Representation" of
-  /// `core::result`). Of any other `Self`, they need the `unstable` feature.
+  /// Whether `core` guarantees that `Option<Self>` is `Self`, with `None` as all-zero bytes. That
+  /// is so when `Self` is a `NonZero` integer, or a `repr(transparent)` struct around one
+  /// ("Representation" in the documentation of `core::option`). The layout of `Option<Self>` is
+  /// then the same from one compiler version to the next, and so is the layout of `Result<Self, E>`
+  /// and `Result<E, Self>` where `E` has size 0 and alignment 1 ("Representation" in
+  /// `core::result`). For any other `Self`, they need the `unstable` feature.
   #[doc(hidden)]
   const NULL_OPTIMIZED: bool = false;
 }
 
 /// A type that is carried next to a tag of kind `K`, with the values of that tag that mean it.
 ///
-/// A message carries a payload next to a field that tells its type, and an enum carries a
-/// variant next to its discriminant. `K` names the kind of tag, since a type may be carried by
-/// several things. By convention, `K` is the type of the tag when nothing is known of what it
-/// carries. Bytes go with any `K`, whose every value they accept.
+/// A message carries a payload next to a field that tells its type, and an enum carries a variant
+/// next to its discriminant. `K` names the kind of tag, since a type may be carried by several
+/// things. By convention, `K` is the type of the tag when nothing is known about what it carries.
+/// Bytes go with any `K`, and accept every value of its tag.
 ///
-/// `#[pun(tag(K = T))]` implements it (see [`macro@Pun`]). `Tag` is not an `unsafe` trait. The
-/// tag is a field like any other, whose values `puns` checks or proves.
+/// `#[pun(tag(K = T))]` implements it (see [`macro@Pun`]). `Tag` is not an `unsafe` trait: the tag
+/// is a field like any other, whose values `puns` checks or proves.
 ///
 /// # Examples
 ///
@@ -2452,11 +2452,11 @@ impl_signed_non_zero!(i8 i16 i32 i64 i128 isize);
 pub enum Error {
   /// The address of the value is not a multiple of the alignment of the target.
   Alignment,
-  /// The size of the value is not a size that the target can have, or there are fewer bytes
-  /// than the target takes.
+  /// The size of the value is not a size that the target can have, or there are fewer bytes than
+  /// the target needs.
   Size,
-  /// The bytes are not a valid target. A scalar holds a value that the target does not accept,
-  /// a `str` is not UTF-8, or a rule of the target does not hold or cannot be computed.
+  /// The bytes are not a valid target: a scalar holds a value that the target does not accept, a
+  /// `str` is not UTF-8, or a rule of the target does not hold or cannot be computed.
   Validity,
 }
 
@@ -3187,8 +3187,8 @@ pub const fn pun_ref<S: ?Sized + Pun, D: ?Sized + Pun>(value: &S) -> &D {
 
 /// Reinterprets a mutable reference to an `S` as a mutable reference to a `D`.
 ///
-/// The returned reference points to the same bytes as `value`, as for [`pun_ref`]. Any `D` may be
-/// written through it, so every `D` must also be a valid `S`. Nothing is checked at run time.
+/// The returned reference points to the same bytes as `value`, as with [`pun_ref`]. Since any `D`
+/// may be written through it, every `D` must also be a valid `S`. Nothing is checked at run time.
 ///
 /// # Compile-time errors
 ///
@@ -3239,17 +3239,17 @@ pub const fn pun_mut<S: ?Sized + Pun, D: ?Sized + Pun>(value: &mut S) -> &mut D 
 /// Reinterprets a reference to an `S` that holds self-relative pointers as a reference to a `D`,
 /// with everything that the pointers aim at.
 ///
-/// A self-relative pointer ([`SelfRelative`]) is an offset to a target in the same buffer. No
-/// other function makes a value that holds one, because what a pointer aims at is not a property
-/// of its bytes. `view_ref` proves at compile time that every `S` is a valid `D`, and that what
-/// each pointer of `S` aims at is a valid value of what the pointer of `D` at the same place aims
-/// at, and so on through their pointers. A recursive type is proven by induction over the pairs
-/// of types that are met, each once. The returned reference points to the same bytes as `value`,
-/// and nothing is checked at run time.
+/// A self-relative pointer ([`SelfRelative`]) is an offset to a target in the same buffer. No other
+/// function makes a value that holds one, because what a pointer aims at is not a property of its
+/// bytes. `view_ref` proves at compile time that every `S` is a valid `D`, that what each pointer
+/// of `S` aims at is a valid value of what the pointer of `D` at the same place aims at, and so on
+/// through their pointers. A recursive type is proven by induction over the pairs of types that are
+/// met, each once. The returned reference points to the same bytes as `value`, and nothing is
+/// checked at run time.
 ///
-/// Behind a pointer nothing can be checked, so nothing may be left to check there. It is not a
-/// `const fn`, because the proof behind pointers is made of instances of functions, which a call
-/// in a constant would not create. It never gives a `&mut`, because a pointer is only read.
+/// Nothing can be checked behind a pointer, so nothing may be left to check there. `view_ref` is
+/// not a `const fn`, because the proof behind pointers is made of instances of functions, which a
+/// call in a constant would not create. It never gives a `&mut`, because a pointer is only read.
 ///
 /// # Compile-time errors
 ///
