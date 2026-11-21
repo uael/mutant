@@ -700,7 +700,7 @@ pub(crate) enum Uniform {
 #[expect(clippy::struct_excessive_bools, reason = "five facts of a layout, each asked alone")]
 pub(crate) struct Stable {
   /// The offsets of the parts and the size are the same in every layout that Rust allows, given the
-  /// sizes of the parts, or every layout of the type is the same bytes ([`Layout::rust`]). The
+  /// sizes of the parts, or every layout of the type is the same bytes (`Layout::rust`). The
   /// analysis may look into such a layout.
   pub(crate) fixed: bool,
   /// Each byte of a value belongs to the same part in every layout that Rust allows.
@@ -951,7 +951,7 @@ pub struct Pointer {
   /// Whether an offset whose bytes are all zero is no pointer.
   pub(crate) nullable: bool,
   /// Whether the pointer type has no value whose bytes are all zero, as when its offset is a
-  /// `NonZero`. [`Layout::pointer`] finds it from the type. The declaring crate does not state it.
+  /// `NonZero`. `Layout::pointer` finds it from the type. The declaring crate does not state it.
   pub(crate) nonzero: bool,
   /// The size of the offset in bytes, which is the size of the pointer: 1 to 16.
   pub(crate) width: usize,
@@ -2022,7 +2022,7 @@ const fn excludes_zero<P>() -> bool {
 /// The tag of a union and of an enum without variants: a scalar of size 0.
 const NO_TAG: Layout = Layout::scalar::<()>(Spec::any::<()>());
 
-/// Does nothing. [`Layout::PIN`] holds instances of it, whose types name the types that it pins.
+/// Does nothing. `Layout::PIN` holds instances of it, whose types name the types that it pins.
 fn pin<T>(_: T) {}
 
 /// Whether the `unstable` feature is enabled.
