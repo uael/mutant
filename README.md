@@ -177,11 +177,11 @@ conditions like a checksum at run time, but neither uses the rules of one type t
 another.
 
 They also cover ground that `puns` doesn't: `bytemuck` casts a `Vec`, `zerocopy` handles atomics,
-and their errors are trait bounds that your editor reports right away. Reach for them for these,
-for an older Rust, or for a crate with years of review behind it. To decode data into owned values,
-[`binrw`][binrw], [`deku`][deku] or [`nom`][nom] are a better fit. Rust's own
-[Safe Transmute][safe transmute] project compares the two types as well, inside the compiler, but
-it's only on nightly.
+and their errors are mostly trait bounds that your editor reports right away. Reach for them for
+these, for an older Rust, or for a crate with years of review behind it. To decode data into owned
+values, [`binrw`][binrw], [`deku`][deku] or [`nom`][nom] are a better fit. Rust's own [Safe
+Transmute][safe transmute] project compares the two types as well, inside the compiler, but it's
+only on nightly.
 
 ## Caveats
 
@@ -206,8 +206,8 @@ it's only on nightly.
 
 A proven pun compiles to no check at all, and checked puns are about as fast as the same checks
 written by hand: on an Apple M4 Max, checking Ethernet, IPv4, IPv6, UDP and TCP packets takes
-between half and 1.1 times as long. What you pay for is mostly build time, from about 17 ms per
-struct in a debug build to 25 s for a view of 64 overlapping variants.
+between half and 1.1 times as long. What you pay for is mostly build time: about 17 ms per struct
+in a debug build, and up to 25 s in release for a view of 64 overlapping variants.
 [`docs/performance.md`][performance] has the code, the method and the other cases.
 
 ## Safety and testing
