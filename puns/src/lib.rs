@@ -2342,11 +2342,18 @@ macro_rules! impl_any {
   ($($ty:ty)+) => {$(
     // SAFETY: `Spec::any::<$ty>()` has the size of `$ty`, and accepts any initialized bytes. The
     // items of the `# Safety` of `Scalar` hold:
-    // - Every value of `$ty` is initialized [1], and so is accepted. `()` has no byte.
-    // - Any initialized bytes are a valid `$ty` [1], and `$ty` has no other invariant.
+    // - Every value of `$ty` is initialized [2], and so is accepted. `()` has no byte.
+    // - Any initialized bytes are a valid `$ty`: validity depends on the type [1], an integer is
+    //   required only to be initialized [2], and `()` has no byte. `$ty` has no other invariant.
     // - `$ty` holds no `UnsafeCell`.
     //
-    // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.scalar:
+    // [1] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.def:
+    //
+    //     The Rust compiler assumes that all values produced during program execution are
+    //     “valid”, and producing an invalid value is hence immediate UB. Whether a value is valid
+    //     depends on the type:
+    //
+    // [2] Per https://doc.rust-lang.org/1.99.0/reference/behavior-considered-undefined.html#r-undefined.validity.scalar:
     //
     //     An integer (`i*`/`u*`), floating point value (`f*`), or raw pointer must be
     //     initialized, i.e., must not be obtained from uninitialized memory.
