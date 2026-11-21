@@ -16,7 +16,7 @@
 //! CI runs the tests under Miri with `-Zmiri-strict-provenance`, with tree borrows on x86-64, and
 //! with stacked borrows on `i686-unknown-linux-gnu` and `s390x-unknown-linux-gnu`. The i686 target
 //! has a 32-bit `usize` and a `u64` aligned to 4. The s390x target is big-endian. The selection of
-//! the model check for Miri runs there too, with tree borrows.
+//! the model check for Miri runs on x86-64 only, with tree borrows.
 //!
 //! `-Zmiri-symbolic-alignment-check` reports a misaligned reference where `try_pun_ref` checked
 //! the address of bytes that happened to be aligned. The check reads the address as an integer

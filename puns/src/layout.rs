@@ -26,15 +26,15 @@
 //! `const fn`s build a layout from what the compiler says about the type: `size_of`, the offsets of
 //! the fields, `size_of_val_raw`, and so on. A node is one of the following:
 //!
-//! - A **scalar** ([`Spec`]) is at most 16 bytes in a byte order, with a sorted list of valid
-//!   ranges, and a scalar that restricts its values is 1 to 16 bytes. `bool` is `0..=1`, `char` is
-//!   two ranges, and `NonZero` is `1..`. An enum without fields is the values of its variants, read
-//!   from the compiler whatever its `repr`. A scalar has two sets of values: what it *requires* is
-//!   the values that a value made of it must have, and what it is *known* to be is what every value
-//!   of it is. The two are the same, with two exceptions. A field restricted by `#[pun(valid(..))]`
-//!   requires values that it is not known to hold ([Guarantees and
-//!   requirements](crate#guarantees-and-requirements)), and a scalar made by [`Spec::maybe_uninit`]
-//!   requires some values but is known to be anything, padding included.
+//! - A **scalar** ([`Spec`]) is a number of bytes in a byte order, with a sorted list of valid
+//!   ranges. A scalar that restricts its values is 1 to 16 bytes, while one that accepts any bytes
+//!   may have any size. `bool` is `0..=1`, `char` is two ranges, and `NonZero` is `1..`. An enum
+//!   without fields is the values of its variants, read from the compiler whatever its `repr`. A
+//!   scalar has two sets of values: what it *requires* is the values that a value made of it must
+//!   have, and what it is *known* to be is what every value of it is. The two are the same, with
+//!   two exceptions. A field restricted by `#[pun(valid(..))]` requires values that it is not known
+//!   to hold ([Guarantees and requirements](crate#guarantees-and-requirements)), and a scalar made
+//!   by [`Spec::maybe_uninit`] requires some values but is known to be anything, padding included.
 //! - A **struct** has its fields ([`Field`]) at their offsets, which come from the compiler for
 //!   any `repr`. The bytes that no field covers are padding. A struct may have rules ([`Rule`]).
 //! - An **enum** with fields ([`Enum`]) has a tag, a scalar at a fixed place, and each [`Variant`]

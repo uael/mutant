@@ -4571,6 +4571,10 @@ pub const fn from_tail_mut<D: ?Sized + Pun>(
 /// The type system does not enforce regions: if the fields of `value` give regions that do not fit
 /// in its tail, they are cut short.
 ///
+/// # Panics
+///
+/// Panics if the struct of `S` has no `index`th region.
+///
 /// # Compile-time errors
 ///
 /// A call compiles only if every byte of every value of `S`, up to the end of its slice, is
