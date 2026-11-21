@@ -27,53 +27,53 @@ of more functions, and gives the command that writes the assembly. The code was 
 [`puns/benches/checks.rs`][checks] times each check made by `puns` next to the same check written
 by hand. The times below are in nanoseconds per check. They are the median of 5 runs of the
 benchmark, and each run takes the best of 7 samples of each case. They were measured on
-2026-11-20 with:
+2026-11-21 with:
 
-- the library at commit `50e17d8`,
+- the library at commit `4176671`,
 - `rustc` 1.100.0, with the `bench` profile of the workspace (`opt-level = 3`, LTO, one codegen
   unit),
 - an Apple M4 Max (14 cores, 36 GiB) on macOS 26.7.2,
 - `cargo bench -p puns --features unstable --bench checks`.
 
-The machine was not idle. Other programs kept its load average between 14 and 20 during the runs,
-and most cases varied by less than 10% from one run to the next. The output of each run is in
-[`docs/checks-2026-11-20.txt`][record].
+The load average of the machine was between 3.5 and 3.9 during the runs. 26 of the 33 cases
+varied by less than 2% from one run to the next, and the most variable one, `ipv6, tcp, 12
+headers`, by 22%. The output of each run is in [`docs/checks-2026-11-21.txt`][record].
 
 | Case | `puns` | by hand |
 |---|---:|---:|
-| `ipv4, udp, 64 bytes` | 5.83 | 5.28 |
-| `ipv4, udp, 1472 bytes` | 25.1 | 25.3 |
-| `ipv4, tcp, 1460 bytes` | 25.3 | 25.2 |
-| `ipv4, protocol 253, 1480 bytes` | 3.21 | 2.86 |
-| `ipv4, udp, 64 bytes, bad checksum` | 5.89 | 5.07 |
-| `ipv6, tcp, 0 headers` | 1.71 | 1.67 |
-| `ipv6, tcp, 3 headers` | 2.67 | 4.46 |
-| `ipv6, tcp, 12 headers` | 6.82 | 12.4 |
-| `ipv6, udp, 3 headers, 64 bytes` | 5.22 | 7.08 |
-| `ipv6, udp, 0 headers, 1400 bytes` | 23.2 | 23.9 |
-| `udp, from_head` | 0.87 | 0.87 |
-| `view enum, udp over ipv4 (first)` | 6.46 | 5.98 |
-| `view enum, tcp over ipv4` | 8.41 | 7.64 |
-| `view enum, udp, bad checksum` | 6.12 | 6.27 |
-| `view enum, arp` | 1.11 | 1.25 |
-| `view enum, vlan` | 0.83 | 1.51 |
-| `view enum, other ethertype (last)` | 0.89 | 1.20 |
-| `[u8] -> [bool], 64 KiB` | 731 | 18,820 |
-| `[u8] -> [Kind] (1, 2, 3, 7), 4 KiB` | 110 | 1,233 |
-| `[u8] -> [Small] (no repr: a tag, a bool), 4 KiB` | 569 | 917 |
-| `[u8] -> [MaybeFlag] (no repr: a niche), 64 KiB` | 28,881 | 19,014 |
-| `[u32] -> [char], 4 KiB` | 96.8 | 322 |
-| `crc32, 64 bytes` | 12.5 | 13.2 |
-| `crc32, 64 bytes (by hand: a byte at a time)` | 12.5 | 80.1 |
-| `crc-32c (a Crc), 64 bytes` | 14.2 | 13.3 |
-| `crc-16/modbus (a Crc), 64 bytes` | 14.9 | 76.9 |
-| `crc-16/xmodem (a Crc), 64 bytes` | 14.2 | 86.0 |
-| `crc32, 1518 bytes` | 556 | 1,345 |
-| `crc32, 1518 bytes (by hand: a byte at a time)` | 533 | 3,201 |
-| `crc-32c (a Crc), 1518 bytes` | 445 | 1,323 |
-| `crc-16/modbus (a Crc), 1518 bytes` | 436 | 3,218 |
-| `crc-16/xmodem (a Crc), 1518 bytes` | 517 | 3,514 |
-| `sum16, 1500 bytes` | 24.7 | 24.4 |
+| `ipv4, udp, 64 bytes` | 5.07 | 4.59 |
+| `ipv4, udp, 1472 bytes` | 22.1 | 22.4 |
+| `ipv4, tcp, 1460 bytes` | 22.2 | 22.0 |
+| `ipv4, protocol 253, 1480 bytes` | 2.80 | 2.48 |
+| `ipv4, udp, 64 bytes, bad checksum` | 5.07 | 4.59 |
+| `ipv6, tcp, 0 headers` | 1.52 | 1.38 |
+| `ipv6, tcp, 3 headers` | 2.29 | 3.46 |
+| `ipv6, tcp, 12 headers` | 5.87 | 10.7 |
+| `ipv6, udp, 3 headers, 64 bytes` | 4.57 | 5.59 |
+| `ipv6, udp, 0 headers, 1400 bytes` | 20.4 | 21.1 |
+| `udp, from_head` | 0.77 | 0.77 |
+| `view enum, udp over ipv4 (first)` | 5.58 | 5.10 |
+| `view enum, tcp over ipv4` | 6.97 | 6.25 |
+| `view enum, udp, bad checksum` | 5.09 | 5.24 |
+| `view enum, arp` | 0.86 | 1.15 |
+| `view enum, vlan` | 0.73 | 1.27 |
+| `view enum, other ethertype (last)` | 0.76 | 1.02 |
+| `[u8] -> [bool], 64 KiB` | 632 | 16,640 |
+| `[u8] -> [Kind] (1, 2, 3, 7), 4 KiB` | 97.2 | 1,057 |
+| `[u8] -> [Small] (repr(Rust): a tag, a bool), 4 KiB` | 490 | 813 |
+| `[u8] -> [MaybeFlag] (repr(Rust): a niche), 64 KiB` | 25,352 | 16,646 |
+| `[u32] -> [char], 4 KiB` | 85.4 | 276 |
+| `crc32, 64 bytes` | 10.8 | 11.4 |
+| `crc32, 64 bytes (by hand: a byte at a time)` | 10.8 | 66.3 |
+| `crc-32c (a Crc), 64 bytes` | 12.4 | 11.4 |
+| `crc-16/modbus (a Crc), 64 bytes` | 12.4 | 66.0 |
+| `crc-16/xmodem (a Crc), 64 bytes` | 12.1 | 74.2 |
+| `crc32, 1518 bytes` | 492 | 1,174 |
+| `crc32, 1518 bytes (by hand: a byte at a time)` | 490 | 2,813 |
+| `crc-32c (a Crc), 1518 bytes` | 399 | 1,187 |
+| `crc-16/modbus (a Crc), 1518 bytes` | 389 | 2,813 |
+| `crc-16/xmodem (a Crc), 1518 bytes` | 451 | 3,188 |
+| `sum16, 1500 bytes` | 22.1 | 21.9 |
 
 A case is named as in the benchmark, and `cargo bench -p puns --features unstable --bench checks
 -- 'ipv6'` runs the cases whose name contains `ipv6`. The size of an IPv4 case is the size of its
@@ -88,14 +88,48 @@ tag is a niche in a `bool`, is not checked this way, and is slower than by hand.
 variant whose values are all values of a later variant is checked from that variant. So a wrong
 checksum of UDP over IPv4 is computed once, for the IPv4 variant.
 
+## Build time
+
+The analysis runs in the compiler, once for each pair of types that a function of `puns` is used
+with. [`docs/build-time.py`][build-time] builds a crate that uses `puns` in several ways, and
+prints the best of 3 builds of that crate alone, in seconds. These times were measured on
+2026-11-21, at commit `4176671`, with `rustc` 1.100.0, on the machine above, with a load average
+between 4.2 and 4.4.
+
+Each struct has five fields, among them an enum and a `bool`. Reading each of 100 structs from
+bytes adds 1.7 s to a debug build, and 0.73 s to a release build: about 17 ms and 7 ms for each
+pair of types.
+
+| Structs | debug, declared | debug, read | release, declared | release, read |
+|---:|---:|---:|---:|---:|
+| 100 | 0.44 | 2.15 | 0.45 | 1.18 |
+| 200 | 0.77 | 4.31 | 0.77 | 2.26 |
+
+A view enum compares its variants with each other. Where each variant starts with a different
+constant, it tells most of them apart at once, and its build grows about in proportion to its
+number of variants. Where the values of each variant are also values of the next one, the analysis
+compares more pairs, and the build grows as the square of the number of variants, or faster in a
+release build.
+
+| Variants | distinct, debug | distinct, release | overlapping, debug | overlapping, release |
+|---:|---:|---:|---:|---:|
+| 4 | 0.20 | 0.19 | 0.22 | 0.20 |
+| 8 | 0.27 | 0.23 | 0.29 | 0.27 |
+| 16 | 0.44 | 0.33 | 0.75 | 0.48 |
+| 32 | 0.84 | 0.60 | 2.60 | 1.92 |
+| 64 | 1.79 | 1.28 | 9.89 | 25.2 |
+
 ## Costs
 
-A check never allocates and never panics. Its time grows with the size of the value. A `walk` takes
-at most `8 * size + 128` steps, so a checksum or another `walk` inside a `walk` multiplies the time
-by the size, at each level. Walks nest up to 4 deep. Keep this in mind before you give such a type
-untrusted bytes. Each checked pun is code specialized for its two types. Measure the checks in
-release. They rely on inlining, which a debug build mostly does not do.
+A check never allocates and never panics. Without nested walks, its time grows with the size of
+the value. A `walk` takes at most `8 * size + 128` steps, so a checksum or another `walk` inside a
+`walk` multiplies the time by the size, at each level. Walks nest up to 4 deep, so a checksum
+inside the deepest one takes time in proportion to the fifth power of the size. Keep this in mind
+before you give such a type untrusted bytes. Each checked pun is code specialized for its two
+types. Measure the checks in release. They rely on inlining, which a debug build mostly does not
+do.
 
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
-[record]: https://github.com/uael/puns/blob/main/docs/checks-2026-11-20.txt
+[record]: https://github.com/uael/puns/blob/main/docs/checks-2026-11-21.txt
+[build-time]: https://github.com/uael/puns/blob/main/docs/build-time.py
