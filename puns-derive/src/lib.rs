@@ -319,24 +319,31 @@ struct Options {
 ///
 /// # Errors
 ///
-/// Returns an error if an option is not in `allowed`, rather than ignore it, or if an option is
-/// unknown or does not parse.
+/// Returns an error if an option is not in `allowed`, rather than ignore it, if an option of one
+/// value is given twice, rather than keep the last, or if an option is unknown or does not parse.
 fn parse_options(attrs: &[Attribute], place: &str, allowed: &[&str]) -> Result<Options> {
   let mut options = Options::default();
+  let mut given = Vec::new();
   for attr in attrs.iter().filter(|attr| attr.path().is_ident("pun")) {
     attr.parse_nested_meta(|meta| {
       if let Some(name) = meta.path.get_ident().map(ToString::to_string)
-        && !allowed.contains(&name.as_str())
         && ALL_OPTIONS.contains(&name.as_str())
       {
-        let of = match name.as_str() {
-          "crate" => "the type",
-          "bound" => "a struct, an enum with fields that is not a view, or a union",
-          "size" | "assert" | "tag" | "get" => "a struct",
-          "valid" => "a field",
-          _ => "the last field of a struct",
-        };
-        return Err(meta.error(format!("`{name}` is an option of {of}, not of {place}")));
+        if !allowed.contains(&name.as_str()) {
+          let of = match name.as_str() {
+            "crate" => "the type",
+            "bound" => "a struct, an enum with fields that is not a view, or a union",
+            "size" | "assert" | "tag" | "get" => "a struct",
+            "valid" => "a field",
+            _ => "the last field of a struct",
+          };
+          return Err(meta.error(format!("`{name}` is an option of {of}, not of {place}")));
+        }
+        // `bound`, `assert`, `tag` and `get` add to what they gave before.
+        if !matches!(name.as_str(), "bound" | "assert" | "tag" | "get") && given.contains(&name) {
+          return Err(meta.error(format!("`{name}` is given twice")));
+        }
+        given.push(name);
       }
       if meta.path.is_ident("crate") {
         options.root = Some(if meta.input.peek(Token![=]) {
@@ -1891,6 +1898,15 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream> {
   };
   let allowed: &[&str] = if place == "an enum" { &["crate", "bound"] } else { &["crate"] };
   let options = parse_options(&input.attrs, place, allowed)?;
+  // No option means something on a variant, nor on the field of a view.
+  for variant in &data.variants {
+    parse_options(&variant.attrs, "a variant", &[])?;
+    if place == "a view" {
+      for field in &variant.fields {
+        parse_options(&field.attrs, "a field of a view", &[])?;
+      }
+    }
+  }
   let root = options.root.unwrap_or_else(|| quote!(::puns));
   let ident = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();

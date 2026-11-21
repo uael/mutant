@@ -1143,11 +1143,12 @@ pub use layout::{crc32, sum16};
 /// On a struct, an enum with fields that is not a view, or a union:
 ///
 /// - `#[pun(bound(T: Trait, ..))]`: the bounds of the implementation of `Pun`, in addition to the
-///   bounds of the type. They replace the bounds that the derive finds by itself, which require the
-///   type of each field that depends on a type parameter to be `Pun`, unless that type names the
-///   type being derived. Generic types that hold each other behind pointers need this, since the
-///   bounds found for each would form a cycle. Write `#[pun(bound())]` when the bounds of the type
-///   are enough.
+///   bounds of the type. They replace the bounds that the derive finds for the fields, which
+///   require the type of each field that depends on a type parameter to be `Pun`, unless that type
+///   names the type being derived. The derive still requires the type of each typed region to be
+///   `Pun`, and a struct that is neither `repr(C)` nor `repr(transparent)` to be `Sized`. Generic
+///   types that hold each other behind pointers need this, since the bounds found for each would
+///   form a cycle. Write `#[pun(bound())]` when the bounds of the type are enough.
 ///
 /// On any type:
 ///
@@ -1287,8 +1288,9 @@ pub use layout::{crc32, sum16};
 /// For every type:
 ///
 /// - No identifier in the item starts with `__Pun`, since these names are reserved.
-/// - Every `#[pun(..)]` option on the type, or on a field of a struct, a union or an enum that is
-///   not a view, is one of those above, in a place where it means something.
+/// - Every `#[pun(..)]` option is one of those above, in a place where it means something, and none
+///   is on a variant or on a field of a view. An option is given once, except `bound`, `assert`,
+///   `tag` and `get`, which add to what they gave before.
 /// - The type of every field implements `Pun`, except in a view, where the type `T` of each
 ///   reference `&'a T` does.
 /// - The layout of the type of a field with `valid` is a scalar of 1 to 16 bytes whose bytes are
@@ -1340,13 +1342,13 @@ pub use layout::{crc32, sum16};
 /// - The union is `repr(C)`, and not packed.
 /// - No field holds a self-relative pointer.
 ///
-/// The derive reports an unknown or misplaced option, and an expression that is not a rule, at the
-/// place of the fault. `cargo check` reports these errors, as well as type errors. The other
-/// conditions are checked when the layout of the type is evaluated (E0080). For a type without
-/// generic parameters, `cargo check` reports a violation. For a generic type, the conditions are
-/// checked after monomorphization, so `cargo check` does not report a violation, but `cargo build`
-/// does, for each instance that is used. The conditions of a generated method are checked where the
-/// method is used, by `cargo build`.
+/// The derive reports an unknown, misplaced or repeated option, and an expression that is not a
+/// rule, at the place of the fault. `cargo check` reports these errors, as well as type errors. The
+/// other conditions are checked when the layout of the type is evaluated (E0080). For a type
+/// without generic parameters, `cargo check` reports a violation. For a generic type, the
+/// conditions are checked after monomorphization, so `cargo check` does not report a violation, but
+/// `cargo build` does, for each instance that is used. The conditions of a generated method are
+/// checked where the method is used, by `cargo build`.
 ///
 /// # Analysis
 ///
@@ -1380,7 +1382,8 @@ pub use layout::{crc32, sum16};
 ///   implemented traits name ([`layout::Layout`], [`layout::Spec`], [`layout::Field`]), or
 ///   associated functions of [`layout::Rule`], [`layout::Op`], [`layout::Field`], [`layout::Enum`]
 ///   and [`layout::Variant`], which a hidden constant of `Layout` fixes with `fn(T)` types that no
-///   path can stand in for.
+///   path can stand in for. The generated code also calls `new` of [`layout::Crc`] and of the
+///   identity of a type, whose results go to these functions, so only the real types compile.
 /// - The offsets of the fields do not come from `offset_of!`, which is a macro named by a path.
 ///   With `repr(C)`, they are what `repr(C)` specifies, computed from the sizes and alignments of
 ///   the fields. With `repr(transparent)`, the field with a size is at 0. Otherwise, the struct is
@@ -1399,8 +1402,17 @@ pub use layout::{crc32, sum16};
 ///   type it means, and the generated code writes these types where both names would mean something
 ///   else.
 ///
+/// The one exception is the identity of a type, which tells whether two layouts are of the same
+/// type. It is where the type is declared, written by a macro that the derive names through the
+/// path of `puns`, so a crate that redirects that path can give a type the identity of another.
+/// Two layouts count as the same type only if they are also equal, so this cannot make a wrong
+/// layout. It can make a verdict depend on how `rustc` arranged the two types in this compilation,
+/// which without the `unstable` feature no verdict otherwise does.
+///
 /// The rest of `::core` that the derive names (`Option`, `PhantomData`, `usize`, and so on) is
-/// checked by the types of the traits it implements. The derive trusts the compiler for what it
+/// checked by the types of the traits it implements. `::core::ptr::null()` is the probe of a sized
+/// type, which nothing reads, and `::core::panic!` is written only next to a compile error of the
+/// derive. The derive trusts the compiler for what it
 /// parses, such as `repr`. It also trusts that the type of a field is the same type wherever the
 /// derive writes it, which a procedural macro in the type of a field that expands to a different
 /// type at each expansion would break.
