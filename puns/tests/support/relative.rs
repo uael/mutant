@@ -130,7 +130,10 @@ macro_rules! pointer {
     // - What it aims at is there, valid, and its own: a value of this type in a buffer is made
     //   by a `Builder`, which `Region::new` turns into a region whose pointers aim at valid
     //   targets, aligned as `POINTER` says (the `# Safety` of `Region::new`, and
-    //   `Builder::reserve`). A region never writes to its buffer, nor gives a `&mut` to any of
+    //   `Builder::reserve`). The target of `One::here` is the zero bytes of its offset, which
+    //   are a valid target by that `# Safety`, and which hold it at any address, since `here`
+    //   asserts that the target is no larger than the offset and no more aligned than the
+    //   pointer. A region never writes to its buffer, nor gives a `&mut` to any of
     //   it.
     // - Null: `Opt` is made with `or_null`, and `Region::opt` follows no pointer of offset zero.
     // - The target is the type: `POINTER` is made for `Target` by `Pointer::one`,
@@ -208,8 +211,19 @@ impl<T, O: Offset> One<T, O> {
   /// It is for a target of which zero bytes are a valid value, such as `u8`. That target is then
   /// there, as the `# Safety` section of `SelfRelative` requires. The pointer has an offset of
   /// zero but is not null. A pointer whose offset cannot be zero cannot be this pointer.
+  ///
+  /// # Compile-time errors
+  ///
+  /// A call compiles only if `T` is at most as large as the offset, and at most as aligned as the
+  /// pointer, so that the bytes of the offset hold a `T` at any address of the pointer.
   #[must_use]
   pub fn here() -> Self {
+    const {
+      assert!(
+        size_of::<T>() <= size_of::<O>() && align_of::<T>() <= align_of::<Self>(),
+        "the offset of a pointer cannot hold its target"
+      );
+    }
     Self { offset: O::new(0), target: PhantomData }
   }
 }
@@ -396,10 +410,10 @@ impl Builder {
       value.fix(place);
       // SAFETY: `reserve` made room for `values.len()` elements from `at`, so `place` and the
       // `size_of::<T>()` bytes from it are in the blocks, valid for writes. `at` is a multiple of
-      // `first::<T, O>()`, the alignment of `T` or the size of `O`, whichever is greater. Both
-      // are powers of two (an offset is 2, 4 or 8 bytes), so `first::<T, O>()` is a multiple of
-      // the alignment of `T`, and so is `at`, as `size_of::<T>()` is. So `place` is aligned for `T`. These are the
-      // requirements of `add` and of `write`.
+      // `first::<T, O>()`, the alignment of `T` or the size of `O`, whichever is greater. Both are
+      // powers of two (an offset is 2, 4 or 8 bytes), so `first::<T, O>()` is a multiple of the
+      // alignment of `T`, and so is `at`, as `size_of::<T>()` is. So `place` is aligned for `T`.
+      // These are the requirements of `add` and of `write`.
       unsafe { self.base().add(place).cast::<T>().write(value) };
     }
     Seq::to(at)
@@ -434,7 +448,8 @@ impl<T: Fix> Region<T> {
   ///
   /// - Every pointer of `root`, and of what was put in `builder`, was made by `builder` (`one`,
   ///   `opt`, `seq` or `text`) with what it aims at, or is `One::here` of a target of which zero
-  ///   bytes are a valid value.
+  ///   bytes are a valid value. Such a target fits in the offset of the pointer, at an address
+  ///   aligned for it, which `One::here` asserts.
   /// - Every such pointer is in one value only.
   /// - Every value that holds pointers implements [`Fix`] as its `# Safety` section requires.
   pub unsafe fn new(mut builder: Builder, root: T) -> Self {
@@ -511,11 +526,12 @@ impl<T> Region<T> {
     let to = self.aim(here, offset, size_of::<U>());
     // SAFETY: `place` asserted that `pointer` is in the buffer of this region, and `aim` that its
     // target, `size_of::<U>()` bytes from `to`, is too. So `add(to)` stays in the blocks. The
-    // pointer was made by the builder with its target, by the `# Safety` of `Region::new`, or was
-    // read as a `One<U, O>` by `puns::view_ref`, which proves that what it aims at is a valid
-    // `U`. So the bytes there are a valid `U`, aligned for it, by the requirement of
-    // `SelfRelative` that what it aims at is there and valid (`SelfRelative`, section Safety).
-    // The region never writes to its blocks, and the reference borrows `self`.
+    // pointer was made by the builder with its target, or is `One::here` of a target that its
+    // offset holds at any address, by the `# Safety` of `Region::new`, or was read as a `One<U, O>`
+    // by `puns::view_ref`, which proves that what it aims at is a valid `U`. So the bytes there are
+    // a valid `U`, aligned for it, by the requirement of `SelfRelative` that what it aims at is
+    // there and valid (`SelfRelative`, section Safety). The region never writes to its blocks, and
+    // the reference borrows `self`.
     unsafe { &*self.base().add(to).cast::<U>() }
   }
 
