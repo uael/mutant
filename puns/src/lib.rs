@@ -1067,8 +1067,9 @@ pub use layout::{crc32, sum16};
 /// that one, from it. It fails if that one fails, and is checked only for what that one does not
 /// prove of it. So a variant `Frame<Ipv4<Udp>>` before `Frame<Ipv4>` is checked for its protocol,
 /// and not for the checksums again. The error does not tell why no variant fits. A view has no
-/// `from_tail`, because its variants may be unsized. Its build grows as the square of the number
-/// of its variants.
+/// `from_tail`, because its variants may be unsized. Its build grows about in proportion to the
+/// number of its variants where each starts with a different constant, and as the square of that
+/// number where the values of each variant are also values of the next.
 ///
 /// **Unions.** A union must be `repr(C)`, and not packed. As a target, bytes are a valid union if
 /// they are a valid value of one of its fields. As a source, nothing is known of a union, not even
