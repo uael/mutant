@@ -217,8 +217,8 @@
 //! A pun is refused if a byte that the target requires to be initialized may be padding in the
 //! source.
 //!
-//! `MaybeUninit<T>` is padding of the size and the alignment of `T`. As a target, it takes
-//! anything. As a source, it proves nothing but a target that takes anything. So a `&mut` to a
+//! `MaybeUninit<T>` is padding of the size and the alignment of `T`, and is `Pun` only if `T` is,
+//! so that it never holds an `UnsafeCell`. As a target, it takes anything. As a source, it proves nothing but a target that takes anything. So a `&mut` to a
 //! `MaybeUninit<T>` is made only from a source that may hold anything there, because what is
 //! written through it may be uninitialized. A `&mut T` is never made from a `MaybeUninit<T>`,
 //! because a byte that `T` requires would be read from padding.
@@ -2167,14 +2167,13 @@ unsafe impl<T: ?Sized + Pun> Pun for ManuallyDrop<T> {
 // from a `&mut S` only if every value of the target, padding included, is a valid `S` (the
 // reverse relation that `mutable` checks), so never from a `&mut T`.
 //
-// Without the `unstable` feature, `T: Pun` makes the size of `T`, which is the size of
-// `MaybeUninit<T>`, a part of what the analysis checks to be the same in every layout that Rust
-// allows (`sized_like`). This is about the `unstable` feature, not about soundness.
+// Without the `unstable` feature, the layout also records the size of `T`, which is the size of
+// `MaybeUninit<T>`, as a part of what the analysis checks to be the same in every layout that
+// Rust allows (`sized_like`). This is about the `unstable` feature, not about soundness.
 //
 // [1] Per https://doc.rust-lang.org/1.99.0/core/mem/union.MaybeUninit.html:
 //
 //     any bit value is valid for a `MaybeUninit<T>`
-#[cfg(not(feature = "unstable"))]
 unsafe impl<T: Pun> Pun for core::mem::MaybeUninit<T> {
   type Elem = ();
   type Fields = ();
@@ -2182,20 +2181,11 @@ unsafe impl<T: Pun> Pun for core::mem::MaybeUninit<T> {
   type Rules = ();
   type Pointee = ();
   const PROBE: *const Self = core::ptr::null();
+  #[cfg(not(feature = "unstable"))]
   const LAYOUT: Layout = Layout::padding::<Self>()
     .sized_like(&T::LAYOUT)
     .identified(layout::Id::new("MaybeUninit", &[T::LAYOUT.id]));
-}
-
-// SAFETY: as above, for any `T`.
-#[cfg(feature = "unstable")]
-unsafe impl<T> Pun for core::mem::MaybeUninit<T> {
-  type Elem = ();
-  type Fields = ();
-  type Variants = ();
-  type Rules = ();
-  type Pointee = ();
-  const PROBE: *const Self = core::ptr::null();
+  #[cfg(feature = "unstable")]
   const LAYOUT: Layout = Layout::padding::<Self>();
 }
 
