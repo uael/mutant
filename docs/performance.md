@@ -91,19 +91,19 @@ checksum of UDP over IPv4 is computed once, for the IPv4 variant.
 ## Build time
 
 The analysis runs in the compiler, once for each pair of types that a function of `puns` is used
-with. [`docs/build-time.py`][build-time] builds a crate that uses `puns` in several ways, and
-prints the best of 3 builds of that crate alone, in seconds. These times were measured on
-2026-11-21, at commit `4176671`, with `rustc` 1.100.0, on the machine above, with a load average
-between 4.2 and 4.4.
+with. `cargo xtask build-time` ([`xtask/src/build_time.rs`][build-time]) builds a crate that uses
+`puns` in several ways, and prints the best of 3 builds of that crate alone, in seconds. These
+times were measured on 2026-11-21, with the library at commit `c5abfbd`, `rustc` 1.100.0, on the
+machine above, at a load average between 3.9 and 4.3.
 
 Each struct has five fields, among them an enum and a `bool`. Reading each of 100 structs from
-bytes adds 1.7 s to a debug build, and 0.73 s to a release build: about 17 ms and 7 ms for each
+bytes adds 1.7 s to a debug build, and 0.74 s to a release build: about 17 ms and 7 ms for each
 pair of types.
 
 | Structs | debug, declared | debug, read | release, declared | release, read |
 |---:|---:|---:|---:|---:|
-| 100 | 0.44 | 2.15 | 0.45 | 1.18 |
-| 200 | 0.77 | 4.31 | 0.77 | 2.26 |
+| 100 | 0.42 | 2.13 | 0.43 | 1.17 |
+| 200 | 0.75 | 4.19 | 0.77 | 2.24 |
 
 A view enum compares its variants with each other. Where each variant starts with a different
 constant, it tells most of them apart at once, and its build grows about in proportion to its
@@ -113,11 +113,11 @@ release build.
 
 | Variants | distinct, debug | distinct, release | overlapping, debug | overlapping, release |
 |---:|---:|---:|---:|---:|
-| 4 | 0.20 | 0.19 | 0.22 | 0.20 |
-| 8 | 0.27 | 0.23 | 0.29 | 0.27 |
-| 16 | 0.44 | 0.33 | 0.75 | 0.48 |
-| 32 | 0.84 | 0.60 | 2.60 | 1.92 |
-| 64 | 1.79 | 1.28 | 9.89 | 25.2 |
+| 4 | 0.19 | 0.18 | 0.20 | 0.19 |
+| 8 | 0.25 | 0.22 | 0.28 | 0.26 |
+| 16 | 0.42 | 0.32 | 0.72 | 0.47 |
+| 32 | 0.81 | 0.59 | 2.53 | 1.89 |
+| 64 | 1.74 | 1.26 | 9.89 | 24.9 |
 
 ## Costs
 
@@ -132,4 +132,4 @@ do.
 [codegen]: https://github.com/uael/puns/blob/main/puns/examples/codegen.rs
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
 [record]: https://github.com/uael/puns/blob/main/docs/checks-2026-11-21.txt
-[build-time]: https://github.com/uael/puns/blob/main/docs/build-time.py
+[build-time]: https://github.com/uael/puns/blob/main/xtask/src/build_time.rs

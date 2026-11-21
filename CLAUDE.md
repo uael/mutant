@@ -29,6 +29,7 @@ cargo xtask fmt                      # Format code (cargo fmt on the pinned nigh
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches; -D warnings), without `unstable` then with it, + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
+cargo xtask build-time               # Build times of the analysis, for docs/performance.md (minutes)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
@@ -136,7 +137,7 @@ them, the crate docs and `README.md` in step with the code.
 - **`puns-model/`** — model check of the analysis against oracles that do not use it (not
   published; uses the test-only `verdict` feature of `puns`), with `fakecore/`, a `core`
   that lies, for what the derive must not trust
-- **`xtask/`** — dev automation (fmt, lint)
+- **`xtask/`** — dev automation (fmt, lint, build times)
 
 ## Releasing
 

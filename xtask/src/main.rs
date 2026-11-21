@@ -1,3 +1,5 @@
+mod build_time;
+
 use std::{path::PathBuf, sync::LazyLock};
 
 use anyhow::Result;
@@ -27,6 +29,8 @@ enum Command {
     #[arg(long)]
     fix: bool,
   },
+  /// Time the builds of the section "Build time" of `docs/performance.md`
+  BuildTime,
 }
 
 /// The root directory of the workspace.
@@ -43,6 +47,7 @@ fn main() -> Result<()> {
   match cli.command {
     Command::Fmt { check } => fmt(&sh, check),
     Command::Lint { fix } => lint(&sh, fix),
+    Command::BuildTime => build_time::run(&ROOT),
   }
 }
 
