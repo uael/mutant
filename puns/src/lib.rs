@@ -511,8 +511,8 @@
 //!
 //! ## Enums: what is refused
 //!
-//! A `Shape` is not 4 bytes. The byte after the tag of a `Circle` is padding, and nothing tells a
-//! `Circle` from a `Rect` at compile time.
+//! A `Shape` is not a `[u8; 4]`. The byte after the tag of a `Circle` is padding, and nothing
+//! tells a `Circle` from a `Rect` at compile time.
 //!
 //! ```compile_fail,E0080
 //! # use puns::Pun;
