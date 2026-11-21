@@ -271,12 +271,14 @@ plain! {
   i16le i32le i64le i16be i32be i64be
 }
 
-// SAFETY: the pointer, if any, at the position of the value: `Some` of a pointer is the pointer,
-// at the same address (`Layout::nullable` checks that `Option` of it has no tag).
+// SAFETY: `fix` calls `Fix::fix` on the value of `Some`, at its position: `at` plus its offset in
+// the `Option`, which is not 0 if the `Option` has a tag before it. It changes nothing else, as
+// the `# Safety` of `Fix` requires.
 unsafe impl<T: Fix> Fix for Option<T> {
   fn fix(&mut self, at: usize) {
+    let whole = addr(self);
     if let Some(value) = self {
-      value.fix(at);
+      field(whole, at, value);
     }
   }
 }

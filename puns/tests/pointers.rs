@@ -504,6 +504,22 @@ fn null_and_text() {
   assert_eq!(puns::try_view_ref::<_, One<u8>>(&r.1).err(), Some(puns::Error::Validity));
 }
 
+/// Checks that `Some` of a pointer that is not nullable aims at its target: the pointer is after
+/// the tag of the `Option`, so it is fixed at its own position, not at the position of the
+/// `Option`.
+#[test]
+fn some_of_a_pointer_after_a_tag() {
+  let mut b = Builder::new();
+  let one: One<u16, i32le> = b.one(0x1234);
+  // SAFETY: Every pointer of the root and of what `b` holds was made by `b` with what it aims
+  // at, and is in one value only. Each type that holds pointers implements `Fix` as its
+  // `# Safety` requires. These are the requirements of `Region::new`.
+  let r = unsafe { Region::new(b, Some(one)) };
+  let some = r.as_ref().expect("some");
+  assert_ne!(addr(some), addr(&*r), "the pointer is after a tag");
+  assert_eq!(*r.get(some), 0x1234);
+}
+
 /// Checks that a value that holds pointers reads as plain data, because an offset is initialized
 /// bytes.
 #[test]
