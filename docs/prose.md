@@ -91,6 +91,8 @@ Avoid these patterns, each of which is common in generated text:
   commands in code blocks may be longer, since they cannot be wrapped.
 - Every link resolves. A link to a hidden item is a dead link, so name such an item in code
   without a link.
-- No arbitrary identifiers (rule numbers, internal ticket ids) in the documentation.
+- No arbitrary identifiers (rule numbers, labels of review findings, internal ticket ids) in the
+  documentation or in commit messages, whose subjects become the changelog. Name a thing by what
+  it is.
 - Doc tests compile and pass, `cargo doc` builds with `-D warnings`, and an example states its
   result with `assert_eq!` rather than in a comment.
