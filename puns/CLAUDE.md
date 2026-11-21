@@ -108,5 +108,7 @@ their costs, for whoever takes one up.
 - **Fields of fields in rules.** Loading `header.length` or `magic[0]` would be sound if the
   offset were checked against the layout of the field, as a scalar of that size there, as it is
   for the fields of the struct.
-- **Patterns other than `str` as types.** Automata are compared by their states and edges, not by
-  their `id`, which a user can choose (`Op::Matches`).
+- **Patterns other than `str` as types.** The derive cannot make a type that guarantees a
+  pattern, since safe code can write its fields. A rule `matches(DFA, start, end)` (`Op::Matches`)
+  requires one instead. Two automata are equal only if their states and edges are: their `id`,
+  which a user can choose, only tells different ones apart early.
