@@ -55,6 +55,24 @@ struct Constants {
   x: u8,
 }
 
+/// A `const fn` that a rule calls with constants, by its path. Rust computes the call.
+const fn twice(n: u8) -> u8 {
+  n * 2
+}
+
+#[derive(Pun)]
+#[repr(C)]
+#[pun(assert(x < self::twice(2) && x < crate::twice(3)))]
+struct Called {
+  x: u8,
+}
+
+#[test]
+fn a_const_fn_is_called_by_its_path() {
+  assert!(puns::from_bytes::<Called>(&[3]).is_ok());
+  assert!(puns::from_bytes::<Called>(&[4]).is_err());
+}
+
 #[test]
 fn constants_are_unsigned_integers() {
   assert!(puns::from_bytes::<Constants>(&[1]).is_ok());

@@ -1058,10 +1058,13 @@ fn literal(lit: &Lit) -> Result<TokenStream> {
 fn mentions(tokens: TokenStream, fields: &[FieldInfo], scope: &Scope) -> bool {
   // After `.` or `::`, a name is a field or an item of something else.
   let mut qualified = false;
-  for token in tokens {
+  let mut tokens = tokens.into_iter().peekable();
+  while let Some(token) = tokens.next() {
     match token {
       proc_macro2::TokenTree::Ident(ident) => {
-        let named = ident == "self"
+        // `self::` starts the path of an item of this module, such as `self::f(3)`, not the value.
+        let path = matches!(tokens.peek(), Some(proc_macro2::TokenTree::Punct(punct)) if punct.as_char() == ':');
+        let named = (ident == "self" && !path)
           || scope.get(&ident).is_some()
           || fields.iter().any(|field| field.member == Member::Named(ident.clone()));
         if named && !qualified {
