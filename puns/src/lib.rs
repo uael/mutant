@@ -358,6 +358,10 @@
 //! names your call, not a call inside `puns`. Between the first lines and the last note, `rustc`
 //! prints about thirty lines that locate the failed constant inside `puns`, which you can skip.
 //!
+//! An optimized build may inline the function into yours before it evaluates the constant. `rustc`
+//! then prints no last note: the error names the two types, as in `Plan::<Header, [u8; 8]>`, but
+//! not the line of your code. A debug build, such as the one of `cargo build`, names it.
+//!
 //! To fix this pun, declare the padding as a field, so that it is initialized.
 //!
 //! ```
