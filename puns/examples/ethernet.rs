@@ -48,7 +48,7 @@
 //! Some conversions are proven, and use [`pun_ref`], such as an ARP frame read as bytes. `main`
 //! also changes bytes, such as an EtherType, a size or a checksum, and asserts the [`Error`] that
 //! the read then returns. Last, it tells frames apart with [`AnyFrame`], and prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use puns::{
   Error, Pun, Tag, from_head,

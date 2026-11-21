@@ -44,7 +44,7 @@
 //! reads ELF files of the four classes and byte orders as an [`AnyElf`], and a PE file as an
 //! [`AnyPe`]. It changes bytes so that a rule fails, asserts that each read then returns an
 //! error, and prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use core::marker::PhantomData;
 

@@ -46,7 +46,7 @@
 //! of its entries, and USB descriptors, and asserts their fields and getters. It changes or
 //! truncates bytes so that a rule fails, asserts that each read then returns an error, and prints
 //! `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use puns::{
   Error, Pun, from_head,

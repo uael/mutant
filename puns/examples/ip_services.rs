@@ -45,7 +45,7 @@
 //! `main` reads messages of each format from bytes and asserts their fields, regions and getters.
 //! It changes bytes so that a rule fails, and asserts that each read then returns an error. It
 //! reads datagrams of several formats as an [`AnyMessage`], and prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use puns::{
   Error, Pun, from_head,

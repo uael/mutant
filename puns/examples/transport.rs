@@ -50,7 +50,7 @@
 //!
 //! `main` reads a message of each protocol from bytes and asserts its fields, regions and getters.
 //! It also changes bytes and asserts that the read then returns an error. It prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use core::marker::PhantomData;
 

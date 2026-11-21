@@ -40,7 +40,7 @@
 //!
 //! `main` reads frames of each format from bytes and asserts their fields, regions and getters.
 //! It also changes bytes and asserts that the read then returns an error. It prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use puns::{
   Error, Pun, from_head,

@@ -50,7 +50,7 @@
 //! It reads Protocol Buffers fields, MessagePack items and CBOR items as enums of references. It
 //! changes bytes so that a rule fails, asserts that each read then returns an error, and prints
 //! `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use core::marker::PhantomData;
 

@@ -39,7 +39,7 @@
 //! `main` reads a ZIP file and each of its records, two tar entries and three gzip members, and
 //! asserts their fields and regions. It changes or truncates bytes so that a rule fails or the
 //! size is wrong, asserts that each read then returns an error, and prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use puns::{
   Error, Pun, from_head,

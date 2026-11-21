@@ -32,7 +32,7 @@
 //! `main` reads a WAVE file chunk by chunk and an MP4 file box by box, and asserts their fields,
 //! regions and getters. It changes bytes so that a rule fails or the size is wrong, asserts that
 //! each read then returns an error, and prints `ok`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use core::marker::PhantomData;
 
