@@ -1989,11 +1989,32 @@ pub const fn tail_offset(end: usize, align: usize, pack: usize) -> usize {
 /// # Panics
 ///
 /// Panics if `Option<P>` has the size of `P` with a `None` whose bytes are not all zero: such a
-/// niche means that some values of the offset are not pointers, which is not supported. In const
-/// evaluation, the panic is a compile error, and so is an uninitialized byte of `None`. At run
-/// time, reading such a byte is undefined behavior, so the function is meant only for const
-/// evaluation.
+/// niche means that some values of the offset are not pointers, which is not supported. The bytes
+/// of `None` are read at compile time, so an uninitialized one fails to compile.
 const fn excludes_zero<P>() -> bool {
+  if size_of::<Option<P>>() != size_of::<P>() {
+    return false;
+  }
+  // SAFETY: The call is in a `const` block, so it is evaluated at compile time, which is what
+  // `none_is_zeros` requires.
+  let zeros = const { unsafe { none_is_zeros::<P>() } };
+  assert!(
+    zeros,
+    "the offset of a self-relative pointer excludes values other than zero (a niche that is not \
+     zero): not supported, nothing tells which"
+  );
+  true
+}
+
+/// Returns whether `Option<P>` has the size of `P`, and every byte of `None` is zero.
+///
+/// # Safety
+///
+/// The call must be evaluated at compile time, in a `const` item or block. Some bytes of `None`
+/// may be uninitialized, as when `P` is `(NonZero<u8>, u16)`, and reading one at run time is
+/// undefined behavior. Const evaluation reports an error instead, as the module documentation of
+/// `discover` explains ("Const evaluation fails on what is not a value").
+const unsafe fn none_is_zeros<P>() -> bool {
   if size_of::<Option<P>>() != size_of::<P>() {
     return false;
   }
@@ -2002,17 +2023,11 @@ const fn excludes_zero<P>() -> bool {
   while i < size_of::<P>() {
     // SAFETY: `i < size_of::<P>()`, which is the size of `Option<P>`, so `add(i)` stays within
     // `none`, and the byte is valid for reads and aligned. A read of a `u8` also requires the byte
-    // to be initialized, which nothing here ensures. `rustc` reports an error when const
-    // evaluation reads an uninitialized byte, as the module documentation of `discover` explains
-    // ("Const evaluation fails on what is not a value"), and the Reference does not promise
-    // it. So this is sound only in const evaluation, where `self_relative!` evaluates it. A call
-    // at run time with such a `P` would be undefined behavior (see `# Panics`).
-    let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
-    assert!(
-      byte == 0,
-      "the offset of a self-relative pointer excludes values other than zero (a niche that is not \
-       zero): not supported, nothing tells which"
-    );
+    // to be initialized. The caller evaluates this function at compile time, where reading an
+    // uninitialized byte is an error rather than a read.
+    if unsafe { *none.as_ptr().cast::<u8>().add(i) } != 0 {
+      return false;
+    }
     i += 1;
   }
   true
@@ -2086,16 +2101,22 @@ impl Layout {
   /// # Panics
   ///
   /// Panics, with the reason, if the layout is not of a shape that the experiments recognize. In
-  /// const evaluation, the panic is a compile error, and so is an experiment that reads an
-  /// uninitialized byte. At run time, such a read is undefined behavior, so the function is meant
-  /// only for const evaluation.
+  /// const evaluation, the panic is a compile error.
+  ///
+  /// # Safety
+  ///
+  /// The call must be evaluated at compile time, in a `const` item or block. The experiments read
+  /// bytes that may be uninitialized, and the variants of values whose tags may be invalid, which
+  /// is undefined behavior at run time. Const evaluation reports an error instead, as the module
+  /// documentation of `discover` explains ("Const evaluation fails on what is not a value").
   #[doc(hidden)]
   #[must_use]
-  pub const fn discover<E, const V: usize>(
+  pub const unsafe fn discover<E, const V: usize>(
     samples: &[mem::MaybeUninit<E>; V],
     fields: &[&[Field]; V],
   ) -> Desc<V> {
-    crate::discover::discover(samples, fields)
+    // SAFETY: The caller evaluates this call at compile time, which is what `discover` requires.
+    unsafe { crate::discover::discover(samples, fields) }
   }
 
   /// Returns a valid `T`, made from its layout alone, for the samples of the variants of an enum
@@ -2436,9 +2457,8 @@ impl Layout {
   /// Panics if `P` does not have the size of the offset, or if `pointer` was not made for a `T`
   /// (with its size and alignment). Also panics if `Option<P>` has the size of `P` but a `None`
   /// whose bytes are not all zero, or if `pointer` may be null while `P` has no all-zero value. In
-  /// const evaluation, the panic is a compile error, and so is an uninitialized byte of `None`. At
-  /// run time, reading such a byte is undefined behavior, so the function is meant only for const
-  /// evaluation.
+  /// const evaluation, the panic is a compile error. The bytes of `None` are read at compile time,
+  /// so an uninitialized one fails to compile.
   #[doc(hidden)]
   #[must_use]
   pub const fn pointer<P, T>(pointer: Pointer) -> Self {
@@ -2489,9 +2509,8 @@ impl Layout {
   /// Panics if `pointer` may already be null, if `Option<P>` is larger than `P`, or if the bytes of
   /// `None` are not all zero. Also panics if `P` does not have the size of the offset, or if
   /// `pointer` was not made for a `T` (with its size and alignment). In const evaluation, the panic
-  /// is a compile error, and so is an uninitialized byte of `None`. At run time, reading such a
-  /// byte is undefined behavior, so call this function only in const evaluation, as
-  /// `self_relative!` does.
+  /// is a compile error. The bytes of `None` are read at compile time, so an uninitialized one
+  /// fails to compile.
   ///
   /// # Examples
   ///
@@ -2523,17 +2542,10 @@ impl Layout {
       "`Option` of this self-relative pointer is larger than it: its offset has no niche at zero \
        (a `NonZero` has one), so `None` is not the pointer of zeros"
     );
-    let none = mem::MaybeUninit::new(None::<P>);
-    let mut i = 0;
-    while i < size_of::<P>() {
-      // SAFETY: As in `excludes_zero`: `add(i)` stays within `none`, and the read is sound only
-      // in const evaluation, where `rustc` reports an error for an uninitialized byte. `nullable`
-      // is a safe `pub` function, so a call at run time with such a `P` would be undefined
-      // behavior (see `# Panics`).
-      let byte = unsafe { *none.as_ptr().cast::<u8>().add(i) };
-      assert!(byte == 0, "`None` of this self-relative pointer is not zeros");
-      i += 1;
-    }
+    // SAFETY: The call is in a `const` block, so it is evaluated at compile time, which is what
+    // `none_is_zeros` requires.
+    let zeros = const { unsafe { none_is_zeros::<P>() } };
+    assert!(zeros, "`None` of this self-relative pointer is not zeros");
     Self::pointer::<Option<P>, T>(pointer.or_null())
   }
 
@@ -5132,8 +5144,8 @@ impl Op {
 /// A CRC of 1 to 64 bits, given by its parameters in the catalogue of CRCs.
 ///
 /// The parameters are the `width` in bits, the polynomial `poly` without its high bit, the value
-/// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, which is
-/// XORed into the result. With reflected bits, each byte is taken least significant bit first, and
+/// `init` that the register starts with, whether the bits are `reflect`ed, and `xorout`, with which
+/// the result is combined by XOR. With reflected bits, each byte is taken least significant bit first, and
 /// the result is read the same way. `crc::<WIDTH, POLY, INIT, REFLECT, XOROUT>(start, end)` in a
 /// rule of `#[derive(Pun)]` is this CRC of the bytes from `start` to `end`.
 ///

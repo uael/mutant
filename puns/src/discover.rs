@@ -354,15 +354,16 @@ impl<E> Buf<E> {
 
   /// Returns the index of the variant of the value.
   ///
-  /// In const evaluation, it fails the build if the tag is not valid ([const evaluation fails on
-  /// what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
-  const fn variant(&self) -> usize {
+  /// # Safety
+  ///
+  /// The call must be evaluated at compile time, in a `const` item or block. The tag of the value
+  /// may be uninitialized, or not the tag of a variant, and reading the variant of such a value is
+  /// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+  const unsafe fn variant(&self) -> usize {
     // SAFETY: The experiments write only over what is not a field of the variant of the sample,
-    // or over a tag that they copy whole. So the fields of that variant are valid. The tag may
-    // be uninitialized, or not the tag of a variant. Then `variant` is sound only in const
-    // evaluation, where `rustc` reports an error (`discover`, module documentation). This
-    // function is safe, and nothing makes a call at run time an error: it relies on being
-    // evaluated only in constants.
+    // or over a tag that they copy whole, so the fields of that variant are valid. The tag may be
+    // uninitialized, or not the tag of a variant, which `variant` allows only in a call evaluated
+    // in a constant. By contract on the caller, this call is.
     unsafe { variant(self.0.as_ptr()) }
   }
 }
@@ -526,10 +527,14 @@ const fn fill_gaps<E>(buf: &mut Buf<E>, fields: &[Field], skip: usize, len: usiz
 /// Returns whether nothing but `offset..offset + len` tells the variant `v` from the others.
 ///
 /// It is so if the gaps of `v` outside these bytes, filled with zeros and then with ones, leave it
-/// the same variant. A byte of a tag that tells `v` has one value in `v`, not two. In const
-/// evaluation, it fails the build if a fill makes the tag invalid ([const evaluation fails on what
-/// is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
-const fn decided_by<E>(
+/// the same variant. A byte of a tag that tells `v` has one value in `v`, not two.
+///
+/// # Safety
+///
+/// The call must be evaluated at compile time, in a `const` item or block. A fill may make the
+/// tag invalid, and reading the variant of such a value is undefined behavior at run time. Const
+/// evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+const unsafe fn decided_by<E>(
   sample: &MaybeUninit<E>,
   fields: &[Field],
   v: usize,
@@ -539,7 +544,9 @@ const fn decided_by<E>(
   let (mut zeros, mut ones) = (Buf::of(sample), Buf::of(sample));
   fill_gaps(&mut zeros, fields, offset, len, 0);
   fill_gaps(&mut ones, fields, offset, len, 0xff);
-  zeros.variant() == v && ones.variant() == v
+  // SAFETY: `decided_by` is evaluated at compile time, by contract on the caller, so these calls
+  // are too.
+  unsafe { zeros.variant() == v && ones.variant() == v }
 }
 
 /// Returns the integer of `len` bytes at `offset` of `sample`, in native byte order.
@@ -553,13 +560,19 @@ const fn decided_by<E>(
 /// # Panics
 ///
 /// Panics if the bytes are not within an `E`, or if `len` is more than 16.
-const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
+///
+/// # Safety
+///
+/// The call must be evaluated at compile time, in a `const` item or block. The bytes may be
+/// uninitialized, and reading them is undefined behavior at run time. Const evaluation reports an
+/// error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+const unsafe fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
   assert!(offset + len <= size_of::<E>() && len <= 16);
   // SAFETY: `offset + len` is at most the size of an `E`, and `len` at most 16, which is asserted
   // above. So `add(offset)` stays within `sample`, and the `len` bytes from there are valid for
-  // reads. `load` also requires them to be initialized, which nothing here ensures. In const
-  // evaluation, `rustc` reports an error instead (`discover`, module documentation). This
-  // function is safe, and relies on being evaluated only in constants.
+  // reads. `load` also requires them to be initialized. By contract on the caller, the call is
+  // evaluated at compile time, where reading an uninitialized byte is an error rather than a
+  // read.
   unsafe { load(sample.as_ptr().cast::<u8>().add(offset), len, Endian::NATIVE) }
 }
 
@@ -573,14 +586,18 @@ const fn read<E>(sample: &MaybeUninit<E>, offset: usize, len: usize) -> u128 {
 /// Panics, with the reason, if the layout is not of a shape that `rustc` gives ([one scalar tells
 /// the variant](crate::discover#one-scalar-tells-the-variant)), if a field holds a self-relative
 /// pointer, or if a sample is not its own variant ([the discriminant is the
-/// index](crate::discover#the-discriminant-is-the-index)). In const evaluation, it also fails the
-/// build if an experiment reads what it must not ([const evaluation fails on what is not a
-/// value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+/// index](crate::discover#the-discriminant-is-the-index)).
+///
+/// # Safety
+///
+/// The call must be evaluated at compile time, in a `const` item or block. The experiments read
+/// bytes that may be uninitialized, and the variants of values whose tags may be invalid, which is
+/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
 #[expect(
   clippy::many_single_char_names,
   reason = "`v`, `u` and `d` are variants, `i` and `c` fields and candidates, by their index"
 )]
-pub const fn discover<E, const V: usize>(
+pub const unsafe fn discover<E, const V: usize>(
   samples: &[MaybeUninit<E>; V],
   fields: &[&[Field]; V],
 ) -> Desc<V> {
@@ -604,8 +621,8 @@ pub const fn discover<E, const V: usize>(
       // SAFETY: `samples[v]` is the sample of the variant `v`, which has values, as `discover`
       // documents. `Layout::sample` makes it a valid `E`, so its tag is initialized and is the
       // tag of a variant, and the fields of that variant are valid. These are the requirements
-      // of `variant`. `discover` is safe and takes any `samples`. With other samples, this
-      // relies on being evaluated only in constants, as `Buf::variant` does.
+      // of `variant`. With other samples, the tag may be invalid, which `variant` allows only in a
+      // call evaluated in a constant. By contract on the caller of `discover`, this call is.
       assert!(unsafe { variant(samples[v].as_ptr()) } == v, "the discriminant is not the index");
       let mut i = 0;
       while i < these.len() {
@@ -643,7 +660,9 @@ pub const fn discover<E, const V: usize>(
     // whose valid values are this variant. Either way its fields tell it, nothing else: checked.
     let these = fields[first];
     assert!(
-      decided_by(&samples[first], these, first, 0, 0),
+      // SAFETY: `discover` is evaluated at compile time, by contract on the caller, so this call
+      // is too.
+      unsafe { decided_by(&samples[first], these, first, 0, 0) },
       "the only variant that has values is told by bytes that are not its fields"
     );
     desc.tags[first] = (0, 0);
@@ -659,7 +678,9 @@ pub const fn discover<E, const V: usize>(
       matches!(start, 1 | 2 | 4 | 8 | 16),
       "the bytes before the fields of an enum of the `Rust` representation are not an integer: unsupported layout"
     );
-    try_tag(&mut desc, samples, fields, (0, start, None), V);
+    // SAFETY: `discover` is evaluated at compile time, by contract on the caller, so this call is
+    // too.
+    unsafe { try_tag(&mut desc, samples, fields, (0, start, None), V) };
     assert!(desc.tag.1 > 0, "the tag of the enum does not tell its variants: unsupported layout");
     return desc;
   }
@@ -702,7 +723,9 @@ pub const fn discover<E, const V: usize>(
           }
           u += 1;
         }
-        if free && try_tag(&mut desc, samples, fields, (offset, len, known), d) {
+        // SAFETY: `discover` is evaluated at compile time, by contract on the caller, so this
+        // call is too.
+        if free && unsafe { try_tag(&mut desc, samples, fields, (offset, len, known), d) } {
           return desc;
         }
       }
@@ -731,7 +754,13 @@ pub const fn discover<E, const V: usize>(
 ///
 /// Panics if no variant that has values is not `dataful`, if two variants have the same tag, or
 /// if the tag of a variant is a valid value of the scalar of the niche.
-const fn try_tag<E, const V: usize>(
+///
+/// # Safety
+///
+/// The call must be evaluated at compile time, in a `const` item or block. The experiments read
+/// bytes that may be uninitialized, and the variants of values whose tags may be invalid, which is
+/// undefined behavior at run time. Const evaluation reports an error instead ([const evaluation fails on what is not a value](crate::discover#const-evaluation-fails-on-what-is-not-a-value)).
+const unsafe fn try_tag<E, const V: usize>(
   desc: &mut Desc<V>,
   samples: &[MaybeUninit<E>; V],
   fields: &[&[Field]; V],
@@ -750,7 +779,9 @@ const fn try_tag<E, const V: usize>(
     if desc.inhabited[r] && r != base {
       let mut buf = Buf::of(&samples[base]);
       buf.transplant(&samples[r], offset, len);
-      if buf.variant() != r {
+      // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call
+      // is too.
+      if unsafe { buf.variant() } != r {
         return false;
       }
     }
@@ -759,11 +790,15 @@ const fn try_tag<E, const V: usize>(
   // Nothing else tells the variants that have one tag from the others.
   let mut v = 0;
   while v < V {
-    if desc.inhabited[v]
-      && v != dataful
-      && (covers(fields[v], offset, len) || !decided_by(&samples[v], fields[v], v, offset, len))
-    {
-      return false;
+    if desc.inhabited[v] && v != dataful {
+      if covers(fields[v], offset, len) {
+        return false;
+      }
+      // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call
+      // is too.
+      if !unsafe { decided_by(&samples[v], fields[v], v, offset, len) } {
+        return false;
+      }
     }
     v += 1;
   }
@@ -771,7 +806,9 @@ const fn try_tag<E, const V: usize>(
   // ones, leave it that variant ("One scalar tells the variant", above, says that a niche is told
   // by its scalar alone; a layout in which another place takes part, a two-level encoding say, is
   // refused here).
-  if dataful < V && !decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) {
+  // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call is
+  // too.
+  if dataful < V && !unsafe { decided_by(&samples[dataful], fields[dataful], dataful, 0, 0) } {
     return false;
   }
   // Their tags: initialized, so bytes of the tag ("A fresh value has uninitialized padding",
@@ -779,7 +816,9 @@ const fn try_tag<E, const V: usize>(
   let (mut values, mut single, mut v) = ([0; V], [false; V], 0);
   while v < V {
     if desc.inhabited[v] && v != dataful {
-      let value = read(&samples[v], offset, len);
+      // SAFETY: `try_tag` is evaluated at compile time, by contract on the caller, so this call
+      // is too.
+      let value = unsafe { read(&samples[v], offset, len) };
       let mut u = 0;
       while u < v {
         assert!(!single[u] || values[u] != value, "two variants have the same tag");
