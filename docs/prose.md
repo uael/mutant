@@ -56,8 +56,9 @@ Avoid these patterns, each of which is common in generated text:
 **The reference documentation** (`///`, `//!`, `docs/*.md`) speaks as `core` and `zerocopy` do:
 
 - Negations are mostly written out ("does not", "cannot", "is not"). In the documentation of
-  `zerocopy` 0.8.63, about 8% of negations are contracted, and in `core` about 18%.
-- "You" is used sparingly: about twice per thousand words in both.
+  `zerocopy` 0.8.63, under a tenth of negations are contracted, and in `core` between a tenth and
+  a fifth, depending on what is counted.
+- "You" is used sparingly, two to four times per thousand words in both.
 - An item starts with a one-line summary in the third person ("Returns...", "Reinterprets...").
   A description follows, then the sections that apply (`# Errors`, `# Panics`, `# Safety`,
   `# Compile-time errors`), with `# Examples` last.

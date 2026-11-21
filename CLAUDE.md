@@ -35,14 +35,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is
-1.99, the first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the
-layout of unsized types needs ("Minimum Rust version" in the crate docs); the CI job "Minimum
-Rust version" builds on it, and a feature newer than 1.99 raises `rust-version` with its reason
-written there. CI also builds for `thumbv7em-none-eabihf`, a target without `std`. A pinned nightly
-(`nightly-2026-11-17`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by
-Miri, under which the trybuild test is ignored. Generate trybuild `.stderr` files with the pinned
-stable.
+The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is 1.99,
+the first stable release with `size_of_val_raw` and `align_of_val_raw` in `const`, which the layout
+of unsized types needs ("Minimum Rust version" in the crate docs); the CI job "Minimum Rust version"
+builds on it, and a feature newer than 1.99 raises `rust-version` with its reason written there. CI
+also builds for two targets without `std`: `thumbv7em-none-eabihf`, and, on the pinned nightly,
+`msp430-none-elf`, whose `usize` has 16 bits. A pinned nightly (`nightly-2026-11-17`) is used by
+`cargo xtask fmt` (`rustfmt.toml` uses unstable options) and by Miri, under which the trybuild test
+is ignored. Generate trybuild `.stderr` files with the pinned stable.
 
 Most refusals are panics of `const { .. }` blocks in generic functions, evaluated at
 monomorphization: `cargo check` does not report them, `cargo build` does. The trybuild test has a
@@ -89,17 +89,17 @@ released with "memory is `u64` words, so 8-aligned", which no test ever ran wher
 `unsafe` block that reads a type at an address comes with the test that stresses it (an over-aligned
 type, an integer wider than `isize`, the other byte order).
 
-Do not let the machine code of `examples/codegen.rs` regress: the instruction counts of its
-functions are in its module documentation; compare before and after a change of the library. A count
-is not a time: `puns/benches/checks.rs` times what is checked at run time (IPv4, IPv6 behind
-extension headers, a view enum, slices, CRCs, `sum16`) next to the same check written by hand, the
-best of 7 samples, on an idle machine; run it on both trees, back to back, before and after a change
-of the evaluator or the validators. It takes minutes to build (release, LTO), and is not a check of
-CI. With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or `hand`) it runs a case that many
-times instead, for `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`: a count of
-instructions per check, which a loaded machine does not change. The times published in
-`docs/performance.md` name the machine, the revision and the load, and the output of their runs is
-in `docs/checks-<date>.txt`: new times come with a new record.
+Do not let the machine code of `examples/codegen.rs` regress. The instruction counts of its
+functions are in its module documentation, so compare them before and after a change of the library.
+A count is not a time, though. `puns/benches/checks.rs` times what is checked at run time (IPv4,
+IPv6 behind extension headers, a view enum, slices, CRCs, `sum16`) next to the same check written by
+hand, the best of 7 samples, on an idle machine. Run it on both trees, back to back, before and
+after a change of the evaluator or the validators. It takes minutes to build (release, LTO), and is
+not a check of CI. With `PUNS_BENCH_RUNS=1000` and `PUNS_BENCH_SIDE=puns` (or `hand`), it runs a
+case that many times instead, for `valgrind --tool=callgrind --toggle-collect='*checks*runs*'`,
+which gives a count of instructions per check that a loaded machine does not change. The times
+published in `docs/performance.md` name the machine, the revision and the load, and the output of
+their runs is in `docs/checks-<date>.txt`, so new times come with a new record.
 
 ## Architecture
 

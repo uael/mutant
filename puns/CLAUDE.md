@@ -59,11 +59,13 @@ modules, but the module `view` is `#[doc(hidden)]`, so read its documentation in
   `deep::listed` and `visit::listed`. The validation of the `try_` and `from_` functions compares
   the rules (`validate::listed`) and the place of each field (`F::Path`), and takes the other
   lists from the `# Safety` of `Pun`.
-- The derive names nothing through a path that the deriving crate can redefine.
-- Pointers are declared through the public API only, as another crate would declare them: in
-  the doc test of `SelfRelative` (doc tests are outside the crate), in the tests
-  ([`tests/support/relative.rs`](tests/support/relative.rs)), in the model check and in
-  `examples/codegen.rs`.
+- What a layout is made of depends on no path that the deriving crate can redefine, though the
+  generated code names `::core` and the root of `puns` ("What the derive trusts" in the
+  documentation of `#[derive(Pun)]`). `fakecore` in `puns-model` holds the derive to it.
+- Every pointer type in the repository is declared through the public API only, as another crate
+  would declare it: in doc tests, which are outside the crate, and in the tests, the model check and
+  `examples/codegen.rs`. Most of them share
+  [`tests/support/relative.rs`](tests/support/relative.rs).
 
 ## Not done yet
 
