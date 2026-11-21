@@ -762,3 +762,49 @@ fn two_types_at_one_place_are_two() {
     assert!(!analyze(first(), second()).relation.infallible());
   }
 }
+
+/// Returns the labels of the links of a Markdown text, in lowercase: `label` in `[label]: url`, in
+/// `[text][label]` and in `[label]` alone. A link with its URL inline, `[text](url)`, has none.
+fn link_labels(text: &str) -> Vec<String> {
+  let mut labels = Vec::new();
+  let mut rest = text;
+  while let Some(open) = rest.find('[') {
+    let after = &rest[open + 1..];
+    let Some(close) = after.find(']') else { break };
+    let inner = &after[..close];
+    let next = &after[close + 1..];
+    if let Some(second) = next.strip_prefix('[') {
+      if let Some(end) = second.find(']') {
+        labels.push(second[..end].to_lowercase());
+        rest = &second[end + 1..];
+        continue;
+      }
+    } else if !next.starts_with('(') && !inner.contains('[') {
+      labels.push(inner.to_lowercase());
+    }
+    rest = &after[close + 1..];
+  }
+  labels
+}
+
+/// The README is the start of the documentation of the crate (`#![doc = include_str!(..)]` in
+/// `lib.rs`), so the links that it defines are defined in all of that documentation. A label that
+/// the README defines and the rest of it also defines or uses would make one of the two links point
+/// to the target of the other, as `[reference]` once sent the Rust Reference to docs.rs.
+#[test]
+fn the_readme_defines_no_label_of_the_crate_documentation() {
+  let readme = include_str!("../README.md");
+  let defined: Vec<String> = readme
+    .lines()
+    .filter_map(|line| line.strip_prefix('[')?.split_once("]: "))
+    .map(|(label, _)| label.to_lowercase())
+    .collect();
+  let crate_docs = include_str!("lib.rs")
+    .lines()
+    .filter_map(|line| line.strip_prefix("//!"))
+    .collect::<Vec<_>>()
+    .join("\n");
+  let shared: Vec<String> =
+    link_labels(&crate_docs).into_iter().filter(|label| defined.contains(label)).collect();
+  assert!(shared.is_empty(), "labels of both the README and `lib.rs`: {shared:?}");
+}
