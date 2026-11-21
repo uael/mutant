@@ -32,14 +32,13 @@ assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 0]), Ok(&[Switch::On, Switch::Of
 assert_eq!(puns::from_bytes::<[Switch; 2]>(&[1, 2]), Err(puns::Error::Validity));
 ```
 
-The first conversion costs nothing at run time: every `Switch` is already a valid `bool`, so
-`pun_ref` hands back the same memory with a new type. The second can't be proven, because a byte
-can hold anything, so `from_bytes` checks each one and returns a `Result`. `puns` calls these
-*proven* and *checked* puns. A conversion that could never be valid, or that would read padding
-bytes, is *refused*: it doesn't compile.
+The first conversion costs nothing at run time. Every `Switch` is already a valid `bool`, so
+`pun_ref` returns the same memory with a new type. The second can't be proven, because a byte can
+hold any value, so `from_bytes` checks each one and returns a `Result`. `puns` calls these *proven*
+and *checked* puns. A conversion that could never be valid, or that would read padding bytes, is
+*refused*, and doesn't compile.
 
-Proofs fail loudly. Give `Switch` a third variant with the value 2, and the `pun_ref` call above
-stops compiling:
+If you give `Switch` a third variant with the value 2, the `pun_ref` call above stops compiling:
 
 ```text
 cannot pun: some values of the source are not valid for the target, or do not prove one of its rules.
@@ -47,16 +46,16 @@ Use a `try_*` function to check them at run time.
 This is at byte 0 of the target.
 ```
 
-Switching to `try_pun_ref` moves the check to run time. Note that `cargo build` reports these
-errors, but `cargo check` and your editor mostly don't, because the comparison happens while the
-compiler generates code.
+Switching to `try_pun_ref` moves the check to run time. `cargo build` reports these errors, but
+`cargo check` and your editor mostly don't, because the comparison happens while the compiler
+generates code.
 
 ```sh
 cargo add puns
 ```
 
-`puns` is `no_std`, never allocates, and needs Rust 1.99 or later ([why][msrv]). It's also young:
-the first release came out in November 2026, so expect the API to change before 1.0.
+`puns` is `no_std`, never allocates, and needs Rust 1.99 or later ([why][msrv]). The first release
+came out in November 2026, so expect the API to change before 1.0.
 
 ## Reading a packet
 
@@ -110,19 +109,19 @@ assert_eq!(buffer[1], 63);
 ```
 
 `u16be` and `u32be` are big-endian integers with an alignment of 1, which is why `Packet` has no
-padding and can sit at any address in a buffer. Rules can also compute other checksums, read
-variable-length integers and `walk` a chain of headers, and other attributes cover bit fields,
-restricted values and regions; the [derive's documentation][derive] lists them all.
+padding and can be at any address in a buffer. Rules can also compute other checksums, read
+variable-length integers and `walk` a chain of headers. Other attributes cover bit fields,
+restricted values and regions, and the [derive's documentation][derive] lists them all.
 
-A rule describes the format, and Rust knows nothing of it. It's checked when the bytes are read,
-and nothing keeps it true afterwards: had the router set `length` to 10, the payload would still
-have 3 bytes, and later puns to a type with the same rule would trust the stale check. `puns`
-doesn't build new values of an unsized type like `Packet`, so to send one, you write its bytes
-yourself, and `as_bytes` gives you the bytes of any value.
+A rule describes the format, and Rust knows nothing of it. It's checked when the bytes are read, and
+nothing keeps it true afterwards. If the router had set `length` to 10, the payload would still have
+3 bytes, and a later pun to a type with the same rule would trust the old check. `puns` doesn't
+build new values of an unsized type like `Packet`, so to send one, you write its bytes yourself.
+`as_bytes` gives you the bytes of any value.
 
-When the data can be one of several types, derive `Pun` on an enum of references, a *view*, and
-its `from_bytes` returns the first variant that the bytes match. [`link.rs`][link] reads Bluetooth
-HCI packets this way.
+When the data can be one of several types, derive `Pun` on an enum of references, which `puns` calls
+a *view*. Its `from_bytes` returns the first variant that the bytes match, and [`link.rs`][link]
+reads Bluetooth HCI packets this way.
 
 `from_bytes`, `from_head` and `from_tail` are `const fn`, so you can check bytes at compile time.
 `unwrap` isn't `const`, so [match on the result][const] there instead.
@@ -163,22 +162,21 @@ assert_eq!(items[1], Item::Potion { heal: 25, cursed: false });
 ```
 
 If version 2 ever drops a variant or narrows a field, this stops compiling. (`pun_mut` won't accept
-it, since you could then write a key into an `OldItem`.) What `puns` can't check is meaning:
-variants are matched by their tag, so if version 2 gave tag 1 to the key, this would still compile
-and read the old potion as a key. Keep the tags of existing variants.
+it, since you could then write a key into an `OldItem`.) `puns` can't check what a variant means,
+because it matches variants by their tag. If version 2 gave tag 1 to the key, this would still
+compile and read the old potion as a key, so keep the tags of existing variants.
 
 ## Compared with other crates
 
-`puns` owes a lot to [`zerocopy`][zerocopy] and [`bytemuck`][bytemuck], for ideas and for
-implementation details. Their traits describe what each type accepts on its own, and a `bool`
-doesn't accept every byte, so reading a `&[Switch]` as a `&[bool]` with them checks every byte and
-returns a `Result`. With `puns`, it's free ([code and machine code][comparison]). Both can check
-conditions like a checksum at run time, but neither uses the rules of one type to prove those of
-another.
+`puns` takes many ideas and implementation details from [`zerocopy`][zerocopy] and
+[`bytemuck`][bytemuck]. Their traits describe what each type accepts on its own. A `bool` doesn't
+accept every byte, so with them, reading a `&[Switch]` as a `&[bool]` checks every byte and returns
+a `Result`. With `puns`, it's free ([code and machine code][comparison]). Both can check conditions
+like a checksum at run time, but neither uses the rules of one type to prove those of another.
 
-They also cover ground that `puns` doesn't: `bytemuck` casts a `Vec`, `zerocopy` handles atomics,
-and their errors are mostly trait bounds that your editor reports right away. Reach for them for
-these, for an older Rust, or for a crate with years of review behind it. To decode data into owned
+They also do things that `puns` doesn't: `bytemuck` casts a `Vec`, `zerocopy` handles atomics, and
+their errors are mostly trait bounds that your editor reports right away. Use them for these, for an
+older Rust, or when you need a crate that has been reviewed for years. To decode data into owned
 values, [`binrw`][binrw], [`deku`][deku] or [`nom`][nom] are a better fit. Rust's own [Safe
 Transmute][safe transmute] project compares the two types as well, inside the compiler, but it's
 only on nightly.
