@@ -29,7 +29,7 @@ by hand. The times below are in nanoseconds per check. They are the median of 5 
 benchmark, and each run takes the best of 7 samples of each case. They were measured on
 2026-11-21 with:
 
-- the library at commit `4176671`,
+- the library at commit [`4176671`][commit],
 - `rustc` 1.100.0, with the `bench` profile of the workspace (`opt-level = 3`, LTO, one codegen
   unit),
 - an Apple M4 Max (14 cores, 36 GiB) on macOS 26.7.2,
@@ -93,8 +93,8 @@ checksum of UDP over IPv4 is computed once, for the IPv4 variant.
 The analysis runs in the compiler, once for each pair of types that a function of `puns` is used
 with. `cargo xtask build-time` ([`xtask/src/build_time.rs`][build-time]) builds a crate that uses
 `puns` in several ways, and prints the best of 3 builds of that crate alone, in seconds. These
-times were measured on 2026-11-21, with the library at commit `c5abfbd`, `rustc` 1.100.0, on the
-machine above, at a load average between 3.9 and 4.3.
+times were measured on 2026-11-21, with the library at commit [`4176671`][commit], `rustc`
+1.100.0, on the machine above, at a load average between 3.9 and 4.3.
 
 Each struct has five fields, among them an enum and a `bool`. Reading each of 100 structs from
 bytes adds 1.7 s to a debug build, and 0.74 s to a release build: about 17 ms and 7 ms for each
@@ -133,3 +133,4 @@ do.
 [checks]: https://github.com/uael/puns/blob/main/puns/benches/checks.rs
 [record]: https://github.com/uael/puns/blob/main/docs/checks-2026-11-21.txt
 [build-time]: https://github.com/uael/puns/blob/main/xtask/src/build_time.rs
+[commit]: https://github.com/uael/puns/commit/4176671c690b6a75de775d3d4c6f6c607736ff00
